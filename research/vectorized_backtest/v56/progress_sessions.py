@@ -1,0 +1,45 @@
+"""Read-only session strength summaries from sealed global replay receipts."""
+import json,hashlib,statistics,math
+from pathlib import Path
+
+def strength(rows):
+    valid=[r for r in rows if r.get('eligible',False)]
+    if not valid:return {}
+    if any(not math.isfinite(float(r[k])) for r in valid for k in ('score','net_pnl','drawdown')):raise ValueError('Nonfinite session summary')
+    top=max(valid,key=lambda r:(r['net_pnl'],r['score'],-r['serial']))
+    trades=top['closed_positions'];wins=top.get('winning_positions')
+    return dict(top_net=top['net_pnl'],median_net=statistics.median(r['net_pnl'] for r in valid),top_drawdown=top['drawdown'],
+        top_win_rate=100*wins/trades if wins is not None and trades else None,best_score=max(r['score'] for r in valid),
+        profitable_fraction=100*sum(r['net_pnl']>0 for r in valid)/len(valid),median_drawdown=statistics.median(r['drawdown'] for r in valid),candidates=len(valid),top_serial=top['serial'])
+
+def read_verified(path,expected=None):
+    raw=Path(path).read_bytes()
+    if expected is not None and hashlib.sha256(raw).hexdigest()!=expected:raise ValueError('Sealed global evidence changed: '+str(path))
+    return json.loads(raw)
+
+def load_global(job,root,generation,stop,progress=lambda done,total:None):
+    from .full_common import aggregate,ranking
+    from .objectives import Objective
+    from research.vectorized_backtest.v42.distributed_assets import remote
+    root=Path(root);folder=root/f'generation-{generation:04d}';seal=read_verified(folder/'complete.json');panels={};summaries={};done=0
+    total=len(job['training_days'])+len(job['validation_days'])
+    for role in ('training','validation'):
+        evidence=read_verified(folder/(role+'.json'),seal[role+'_sha256'])
+        if role=='validation' and not evidence['display_only']:raise ValueError('Validation authority changed')
+        ids=evidence['ids']
+        for day in job[role+'_days']:
+            if stop.is_set():raise InterruptedError('Observer closed')
+            ref=evidence['receipts'][day];path=Path(ref['receipt'])
+            if str(root).startswith('\\\\'):path=remote(path,job['workstation_share'])
+            receipt=read_verified(path,ref['receipt_sha256'])
+            if receipt['day']!=day or receipt['split']!=role or receipt['population_sha256']!=evidence['population_sha256'] or not receipt['full_session'] or receipt['validation_opened']!=(role=='validation'):raise ValueError('Global session receipt identity changed')
+            panel=aggregate([receipt['metrics']],Objective(**job['objective']))
+            if len(panel['score'])!=len(ids):raise ValueError('Global session candidate alignment changed')
+            key=role+':'+day;panels[key]=dict(ids=ids,panel=panel);summary=strength(ranking(panel,ids))
+            timing_path=path.parent/'timings.json';seconds=None
+            if timing_path.exists():
+                timings=read_verified(timing_path)
+                if timings:seconds=sum(float(row.get(k,0)) for row in timings for k in ('load_seconds','rule_seconds','replay_seconds'))
+            summaries[key]=dict(strength=summary,batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0)
+            done+=1;progress(done,total)
+    return dict(generation=generation,panels=panels,summaries=summaries)

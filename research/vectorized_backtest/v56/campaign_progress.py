@@ -1,7 +1,7 @@
 """V48-style multi-device overview, session drill-down, and evolution attribution."""
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
-import argparse,json,time,statistics,math
+import argparse,json,time,statistics,math,threading
 from pathlib import Path
 from rich.console import Console
 from rich.layout import Layout
@@ -30,7 +30,8 @@ def diagnostics(value,prefix=''):
 
 class Model:
     def __init__(self,job):
-        self.job=job;self.root=Path(job['campaign']);self.cache={};self.reports={};self.last_error=None;self.timing_cache={}
+        self.job=job;self.root=Path(job['campaign']);self.cache={};self.reports={};self.last_error=None;self.timing_cache={};self.strength_cache={}
+        self.global_data=None;self.global_loading=None;self.global_error=None;self.global_thread=None;self.observer_stop=threading.Event();self.global_attempt=0.;self.global_day=None;self.global_role=None;self.summary_mode='combined'
         self.bus=remote(job['transport'],job['workstation_share'])
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
     def read(self,path,default=None):
@@ -49,24 +50,50 @@ class Model:
         return path if node=='laptop' else remote(path,self.job['workstation_share'])
     def target(self):return self.session_root(self.day) if self.day else remote(self.root/'phase-2',self.job['workstation_share'])
     def status(self):return self.read(self.target()/'full-status.json')
+    def close(self):self.observer_stop.set()
+    def strength(self,path,state):
+        from .progress_sessions import strength
+        key=(str(path),state.get('ranking_generation',state.get('completed_generations',0)))
+        if key not in self.strength_cache:
+            self.strength_cache={k:v for k,v in self.strength_cache.items() if k[0]!=str(path)}
+            self.strength_cache[key]=strength(state.get('training_ranking',[]))
+        return self.strength_cache[key]
+    def global_snapshot(self):
+        target=remote(self.root/'phase-2',self.job['workstation_share']);state=self.read(target/'full-status.json');generation=state.get('ranking_generation',state.get('completed_generations',0))
+        if generation and (self.global_data is None or self.global_data['generation']!=generation) and not (self.global_thread and self.global_thread.is_alive()) and time.monotonic()-self.global_attempt>10:
+            self.global_attempt=time.monotonic();self.global_loading=(generation,0,36);self.global_error=None
+            def collect():
+                from .progress_sessions import load_global
+                try:self.global_data=load_global(self.job,target/'global',generation,self.observer_stop,lambda done,total:setattr(self,'global_loading',(generation,done,total)))
+                except InterruptedError:pass
+                except Exception as error:self.global_error=str(error)
+                finally:self.global_loading=None
+            self.global_thread=threading.Thread(target=collect,daemon=True);self.global_thread.start()
+        return self.global_data
     def timing(self,path,state,running=False,complete=False):
         """Immutable seal durations are loaded once; active elapsed is approximate."""
         root=Path(path)/'global';done=50 if complete else int(state.get('completed_generations',0));cache=self.timing_cache.setdefault(str(root),{})
         for generation in range(1,done+1):
             if generation in cache:continue
             seal=self.read(root/f'generation-{generation:04d}'/'complete.json');seconds=seal.get('wall_seconds')
-            if isinstance(seconds,(int,float)) and math.isfinite(seconds) and seconds>=0:cache[generation]=(seconds,seal.get('source_sha256'))
+            if isinstance(seconds,(int,float)) and math.isfinite(seconds) and seconds>=0:
+                reused=False
+                if seal.get('source_sha256')==self.job.get('source_sha256'):
+                    evidence=self.read(root/f'generation-{generation:04d}'/'training.json');refs=evidence.get('receipts',{})
+                    # An absent/empty batch timing cannot establish a full replay rate.
+                    reused=bool(refs) and all(not self.read((remote(r['receipt'],self.job['workstation_share']) if str(root).startswith('\\\\') else Path(r['receipt'])).parent/'timings.json') for r in refs.values())
+                cache[generation]=(seconds,seal.get('source_sha256'),reused)
         rows=[];total=0.
-        for generation,(seconds,source) in sorted(cache.items()):
+        for generation,(seconds,source,reused) in sorted(cache.items()):
             if generation>done:continue
-            total+=seconds;rows.append(dict(generation=generation,seconds=seconds,total=total,current_source=source==self.job.get('source_sha256')))
+            total+=seconds;rows.append(dict(generation=generation,seconds=seconds,total=total,current_source=source==self.job.get('source_sha256'),cached_replay=reused))
         elapsed=None
         if running and done<50:
             try:
                 started=(root/f'generation-{done+1:04d}'/'population.json').stat().st_mtime
                 if started>=state.get('owner',{}).get('creation_time',float('inf')):elapsed=max(0.,time.time()-started)
             except OSError:pass
-        recent=[r['seconds'] for r in rows if r['current_source'] and r['generation']>1][-3:]
+        recent=[r['seconds'] for r in rows if r['current_source'] and not r['cached_replay'] and r['generation']>1][-3:]
         rate=statistics.median(recent) if recent else None
         eta=0. if complete else None;generation_eta=None
         if running and rate is not None:
@@ -103,19 +130,28 @@ class Model:
             progress=s.get('worker_progress',{}) if active and not complete else {};stage=progress.get('stage',s.get('stage','')) if active and not complete else ''
             if preparing:progress={};stage='Verify inputs / resume saved state'
             timing=self.timing(self.session_root(day),s,running=active and state=='running' and not stopped,complete=complete)
-            sessions.append(dict(day=day,node=node,done=50 if complete else done,state=state,stage=stage,progress=progress,timing=timing))
+            sessions.append(dict(day=day,node=node,done=50 if complete else done,state=state,stage=stage,progress=progress,timing=timing,strength=self.strength(self.session_root(day),s)))
         result=(nodes,sessions,stopped);self.snapshot_cache=(time.monotonic(),result);return result
     def rows(self):
         if self.view=='overview':return self.snapshot()[1]
+        if self.view=='global_sessions':
+            data=self.global_snapshot();generation=data['generation'] if data else 0
+            return [dict(day=day,role=role,generation=generation,**(data['summaries'].get(role+':'+day,{}) if data else {})) for role in ('training','validation') for day in self.job[role+'_days']]
         if self.view=='timings':return self.timing(self.target(),self.status())['rows']
         if self.view=='reproduction':return diagnostics(self.report().get('next_generation_reproduction') or {})
         if self.view in ('operators','families','methods'):
             category={'operators':'operator','families':'family','methods':'founder-method'}[self.view]
             return [g for g in self.report().get('groups',[]) if g['category']==category]
-        if self.view=='founders':rows=list(self.read(self.target()/'global/founder-results.json').values())
+        if self.view=='global_ranking':
+            from .full_common import ranking
+            data=self.global_snapshot();key=str(self.global_role)+':'+str(self.global_day)
+            if not data or key not in data['panels']:return []
+            values=data['panels'][key];report=self.read(self.target()/'global'/f"generation-{data['generation']:04d}"/'evolution-report.json');details={r['serial']:r for r in report.get('candidates',[])}
+            rows=[dict(details.get(r['serial'],{}),**r,generation=data['generation'],metric_scope=key) for r in ranking(values['panel'],values['ids'])]
+        elif self.view=='founders':rows=list(self.read(self.target()/'global/founder-results.json').values())
         elif self.view=='ranking':
             details={r['serial']:r for r in self.report().get('candidates',[])}
-            return [dict(details.get(r['serial'],{}),**r) for r in self.status().get('validation_ranking' if self.validation else 'training_ranking',[])]
+            rows=[dict(details.get(r['serial'],{}),**r) for r in self.status().get('validation_ranking' if self.validation else 'training_ranking',[])]
         else:rows=self.report().get('candidates',[])
         if self.filter:
             kind,value=self.filter
@@ -129,9 +165,10 @@ class Model:
             self.detail_page=max(0,self.detail_page+(1 if key=='n' else -1));return
         if key=='l' and self.selected:self.view='lineage';self.detail_page=0;return
         if key=='v':self.view='reproduction';self.selection=0;return
-        if key=='d':self.view='timings';self.selection=0;return
-        if key in ('h','\x1b'):self.view='overview';self.day=None;self.selection=0;self.filter=None;return
-        if key=='g':self.day=None;self.view='ranking';self.selection=0;self.filter=None;return
+        if key=='c':self.summary_mode='timing' if self.summary_mode=='combined' else 'combined';return
+        if key=='d':self.view='timings';self.selection=0;self.global_day=None;return
+        if key in ('h','\x1b'):self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;return
+        if key=='g':self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
         if key in ('o','f','m','a','i'):
             self.view={'o':'operators','f':'families','m':'methods','a':'candidates','i':'founders'}[key];self.selection=0;self.filter=None;return
         if key=='t':self.validation=not self.validation;return
@@ -145,13 +182,14 @@ class Model:
         if key in ('\r','\n') and rows and self.view not in ('reproduction','detail','lineage','timings'):
             row=rows[min(self.selection,len(rows)-1)]
             if self.view=='overview':self.day=row['day'];self.view='ranking';self.selection=0
+            elif self.view=='global_sessions':self.global_day=row['day'];self.global_role=row['role'];self.view='global_ranking';self.selection=0
             elif self.view in ('operators','families','methods'):
                 self.filter=({'operators':'operators','families':'founder_groups','methods':'founder_methods'}[self.view],row['group']);self.view='candidates';self.selection=0
             else:self.selected=row;self.view='detail';self.detail_page=0
 
 def render(model,width,height):
     layout=Layout();layout.split_column(Layout(name='head',size=4),Layout(name='body'),Layout(name='keys',size=4))
-    title=f"V56 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'GLOBAL / OVERVIEW'} | 50 session + 50 global"
+    title=f"V56 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     note='Score: P&L - losses - 2 x DD | risk caps OFF | validation display-only'
     table=Table(expand=True,padding=(0,0));limit=max(1,height-13);start=model.selection//limit*limit
     if model.view=='overview':
@@ -164,18 +202,36 @@ def render(model,width,height):
         title+=f' | {done}/24 complete';note=stage+'\n'+note
         compact=width<120
         columns=('Session','Host','Gen','Last','Current','Work','ETA','State') if compact else ('Session','Host','Sealed','State','Last gen','Current gen','Session work','Session ETA','Activity')
+        if model.summary_mode=='combined':columns=('Session','Host','Gen','Top net $','Median $','Top DD $','Win %') if compact else ('Session','Host','Gen','State','Last','Current','Work','ETA','Best score','Top net $','Median $','Top DD $','Win %','Profit %')
         for h in columns:table.add_column(h,no_wrap=True)
         for i,r in enumerate(rows[start:start+limit],start):
             p=r['progress'];activity=r['stage']+(f" {p.get('completed_seconds',0)}/{p.get('total_seconds',0)} clocks" if p else '')
             t=r['timing'];eta='done' if t['complete'] else '~'+duration(t['eta']) if t['eta'] is not None else '-'
             times=[duration(t['last']),duration(t['elapsed']),duration(t['work']),eta]
             cells=[r['day'],r['node'][0].upper(),f"{r['done']}/50",*times,r['state']] if compact else [r['day'],r['node'],f"{r['done']}/50",r['state'],*times,activity]
+            if model.summary_mode=='combined':
+                s=r['strength'];metrics=[number(s.get(k)) for k in ('top_net','median_net','top_drawdown','top_win_rate')]
+                cells=[r['day'],r['node'][0].upper(),f"{r['done']}/50",*metrics] if compact else [r['day'],r['node'][0].upper(),f"{r['done']}/50",r['state'],*times,number(s.get('best_score')),*metrics,number(s.get('profitable_fraction'))]
             color={'complete':'bright_green','running':'bright_cyan','preparing':'bright_yellow','failed':'bold bright_red','STALE':'bold bright_red','stopped':'dim'}.get(r['state'])
             table.add_row(*cells,style=SELECTED if i==model.selection else color)
-        caption='Work: sealed generations only. ~ETA: recent current-code timings.'
+        caption='C: strength / timing columns | DD and win rate: top-profit candidate. Profit %: profitable eligible candidates.'
         if rows:
             selected=rows[min(model.selection,len(rows)-1)];t=selected['timing']
             note+='\nSelected '+selected['day']+' | generation ETA '+('done' if t['complete'] else '~'+duration(t['generation_eta']) if t['generation_eta'] is not None else 'warming / unavailable')+' | Enter then D: generation history'
+    elif model.view=='global_sessions':
+        rows=model.rows();compact=width<120
+        columns=('Session','Split','Top net $','Median $','Top DD $','Win %') if compact else ('Session','Split','Gen','Best score','Top net $','Median net $','Top DD $','Median DD $','Win %','Profit %','Candidates','Replay work')
+        for h in columns:table.add_column(h,no_wrap=True)
+        for i,r in enumerate(rows[start:start+limit],start):
+            s=r.get('strength',{});metrics=[number(s.get(k)) for k in ('top_net','median_net','top_drawdown')]
+            cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train']
+            cells+= [*metrics,number(s.get('top_win_rate'))] if compact else [str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-')),'cached' if r.get('cached') else duration(r.get('batch_seconds'))]
+            table.add_row(*cells,style=SELECTED if i==model.selection else 'bright_magenta' if r['role']=='validation' else 'bright_cyan')
+        loaded=model.global_data;caption=f"Sealed global generation {loaded['generation']}" if loaded else 'Global results not yet evaluated'
+        if model.global_loading:caption+=f' | loading {model.global_loading[1]}/{model.global_loading[2]} sessions'
+        if model.global_error:caption+=' | evidence unavailable: '+model.global_error
+        caption+=f' | rows {start+1}-{min(start+limit,len(rows))}/{len(rows)}'
+        caption+=' | VAL*: display-only | eligible candidates | DD / Win %: top-profit candidate | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
     elif model.view in ('operators','families','methods'):
         report=model.report();rows=model.rows()
         compact=width<120
@@ -190,7 +246,7 @@ def render(model,width,height):
     elif model.view=='timings':
         rows=model.rows()
         for h in ('Generation','Duration','Cumulative work','Timing period'):table.add_column(h,no_wrap=True)
-        for i,r in enumerate(rows[start:start+limit],start):table.add_row(str(r['generation']),duration(r['seconds']),duration(r['total']),'current code' if r['current_source'] else 'before update',style=SELECTED if i==model.selection else None)
+        for i,r in enumerate(rows[start:start+limit],start):table.add_row(str(r['generation']),duration(r['seconds']),duration(r['total']),'cache reuse' if r['cached_replay'] else 'current code' if r['current_source'] else 'before update',style=SELECTED if i==model.selection else None)
         if not rows:table.add_row('No sealed generation','-','-','-')
         caption='Measured generation wall times; excludes between-generation pauses and initial setup.'
     elif model.view=='reproduction':
@@ -216,6 +272,10 @@ def render(model,width,height):
         table.add_column('Session');table.add_column('Score $',justify='right');table.add_column('Net $',justify='right');table.add_column('Loss $',justify='right');table.add_column('DD $',justify='right')
         generation=r.get('last_evaluated_generation',r.get('generation',model.report().get('generation',0)))
         data=model.read(model.target()/'global'/f'generation-{generation:04d}'/'session-metrics.json')
+        if not model.day and model.global_data and model.global_data['generation']==generation:
+            panels=model.global_data['panels'];first=next(iter(panels.values()),None)
+            if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
+        if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if r['metric_scope'].startswith('validation:') else '')
         if r.get('serial') in data.get('ids',[]):
             index=data['ids'].index(r['serial'])
             page_size=max(1,height-19);offset=model.detail_page*page_size
@@ -228,6 +288,7 @@ def render(model,width,height):
         for h in ('Serial','Score $','Net $','Loss $','DD $','Nodes','Technique / family'):table.add_column(h,no_wrap=True,justify='right')
         for i,r in enumerate(rows[start:start+limit],start):table.add_row(str(r['serial']),*(number(r.get(k)) for k in ('score','net_pnl','gross_losses','drawdown','nodes')),', '.join(r.get('operators',r.get('founder_groups',[]))),style=SELECTED if i==model.selection else None)
         status=model.status();caption=f"{'VALIDATION display-only' if model.validation and model.view=='ranking' else 'TRAINING'} | {model.view} | {len(rows)} candidates | sort {model.sort} | {status.get('stage','Not evaluated')}"
+        if model.view=='global_ranking':caption=f"GLOBAL {model.global_role} {'display-only' if model.global_role=='validation' else ''} | {model.global_day} | sealed generation {model.global_data['generation'] if model.global_data else '-'} | {len(rows)} candidates | sort {model.sort}"
         if not rows:table.add_row('Not evaluated',*['']*6)
     if model.view!='overview':
         state=model.status();t=model.timing(model.target(),state,running=state.get('status')=='running' and time.time()-state.get('updated_epoch',0)<15,complete=state.get('status')=='complete')
@@ -235,14 +296,14 @@ def render(model,width,height):
         note+='\nGeneration ETA '+('~'+duration(t['generation_eta']) if t['generation_eta'] is not None else '-')+' | D: measured generation history'
     layout['head'].update(Text(title+'\n'+note,style='bright_cyan'))
     layout['body'].update(Panel(table,title=model.view.upper(),subtitle=caption,padding=0))
-    layout['keys'].update(Text('J/K select | N/B page | Enter details | H summary | G global\nO crossover | F families | M methods | A candidates | I founders | D timings\nS sort | R reverse | T train/val | U descendants | L lineage | V attempts\nQ closes this observer only; optimization continues.'))
+    layout['keys'].update(Text('J/K select | N/B page | Enter details | H phase 1 | G global sessions\nO crossover | F families | M methods | A candidates | I founders | D timings\nC columns | S sort | R reverse | T train/val | U descendants | L lineage | V attempts\nQ closes this observer only; optimization continues.'))
     return layout
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--job',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--view',default='overview');a=p.parse_args()
     model=Model(json.loads(a.job.read_bytes()));model.view=a.view;console=Console()
     if console.is_terminal:console=Console(color_system='truecolor',no_color=False,legacy_windows=False)
-    if a.once or not console.is_terminal:console.print(render(model,console.width,console.height));return
+    if a.once or not console.is_terminal:console.print(render(model,console.width,console.height));model.close();return
     if os.name=='nt':
         import ctypes,msvcrt
         handle=msvcrt.get_osfhandle(console.file.fileno());mode=ctypes.c_ulong()
@@ -259,4 +320,5 @@ def main():
                         model.key(key,live.dimensions()[1]);break
                     time.sleep(.05)
     except KeyboardInterrupt:return
+    finally:model.close()
 if __name__=='__main__':main()

@@ -34,6 +34,7 @@ class TimingTests(unittest.TestCase):
             job=dict(campaign=tmp,transport=tmp,workstation_share='fixture',source_sha256='new',training_days=['2026-08-07'],machines={'laptop':dict(session_days=['2026-08-07'])})
             with patch('research.vectorized_backtest.v56.campaign_progress.remote',side_effect=lambda p,s:Path(p)):
                 model=Model(job)
+                model.summary_mode='timing'
                 for width,height in ((80,24),(160,45)):
                     output=io.StringIO();console=Console(file=output,width=width,height=height,color_system=None)
                     console.print(render(model,width,height));value=output.getvalue()
