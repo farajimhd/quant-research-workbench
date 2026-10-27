@@ -9,6 +9,51 @@ from tests.test_vector_v56_campaign import RUNTIME,job,TRAIN
 from tests.test_vector_v56_reproduction import members
 from research.vectorized_backtest.v42.publication import write_json
 from research.vectorized_backtest.v56.session_lanes import output_scope
+import torch
+
+class KernelSchedulingTests(unittest.TestCase):
+    @unittest.skipUnless(torch.cuda.is_available(),'CUDA required')
+    def test_sorted_two_warp_execution_preserves_recurrence_and_tail_listings(self):
+        import numpy as np
+        from research.vectorized_backtest.v56 import network_cuda as cuda
+        from research.vectorized_backtest.v56.network import NetworkPlan
+        from research.vectorized_backtest.v56.genome import sample,MARKET_INPUTS
+        from research.vectorized_backtest.v42.features import CATALOG
+        from tests.test_vector_v56_whole_network import parent,cross
+        pop=sample(np.random.default_rng(21),4)
+        pop += [cross(parent(0,recurrent=True),parent(1,recurrent=True),mode)[0]
+                for mode in ('union','intersection','xor','xnor')]
+        plan=NetworkPlan(pop,'cuda');b=len(pop);u=129;plan.prepare(b,u)
+        counts=plan.counts.cpu().numpy();order=plan.cuda_network_order.cpu().numpy()
+        self.assertEqual(sorted(order.tolist()),list(range(len(counts))))
+        self.assertTrue(np.all(np.diff(counts[order])<=0))
+        generator=torch.Generator(device='cuda').manual_seed(2021)
+        values=torch.rand((u,MARKET_INPUTS),generator=generator,device='cuda')*2-1
+        valid=torch.ones((u,len(CATALOG)),device='cuda',dtype=torch.bool);valid[::3]=False
+        position=torch.zeros((1,b,u,9),device='cuda',dtype=torch.float64)
+        opened=torch.zeros((1,b,u),device='cuda',dtype=torch.float64)
+        previous=torch.ones((1,1,u),device='cuda',dtype=torch.float64)
+        original=cuda.workspace_kernel
+        class Unsorted:
+            def __getitem__(self,grid):
+                def launch(*args,**kw):
+                    kw['num_warps']=4
+                    return original[(b,5,args[-2])](*args[:-1],False,**kw)
+                return launch
+        results=[]
+        try:
+            for kernel in (Unsorted(),original):
+                plan.reset();rows=[]
+                with patch.object(cuda,'workspace_kernel',kernel):
+                    for tick in range(5):
+                        out=cuda.signals(plan,values,valid,position,opened,previous,torch.tensor(tick,device='cuda'))
+                        rows.append((out.cpu(),plan.ratios.cpu(),plan.export_state()))
+                results.append(rows)
+            for before,after in zip(*results):
+                self.assertTrue(torch.equal(before[0],after[0]))
+                self.assertTrue(torch.equal(before[1],after[1]))
+                for key in before[2]:self.assertTrue(torch.equal(before[2][key],after[2][key]),key)
+        finally:plan.close()
 
 class PreparationTests(unittest.TestCase):
     def test_capacity_is_bounded_nested_and_restored_after_error(self):

@@ -43,6 +43,8 @@ class NetworkPlan:
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in packed['values']]
         self.operations=torch.as_tensor(packed['operations'],device=device)
         self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
+        # Execute long action graphs first; genotype and output order stay intact.
+        self.cuda_network_order=torch.as_tensor(np.argsort(-packed['values'][3],kind='stable').astype(np.int32),device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         self.workspace_shape=None
 

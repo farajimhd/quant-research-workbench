@@ -148,3 +148,22 @@ all listings, and a 512-clock real-market prefix; these are diagnostic timings,
 not full-session fitness or an end-to-end campaign acceleration claim.
 Evidence lives under the V56 runtime `profile-20261027` directory. Neither test
 changes the objective, financial transitions, selection, nor checkpoint state.
+
+GPU replay profiling on the laptop's RTX 5090 identified the recurrent workspace
+kernel as 88.2% of device time at the production batch size of 512 candidates.
+The default unowned 128-listing tile now uses a stable descending-node-count
+schedule, placing all listing tiles of the largest action networks first, with
+two warps per tile. Output indices and within-network arithmetic order are
+unchanged. Other tile sizes and owner-restricted lanes retain four warps and
+their original scheduling. Whole-network operators also bypass the generic
+edge calculations whose results they replace.
+
+The bounded before/after check replays the same 512 saved Aug 7 candidates over
+all 491 listings and 512 real market clocks, with tracing and the same execution
+configuration. Financial exports and hashes of the complete recurrent state
+match exactly. The laptop replay takes approximately 2.46 seconds versus 3.58
+seconds before this change; setup, loading, and population preparation are
+excluded. This is a short replay measurement, not a full-generation or workstation
+speedup claim. GPU traces and alternating baseline/optimized measurements are
+under the V56 runtime `gpu-profile-20261027` directory. The one-warp trial was
+rejected because it changed results. No full campaign is launched by these tests.
