@@ -53,7 +53,10 @@ class CampaignTests(unittest.TestCase):
         with TemporaryDirectory(dir=RUNTIME) as tmp:
             j=job();j.update(campaign_stage='global',source_sha256='fixture');e=Evolution(j,'workstation',tmp,2,[tmp]);observed=[]
             class Lanes:
-                def __init__(self,cfg,workers,panel):self.cfg=cfg;observed.append((cfg['split'],workers))
+                def __init__(self,cfg,workers,panel):
+                    self.cfg=cfg;observed.append((cfg['split'],workers))
+                    assert cfg['compile_cache_root'].replace('\\','/').startswith('D:/TradingML/runtimes/v56c/')
+                    assert len(cfg['compile_cache_root'])<80
                 def __enter__(self):return self
                 def __exit__(self,*args):pass
                 def generation(self,days,pop,generation,token):

@@ -47,7 +47,8 @@ class Evolution(Controller):
         if self.job['campaign_stage']=='session' and role!='training':raise ValueError('Local validation is forbidden')
         for day in days:ensure_day(self.job,self.node,role,day)
         out=Path(self.worker.config['output'])/role;token=digest([m.payload() for m in members])
-        cfg=config(self.job,self.node,role);cfg.update(output=str(out),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),compile_cache_root=str(self.root/'compiler'))
+        cache=Path('D:/TradingML/runtimes/v56c')/self.job['source_sha256'][:12]/self.node
+        cfg=config(self.job,self.node,role);cfg.update(output=str(out),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),compile_cache_root=str(cache))
         if self.workers==1:
             from .session_lanes import Worker
             key=(role,str(out))

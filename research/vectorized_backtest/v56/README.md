@@ -74,7 +74,9 @@ No session fitness is reused as a global score.
 Two persistent process lanes replay independent sessions concurrently on the
 workstation GPU. Each owns its session state and CUDA graph; they share no
 recurrent or financial state. Lanes have separate memory admission, compiler
-caches and bounded host residency. Training replays cover all 24 days for every
+caches and bounded host residency. Compiler caches use the short source-bound
+D:/TradingML/runtimes/v56c/<source>/<host> root to avoid Windows path-length
+failures in persistent FX/AOT cache writes. Training replays cover all 24 days for every
 candidate. The unchanged global score sums daily P&L, gross losses and twice the
 daily equity drawdowns. Ticker ranks likewise sum each listing's local costs
 across training days before ranking. Approximately 25% of crossover parent draws
