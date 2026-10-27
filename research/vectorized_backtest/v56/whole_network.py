@@ -9,7 +9,7 @@ POLICY = dict(total_crossover_fraction=.25, phase0_same_owner_only=True, phase1_
               recurrent_state='disjoint branch nodes', oversize='explicit fresh fallback')
 
 
-def network(a, b, mode, age_a=0, age_b=0):
+def network(a, b, mode, age_a=0, age_b=0, *, validate=True):
     if mode not in POLICY['modes']: raise ValueError('Unknown whole-network mode')
     nodes=[]; roots=[]; sizes=[]
     for side, (net, age) in enumerate(((a, age_a), (b, age_b))):
@@ -28,7 +28,8 @@ def network(a, b, mode, age_a=0, age_b=0):
     nodes.append(Neuron(tuple(INPUTS+i for i in (*roots,*sizes)),(1.,)*4,0.,op='whole_xnor_size' if mode=='xnor' else 'whole_size',slot=19))
     op={'union':'whole_or','intersection':'whole_and','xor':'whole_xor','xnor':'whole_xnor'}[mode]
     nodes.append(Neuron(tuple(INPUTS+i for i in roots),(1.,1.),0.,op=op,slot=23))
-    return Network(tuple(nodes), .5, size, 1., 0.).validate()
+    result=Network(tuple(nodes), .5, size, 1., 0.)
+    return result.validate() if validate else result
 
 
 def node_cost(a,b,stages):

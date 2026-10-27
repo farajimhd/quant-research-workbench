@@ -9,6 +9,11 @@ from research.vectorized_backtest.v42.publication import write_json
 
 def records(folder,job,day):
     folder=Path(folder);meta=json.loads((folder/'export.json').read_bytes())
+    if meta['job_sha256']!=digest(job):
+        from .resume_authority import export_job
+        previous=export_job(job,day,meta)
+        if sha(folder/'export.json')!=job['resume_transition']['exports'][day]:raise ValueError('Predecessor export digest changed')
+        return records(folder,previous,day)
     if meta['day']!=day or meta['job_sha256']!=digest(job):raise ValueError('Export campaign/day changed')
     for name,expected in meta['files'].items():
         if Path(name).name!=name or sha(folder/name)!=expected:raise ValueError('Export evidence changed: '+name)

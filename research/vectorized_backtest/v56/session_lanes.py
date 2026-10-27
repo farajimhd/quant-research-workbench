@@ -169,7 +169,11 @@ class Worker:
             cached=dict(cached)
         elif cache_path.exists() and c.get('reuse_results',True):
             record=json.loads(cache_path.read_text(encoding='utf-8-sig'))
-            if record['identity']!=identity:raise ValueError('Result cache contract changed')
+            if record['identity']!=identity:
+                # Only an exact, archived cache receipt may cross the explicitly
+                # authorized source transition. Every numerical/input field stays equal.
+                from .resume_authority import accept_cache
+                accept_cache(c,cache_path,record,identity)
             raw=json.dumps(record['results'],sort_keys=True,separators=(',',':'),allow_nan=False)
             if sha256(raw.encode()).hexdigest()!=record['results_sha256']:raise ValueError('Result cache integrity mismatch')
             cached=record['results']

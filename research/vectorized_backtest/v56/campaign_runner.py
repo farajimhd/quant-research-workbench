@@ -5,6 +5,7 @@ for k in ('OMP_NUM_THREADS','MKL_NUM_THREADS','OPENBLAS_NUM_THREADS'):os.environ
 import argparse,json,time,threading,queue,traceback
 from pathlib import Path
 from types import SimpleNamespace
+from contextlib import contextmanager
 import psutil
 from .full_controller import Controller
 from .full_common import config,check_job
@@ -19,6 +20,17 @@ def exchange(job,node):return Path(job['transport']) if node=='workstation' else
 
 def stop_check(roots):
     if any((Path(p)/'STOP').exists() for p in roots):raise InterruptedError('V56 full campaign stop requested')
+
+@contextmanager
+def session_pool(root):
+    import multiprocessing as mp
+    from concurrent.futures import ProcessPoolExecutor
+    with ProcessPoolExecutor(max_workers=2,mp_context=mp.get_context('spawn')) as pool:
+        try:yield pool
+        except BaseException:
+            marker=Path(root)/'STOP'
+            if not marker.exists():write_json(marker,dict(reason='Session coordinator interrupted; stop both lanes'))
+            raise
 
 class Evolution(Controller):
     def __init__(self,job,node,root,workers,stop_roots):
@@ -51,6 +63,7 @@ class Evolution(Controller):
         base_out=self.root/'replays'/role
         diagnostic=out!=base_out
         cfg=config(self.job,self.node,role);cfg.update(output=str(base_out),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),compile_cache_root=str(cache))
+        cfg['result_cache_transition']=self.job.get('resume_transition',{}).get('result_caches',{})
         if self.workers==1:
             from .session_lanes import Worker,output_scope
             key=role
@@ -60,7 +73,7 @@ class Evolution(Controller):
                 self.direct=None;gc.collect()
                 if torch.device(cfg['device']).type=='cuda':
                     torch.cuda.empty_cache()
-                    cfg['lane_memory_bytes']=torch.cuda.mem_get_info(cfg['device'])[0]*.8
+                    cfg['lane_memory_bytes']=torch.cuda.mem_get_info(cfg['device'])[0]*.8/self.job.get('independent_session_lanes',1)
                 else:cfg['lane_memory_bytes']=0
                 self.direct=Worker(cfg,self.events,0);self.lane_key=key
             day=days[0];width=len(json.loads((Path(cfg['history'])/day/'complete.json').read_bytes())['listing_ids'])
@@ -105,23 +118,62 @@ def probe(job,node,day):
     if load_probe(p,job['training'])['metadata']['days']!=[day]:raise ValueError('Session probe leaked another day')
     return p
 
+def session_unit(job,node,day):
+    """One spawned process owns one evolutionary session and its CUDA context."""
+    root=Path(job['campaign']);bus=exchange(job,node);stops=[root,bus];stop_check(stops)
+    target=bus/'sessions'/day;local=root/'sessions'/day
+    if (target/'export.json').exists():load_export(target,job,day);return dict(day=day,skipped=True,retried=False)
+    retried=(local/'global/checkpoint.json').exists()
+    ensure_day(job,node,'training',day);p=probe(job,node,day)
+    derived=dict(job,campaign_stage='session',training_days=[day],validation_days=[],phase2_generations=job['phase1_generations'],initialization_probe=str(p),initialization_probe_sha256=sha(p),parent_job_sha256=digest(job),independent_session_lanes=job['machines'][node]['session_workers'])
+    Evolution(derived,node,local,1,stops).run({});export_session(local,target,job,day)
+    return dict(day=day,skipped=False,retried=retried)
+
 def run(job,node):
     check_job(job);root=Path(job['campaign']);root.mkdir(parents=True,exist_ok=True);bus=exchange(job,node);bus.mkdir(parents=True,exist_ok=True)
     stops=[root,bus];node_root=root/'nodes'/node;node_root.mkdir(parents=True,exist_ok=True)
     with owned_run(node_root,version='v56-full-node-v1'):
-        completed=[];skipped=[];retried=[];failed=[];unit=None;owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time())
+        completed=[];skipped=[];retried=[];failed=[];unit=None;active_days=[];owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time())
         def status(stage,active=None,**extra):
-            publish_transport(bus,bus/(node+'-status.json'),dict(status=stage,node=node,owner=owner,active=active,completed=completed,queued=[d for d in job['machines'][node]['session_days'] if d not in completed and d!=active],skipped=skipped,retried=retried,failed=failed,updated_epoch=time.time(),**extra))
+            publish_transport(bus,bus/(node+'-status.json'),dict(status=stage,node=node,owner=owner,active=active,active_sessions=list(active_days),completed=completed,queued=[d for d in job['machines'][node]['session_days'] if d not in completed and d not in active_days],skipped=skipped,retried=retried,failed=failed,updated_epoch=time.time(),**extra))
         try:
-            for day in job['machines'][node]['session_days']:
+            days=job['machines'][node]['session_days']
+            parallel=job['machines'][node]['session_workers']>1
+            if parallel:
+                from concurrent.futures import wait,FIRST_COMPLETED
+                pending=[]
+                for day in days:
+                    target=bus/'sessions'/day
+                    if (target/'export.json').exists():load_export(target,job,day);completed.append(day);skipped.append(day)
+                    else:pending.append(day)
+                with session_pool(root) as pool:
+                    futures={}
+                    while pending or futures:
+                        stop_check(stops)
+                        while pending and len(futures)<2:
+                            day=pending.pop(0);futures[pool.submit(session_unit,job,node,day)]=day;active_days.append(day)
+                        status('session-stage',active_days[0] if active_days else None)
+                        ready,_=wait(futures,timeout=2,return_when=FIRST_COMPLETED)
+                        for future in ready:
+                            day=futures.pop(future);unit=day
+                            try:result=future.result()
+                            except BaseException:
+                                failed.append(day);write_json(root/'STOP',dict(reason='Independent session failed',day=day));raise
+                            completed.append(day);active_days.remove(day)
+                            if result['retried']:retried.append(day)
+                            if result['skipped']:skipped.append(day)
+                            unit=None
+                status('session-stage')
+            for day in ([] if parallel else days):
                 unit=day;stop_check(stops);status('session-stage',day);target=bus/'sessions'/day;local=root/'sessions'/day
+                active_days[:]=[day]
                 if (target/'export.json').exists():load_export(target,job,day);skipped.append(day)
                 else:
                     if (local/'global/checkpoint.json').exists():retried.append(day)
                     ensure_day(job,node,'training',day);p=probe(job,node,day)
                     derived=dict(job,campaign_stage='session',training_days=[day],validation_days=[],phase2_generations=job['phase1_generations'],initialization_probe=str(p),initialization_probe_sha256=sha(p),parent_job_sha256=digest(job))
                     Evolution(derived,node,local,1,stops).run({});export_session(local,target,job,day)
-                completed.append(day);unit=None;status('session-stage')
+                completed.append(day);unit=None;active_days.clear();status('session-stage')
             if node=='laptop':status('complete');return
             while True:
                 stop_check(stops)
@@ -139,7 +191,7 @@ def run(job,node):
             unit='global';status('global-stage',unit);Evolution(derived,node,root/'phase-2',job['global_session_workers'],stops).run(exports);unit=None;status('complete')
             write_json(root/'complete.json',dict(status='complete',session_generations=50,global_generations=50,global_complete_sha256=sha(root/'phase-2/global/complete.json'),validation='display-only',job_sha256=digest(job)))
         except BaseException:
-            interrupted=any((Path(p)/'STOP').exists() for p in stops)
+            interrupted=any((Path(p)/'STOP').exists() for p in stops) and not failed
             if not interrupted:failed.append(unit or node)
             status('interrupted' if interrupted else 'failed',unit,traceback=traceback.format_exc());raise
 

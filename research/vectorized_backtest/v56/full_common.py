@@ -8,7 +8,7 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 
 
 def check_job(job):
-    if job.get('version')=='v56-full-v1':
+    if job.get('version') in ('v56-full-v1','v56-full-v2'):
         from .campaign_contract import check_full_job
         return check_full_job(job)
     if job['version'] not in ('v56-pilot-v2',):raise ValueError('V56 is restricted to the Aug13 laptop pilot')
@@ -53,12 +53,13 @@ def config(job,node,role='training'):
         split=role)
 
 
-def aggregate(ordered,objective=Objective()):
+def aggregate(ordered,objective=Objective(),session_sink=None):
     """Sum identical complete-session costs across training days, never validation."""
     objective.validate()
     n=len(ordered[0]['net_pnl']);pnl=np.zeros(n);loss=np.zeros(n);dd=np.zeros(n)
     trades=np.zeros(n);wins=np.zeros(n);risk=np.zeros(n);distance=np.zeros(n);eligible=np.ones(n,bool)
     for m in ordered:
+        session_loss=np.zeros(n) if session_sink is not None else None
         if any(len(m[k])!=n for k in ('net_pnl','terminal_valid','episode_profits','episode_exit_clocks')):raise ValueError('Global panel alignment changed')
         session_dd=np.asarray(m['drawdown'],float)
         if session_dd.shape!=(n,) or not np.isfinite(session_dd).all() or (session_dd<0).any():raise ValueError('Finite session equity drawdown required')
@@ -68,7 +69,10 @@ def aggregate(ordered,objective=Objective()):
         for i in range(n):
             v=np.asarray(m['episode_profits'][i],float);clocks=np.asarray(m['episode_exit_clocks'][i],int)
             if len(v)!=len(clocks) or len(v)!=m['closed_positions'][i] or not np.isfinite(v).all():raise ValueError('Global episode ledger mismatch')
-            loss[i]+=np.maximum(-v,0).sum()
+            amount=np.maximum(-v,0).sum();loss[i]+=amount
+            if session_loss is not None:session_loss[i]=amount
+        if session_sink is not None:
+            session_sink.append(dict(score=np.asarray(m['net_pnl'])-objective.drawdown_weight*session_dd-objective.loss_weight*session_loss,net_pnl=np.asarray(m['net_pnl']),gross_losses=session_loss,drawdown=session_dd,closed_positions=np.asarray(m['closed_positions']),eligible=np.asarray(m['terminal_valid'],bool)))
     score=pnl-objective.drawdown_weight*dd-objective.loss_weight*loss
     if not np.isfinite(score).all():raise ValueError('Nonfinite global cost')
     # User-authorized selection policy: valid terminal replay only. Risk and

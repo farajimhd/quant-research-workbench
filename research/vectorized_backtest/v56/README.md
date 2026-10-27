@@ -187,3 +187,48 @@ unchanged. A short real Worker-path check verifies identical receipt metrics,
 including ticker scores; its prefix receipts explicitly declare full_session=false.
 These timing comparisons exclude startup and do not promise an end-to-end
 generation or campaign duration. No checkpoint or active job is migrated here.
+
+## Full campaign continuation (v2)
+
+The user-authorized continuation retains the 24/12 split, 50 generations per
+session plus 50 global, population 1024, original score, 25% ticker-specialist
+parent selection, and disabled risk-admission caps. It runs two independent
+phase-one sessions on the workstation and one on the laptop. Two GPU processes
+are a requested scheduling choice; earlier replay-only measurements did not
+show a concurrency speedup. Per-process memory admission remains bounded.
+
+`campaign_resume` prepares a new immutable job alongside the original. It binds
+the exact stopped checkpoint, state, contract, completed exports, and archived
+financial caches. Resume changes only the authorized source/parent-job identity;
+it preserves population, RNG, sealed generations, and completed session exports.
+The old job and seals are never rewritten. New caches may reuse only exact
+hash-bound predecessor receipts with every other input/execution field equal.
+Preparation does not remove stop markers or launch training.
+
+Global initialization keeps 3072 session experts (128 per training session) and
+replaces the random half with 3072 blind offspring. Six groups of 512 span 2,
+3-4, 5-8, 9-12, 13-23, and all 24 source sessions. Methods include balanced union,
+intersection, XOR and XNOR trees, alternating-operator chains, and action mosaics.
+Both same-rank expert combinations (including top-with-top) and independent
+expert ranks are included. Reproduction uses no additional fitness or validation
+replays. It records all joins, fragments, parameter mutations, and source experts.
+
+Full mature networks cannot all fit the unchanged 1024-node budget. Blind mixing
+uses bounded closed subgraphs where possible and explicit market-edge projections
+otherwise. Each named session must retain a tagged, output-connected branch with
+a nonzero structural market path. This is structural contribution, not proof of
+useful behavior or preservation of a parent's full decision rule. Final children
+receive the complete genome validation; repeated intermediate-chain validation
+is avoided. Failed quotas stop explicitly; there is no random replacement route.
+
+The read-only `campaign_progress --job <continuation-job>` terminal restores the
+multi-device overview and session navigation: J/K and Enter, H overview, G global,
+O crossover techniques, F founder breadth groups, M mixing methods, A candidates,
+I original founders, L detailed mixing lineage, and U descendants of a founder.
+N/B pages lists and per-session details; Q/Ctrl+C only detach the observer.
+Reports bind to generation seals and expose measured score, loss, drawdown,
+retention, parent comparisons, and overlapping technique groups in both phases.
+Original founder scores are never replaced by descendant scores. Descendant
+source-session labels describe ancestry, not revalidated surviving contributions.
+Historical unavailable fields remain unavailable. Per-session metrics are emitted
+during the existing aggregate pass, avoiding a second financial-ledger traversal.

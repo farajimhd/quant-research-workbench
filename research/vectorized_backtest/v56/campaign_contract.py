@@ -24,7 +24,7 @@ def check_structure(job,train,valid):
     if 'founder_reuse' in job:raise ValueError('Full run must not import pilot financial results')
 
 def check_full_job(job):
-    if job['version']!='v56-full-v1' or source_hash()!=job['source_sha256']:raise ValueError('Pinned full source changed')
+    if job['version'] not in ('v56-full-v1','v56-full-v2') or source_hash()!=job['source_sha256']:raise ValueError('Pinned full source changed')
     for k in ('source_job','training','validation'):
         if sha(job[k])!=job[k+'_sha256']:raise ValueError('Pinned input changed: '+k)
     train=json.loads(Path(job['training']).read_bytes());valid=json.loads(Path(job['validation']).read_bytes())
@@ -35,7 +35,12 @@ def check_full_job(job):
     for role,days in (('training',train['days']),('validation',valid['days'])):
         if set(job['assets'][role])!=set(days):raise ValueError('Asset session membership changed')
     for n,m in job['machines'].items():
-        if m['session_workers']!=1:raise ValueError('One independent evolutionary session per host')
+        expected=2 if n=='workstation' and job['version']=='v56-full-v2' else 1
+        if m['session_workers']!=expected:raise ValueError('Independent session concurrency changed')
+    if job['version']=='v56-full-v2':
+        if job.get('global_initialization')!=dict(version='v56-blind-mix-v1',experts=3072,offspring=3072,group_quota=512,require_surviving_contributions=True):raise ValueError('Blind initialization policy changed')
+        from .resume_authority import predecessor
+        predecessor(job)
     return job
 
 def prepare_full(source,root,laptop_code,workstation_code):
