@@ -20,6 +20,9 @@ def prepare_entries(job_path):
           +"deployment=json.loads((code/'deployment.json').read_bytes())\nif deployment['commit']!="+repr(job['commit'])+":raise ValueError('Deployment commit changed')\n"
           +"for name,expected in deployment['files'].items():\n if hashlib.sha256((code/name).read_bytes()).hexdigest()!=expected:raise ValueError('Deployment changed: '+name)\n"
           +"status='failed'\ntry:\n sys.argv=['campaign_runner','--job',str(job),'--node',"+repr(node)+"]\n runpy.run_module('research.vectorized_backtest.v56.campaign_runner',run_name='__main__');status='complete'\nexcept InterruptedError:\n status='interrupted';traceback.print_exc();raise\nexcept BaseException:\n traceback.print_exc();raise\nfinally:\n (root/"+repr(node+'-exit.json')+").write_text(json.dumps(dict(status=status,epoch=time.time())))\n")
+        # Spawned replay lanes import the main entry as __mp_main__. Importing
+        # that file must never start another full-campaign coordinator.
+        source='def main():\n'+''.join('    '+line+'\n' for line in source.splitlines())+"\nif __name__=='__main__':\n    main()\n"
         if entry.exists() and entry.read_text()!=source:raise ValueError('Existing node entry differs')
         entry.write_text(source)
         commands[node]=subprocess.list2cmdline([m['python'],'-B','-m','research.vectorized_backtest.v56.campaign_launch','--job',str(job_path),'--node',node,'--install'])
@@ -42,6 +45,8 @@ def main():
         if platform.node().lower()!=m['hostname'].lower():raise ValueError('Wrong host')
         from .scheduled_launch import install
         task='Codex-V56-full-'+Path(j['campaign']).name+'-'+a.node
-        print(install(task,m['python'],Path(j['campaign'])/('entry-'+a.node+'.py'),m['code'],[],Path(m['code'])/'research/vectorized_backtest/v56/scheduled_launch.py'));return
+        background=Path(m['python']).with_name('pythonw.exe')
+        if not background.is_file():raise ValueError('Background Python runtime unavailable')
+        print(install(task,str(background),Path(j['campaign'])/('entry-'+a.node+'.py'),m['code'],[],Path(m['code'])/'research/vectorized_backtest/v56/scheduled_launch.py'));return
     print(json.dumps(prepare_entries(a.job),indent=2))
 if __name__=='__main__':main()

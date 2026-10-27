@@ -185,7 +185,7 @@ class DirectWorkerAdmissionTests(unittest.TestCase):
             root=Path(tmp);day=TRAIN[0];history=root/'history'/day;history.mkdir(parents=True);write_json(history/'complete.json',dict(listing_ids=[0]))
             j=job();j.update(campaign_stage='session',training_days=[day],validation_days=[],source_sha256='fixture');pop=members(2);configs=[]
             class Worker:
-                def __init__(self,cfg,*args):self.cfg=cfg;configs.append(cfg)
+                def __init__(self,cfg,*args):self.cfg=cfg;self.config=cfg;self.resident_results=None;configs.append(cfg)
                 def run(self,day,next_day,payload,generation,token,width):
                     assert self.cfg['lane_memory_bytes']==8000
                     p=Path(self.cfg['output'])/f'generation-{generation:04d}'/day;p.mkdir(parents=True)

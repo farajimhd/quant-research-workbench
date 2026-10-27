@@ -86,9 +86,10 @@ ancestry and fallback rules. Elites remain globally ranked.
 Every generation freezes successor genomes and RNG before replaying all 12
 validation sessions on the workstation, also with two lanes. Validation reports
 are display only. Paired mutation diagnostics keep separate outputs and do not
-enter parent selection. Switching training/validation/diagnostic output closes
-and recreates the lane pool; this favors isolation over retaining GPU residency
-across those boundaries. Actual full-workload throughput must be profiled after
+enter parent selection. Mutation diagnostics temporarily switch only the receipt destination and financial
+result cache, restoring the main cache afterward. Loaded market data and workers
+remain resident across diagnostics. Switching training/validation roles still
+closes and recreates workers to preserve split isolation. Actual full-workload throughput must be profiled after
 launch; two-lane process tests alone do not establish GPU speedup or memory fit.
 
 From the pinned laptop code directory, prepare with:
@@ -116,3 +117,22 @@ and rerunning the same pinned node entry. Completed session exports are verified
 and skipped; incomplete sessions/global evolution resume their sealed checkpoints.
 Missing or conflicting evidence fails closed. Crash-left owner locks require an
 explicit ownership audit before removal; they are never stolen by timeouts.
+
+
+Performance repair: timing receipts from late session generations showed repeated
+combined main/diagnostic load-and-preparation time of roughly 35-40 seconds per
+generation. That field includes population packing as well as market loading;
+it is not an estimate that all 35-40 seconds will be saved. Workers
+now retain their bounded market residency across those output scopes; diagnostic
+results are isolated and the training result cache is restored even on errors.
+The original 128-listing neural tile is retained: short 64-clock, 64-candidate
+kernel probes on both hosts did not justify changing it. These probes are not
+full-campaign speedup measurements. Future task actions use pythonw.exe, with
+logs redirected by the pinned entry, so training does not own a closable console.
+Generated entries are guarded for Windows spawned-worker imports.
+
+Existing campaign checkpoints and completed exports retain their original source
+identity. A performance-only source update does not authorize rewriting them or
+restarting founders; a future resume must explicitly bind the preserved checkpoint
+state and receipts to its new operational source. No campaign is auto-resumed by
+installing or testing these repairs.

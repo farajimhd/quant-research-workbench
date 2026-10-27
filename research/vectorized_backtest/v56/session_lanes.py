@@ -38,6 +38,19 @@ def replay_widths(days,widths,group_size):
     return result
 
 
+from contextlib import contextmanager
+
+@contextmanager
+def output_scope(worker,output,*,isolate_results=False):
+    """Change receipt destination without evicting read-only market residency."""
+    previous=worker.config['output'];resident=worker.resident_results;day=getattr(worker,'last_result_day',None)
+    worker.config['output']=str(output)
+    if isolate_results:worker.resident_results=None
+    try:yield worker
+    finally:
+        worker.config['output']=previous
+        if isolate_results:worker.resident_results=resident;worker.last_result_day=day
+
 class Worker:
     def __init__(self,config,events,lane,*,preparation=None):
         self.config=config;self.events=events;self.lane=lane
@@ -129,6 +142,7 @@ class Worker:
         if getattr(self,'last_result_day',None)!=day:self.resident_results=None
         self.last_result_day=day
         self.check_stop()
+        market_cached=day in self.host
         from .lineage import program_key
         from research.vectorized_backtest.v6.torch_backtest.runtime import file_hash
         from hashlib import sha256
@@ -226,6 +240,7 @@ class Worker:
                     metrics['ticker_score']=ticker_scores(metrics,item)
                     for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
                     timing=dict(day=day,offset=offset,candidates=actual,padded_candidates=len(members),
+                        market_cached=market_cached,worker_load_count=self.loads,worker_upload_count=self.uploads,
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,pid=os.getpid(),finished_epoch=time())
                     if plan.plan is not None:
@@ -302,6 +317,11 @@ def evaluate(*args):
         import traceback
         raise RuntimeError(traceback.format_exc()) from None
 def cleanup():_worker.close()
+def evaluate_scoped(day,next_day,payload,generation,token,replay_width,output,isolate_results):
+    with output_scope(_worker,output,isolate_results=isolate_results):
+        return _worker.run(day,next_day,payload,generation,token,replay_width)
+
+
 def release_plans():
     for plan in _worker.plans.values():plan.close()
     _worker.plans.clear()
@@ -348,7 +368,9 @@ class SessionLanes:
         self.thread=threading.Thread(target=self.pump,name='v18-session-progress',daemon=True);self.thread.start()
         return self
 
-    def generation(self,days,population,generation,token,*,prepared_population=None):
+    def generation(self,days,population,generation,token,*,prepared_population=None,output_override=None,isolate_results=False):
+        if output_override is not None and self.config.get('shared_replay'):raise ValueError('Scoped output requires independent process lanes')
+        if isolate_results and output_override is None:raise ValueError('Result isolation requires an explicit output destination')
         from .lineage import program_key
         if self.config.get('shared_replay'):
             from research.vectorized_backtest.v42.global_pipeline import GenerationPopulation
@@ -393,9 +415,14 @@ class SessionLanes:
         for first in range(0,len(days),self.workers):
             cohort=days[first:first+self.workers];started=perf_counter()
             self.panel.begin_sessions(cohort)
-            futures=[self.pools[lane].submit(self.proxies[lane].run if self.config.get('shared_replay') else evaluate,day,
-                days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
-                payload,generation,token,fixed_widths[day]) for lane,day in enumerate(cohort)]
+            if output_override is not None:
+                futures=[self.pools[lane].submit(evaluate_scoped,day,
+                    days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
+                    payload,generation,token,fixed_widths[day],str(output_override),isolate_results) for lane,day in enumerate(cohort)]
+            else:
+                futures=[self.pools[lane].submit(self.proxies[lane].run if self.config.get('shared_replay') else evaluate,day,
+                    days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
+                    payload,generation,token,fixed_widths[day]) for lane,day in enumerate(cohort)]
             results=[future.result() for future in futures]
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             for result in results:

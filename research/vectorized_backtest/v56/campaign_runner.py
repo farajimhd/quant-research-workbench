@@ -48,10 +48,12 @@ class Evolution(Controller):
         for day in days:ensure_day(self.job,self.node,role,day)
         out=Path(self.worker.config['output'])/role;token=digest([m.payload() for m in members])
         cache=Path('D:/TradingML/runtimes/v56c')/self.job['source_sha256'][:12]/self.node
-        cfg=config(self.job,self.node,role);cfg.update(output=str(out),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),compile_cache_root=str(cache))
+        base_out=self.root/'replays'/role
+        diagnostic=out!=base_out
+        cfg=config(self.job,self.node,role);cfg.update(output=str(base_out),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),compile_cache_root=str(cache))
         if self.workers==1:
-            from .session_lanes import Worker
-            key=(role,str(out))
+            from .session_lanes import Worker,output_scope
+            key=role
             if self.direct is None or self.lane_key!=key:
                 if self.direct:self.direct.close()
                 import torch,gc
@@ -62,13 +64,15 @@ class Evolution(Controller):
                 else:cfg['lane_memory_bytes']=0
                 self.direct=Worker(cfg,self.events,0);self.lane_key=key
             day=days[0];width=len(json.loads((Path(cfg['history'])/day/'complete.json').read_bytes())['listing_ids'])
-            self.direct.run(day,None,[m.payload() for m in members],generation,token,width)
+            with output_scope(self.direct,out,isolate_results=diagnostic):
+                self.direct.run(day,None,[m.payload() for m in members],generation,token,width)
         else:
             from .session_lanes import SessionLanes
-            key=(role,str(out))
+            key=role
             if self.lane_key!=key:
                 self.close_lanes();self.lanes=SessionLanes(cfg,self.workers,self).__enter__();self.lane_key=key
-            self.lanes.generation(days,members,generation,token)
+            if diagnostic:self.lanes.generation(days,members,generation,token,output_override=out,isolate_results=True)
+            else:self.lanes.generation(days,members,generation,token)
         result=[];refs={}
         for day in days:
             p=out/f'generation-{generation:04d}'/day/'receipt.json';receipt=json.loads(p.read_bytes())
