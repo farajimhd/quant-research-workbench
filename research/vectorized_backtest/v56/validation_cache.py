@@ -5,6 +5,7 @@ from contextvars import ContextVar
 
 _active = ContextVar('v42_network_validation', default=None)
 CAPACITY = 4096
+_capacity = ContextVar('v56_validation_capacity', default=CAPACITY)
 
 
 def known_immutable(network):
@@ -13,14 +14,18 @@ def known_immutable(network):
 
 
 @contextmanager
-def validation_scope():
+def validation_scope(*, capacity=CAPACITY):
+    if type(capacity) is not int or not 1<=capacity<=32768:
+        raise ValueError('Invalid bounded validation cache capacity')
     token = _active.set(OrderedDict())
+    limit = _capacity.set(capacity)
     try:
         from .identity_cache import identity_scope
         with identity_scope():
             yield
     finally:
         _active.reset(token)
+        _capacity.reset(limit)
 
 
 def immutable(network):
@@ -44,6 +49,6 @@ def validate(network, uncached):
         # Strong references prevent identity reuse. FIFO eviction changes only
         # recomputation; invalid and externally mutable objects are never cached.
         cache[id(network)] = network
-        if len(cache) > CAPACITY:
+        if len(cache) > _capacity.get():
             cache.popitem(last=False)
     return result

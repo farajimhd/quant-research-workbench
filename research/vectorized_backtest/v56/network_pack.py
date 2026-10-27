@@ -1,11 +1,9 @@
 """CPU-only deterministic network packing; no CUDA calls or random draws."""
 import numpy as np
-from .genome import STAGES,OPS,MARKET_INPUTS
-from research.vectorized_backtest.v42.features import CATALOG
+from .genome import STAGES,OPS
 from .config import FAN_IN
 
 def pack_networks(members):
-    columns=list(range(len(CATALOG)));lookup={s:i for i,s in enumerate(columns)};c=len(columns)
     nets=[m.networks[s] for m in members for s in STAGES]
     counts=np.array([len(n.nodes) for n in nets],np.int32);offsets=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)
     total_nodes=int(counts.sum());offsets_cpu=offsets;kernel_nodes=1<<(int(counts.max())-1).bit_length()
@@ -18,9 +16,11 @@ def pack_networks(members):
         net.validate()
         for j,node in enumerate(net.nodes):
             row=int(offsets[index])+j;bias[row]=node.bias;edge_counts[row]=len(node.sources)
-            for e,(source,w) in enumerate(zip(node.sources,node.weights)):
-                sources[row,e]=source if source<0 else (source//len(CATALOG))*c+lookup[source%len(CATALOG)] if source<MARKET_INPUTS else 3*c+source-MARKET_INPUTS
-                weights[row,e]=w
+            # The full catalog is packed in identity order, so market, state,
+            # current-node and delayed-node source indices already match.
+            count=len(node.sources)
+            sources[row,:count]=node.sources
+            weights[row,:count]=node.weights
     values=(sources,weights,bias,counts,offsets,threshold,size_source,size_weight,size_bias)
     return dict(values=values,operations=np.array([OPS.index(n.op) for net in nets for n in net.nodes],np.int32),
         edge_counts=edge_counts,total_nodes=total_nodes,kernel_nodes=kernel_nodes,offsets_cpu=offsets_cpu)

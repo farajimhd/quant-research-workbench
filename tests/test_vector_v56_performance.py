@@ -10,6 +10,33 @@ from tests.test_vector_v56_reproduction import members
 from research.vectorized_backtest.v42.publication import write_json
 from research.vectorized_backtest.v56.session_lanes import output_scope
 
+class PreparationTests(unittest.TestCase):
+    def test_capacity_is_bounded_nested_and_restored_after_error(self):
+        from research.vectorized_backtest.v56 import validation_cache as c
+        with c.validation_scope(capacity=5120):
+            self.assertEqual(c._capacity.get(),5120)
+            with self.assertRaises(RuntimeError):
+                with c.validation_scope(capacity=10):raise RuntimeError('failed')
+            self.assertEqual(c._capacity.get(),5120)
+        self.assertEqual(c._capacity.get(),c.CAPACITY)
+        for invalid in (0,32769,True):
+            with self.assertRaises(ValueError):
+                with c.validation_scope(capacity=invalid):pass
+
+    def test_cohort_capacity_avoids_eviction_without_caching_invalid_networks(self):
+        from research.vectorized_backtest.v56 import validation_cache as c
+        from dataclasses import replace
+        net=members(1)[0].networks['entry']
+        nets=[replace(net) for _ in range(5)]
+        with c.validation_scope(capacity=5):
+            for n in nets:n.validate()
+            self.assertTrue(all(c.known_immutable(n) for n in nets))
+            with patch.object(type(net),'_validate_uncached',side_effect=AssertionError('validated twice')):
+                for n in nets:n.validate()
+            bad=replace(net,threshold=float('nan'))
+            with self.assertRaises(ValueError):bad.validate()
+            self.assertFalse(c.known_immutable(bad))
+
 class ResidencyTests(unittest.TestCase):
     def test_diagnostic_scope_restores_cache_and_destination_on_failure(self):
         original=('identity',{'elite':'financial-result'});w=SimpleNamespace(config={'output':'main'},resident_results=original,last_result_day='d')

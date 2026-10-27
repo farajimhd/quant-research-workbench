@@ -35,7 +35,10 @@ def prepare(payload,token):
     from .validation_cache import validation_scope
     started=perf_counter()
     if digest(payload)!=token:raise ValueError('Immutable population token mismatch')
-    with validation_scope():
+    # Keep one bounded cohort resident through decode, identity, and packing.
+    # 1024 candidates contain 5120 networks; the default 4096 FIFO thrashes.
+    from .genome import STAGES
+    with validation_scope(capacity=min(32768,max(4096,len(payload)*len(STAGES)))):
         population=[Individual.restore(p) for p in payload]
         keys=[program_key(p) for p in population]
         packed=pack_networks(population)

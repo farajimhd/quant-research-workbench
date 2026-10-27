@@ -136,3 +136,15 @@ identity. A performance-only source update does not authorize rewriting them or
 restarting founders; a future resume must explicitly bind the preserved checkpoint
 state and receipts to its new operational source. No campaign is auto-resumed by
 installing or testing these repairs.
+
+Population preparation also sizes its validation cache to the bounded cohort
+(maximum 32768 action networks). The old 4096-entry FIFO evicted all 5120
+networks of a 1024-candidate population before packing, repeating validation.
+Packing now copies the already identity-ordered source indices in row slices.
+The 2026-10-27 laptop benchmark uses the saved Aug 7 generation-48 population,
+alternating three baseline and three optimized preparations, with exact canonical
+key and packed-array hashes. Separate replay checks use 64 saved candidates,
+all listings, and a 512-clock real-market prefix; these are diagnostic timings,
+not full-session fitness or an end-to-end campaign acceleration claim.
+Evidence lives under the V56 runtime `profile-20261027` directory. Neither test
+changes the objective, financial transitions, selection, nor checkpoint state.
