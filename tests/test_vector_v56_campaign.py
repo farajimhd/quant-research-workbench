@@ -175,3 +175,23 @@ class PromotionTests(unittest.TestCase):
         first,second=result['pedigree'][:2];self.assertFalse(set(a for a,d in first['ancestors'])&set(a for a,d in second['ancestors']))
         self.assertEqual(result['sources'][0]['export_sha256'],TRAIN[0]);self.assertEqual(result['sources'][1]['export_sha256'],TRAIN[1])
         with self.assertRaises(ValueError):seed({TRAIN[0]:exports[TRAIN[0]]},j,{})
+
+
+class DirectWorkerAdmissionTests(unittest.TestCase):
+    def test_single_session_path_sets_same_eighty_percent_gpu_admission_as_pilot(self):
+        from research.vectorized_backtest.v56.campaign_runner import Evolution
+        from tests.test_vector_v56_reproduction import members
+        with TemporaryDirectory(dir=RUNTIME) as tmp:
+            root=Path(tmp);day=TRAIN[0];history=root/'history'/day;history.mkdir(parents=True);write_json(history/'complete.json',dict(listing_ids=[0]))
+            j=job();j.update(campaign_stage='session',training_days=[day],validation_days=[],source_sha256='fixture');pop=members(2);configs=[]
+            class Worker:
+                def __init__(self,cfg,*args):self.cfg=cfg;configs.append(cfg)
+                def run(self,day,next_day,payload,generation,token,width):
+                    assert self.cfg['lane_memory_bytes']==8000
+                    p=Path(self.cfg['output'])/f'generation-{generation:04d}'/day;p.mkdir(parents=True)
+                    write_json(p/'receipt.json',dict(day=day,population_sha256=token,full_session=True,execution=j['execution'],split='training',validation_opened=False,case_owners=[None]*2,metrics={'net_pnl':[0,0]}))
+                def close(self):pass
+            e=Evolution(j,'laptop',root/'runner',1,[root])
+            with patch('research.vectorized_backtest.v56.campaign_runner.config',return_value={'device':'cuda','history':str(root/'history')}),patch('research.vectorized_backtest.v56.campaign_runner.ensure_day'),patch('research.vectorized_backtest.v56.session_lanes.Worker',Worker),patch('torch.cuda.empty_cache'),patch('torch.cuda.mem_get_info',return_value=(10000,12000)):
+                rows,refs=e.evaluate('training',[day],pop,1)
+            self.assertEqual(configs[0]['lane_memory_bytes'],8000);self.assertEqual(len(rows),1);e.direct.close()

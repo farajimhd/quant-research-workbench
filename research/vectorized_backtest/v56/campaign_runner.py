@@ -54,6 +54,12 @@ class Evolution(Controller):
             key=(role,str(out))
             if self.direct is None or self.lane_key!=key:
                 if self.direct:self.direct.close()
+                import torch,gc
+                self.direct=None;gc.collect()
+                if torch.device(cfg['device']).type=='cuda':
+                    torch.cuda.empty_cache()
+                    cfg['lane_memory_bytes']=torch.cuda.mem_get_info(cfg['device'])[0]*.8
+                else:cfg['lane_memory_bytes']=0
                 self.direct=Worker(cfg,self.events,0);self.lane_key=key
             day=days[0];width=len(json.loads((Path(cfg['history'])/day/'complete.json').read_bytes())['listing_ids'])
             self.direct.run(day,None,[m.payload() for m in members],generation,token,width)
