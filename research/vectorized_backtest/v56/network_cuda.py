@@ -28,7 +28,7 @@ def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.c
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,EDGE_UNROLL:tl.constexpr):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     if SORTED:
         net_order=tl.load(ORDER+tl.program_id(0)//TILES)
@@ -56,10 +56,11 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
         peak=tl.full((BLOCK,),-float('inf'),tl.float32);den=tl.full((BLOCK,),0,tl.float32)
         # Preserve edge order and zero-weight semantics, but never inspect
         # padded slots. The scalar bound is uniform within this action tile.
+        # Unroll pairs without reassociating float32 accumulation or enabling FMA.
         # Most nodes use the sum path. Dispatch once per node, not once per
         # connection, while retaining identical sequential float32 arithmetic.
         if op==0 or op==7 or op==8:
-            for e in tl.range(0,tl.load(EDGE_COUNTS+base+i),loop_unroll_factor=EDGE_UNROLL):
+            for e in tl.range(0,tl.load(EDGE_COUNTS+base+i),loop_unroll_factor=2):
                 s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
                 if w!=0:
                     if s<0:
@@ -75,7 +76,7 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
                         x=tl.load(current+offset,live,0);valid=tl.load(current_known+offset,live,False)
                     z=z+x*w;ok=ok|valid
         elif op<9:  # Whole-network heads below replace these generic results.
-            for e in tl.range(0,tl.load(EDGE_COUNTS+base+i),loop_unroll_factor=EDGE_UNROLL):
+            for e in tl.range(0,tl.load(EDGE_COUNTS+base+i),loop_unroll_factor=2):
                 s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
                 if w!=0 or (op>=1 and op<=6):
                     if s<0:
@@ -158,15 +159,13 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     if owned:block=32
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
     state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
-    scheduled=not owned and block in (32,64,128)
-    warps=getattr(plan,'cuda_warps',2) if scheduled else 4
-    if warps not in (1,2,4,8):raise ValueError('Unsupported neural CUDA warp count')
+    scheduled=not owned and block in (64,128)
     tiles=tr.cdiv(owned_k,block)
     grid=(b*5*tiles,) if scheduled else (b,5,tiles)
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
-        plan.cuda_network_order,tiles,scheduled,getattr(plan,'cuda_edge_unroll',1),num_warps=warps,enable_fp_fusion=False)
+        plan.cuda_network_order,tiles,scheduled,num_warps=2 if scheduled else 4,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
     pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,b*u,u,256)
     return result
