@@ -119,7 +119,7 @@ class Controller:
             write_json(folder/'evaluated-pedigree.json',birth_records)
             ordered,training_receipts=self.evaluate('training',train,members,generation)
             from .generation_pipeline import overlap
-            self.stage='Validation replay + training-only reproduction' if valid else 'Training-only reproduction'
+            self.stage='Phase 2 validation: display only' if valid else 'Training-only reproduction'
             self.publish(reproduction_stage='Queued')
             work=lambda:self.reproduce(root,folder,members,source_ids,birth_records,token,ordered,training_receipts,train,objective,generation,rng,pedigree,species,probe)
             concurrent=bool(valid and self.job.get('validation_schedule')=='concurrent-training-only-v1')
