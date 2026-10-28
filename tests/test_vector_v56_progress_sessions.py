@@ -1,6 +1,6 @@
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
-import hashlib,io,json,threading,unittest
+import hashlib,io,json,threading,unittest,time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -12,6 +12,23 @@ ROOT=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v56/qualific
 ROOT.mkdir(parents=True,exist_ok=True)
 
 class SessionTests(unittest.TestCase):
+    def test_completed_live_receipt_updates_table_before_generation_seal(self):
+        with TemporaryDirectory(dir=ROOT) as tmp,patch('research.vectorized_backtest.v56.campaign_progress.remote',side_effect=lambda p,s:Path(p)):
+            root=Path(tmp);folder=root/'phase-2/global/generation-0001';folder.mkdir(parents=True)
+            (folder/'population.json').write_text(json.dumps(dict(ids=[41],population=[],population_sha256='a'*64),sort_keys=True,separators=(',',':')))
+            job=dict(campaign=tmp,transport=tmp,workstation_share='fixture',training_days=['2026-08-13'],validation_days=[],machines={},objective=dict(drawdown_weight=2.,loss_weight=1.),execution={})
+            state=dict(completed_generations=0,status='running',stage='Global training',active_sessions=['2026-08-13'])
+            (root/'phase-2/full-status.json').write_text(json.dumps(state))
+            receipt=root/'phase-2/replays/training/generation-0001/2026-08-13/receipt.json';receipt.parent.mkdir(parents=True)
+            metrics=dict(net_pnl=[100],drawdown=[10],closed_positions=[2],winning_positions=[1],terminal_valid=[True],episode_profits=[[110,-10]],episode_exit_clocks=[[1,2]],maximum_position_risk=[0],maximum_stop_distance=[0])
+            receipt.write_text(json.dumps(dict(day='2026-08-13',split='training',population_sha256='a'*64,full_session=True,validation_opened=False,execution={},metrics=metrics,evaluated_candidates=1)))
+            model=Model(job);model.key('g');model.rows();model.live_thread.join(5)
+            self.assertFalse(model.live_thread.is_alive());self.assertIsNone(model.live_error)
+            row=model.rows()[0];self.assertEqual((row['generation'],row['strength']['top_net'],row['replay']['status']),(1,100,'complete'))
+            self.assertFalse((folder/'complete.json').exists())
+            model.key('\r');self.assertEqual(model.rows()[0]['serial'],41)
+            model.close()
+
     def test_live_replay_samples_receipts_and_generation_reset(self):
         with TemporaryDirectory(dir=ROOT) as tmp,patch('research.vectorized_backtest.v56.campaign_progress.remote',side_effect=lambda p,s:Path(p)):
             root=Path(tmp);folder=root/'phase-2/global/generation-0001';folder.mkdir(parents=True);(folder/'population.json').write_text('{}')

@@ -70,6 +70,7 @@ class Model:
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
         self.replay_samples={};self.replay_sample_scope=None
+        self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
     def remember(self):
         self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation=self.navigation[-32:]
@@ -193,12 +194,39 @@ class Model:
                 rows[key]=dict(generation=generation,status=status,progress=sample,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None)
         return rows
 
+    def live_snapshot(self,live):
+        generation=max((r['generation'] for r in live.values()),default=0)
+        if not generation:return None
+        if self.live_data is None or self.live_data['generation']!=generation:
+            if self.live_thread and self.live_thread.is_alive():return None
+            self.live_data=dict(generation=generation,panels={},summaries={});self.live_error=None
+        data=self.live_data
+        pending=[key for key,r in live.items() if r['status']=='complete' and key not in data['summaries']]
+        if pending and not (self.live_thread and self.live_thread.is_alive()) and time.monotonic()-self.live_attempt>2:
+            self.live_attempt=time.monotonic();root=remote(self.root/'phase-2',self.job['workstation_share'])
+            def collect():
+                try:
+                    from .progress_sessions import population_metadata,load_live_session
+                    ids,token=population_metadata(root/'global'/f'generation-{generation:04d}'/'population.json')
+                    for key in pending:
+                        if self.observer_stop.is_set():return
+                        role,day=key.split(':',1);panel,summary=load_live_session(self.job,root,generation,role,day,ids,token)
+                        data['panels'][key]=panel;data['summaries'][key]=summary
+                    self.live_error=None
+                except Exception as error:self.live_error=str(error)
+            self.live_thread=threading.Thread(target=collect,daemon=True);self.live_thread.start()
+        return data
+
     def rows(self):
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
             data=self.global_snapshot();generation=data['generation'] if data else 0
-            live=self.global_replays()
-            return [dict(day=day,role=role,generation=generation,replay=live[role+':'+day],**(data['summaries'].get(role+':'+day,{}) if data else {})) for role in ('training','validation') for day in self.job[role+'_days']]
+            live=self.global_replays();current=self.live_snapshot(live);rows=[]
+            for role in ('training','validation'):
+                for day in self.job[role+'_days']:
+                    key=role+':'+day;source=current if current and key in current['summaries'] else data
+                    rows.append(dict(day=day,role=role,generation=source['generation'] if source else 0,replay=live[key],**(source['summaries'].get(key,{}) if source else {})))
+            return rows
         if self.view=='timings':return self.timing(self.target(),self.status())['rows']
         if self.view=='reproduction':return diagnostics(self.report().get('next_generation_reproduction') or {})
         if self.view in ('operators','families','methods'):
@@ -207,6 +235,7 @@ class Model:
         if self.view=='global_ranking':
             from .full_common import ranking
             data=self.global_snapshot();key=str(self.global_role)+':'+str(self.global_day)
+            if self.live_data and key in self.live_data['panels'] and (not data or self.live_data['generation']>=data['generation']):data=self.live_data
             if not data or key not in data['panels']:return []
             values=data['panels'][key];report=self.read(self.target()/'global'/f"generation-{data['generation']:04d}"/'evolution-report.json');details={r['serial']:r for r in report.get('candidates',[])}
             rows=[dict(details.get(r['serial'],{}),**r,generation=data['generation'],metric_scope=key) for r in ranking(values['panel'],values['ids'])]
@@ -306,9 +335,11 @@ def render(model,width,height):
             cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar]
             cells+= metrics if compact else [str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-')),'cached' if r.get('cached') else duration(r.get('batch_seconds'))]
             table.add_row(*cells,style=SELECTED if i==model.selection else 'bright_magenta' if r['role']=='validation' else 'bright_cyan')
-        loaded=model.global_data;caption=f"Sealed global generation {loaded['generation']}" if loaded else 'Global results not yet evaluated'
+        loaded=model.global_data;caption=f"Last seal {loaded['generation']}" if loaded else 'No sealed global generation yet'
+        caption+=' | metrics update after each replay; Gen = metric generation'
         if model.global_loading:caption+=f' | loading {model.global_loading[1]}/{model.global_loading[2]} sessions'
         if model.global_error:caption+=' | evidence unavailable: '+model.global_error
+        if model.live_error:caption+=' | live evidence unavailable: '+model.live_error
         caption+=f' | rows {start+1}-{min(start+limit,len(rows))}/{len(rows)}'
         if rows:
             selected=rows[min(model.selection,len(rows)-1)];live=selected['replay'];sample=live['progress']
@@ -394,7 +425,8 @@ def render(model,width,height):
         note+='\nGeneration ETA '+('~'+duration(t['generation_eta']) if t['generation_eta'] is not None else '-')+' | D: measured generation history'
     header=Text(title+'\n'+note,style='bright_cyan')
     if model.view!='overview':
-        header.append(f"\nGenerations {state.get('completed_generations',0)}/50 ",style='white');header.append(progress_bar(state.get('completed_generations',0),50,color='bright_green'));header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
+        header.append(f"\nGenerations {state.get('completed_generations',0)}/50 ",style='white');header.append(progress_bar(state.get('completed_generations',0),50,color='bright_green'))
+        if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     layout['head'].update(header)
     names={'ranking':'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
