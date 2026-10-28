@@ -57,8 +57,14 @@ class Evolution(Controller):
         expected=self.job['training_days'] if role=='training' else self.job['validation_days']
         if days!=expected or not days:raise ValueError('Replay split/day authority changed')
         if self.job['campaign_stage']=='session' and role!='training':raise ValueError('Local validation is forbidden')
-        for day in days:ensure_day(self.job,self.node,role,day)
         out=Path(self.worker.config['output'])/role;token=digest([m.payload() for m in members])
+        if out==self.root/'replays'/role:
+            from .completed_replays import restore
+            restored=restore(self.job,out,role,days,generation,token,len(members))
+            if restored is not None:
+                self.publish(replay_generation=generation,replay_role=role,replay_population=len(members),completed_sessions=len(days),active_sessions=[],replay_receipts_reused=len(days))
+                return restored
+        for day in days:ensure_day(self.job,self.node,role,day)
         cache=Path('D:/TradingML/runtimes/v56c')/self.job['source_sha256'][:12]/self.node
         base_out=self.root/'replays'/role
         diagnostic=out!=base_out

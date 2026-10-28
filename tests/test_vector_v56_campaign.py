@@ -72,10 +72,10 @@ class CampaignTests(unittest.TestCase):
         from research.vectorized_backtest.v56.full_controller import Controller
         from research.vectorized_backtest.v56.genome import sample
         outcomes=[]
-        for validation_value in (-10000.,10000.):
+        for validation_value,schedule in ((-10000.,None),(10000.,None),(-10000.,'concurrent-training-only-v1'),(10000.,'concurrent-training-only-v1')):
             with TemporaryDirectory(dir=RUNTIME) as tmp:
                 c=Controller.__new__(Controller);c.root=Path(tmp);c.publish=lambda **v:None
-                c.job=dict(population=10,initial_multiplier=3,seed=2021,phase2_generations=3,training='fixture',initialization_probe='fixture',source_sha256='source',objective=dict(drawdown_weight=2.,loss_weight=1.),training_sha256='train',validation_sha256='val',selection={},mutation_probe_size=0,training_days=TRAIN)
+                c.job=dict(validation_schedule=schedule,population=10,initial_multiplier=3,seed=2021,phase2_generations=3,training='fixture',initialization_probe='fixture',source_sha256='source',objective=dict(drawdown_weight=2.,loss_weight=1.),training_sha256='train',validation_sha256='val',selection={},mutation_probe_size=0,training_days=TRAIN)
                 calls=[]
                 def evaluate(role,days,pop,g):
                     calls.append((role,len(days)));return [metrics(10. if role=='training' else validation_value,len(pop)) for d in days],{}
@@ -88,7 +88,7 @@ class CampaignTests(unittest.TestCase):
                 self.assertEqual(calls,[('training',24),('validation',12)]*3)
                 self.assertEqual(digest(json.loads((c.root/'global/checkpoint.json').read_bytes())['state']),before)
                 seal=json.loads((c.root/'global/generation-0001/validation.json').read_bytes());self.assertEqual(seal['successor_sha256_before'],seal['successor_sha256_after'])
-        self.assertEqual(*outcomes)
+        self.assertTrue(all(value==outcomes[0] for value in outcomes[1:]))
     def test_stop_roots_and_resident_cache_session_boundary(self):
         from research.vectorized_backtest.v56.session_lanes import Worker
         with TemporaryDirectory(dir=RUNTIME) as tmp:

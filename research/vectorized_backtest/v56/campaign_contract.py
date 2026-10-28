@@ -7,6 +7,7 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 from research.vectorized_backtest.v42.publication import write_json
 
 def check_structure(job,train,valid):
+    if job.get('validation_schedule') not in (None,'concurrent-training-only-v1'):raise ValueError('Unsupported validation schedule')
     if len(train)!=24 or len(set(train))!=24 or len(valid)!=12 or len(set(valid))!=12 or set(train)&set(valid) or max(train)>=min(valid):raise ValueError('Chronological disjoint certified 24/12 required')
     if job['training_days']!=train or job['validation_days']!=valid:raise ValueError('Split membership changed')
     if set(job['machines'])!={'laptop','workstation'}:raise ValueError('Both hosts required for session stage')

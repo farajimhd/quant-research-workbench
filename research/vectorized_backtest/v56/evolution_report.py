@@ -27,7 +27,7 @@ def summarize(ids,panel,records,retained=None,generation=0):
         if r.get('blind_mix'):
             parents=r['blind_mix']['parent_serials'];comparisons=[panel['score'][current[p]] for p in parents if p in current]
             if len(comparisons)!=len(parents):comparisons=[]
-        row['beat_best_parent']=row['score']>max(comparisons) if comparisons else None
+        row['beat_best_parent']=bool(row['score']>max(comparisons)) if comparisons else None
         rows.append(row)
         categories=[('operator',tag) for tag in tags]+[('family',tag) for tag in families]+[('founder-method',tag) for tag in methods]+[('origin-session',tag) for tag in row['source_sessions']]+[('immigration',tag) for tag in row['immigration_categories']]
         for category,tag in categories:groups.setdefault((category,tag),[]).append(row)

@@ -31,12 +31,45 @@ def checkpoint_contract(job,train,valid):
         contract['campaign_context']={k:job.get(k) for k in ('campaign_stage','parent_job_sha256','initialization_probe_sha256','promotion_exports')}
     if job.get('immigration_policy'):contract['immigration_policy']=job['immigration_policy']
     if job.get('selection',{}).get('profit_fresh_fraction'):contract['profit_fresh_fraction']=job['selection']['profit_fresh_fraction']
+    if job.get('validation_schedule')=='concurrent-training-only-v1':contract['validation']='display-only; isolated training-only reproduction concurrent with replay'
     return contract
 
 
 class Controller:
     def publish(self,**extra):raise NotImplementedError
     def evaluate(self,role,days,members,generation):raise NotImplementedError
+
+    def reproduce(self,root,folder,members,source_ids,birth_records,token,ordered,training_receipts,train,objective,generation,rng,pedigree,species,probe):
+        """Training-only CPU lane: validation values and worker handles are absent."""
+        started=time.perf_counter()
+        session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
+        from .offspring_audit import summarize
+        write_json(folder/'offspring-audit.json',summarize(birth_records,panel,generation))
+        self.publish(reproduction_stage='Score training population')
+        write_json(folder/'training.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(panel),ranking=ranking(panel,source_ids),receipts=training_receipts))
+        self.publish(reproduction_stage='Select active parents and reproduce')
+        if generation<self.job['phase2_generations']:
+            from .validation_cache import validation_scope
+            # Retain parents plus offspring for this bounded transaction;
+            # 4096 entries thrash even on the 5120 parental action graphs.
+            with validation_scope(capacity=min(32768,max(4096,len(members)*15))):
+                successor,newids,diversity=next_population(rng,members,source_ids,pedigree,[],generation+1,Selection(**self.job['selection']),session_values=panel['score'][None],session_eligible=panel['eligible'][None],global_values=panel['score'],global_eligible=panel['eligible'],target_size=self.job['population'],species=species,ordered=ordered,case_values=None,case_ids=None,probe=probe)
+        else:successor,newids,diversity=members,source_ids,dict(reproduction_performed=False)
+        if generation<self.job['phase2_generations']:
+            audit=read(folder/'offspring-audit.json');selected=set(map(int,source_ids)) & set(map(int,newids))
+            audit['retained_ids']=sorted(selected);audit['selection_observed']=True
+            write_json(folder/'offspring-audit.json',audit)
+        frozen=dict(population=[m.payload() for m in successor],ids=newids.tolist(),rng=rng.bit_generator.state)
+        frozen_hash=digest(frozen);write_json(folder/'successor.json',dict(**frozen,sha256=frozen_hash,training_only=True))
+        write_json(folder/'reproduction.json',dict(generation=generation,successor_sha256=frozen_hash,
+            training_only=True,telemetry=diversity))
+        born=[pedigree.records[int(i)] for i in newids if pedigree.records[int(i)]['generation']==generation+1]
+        write_json(folder/'births.json',born)
+        from .evolution_report import publish as report_evolution
+        per_session={day:serializable(metrics) for day,metrics in zip(train,session_panels)}
+        report_evolution(root,folder,source_ids,panel,birth_records,set(map(int,newids)) if generation<self.job['phase2_generations'] else None,diversity,generation,per_session)
+        self.publish(reproduction=diversity,reproduction_stage='Complete',reproduction_seconds=time.perf_counter()-started,reproduction_finished_epoch=time.time())
+        return panel,successor,newids,diversity,frozen_hash,time.perf_counter()-started
 
     def global_run(self,exports,train,valid):
         from .full_seed import global_seed
@@ -84,44 +117,26 @@ class Controller:
             # Identity/ancestry are known before replay. Publish them now so
             # completed session receipts can be explored before the global seal.
             write_json(folder/'evaluated-pedigree.json',birth_records)
-            ordered,training_receipts=self.evaluate('training',train,members,generation);session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
-            from .offspring_audit import summarize
-            write_json(folder/'offspring-audit.json',summarize(birth_records,panel,generation))
-            self.stage='Score evaluated population';self.publish()
+            ordered,training_receipts=self.evaluate('training',train,members,generation)
+            from .generation_pipeline import overlap
+            self.stage='Validation replay + training-only reproduction' if valid else 'Training-only reproduction'
+            self.publish(reproduction_stage='Queued')
+            work=lambda:self.reproduce(root,folder,members,source_ids,birth_records,token,ordered,training_receipts,train,objective,generation,rng,pedigree,species,probe)
+            concurrent=bool(valid and self.job.get('validation_schedule')=='concurrent-training-only-v1')
+            self.publish(validation_overlap=concurrent,transition_started_epoch=time.time())
+            result,validation_result,timing=overlap(work,lambda:self.evaluate('validation',valid,members,generation),concurrent, bool(valid))
+            panel,successor,newids,diversity,frozen_hash,reproduction_seconds=result
+            validation,validation_receipts=validation_result if valid else (None,{})
+            validation_panel=aggregate(validation,objective) if valid else None
+            timing['reproduction_seconds']=reproduction_seconds
+            write_json(folder/'transition-timings.json',timing)
             if self.job.get('mutation_probe_size',0):
                 from .mutation_probe import run_probe
                 self.stage='Paired mutation diagnostic; selection and RNG isolated';self.publish()
                 run_probe(self,folder,members,source_ids,birth_records,panel,generation)
-            write_json(folder/'training.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(panel),ranking=ranking(panel,source_ids),receipts=training_receipts))
-            self.stage='Select active parents and reproduce';self.publish()
-            if generation<self.job['phase2_generations']:
-                from .validation_cache import validation_scope
-                # Retain parents plus offspring for this bounded transaction;
-                # 4096 entries thrash even on the 5120 parental action graphs.
-                with validation_scope(capacity=min(32768,max(4096,len(members)*15))):
-                    successor,newids,diversity=next_population(rng,members,ids,pedigree,[],generation+1,Selection(**self.job['selection']),session_values=panel['score'][None],session_eligible=panel['eligible'][None],global_values=panel['score'],global_eligible=panel['eligible'],target_size=self.job['population'],species=species,ordered=ordered,case_values=None,case_ids=None,probe=probe)
-            else:successor,newids,diversity=members,ids,dict(reproduction_performed=False)
-            if generation<self.job['phase2_generations']:
-                audit=read(folder/'offspring-audit.json');selected=set(map(int,source_ids)) & set(map(int,newids))
-                audit['retained_ids']=sorted(selected);audit['selection_observed']=True
-                write_json(folder/'offspring-audit.json',audit)
-            frozen=dict(population=[m.payload() for m in successor],ids=newids.tolist(),rng=rng.bit_generator.state)
-            frozen_hash=digest(frozen);write_json(folder/'successor.json',dict(**frozen,sha256=frozen_hash,training_only=True))
-            write_json(folder/'reproduction.json',dict(generation=generation,successor_sha256=frozen_hash,
-                training_only=True,telemetry=diversity))
-            born=[pedigree.records[int(i)] for i in newids if pedigree.records[int(i)]['generation']==generation+1]
-            write_json(folder/'births.json',born)
-            from .evolution_report import publish as report_evolution
-            per_session={day:serializable(metrics) for day,metrics in zip(train,session_panels)}
-            report_evolution(root,folder,source_ids,panel,birth_records,set(map(int,newids)) if generation<self.job['phase2_generations'] else None,diversity,generation,per_session)
-            self.publish(reproduction=diversity)
-            self.stage='Phase 2 validation: display only' if valid else 'Seal training generation; validation unopened'
-            if valid:
-                validation,validation_receipts=self.evaluate('validation',valid,members,generation);validation_panel=aggregate(validation,objective)
-            else:validation_panel=None;validation_receipts={}
             if digest(dict(population=[m.payload() for m in successor],ids=newids.tolist(),rng=rng.bit_generator.state))!=frozen_hash:raise ValueError('Validation changed successor or training RNG')
             write_json(folder/'validation.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(validation_panel) if valid else {},ranking=ranking(validation_panel,source_ids) if valid else [],opened=bool(valid),receipts=validation_receipts,display_only=True,successor_sha256_before=frozen_hash,successor_sha256_after=frozen_hash))
-            observational={name:sha(folder/name) for name in ('evolution-report.json','founder-results.json','session-metrics.json') if (folder/name).exists()}
+            observational={name:sha(folder/name) for name in ('evolution-report.json','founder-results.json','session-metrics.json','transition-timings.json') if (folder/name).exists()}
             write_json(folder/'complete.json',dict(observational_reports=observational,training_sha256=sha(folder/'training.json'),validation_sha256=sha(folder/'validation.json'),successor_sha256=sha(folder/'successor.json'),population_sha256=sha(folder/'population.json'),reproduction_sha256=sha(folder/'reproduction.json'),births_sha256=sha(folder/'births.json'),evaluated_pedigree_sha256=sha(folder/'evaluated-pedigree.json'),offspring_audit_sha256=sha(folder/'offspring-audit.json'),mutation_probe_sha256=sha(folder/'mutation-probe.json') if self.job.get('mutation_probe_size',0) else None,source_sha256=self.job['source_sha256'],validation_independent=True,wall_seconds=time.perf_counter()-started))
             seals[str(generation)]=sha(folder/'complete.json');members=successor;ids=newids;pedigree.retain(ids)
             state=dict(completed=generation,population=[m.payload() for m in members],ids=ids.tolist(),pedigree=list(pedigree.records.values()),next_serial=pedigree.next_serial,rng=rng.bit_generator.state,seals=seals,species=species.state)
