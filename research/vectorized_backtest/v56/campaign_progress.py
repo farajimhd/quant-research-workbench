@@ -67,7 +67,10 @@ def replay_numbers(live):
     reused=p.get('reused_candidates') or 0;new_total=total-reused
     measured=max(0,done-reused)/new_total if new_total>0 else 0.
     eta=elapsed*(1-measured)/measured if elapsed is not None and measured>=.05 and live['status']=='running' else None
-    return dict(done=int(min(done,total)),total=total,elapsed=elapsed,eta=eta,fraction=fraction)
+    # Counts mean completed candidate replays; only the bar/ETA interpolate the
+    # active batch's clocks. Never label partially replayed candidates complete.
+    completed=total if live['status']=='complete' else p.get('completed_candidates',0)
+    return dict(done=int(min(completed,total)),total=total,elapsed=elapsed,eta=eta,fraction=fraction)
 
 def diagnostics(value,prefix=''):
     rows=[]
