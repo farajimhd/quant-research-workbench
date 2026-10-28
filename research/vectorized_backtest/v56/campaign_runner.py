@@ -40,7 +40,12 @@ class Evolution(Controller):
     def publish(self,**values):
         with self.lock:
             self.view.update(values)
-            write_json(self.root/'full-status.json',dict(status=self.status,stage=self.stage,node=self.node,owner=self.owner,updated_epoch=time.time(),total_generations=self.job['phase2_generations'],**self.view))
+            for attempt in range(6):
+                try:
+                    write_json(self.root/'full-status.json',dict(status=self.status,stage=self.stage,node=self.node,owner=self.owner,updated_epoch=time.time(),total_generations=self.job['phase2_generations'],**self.view));break
+                except PermissionError:
+                    if attempt==5:raise
+                    time.sleep(.02*2**attempt)
     def session_progress(self,event):self.publish(worker_progress=event)
     def begin_sessions(self,days):self.publish(active_sessions=days)
     def complete_sessions(self,count,seconds):self.publish(last_cohort_completed=count,last_cohort_seconds=seconds)
@@ -48,7 +53,11 @@ class Evolution(Controller):
         while not self.halt.wait(1):
             try:event=self.events.get_nowait()
             except queue.Empty:event=None
-            self.publish(**({'worker_progress':event} if event else {}))
+            try:self.publish(**({'worker_progress':event} if event else {}))
+            except PermissionError:
+                # Observational heartbeat retries next tick; authoritative writes
+                # and coordinator publications still propagate persistent errors.
+                with self.lock:self.view['status_publish_retries']=self.view.get('status_publish_retries',0)+1
     def close_lanes(self):
         if self.lanes:self.lanes.__exit__(None,None,None);self.lanes=None;self.lane_key=None
     def evaluate(self,role,days,members,generation):

@@ -41,21 +41,10 @@ def distance(a,b):
 
 
 def training_behavior(ordered,n):
-    parts=[];active=np.zeros(n,dtype=bool);lower=np.arange(48)*1800;upper=lower+1800
+    from .behavior_sketch import sketch
+    parts=[];active=np.zeros(n,dtype=bool)
     for metrics in ordered:
-        values=np.empty((n,131),dtype=np.float64)
-        for i in range(n):
-            entries=np.asarray(metrics['episode_entry_clocks'][i],dtype=np.int64)
-            listings=np.asarray(metrics['episode_listings'][i],dtype=np.int64)
-            active[i]|=len(entries)>0
-            # Bounded clock/listing sketches plus size-sensitive realized exposure.
-            time_bins=np.bincount(np.minimum(entries//1800,47),minlength=48)
-            listing_bins=np.bincount(listings%32,minlength=32)
-            exits=np.asarray(metrics['episode_exit_clocks'][i],dtype=np.int64)
-            holding=np.maximum(0,np.minimum(exits[:,None],upper)-np.maximum(entries[:,None],lower)).sum(0)/1800
-            values[i,:48]=time_bins;values[i,48:96]=holding;values[i,96:128]=listing_bins
-            values[i,128]=metrics['closed_positions'][i];values[i,129]=metrics['capital_dollar_seconds'][i]/3600000;values[i,130]=metrics['turnover'][i]/1000
-        parts.append(np.log1p(values))
+        values,present=sketch(metrics,n);parts.append(values);active|=present
     return np.concatenate(parts,axis=1).tolist(),active
 
 

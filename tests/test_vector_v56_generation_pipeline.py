@@ -45,3 +45,22 @@ class TransitionTests(unittest.TestCase):
             with self.assertRaises(ValueError):restore(job,out,'training',['day'],1,'different',1)
             p.write_text(p.read_text()+' ')
             with self.assertRaises(ValueError):restore(job,out,'training',['day'],1,'token',1)
+
+    def test_status_publication_retries_transient_windows_lock(self):
+        from unittest.mock import patch
+        from research.vectorized_backtest.v56.campaign_runner import Evolution
+        with TemporaryDirectory(dir=RUNTIME) as tmp:
+            e=Evolution({'phase2_generations':50},'workstation',tmp,2,[])
+            with patch('research.vectorized_backtest.v56.campaign_runner.write_json',side_effect=[PermissionError('locked'),None]) as writer,patch('research.vectorized_backtest.v56.campaign_runner.time.sleep'):
+                e.publish(reproduction_stage='active');self.assertEqual(writer.call_count,2)
+
+    def test_compiled_behavior_matches_broadcast_reference(self):
+        from research.vectorized_backtest.v56.behavior_sketch import sketch
+        rng=np.random.default_rng(9);entries=[[],[0,1799,1800,86399,90000]]+[rng.integers(0,100000,size=35).tolist() for _ in range(5)];exits=[[e+int(rng.integers(-100,6000)) for e in row] for row in entries];listings=[[int(rng.integers(0,1000)) for e in row] for row in entries];n=len(entries)
+        m=dict(episode_entry_clocks=entries,episode_exit_clocks=exits,episode_listings=listings,closed_positions=list(map(len,entries)),capital_dollar_seconds=list(range(n)),turnover=list(range(n)))
+        result,active=sketch(m,n);reference=np.zeros((n,131));lower=np.arange(48)*1800
+        for i in range(n):
+            e=np.asarray(entries[i],np.int64);x=np.asarray(exits[i],np.int64);l=np.asarray(listings[i],np.int64)
+            reference[i,:48]=np.bincount(np.minimum(e//1800,47),minlength=48);reference[i,48:96]=np.maximum(0,np.minimum(x[:,None],lower+1800)-np.maximum(e[:,None],lower)).sum(0)/1800;reference[i,96:128]=np.bincount(l%32,minlength=32)
+            reference[i,128:]=[len(e),i/3600000,i/1000]
+        self.assertTrue(np.array_equal(result,np.log1p(reference)));self.assertEqual(active.tolist(),[bool(row) for row in entries])
