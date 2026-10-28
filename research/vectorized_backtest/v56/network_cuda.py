@@ -159,12 +159,14 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
     state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
     scheduled=not owned and block in (64,128)
+    warps=getattr(plan,'cuda_warps',2) if scheduled else 4
+    if warps not in (1,2,4,8):raise ValueError('Unsupported neural CUDA warp count')
     tiles=tr.cdiv(owned_k,block)
     grid=(b*5*tiles,) if scheduled else (b,5,tiles)
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
-        plan.cuda_network_order,tiles,scheduled,num_warps=2 if scheduled else 4,enable_fp_fusion=False)
+        plan.cuda_network_order,tiles,scheduled,num_warps=warps,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
     pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,b*u,u,256)
     return result
