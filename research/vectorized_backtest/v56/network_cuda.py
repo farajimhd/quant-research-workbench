@@ -77,10 +77,10 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
                 values=();knowns=();weights=()
                 for k in tl.static_range(4):
                     source=tl.load(SOURCES+(base+i)*FAN+first+k,first+k<ec,0)
-                    weight=tl.load(WEIGHTS+(base+i)*FAN+first+k,first+k<ec,0)
-                    enabled=(first+k<ec)&((weight!=0)|((op>=1)&(op<=6)))
+                    edge_weight=tl.load(WEIGHTS+(base+i)*FAN+first+k,first+k<ec,0)
+                    enabled=(first+k<ec)&((edge_weight!=0)|((op>=1)&(op<=6)))
                     value,known=fetch_value(V,VALID,POSITION_STATES,old,old_known,current,current_known,base,member,source,enabled,u,live,U,C,STATES)
-                    values+=(value,);knowns+=(known,);weights+=(weight,)
+                    values+=(value,);knowns+=(known,);weights+=(edge_weight,)
                 for k in tl.static_range(4):
                     e=first+k
                     w=weights[k]
