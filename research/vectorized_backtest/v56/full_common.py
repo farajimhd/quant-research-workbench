@@ -48,7 +48,7 @@ def config(job,node,role='training'):
         feature_cache=m.get('feature_cache'),input_receipts=m['receipts'],indicator_receipts=m['indicator_receipts'],enriched_receipts=m['enriched_receipts'],
         authorization='v56-training',source_sha256=job['source_sha256'],training_manifest=job['training'],objective=job['objective'],execution=job['execution'],
         selection=job['selection'],backend='compile',device='cuda',batch_size=job['batch_size'],maximum_replay_batch_size=1024,episode_capacity=65536,maximum_data_gib=4.,maximum_gate_gib=8.,
-        capture_gib=machine['capture_gib'],host_reserve_gib=machine['reserve_gib'],host_admission_gib=machine['admission_gib'],host_prefetch=True,shared_replay=False,
+        capture_gib=machine['capture_gib'],host_reserve_gib=machine['reserve_gib'],host_admission_gib=machine['admission_gib'],host_prefetch=True,prefetch_transfer=node=='workstation',shared_replay=False,
         immutable_population_cache=True,plan_limit=1,maximum_host_sessions=2,retain_session_residency=True,reuse_results=True,trace_validation=True,
         split=role,neural_tile=64 if node=='workstation' else 128,gpu_execution_gate=job['campaign'] if node=='workstation' and job.get('version')=='v56-full-v2' else None)
 
