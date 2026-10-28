@@ -64,7 +64,9 @@ def replay_numbers(live):
     if live['status']=='complete':done=total
     elapsed=p.get('session_seconds') if live['status']=='complete' else max(0,time.time()-p['session_started_epoch']) if p.get('session_started_epoch') else None
     fraction=min(1.,done/total) if total else 1. if live['status']=='complete' else 0.
-    eta=elapsed*(1-fraction)/fraction if elapsed is not None and fraction>=.05 and live['status']=='running' else None
+    reused=p.get('reused_candidates') or 0;new_total=total-reused
+    measured=max(0,done-reused)/new_total if new_total>0 else 0.
+    eta=elapsed*(1-measured)/measured if elapsed is not None and measured>=.05 and live['status']=='running' else None
     return dict(done=int(min(done,total)),total=total,elapsed=elapsed,eta=eta,fraction=fraction)
 
 def diagnostics(value,prefix=''):
@@ -221,7 +223,7 @@ class Model:
             if self.live_thread and self.live_thread.is_alive():return None
             self.live_data=dict(generation=generation,panels={},summaries={},reports={});self.live_error=None
         data=self.live_data
-        pending=[key for key,r in live.items() if r['status']=='complete' and key not in data['summaries']]
+        pending=[key for key,r in live.items() if r['status']=='complete' and (key not in data['summaries'] or key not in data['reports'])]
         if pending and not (self.live_thread and self.live_thread.is_alive()) and time.monotonic()-self.live_attempt>2:
             self.live_attempt=time.monotonic();root=remote(self.root/'phase-2',self.job['workstation_share'])
             def collect():
@@ -232,8 +234,11 @@ class Model:
                     records=json.loads(path.read_bytes()) if path.exists() else None
                     for key in pending:
                         if self.observer_stop.is_set():return
-                        role,day=key.split(':',1);panel,summary=load_live_session(self.job,root,generation,role,day,ids,token)
-                        data['panels'][key]=panel;data['summaries'][key]=summary
+                        role,day=key.split(':',1)
+                        if key not in data['panels']:
+                            panel,summary=load_live_session(self.job,root,generation,role,day,ids,token)
+                            data['panels'][key]=panel;data['summaries'][key]=summary
+                        else:panel=data['panels'][key]
                         if records is not None:
                             from .evolution_report import summarize
                             report=summarize(ids,panel['panel'],records,generation=generation)
