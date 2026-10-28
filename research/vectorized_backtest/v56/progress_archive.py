@@ -21,8 +21,6 @@ class Archive:
                     records=read_verified(folder/'pedigree.json',meta['files']['pedigree.json'])
                     seal=read_verified(folder/'seal.json',meta['files']['seal.json'])
                     sidecar=bus/'observer'/(day+'.json');nodes={}
-                    while require_nodes and not sidecar.exists():
-                        if stop.wait(1):return
                     if sidecar.exists():
                         index=read_verified(sidecar)
                         from research.vectorized_backtest.v42.distributed_assets import sha
@@ -33,4 +31,23 @@ class Archive:
                         if str(r['serial']) in nodes:r['node_count']=nodes[str(r['serial'])]
                     self.data[day]=dict(status=dict(status='complete',stage='Sealed phase-1 export',completed_generations=50,ranking_generation=50,training_ranking=ranking(train['panel'],train['ids'])),report=summarize(train['ids'],train['panel'],records,generation=50),last_seconds=seal.get('wall_seconds'))
                 except Exception as error:self.errors[day]=str(error)
+            pending={day for day,value in self.data.items() if any(r['nodes'] is None for r in value['report']['candidates'])} if require_nodes else set()
+            while pending and not stop.is_set():
+                for day in list(pending):
+                    path=bus/'observer'/(day+'.json')
+                    if not path.exists():continue
+                    try:
+                        from research.vectorized_backtest.v42.distributed_assets import sha
+                        index=read_verified(path)
+                        if index['export_sha256']!=sha(bus/'sessions'/day/'export.json'):raise ValueError('Observer node index export mismatch')
+                        report=self.data[day]['report']
+                        for row in report['candidates']:row['nodes']=index['nodes'][str(row['serial'])]
+                        import statistics
+                        fields={'operator':'operators','family':'founder_groups','founder-method':'founder_methods','origin-session':'source_sessions','immigration':'immigration_categories'}
+                        for group in report['groups']:
+                            values=[r['nodes'] for r in report['candidates'] if group['group'] in r[fields[group['category']]]]
+                            group['median_nodes']=statistics.median(values) if values else None
+                        pending.remove(day)
+                    except Exception as error:self.errors[day]=str(error);pending.remove(day)
+                stop.wait(1)
         self.thread=threading.Thread(target=load,daemon=True);self.thread.start()

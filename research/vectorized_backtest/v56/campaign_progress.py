@@ -110,7 +110,12 @@ class Model:
     def target(self):return self.session_root(self.day) if self.day else remote(self.root/'phase-2',self.job['workstation_share'])
     def session_state(self,day):
         return self.archive.data[day]['status'] if day in self.archive.data else self.read(self.session_root(day)/'full-status.json')
-    def status(self):return self.session_state(self.day) if self.day else self.read(self.target()/'full-status.json')
+    def status(self):
+        if self.day:return self.session_state(self.day)
+        state=self.read(self.target()/'full-status.json')
+        if state:return state
+        node=self.read(self.bus/'workstation-status.json')
+        return dict(status='running' if node.get('status','').startswith('verify-') else node.get('status','queued'),stage=node.get('status','Waiting for coordinator'),completed_generations=0)
     def close(self):self.observer_stop.set()
     def strength(self,path,state):
         from .progress_sessions import strength
