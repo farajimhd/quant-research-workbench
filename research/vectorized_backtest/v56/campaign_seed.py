@@ -50,8 +50,19 @@ def seed(exports,job,probe,progress=None):
         fresh,report=initialize(rng,6144,probe=probe);families=report['initial_families'];pedigree=CompactPedigree(3);expert_count=0
     blind_mode=job.get('campaign_stage')=='global' and job.get('global_initialization',{}).get('version')=='v56-blind-mix-v1'
     fresh_ids=pedigree.birth(fresh,1,[(-1,-1)]*len(fresh),['blind-reproduction' if blind_mode else 'fresh']*len(fresh))
-    from research.vectorized_backtest.v42.family_stats import seed as families_seed
-    families_seed(pedigree,fresh_ids,families)
+    if blind_mode:
+        # Mixing methods are not template families. Carry the existing bounded
+        # template ancestry vector from donors; new groups live in founder_groups.
+        from research.vectorized_backtest.v42.family_stats import annotate
+        for serial,meta in zip(fresh_ids,blind):
+            parents=[pedigree.records[int(parent)] for parent in meta['parent_serials']]
+            if not parents:raise ValueError('Blind offspring requires donor ancestry')
+            record=pedigree.records[int(serial)]
+            parts=record['label'].split('-');record['label']='-'.join([parts[0],*parts[3:]])
+            annotate(record,parents)
+    else:
+        from research.vectorized_backtest.v42.family_stats import seed as families_seed
+        families_seed(pedigree,fresh_ids,families)
     if job.get('campaign_stage')=='global' and job.get('global_initialization',{}).get('version')=='v56-blind-mix-v1':
         for index,(serial,meta) in enumerate(zip(fresh_ids,blind),expert_count):
             from pathlib import Path
