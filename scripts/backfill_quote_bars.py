@@ -118,6 +118,9 @@ def run(a):
         old_signal=signal.signal(signal.SIGINT,lambda *_:stop.set())
         counts=dict(completed=0,reused=0,failed=0);profiles={};active_clients=[];verification_seconds=0.
         worker_local=threading.local();worker_clients=[]
+        profile_stream=(root/'profiles.jsonl').open('a',encoding='utf-8',buffering=1024*1024)
+        batch_stream=(root/'batch-profiles.jsonl').open('a',encoding='utf-8',buffering=1024*1024)
+        last_profile_flush=time.monotonic()
         def guard():
             if stop.is_set() or (root/'stop.request').exists():raise InterruptedError('Graceful quote stop requested')
         def work(row,prior,retry=0,shared_stage=None,prepared=None):
@@ -167,13 +170,12 @@ def run(a):
                 signal_result=signals.publish(client,'arte',parent_build,day,ticker,certified[key][3],source_hash,token_rows,*session_times[day])
                 with mutex:
                     counts['completed']+=1
-                    with (root/'profiles.jsonl').open('a',encoding='utf-8') as f:
-                        record=dict(day=day,ticker=ticker,seconds=time.monotonic()-began,
-                            source_events=row['event_count'],quote_events=expected['events'],rows=e['n'],signals=signal_result,
-                            stage_seconds={k:v['seconds'] for k,v in client.profile_totals.items()})
-                        if profile_units or counts['completed']<=128 or counts['completed']%1000==0 or int(row['event_count'])>=4000000:
-                            record.update(profiles=client.profiles,totals=client.profile_totals)
-                        f.write(json.dumps(record)+'\n')
+                    record=dict(day=day,ticker=ticker,seconds=time.monotonic()-began,
+                        source_events=row['event_count'],quote_events=expected['events'],rows=e['n'],signals=signal_result,
+                        stage_seconds={k:v['seconds'] for k,v in client.profile_totals.items()})
+                    if profile_units or counts['completed']<=128 or counts['completed']%1000==0 or int(row['event_count'])>=4000000:
+                        record.update(profiles=client.profiles,totals=client.profile_totals)
+                    profile_stream.write(json.dumps(record)+'\n')
             except BaseException as error:
                 if retryable_transport(error) and retry<2:
                     with mutex:
@@ -245,10 +247,9 @@ def run(a):
                 finally:
                     if fresh:c.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_batch_cleanup',False)
                     with mutex:
-                        with (root/'batch-profiles.jsonl').open('a',encoding='utf-8') as f:
-                            f.write(json.dumps(dict(day=day,tickers=[r['ticker'] for r in rows],
-                                seconds=time.monotonic()-began,source_events=sum(int(r['event_count']) for r in rows),
-                                totals=c.profile_totals))+'\n')
+                        batch_stream.write(json.dumps(dict(day=day,tickers=[r['ticker'] for r in rows],
+                            seconds=time.monotonic()-began,source_events=sum(int(r['event_count']) for r in rows),
+                            totals=c.profile_totals))+'\n')
         try:
             by_day={}
             for r in units:by_day.setdefault(r['source_date'],[]).append(r)
@@ -282,6 +283,11 @@ def run(a):
                         if not pending:break
                         finished,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
                         for f in finished:f.result()
+                        if time.monotonic()-last_profile_flush>=1:
+                            # Diagnostic telemetry is buffered; ClickHouse commit
+                            # receipts remain independently durable for every unit.
+                            with mutex:profile_stream.flush();batch_stream.flush()
+                            last_profile_flush=time.monotonic()
                         elapsed=time.monotonic()-started;productive=max(.001,elapsed-verification_seconds);done=counts['completed']+counts['reused']
                         progress.update(**counts,queued=max(0,len(units)-done-counts['failed']),elapsed=elapsed,
                             new_ticker_days_per_hour=counts['completed']*3600/productive,
@@ -297,5 +303,6 @@ def run(a):
             if interrupted:return 130
             raise
         finally:
+            profile_stream.close();batch_stream.close()
             for client in worker_clients:client.close()
             signal.signal(signal.SIGINT,old_signal)
