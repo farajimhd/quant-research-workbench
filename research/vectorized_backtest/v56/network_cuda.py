@@ -158,7 +158,7 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     if owned:block=32
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
     state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
-    scheduled=not owned and block in (64,128)
+    scheduled=not owned and block in (32,64,128)
     warps=getattr(plan,'cuda_warps',2) if scheduled else 4
     if warps not in (1,2,4,8):raise ValueError('Unsupported neural CUDA warp count')
     tiles=tr.cdiv(owned_k,block)
