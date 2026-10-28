@@ -34,6 +34,28 @@ def retryable_transport(error):
     return isinstance(error,(ConnectionError,TimeoutError,http.client.RemoteDisconnected))
 
 
+def cleanup_stage(client,options,stage,on_retry=lambda retry:None):
+    """Retry only idempotent owned DROP after confirmed query cancellation.
+
+    The batch control connection can idle while its ticker units publish. A
+    reset of that connection must not turn already committed work into failure.
+    Uncertain cancellation still fails closed and retains the stage.
+    """
+    sql.identifier(stage)
+    if not stage.startswith('quote_stage_'):raise ValueError('Owned quote stage required')
+    query=f'DROP TABLE IF EXISTS arte.{stage} SYNC'
+    for attempt in range(3):
+        try:
+            if attempt:
+                with closing(bars.Client(options,persistent=False)) as fresh:
+                    fresh.query(query,'quote_batch_cleanup_reconnect',False)
+            else:client.query(query,'quote_batch_cleanup',False)
+            return
+        except BaseException as error:
+            if not retryable_transport(error) or attempt==2:raise
+            on_retry(attempt+1);time.sleep(.1*(attempt+1))
+
+
 def run(a):
     root=a.run_dir.resolve();runtime=bars.RUNTIME.resolve()
     if not root.is_relative_to(runtime) or not runtime.is_dir():raise ValueError('Operational runtime required')
@@ -224,6 +246,8 @@ def run(a):
             try:
                 with closing(bars.Client(options)) as c:
                     return execution.verify_completed(c,'arte',build,parent_build,day,rows,saved,certified,token_rows,policy,guard=guard)
+            except BaseException:
+                stop.set();raise
             finally:progress.worker(name,'Idle')
         def batch_work(rows,saved):
             day=rows[0]['source_date'];stage='quote_stage_'+uuid.uuid4().hex
@@ -244,12 +268,26 @@ def run(a):
                             if bars.digest([source,plan['rules'],definition['version']])!=certified[(day,t)][0]:raise ValueError('Canonical content differs from completed trade source')
                         guard();execution.insert_batch(c,'arte',stage,build,day,attempts,guard=guard)
                     for row in rows:resilient_work(row,saved.get(row['ticker']),stage if fresh else None,prepared_units.get(row['ticker']))
+                except BaseException:
+                    stop.set();raise
                 finally:
-                    if fresh:c.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_batch_cleanup',False)
-                    with mutex:
-                        batch_stream.write(json.dumps(dict(day=day,tickers=[r['ticker'] for r in rows],
-                            seconds=time.monotonic()-began,source_events=sum(int(r['event_count']) for r in rows),
-                            totals=c.profile_totals))+'\n')
+                    original=sys.exception()
+                    try:
+                        if fresh:
+                            if original and any('Cancellation could not be confirmed' in n for n in getattr(original,'__notes__',())):
+                                original.add_note(f'Owned stage arte.{stage} retained until query ownership drains.')
+                            else:cleanup_stage(c,options,stage,on_retry=lambda retry:progress.emit(f'{day}: reconnect owned stage cleanup ({retry}/2); committed receipts preserved'))
+                    except BaseException as cleanup_error:
+                        stop.set()
+                        if original:
+                            original.add_note('Owned stage cleanup also failed; reconcile before resume.')
+                            raise original from cleanup_error
+                        raise
+                    finally:
+                        with mutex:
+                            batch_stream.write(json.dumps(dict(day=day,tickers=[r['ticker'] for r in rows],
+                                seconds=time.monotonic()-began,source_events=sum(int(r['event_count']) for r in rows),
+                                totals=c.profile_totals))+'\n')
         try:
             by_day={}
             for r in units:by_day.setdefault(r['source_date'],[]).append(r)
@@ -298,7 +336,9 @@ def run(a):
             progress.update(status='complete',queued=0);return 0
         except BaseException as error:
             interrupted=isinstance(error,(InterruptedError,KeyboardInterrupt))
-            stop.set();progress.update(status='interrupted' if interrupted else 'failed',message=str(error))
+            stop.set()
+            if not interrupted and not counts['failed']:counts['failed']=1
+            progress.update(**counts,status='interrupted' if interrupted else 'failed',message=str(error))
             (root/'stop.request').write_text('Preserve quote receipts. Diagnose and drain before deliberate resume.\n',encoding='utf-8')
             if interrupted:return 130
             raise

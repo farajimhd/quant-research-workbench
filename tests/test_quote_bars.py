@@ -141,3 +141,60 @@ def test_batch_sql_preserves_raw_hash_before_grouping_ticker():
     assert 'cityHash64(tuple(*)) raw_hash' in q
     assert 'GROUP BY ticker,bucket_index' in q
     assert 'ORDER BY (ticker,bucket_index)' in q
+
+
+def test_cleanup_reset_reconnects_only_owned_idempotent_drop(monkeypatch):
+    from scripts import backfill_quote_bars as runner
+    calls=[];closed=[];retries=[]
+    class Client:
+        def __init__(self,fail=False):self.fail=fail
+        def query(self,query,label,read):
+            calls.append((query,label,read))
+            if self.fail:raise ConnectionResetError('reset')
+        def close(self):closed.append(True)
+    monkeypatch.setattr(runner.bars,'Client',lambda *a,**kw:Client())
+    monkeypatch.setattr(runner.time,'sleep',lambda _:None)
+    runner.cleanup_stage(Client(True),object(),'quote_stage_owned',retries.append)
+    assert retries==[1] and closed==[True]
+    assert len(calls)==2 and calls[0][0]==calls[1][0]=='DROP TABLE IF EXISTS arte.quote_stage_owned SYNC'
+    with pytest.raises(ValueError,match='Owned quote stage'):runner.cleanup_stage(Client(),object(),'bars_v1')
+
+
+def test_cleanup_does_not_retry_uncertain_cancellation_or_server_error(monkeypatch):
+    from scripts import backfill_quote_bars as runner
+    class Client:
+        def __init__(self,error):self.error=error
+        def query(self,*a):raise self.error
+    def forbidden(*a,**kw):raise AssertionError('Must not open retry connection')
+    monkeypatch.setattr(runner.bars,'Client',forbidden)
+    error=ConnectionResetError('reset');error.add_note('Cancellation could not be confirmed')
+    with pytest.raises(ConnectionResetError):runner.cleanup_stage(Client(error),object(),'quote_stage_owned')
+    with pytest.raises(RuntimeError):runner.cleanup_stage(Client(RuntimeError('server error')),object(),'quote_stage_owned')
+
+
+def test_live_cleanup_reconciles_drop_applied_before_connection_reset():
+    if os.environ.get('QUOTE_LIVE_TEST')!='1':pytest.skip('Explicit SSD integration opt-in')
+    import uuid
+    from pathlib import Path
+    from types import SimpleNamespace
+    from scripts import backfill_quote_bars as runner
+    from scripts.run_fundamentals import Client
+    from research.mlops.env import load_env_files
+    from research.mlops.clickhouse import discover_clickhouse_env_files
+    load_env_files(discover_clickhouse_env_files(),verbose=False)
+    os.environ['QMD_CLICKHOUSE_URL']='http://192.168.1.218:18123'
+    c=Client(os.environ['QMD_CLICKHOUSE_URL']);stage='quote_stage_recovery_'+uuid.uuid4().hex
+    options=SimpleNamespace(env_file=Path('D:/TradingML/secrets/.env'),query_timeout=30,max_threads=1,max_memory_gb=2)
+    class LostDropResponse:
+        def query(self,query,label,read):
+            c.query(query,read=read)
+            raise ConnectionResetError('Injected response loss after committed DROP')
+    try:
+        c.query(f"CREATE TABLE arte.{stage} (n UInt8) ENGINE=MergeTree ORDER BY n SETTINGS storage_policy='live_market_ssd'",read=False)
+        runner.sql.verify_storage(c.query,'arte',[stage])
+        c.query(f'INSERT INTO arte.{stage} VALUES (1)',read=False)
+        runner.sql.verify_storage(c.query,'arte',[stage])
+        runner.cleanup_stage(LostDropResponse(),options,stage)
+        assert not c.query(f"SELECT name FROM system.tables WHERE database='arte' AND name='{stage}'")
+    finally:
+        c.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC',read=False);c.close()
