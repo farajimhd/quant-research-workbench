@@ -28,7 +28,7 @@ def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.c
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,EDGE_UNROLL:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     if SORTED:
         net_order=tl.load(ORDER+tl.program_id(0)//TILES)
@@ -59,7 +59,7 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
         # Most nodes use the sum path. Dispatch once per node, not once per
         # connection, while retaining identical sequential float32 arithmetic.
         if op==0 or op==7 or op==8:
-            for e in range(tl.load(EDGE_COUNTS+base+i)):
+            for e in tl.range(0,tl.load(EDGE_COUNTS+base+i),loop_unroll_factor=EDGE_UNROLL):
                 s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
                 if w!=0:
                     if s<0:
@@ -75,7 +75,7 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
                         x=tl.load(current+offset,live,0);valid=tl.load(current_known+offset,live,False)
                     z=z+x*w;ok=ok|valid
         elif op<9:  # Whole-network heads below replace these generic results.
-            for e in range(tl.load(EDGE_COUNTS+base+i)):
+            for e in tl.range(0,tl.load(EDGE_COUNTS+base+i),loop_unroll_factor=EDGE_UNROLL):
                 s=tl.load(SOURCES+(base+i)*FAN+e);w=tl.load(WEIGHTS+(base+i)*FAN+e)
                 if w!=0 or (op>=1 and op<=6):
                     if s<0:
@@ -166,7 +166,7 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
-        plan.cuda_network_order,tiles,scheduled,num_warps=warps,enable_fp_fusion=False)
+        plan.cuda_network_order,tiles,scheduled,getattr(plan,'cuda_edge_unroll',1),num_warps=warps,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
     pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,b*u,u,256)
     return result
