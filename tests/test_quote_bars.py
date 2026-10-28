@@ -198,3 +198,12 @@ def test_live_cleanup_reconciles_drop_applied_before_connection_reset():
         assert not c.query(f"SELECT name FROM system.tables WHERE database='arte' AND name='{stage}'")
     finally:
         c.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC',read=False);c.close()
+
+
+def test_quote_failure_panel_stays_open_for_resume():
+    from scripts.run_market_data_pipeline import monitor_finished
+    for status in ['running','planning','failed','interrupted']:
+        assert not monitor_finished(dict(step='quotes',status=status))
+    assert monitor_finished(dict(step='quotes',status='complete'))
+    assert not monitor_finished(dict(step='quotes',status='complete',monitor_warning='stale read'))
+    assert monitor_finished(dict(step='bars',status='failed'))

@@ -101,6 +101,15 @@ def arguments(argv=None):
     return a
 
 
+def monitor_finished(state):
+    # Keep quote failures visible and follow an operator's receipt-preserving
+    # resume in the same terminal. Other monitors retain their exit behavior.
+    if state.get('monitor_warning'):return False
+    status=state.get('status')
+    if state.get('step')=='quotes' and status in ('failed','interrupted'):return False
+    return status in ('complete','failed','interrupted')
+
+
 def monitor(a):
     from time import sleep
     from rich.console import Console
@@ -115,7 +124,7 @@ def monitor(a):
             state=None
             while True:
                 state=snapshot(a.run_dir,state);live.update(render(state,console.width,console.height),refresh=True)
-                if not state.get('monitor_warning') and state['status'] in ('complete','failed','interrupted'):break
+                if monitor_finished(state):break
                 sleep(1)
     except KeyboardInterrupt:pass
     return 0
