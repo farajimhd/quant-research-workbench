@@ -29,6 +29,19 @@ def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.c
 
 
 @tr.jit
+def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base,member,source,enabled,u,live,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr):
+    delayed=source<0;market=(source>=0)&(source<3*C)
+    state=(source>=3*C)&(source<3*C+STATES)
+    offset=tl.where(delayed,base-source-1,tl.where(market,source,tl.where(state,member*STATES+source-3*C,base+source-3*C-STATES)))
+    pointer=tl.where(delayed,OLD,tl.where(market,V,tl.where(state,POSITION_STATES,CURRENT)))
+    value=tl.load(pointer+offset*U+u,enabled&live,0)
+    known_pointer=tl.where(delayed,OLD_KNOWN,tl.where(market,VALID,CURRENT_KNOWN))
+    known_offset=tl.where(market,source%C,offset)
+    known=tl.load(known_pointer+known_offset*U+u,enabled&~state&live,False)&(~market|(source<2*C))
+    return value,known
+
+
+@tr.jit
 def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     if SORTED:
@@ -61,25 +74,19 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
         if op<9:
             ec=tl.load(EDGE_COUNTS+base+i)
             for first in range(0,ec,4):
-                edges=first+tl.arange(0,4)
-                ss=tl.load(SOURCES+(base+i)*FAN+edges,edges<ec,0)
-                ww=tl.load(WEIGHTS+(base+i)*FAN+edges,edges<ec,0)
-                enabled=(edges<ec)&((ww!=0)|((op>=1)&(op<=6)))
-                delayed=ss<0;market=(ss>=0)&(ss<3*C)
-                state=(ss>=3*C)&(ss<3*C+STATES)
-                offsets=tl.where(delayed,base-ss-1,tl.where(market,ss,tl.where(state,member*STATES+ss-3*C,base+ss-3*C-STATES)))
-                pointers=tl.where(delayed,old,tl.where(market,V,tl.where(state,POSITION_STATES,current)))
-                xx=tl.load(pointers[:,None]+offsets[:,None]*U+u[None,:],enabled[:,None]&live[None,:],0)
-                kp=tl.where(delayed,old_known,tl.where(market,VALID,current_known))
-                ko=tl.where(market,ss%C,offsets)
-                kk=tl.load(kp[:,None]+ko[:,None]*U+u[None,:],enabled[:,None]&~state[:,None]&live[None,:],False)
-                kk=kk&(~market[:,None]|(ss[:,None]<2*C))
+                values=();knowns=();weights=()
+                for k in tl.static_range(4):
+                    source=tl.load(SOURCES+(base+i)*FAN+first+k,first+k<ec,0)
+                    weight=tl.load(WEIGHTS+(base+i)*FAN+first+k,first+k<ec,0)
+                    enabled=(first+k<ec)&((weight!=0)|((op>=1)&(op<=6)))
+                    value,known=fetch_value(V,VALID,POSITION_STATES,old,old_known,current,current_known,base,member,source,enabled,u,live,U,C,STATES)
+                    values+=(value,);knowns+=(known,);weights+=(weight,)
                 for k in tl.static_range(4):
                     e=first+k
-                    w=tl.gather(ww,tl.full((1,),k,tl.int32),0).reshape(())
+                    w=weights[k]
                     if e<ec and (w!=0 or (op>=1 and op<=6)):
-                        x=tl.gather(xx,tl.full((1,BLOCK),k,tl.int32),0).reshape((BLOCK,))
-                        valid=tl.gather(kk,tl.full((1,BLOCK),k,tl.int32),0).reshape((BLOCK,))
+                        x=values[k]
+                        valid=knowns[k]
                         term=libdevice.mul_rn(x,w);ok=ok|(valid&(w!=0))
                         if op==0 or op==7 or op==8:z=libdevice.add_rn(z,term)
                         elif op==1:aggregate=tl.maximum(aggregate,term)
@@ -131,9 +138,6 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
                     if op==16:h=tl.maximum(z0,z1);ok=k0&k1
         offset=(base+i)*U+u
         tl.store(current+offset,h,live);tl.store(current_known+offset,ok,live)
-        # The edge axis can change warp ownership relative to the scalar node
-        # layout. Publish every node before another warp gathers its value.
-        tl.debug_barrier()
     tl.store(OUT+(member*5+action)*U+u,ok&(h>tl.load(THRESHOLD+net)),live)
 
     if action==0 or action==2 or action==3:

@@ -252,11 +252,13 @@ class Model:
         if active:
             for day,sample in state.get('session_paths',{}).items():
                 if day in self.job['training_days']:self.diagnostic_samples[day]=dict(sample)
-        rows=[];now=time.time()
+        rows=[];now=time.time();stopped=(self.root/'STOP').exists() or (root.parent/'exchange/STOP').exists()
         for day in self.job['training_days']:
             sample=self.diagnostic_samples.get(day,{})
             complete=bool(generation) and (root/'mutation-probe-replay/training'/f'generation-{generation:04d}'/day/'receipt.json').exists()
             status='complete' if complete else state.get('status','running') if active and day in state.get('active_sessions',[]) else 'queued'
+            if not complete and stopped:status='stopped'
+            elif status=='running' and sample.get('updated_epoch') and now-sample['updated_epoch']>15:status='STALE'
             rows.append(dict(day=day,generation=generation,status=status,progress=sample,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None))
         return rows
 
