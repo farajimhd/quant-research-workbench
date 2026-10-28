@@ -141,4 +141,3 @@ def test_batch_sql_preserves_raw_hash_before_grouping_ticker():
     assert 'cityHash64(tuple(*)) raw_hash' in q
     assert 'GROUP BY ticker,bucket_index' in q
     assert 'ORDER BY (ticker,bucket_index)' in q
-

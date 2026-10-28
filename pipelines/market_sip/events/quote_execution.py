@@ -94,4 +94,3 @@ def verify_completed(client,db,build,parent,day,rows,saved,certified,tokens,poli
             done.add(t)
         progress(len(done))
     return done
-

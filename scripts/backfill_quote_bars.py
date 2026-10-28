@@ -116,7 +116,7 @@ def run(a):
         schedule=mcal.get_calendar('XNYS').schedule(start_date=a.start_date,end_date=a.end_date)
         session_times={str(stamp.date()):(int(r.market_open.timestamp()*1e6),int(r.market_close.timestamp()*1e6)) for stamp,r in schedule.iterrows()}
         old_signal=signal.signal(signal.SIGINT,lambda *_:stop.set())
-        counts=dict(completed=0,reused=0,failed=0);profiles={};active_clients=[]
+        counts=dict(completed=0,reused=0,failed=0);profiles={};active_clients=[];verification_seconds=0.
         worker_local=threading.local();worker_clients=[]
         def guard():
             if stop.is_set() or (root/'stop.request').exists():raise InterruptedError('Graceful quote stop requested')
@@ -144,7 +144,7 @@ def run(a):
                 source=prepared['source'] if prepared else bars.checked_source_evidence(row,client.query(sql.stage_evidence('arte',stage)+(f' WHERE ticker={sql.L(ticker)}' if shared_stage else ''),'quote_source_fingerprint')[0])
                 if bars.digest([source,plan['rules'],definition['version']])!=source_hash:
                     raise ValueError('Canonical content differs from completed trade source')
-                guard();progress.worker(name,'Persist 1s / roll up 5s, 10s, 30s',day=day,detail=ticker)
+                guard();progress.worker(name,'Verify batched quote funnel' if prepared else 'Persist 1s / roll up 5s, 10s, 30s',day=day,detail=ticker)
                 if not prepared:client.query(sql.base_insert('arte',stage,build,day,ticker,attempt)+(f' AND ticker={sql.L(ticker)}' if shared_stage else ''),'quote_1s',False)
                 for parent,target in zip(sql.FRAMES,sql.FRAMES[1:]):
                     guard()
@@ -200,11 +200,11 @@ def run(a):
                 finally:
                     with mutex:
                         profiles[name]=client.profile_totals;active_clients.remove(client)
-                        done=counts['completed']+counts['reused'];elapsed=time.monotonic()-started
+                        done=counts['completed']+counts['reused'];elapsed=time.monotonic()-started;productive=max(.001,elapsed-verification_seconds)
                         progress.update(**counts,queued=max(0,len(units)-done-counts['failed']),
                             elapsed=elapsed,ticker_days_per_hour=done*3600/elapsed,
-                            new_ticker_days_per_hour=counts['completed']*3600/elapsed,
-                            eta_seconds=(len(units)-done)*elapsed/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
+                            new_ticker_days_per_hour=counts['completed']*3600/productive,
+                            eta_seconds=(len(units)-done)*productive/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
                     progress.worker(name,'Idle')
         def resilient_work(row,prior,shared_stage=None,prepared=None):
             for retry in range(3):
@@ -262,13 +262,16 @@ def run(a):
                     saved={x['ticker']:x for x in prior}
                     # Full row/hash verification in bounded grouped reads, not one
                     # network conversation per already completed ticker-day.
-                    progress.update(message=f'{day}: verify receipts, then publish only missing units')
+                    verification_started=time.monotonic()
+                    progress.update(phase='receipt_verification',message=f'{day}: verify receipts, then publish only missing units')
                     reused=set();checks=[r for r in rows if r['ticker'] in saved]
                     verifying=[pool.submit(verify_prior,day,checks[i:i+128],saved) for i in range(0,len(checks),128)]
                     for future in as_completed(verifying):
                         verified=future.result();reused.update(verified)
                         with mutex:counts['reused']+=len(verified)
                         progress.update(**counts,queued=max(0,len(units)-counts['reused']-counts['completed']))
+                    verification_seconds+=time.monotonic()-verification_started
+                    progress.update(phase='build',verification_seconds=verification_seconds)
                     remaining=[r for r in rows if r['ticker'] not in reused]
                     iterator=iter(execution.batches(remaining));pending=set()
                     while True:
@@ -279,10 +282,10 @@ def run(a):
                         if not pending:break
                         finished,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
                         for f in finished:f.result()
-                        elapsed=time.monotonic()-started;done=counts['completed']+counts['reused']
+                        elapsed=time.monotonic()-started;productive=max(.001,elapsed-verification_seconds);done=counts['completed']+counts['reused']
                         progress.update(**counts,queued=max(0,len(units)-done-counts['failed']),elapsed=elapsed,
-                            new_ticker_days_per_hour=counts['completed']*3600/elapsed,
-                            eta_seconds=(len(units)-done)*elapsed/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
+                            new_ticker_days_per_hour=counts['completed']*3600/productive,
+                            eta_seconds=(len(units)-done)*productive/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
                     guard()
             bars.save(root/'quote-completion.json',dict(request=request,counts=counts,seconds=time.monotonic()-started,
                 profiles=profiles,luld_ready=True,halt_ready=True,official_bands=False,halt_state='unknown until explicit source status'))
