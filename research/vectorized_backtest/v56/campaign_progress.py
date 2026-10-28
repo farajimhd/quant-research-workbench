@@ -140,8 +140,8 @@ class Model:
         """Immutable seal durations are loaded once; active elapsed is approximate."""
         day=Path(path).name
         if day in self.archive.data and not (Path(path)/'global').exists():
-            seconds=self.archive.data[day]['last_seconds']
-            return dict(last=seconds,elapsed=None,work=None,eta=0,generation_eta=None,rows=[],rate=None,complete=True)
+            seconds=self.archive.data[day]['last_seconds'];saved=self.read(self.bus/'observer-timings'/(day+'.json'));rows=saved.get('rows',[])
+            return dict(last=seconds,elapsed=None,work=rows[-1]['total'] if rows else None,eta=0,generation_eta=None,rows=rows,rate=None,complete=True)
         root=Path(path)/'global';done=50 if complete else int(state.get('completed_generations',0));cache=self.timing_cache.setdefault(str(root),{})
         for generation in range(1,done+1):
             if generation in cache:continue
@@ -191,6 +191,8 @@ class Model:
     def snapshot(self):
         if self.snapshot_cache and time.monotonic()-self.snapshot_cache[0]<1:return self.snapshot_cache[1]
         nodes={n:self.read(self.bus/(n+'-status.json')) for n in self.job['machines']};sessions=[]
+        for node,value in nodes.items():
+            if not value and all(d in self.archive.data for d in self.job['machines'][node]['session_days']):nodes[node]=dict(status='phase-1 complete (archived)',completed=self.job['machines'][node]['session_days'])
         stopped=(self.root/'STOP').exists() or (self.bus/'STOP').exists()
         for day in self.job['training_days']:
             node=next(n for n,m in self.job['machines'].items() if day in m['session_days']);ns=nodes[node]
@@ -454,8 +456,11 @@ def render(model,width,height):
             f"Selected by: {', '.join(r.get('immigration_categories',[]))}",f"Operators: {', '.join(r.get('operators',[]))}",f"Sessions: {', '.join(r.get('source_sessions',[]))}",f"Mix depth: {mix.get('depth','-')} | parents: {mix.get('parent_serials',r.get('parents',[]))}",
             f"Mutations: {mix.get('mutations','see sealed pedigree')} | U lists surviving descendants; founder score is never inherited."]
         origins=r.get('origins') or [o for i,o in model.origin_catalog.items() if int(r.get('origin_mask','0'),16)&(1<<i)]
-        origin_page=origins[model.detail_page*4:model.detail_page*4+4]
-        lines.append(f'Phase-1 origins: {len(origins)} | N/B pages')
+        count=2 if width<120 else 4
+        origin_page=origins[model.detail_page*count:model.detail_page*count+count]
+        if width<120:lines=lines[:3]+[lines[4]]
+        if model.day:lines=[v for v in lines if not v.startswith(('Selected by:','Mix depth:'))]
+        lines.append(f'Origin: {model.day} / phase-1 #{r.get("serial")}' if model.day else f'Phase-1 origins: {len(origins)} | N/B pages')
         lines.extend(f"{o['day']} #{o['source_serial']} | score rank {o.get('score_rank','?')} / net rank {o.get('net_rank','?')} | {o.get('selection','?')}" for o in origin_page)
         table.add_column('Session');table.add_column('Score $',justify='right');table.add_column('Net $',justify='right');table.add_column('Loss $',justify='right');table.add_column('DD $',justify='right')
         generation=r.get('last_evaluated_generation',r.get('generation',model.report().get('generation',0)))
@@ -467,7 +472,7 @@ def render(model,width,height):
         if model.day:lines=[line for line in lines if not line.startswith(('Original founder:','Sessions:','Mutations:'))]
         if r.get('serial') in data.get('ids',[]):
             index=data['ids'].index(r['serial'])
-            page_size=max(1,height-19);offset=model.detail_page*page_size
+            page_size=max(1,height-24);offset=model.detail_page*page_size
             for day,p in list(data.get('sessions',{}).items())[offset:offset+page_size]:table.add_row(day,*(number(p[k][index]) for k in ('score','net_pnl','gross_losses','drawdown')))
         elif model.day:table.add_row(model.day,*(number(r.get(k)) for k in ('score','net_pnl','gross_losses','drawdown')))
         else:table.add_row('Per-session detail unavailable','-','-','-','-')
