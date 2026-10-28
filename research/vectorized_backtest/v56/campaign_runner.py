@@ -217,7 +217,13 @@ def restart_global(job,node,root,bus,stops,status):
     status('verify-phase1-for-global-restart')
     with ThreadPoolExecutor(max_workers=2) as pool:
         cache=pool.submit(prepare_cache,job,bus,root/'phase-2/replays')
-        exports={day:load_export(bus/'sessions'/day,job,day) for day in job['training_days']}
+        from concurrent.futures import ProcessPoolExecutor
+        import multiprocessing as mp
+        from itertools import repeat
+        exports={}
+        with ProcessPoolExecutor(max_workers=2,mp_context=mp.get_context('spawn')) as readers:
+            for day,value in zip(job['training_days'],readers.map(load_export,[bus/'sessions'/d for d in job['training_days']],repeat(job),job['training_days'])):
+                exports[day]=value;status('verify-phase1-for-global-restart',day,verified_exports=len(exports))
         for day in job['training_days']:probe(job,node,day)
         from research.vectorized_backtest.v42.probes import global_probe
         p=global_probe(job['training'],job['training_days'],job['probe_root'])

@@ -4,6 +4,13 @@ from pathlib import Path
 from .progress_sessions import read_verified
 from research.vectorized_backtest.v42.publication import write_json
 
+def normalize(row,width):
+    """Discard only inactive GPU padding, never a real listing's drawdown."""
+    if 'ticker_drawdown' not in row:return row
+    values=row['ticker_drawdown']
+    if len(values)<width or any(v!=0 for v in values[width:]):raise ValueError('Nonzero or missing ticker padding')
+    return dict(row,ticker_drawdown=values[:width])
+
 def prepare(job,bus,output):
     """CPU-only preparation, bounded to two independent session transactions."""
     from concurrent.futures import ThreadPoolExecutor
@@ -14,10 +21,10 @@ def prepare(job,bus,output):
         receipt=read_verified(folder/'receipt.json',meta['files']['receipt.json'])
         if receipt['day']!=day or receipt['split']!='training' or not receipt['full_session'] or receipt['validation_opened'] or receipt['execution']!=job['execution'] or receipt['population_sha256']!=train['population_sha256']:raise ValueError('Immigration replay authority mismatch')
         if hashlib.sha256((folder/'receipt.json').read_bytes()).hexdigest()!=train['receipts'][day]['receipt_sha256']:raise ValueError('Training receipt link mismatch')
-        by_id={r['serial']:r for r in pedigree};metrics=receipt['metrics'];results={}
+        by_id={r['serial']:r for r in pedigree};metrics=receipt['metrics'];results={};width=len(receipt.get('listing_ids',[]))
         if any(len(v)!=len(train['ids']) for v in metrics.values()):raise ValueError('Source financial row alignment mismatch')
         for i,serial in enumerate(train['ids']):
-            key=by_id[serial]['program_sha256'];row={k:v[i] for k,v in metrics.items() if k!='result_reused'}
+            key=by_id[serial]['program_sha256'];row=normalize({k:v[i] for k,v in metrics.items() if k!='result_reused'},width)
             if key in results and results[key]!=row:raise ValueError('Duplicate network has conflicting financial results')
             results[key]=row
         identity=dict(source=job['source_sha256'],data=receipt['identity'],execution=job['execution'],split='training',episode_capacity=65536)
@@ -29,6 +36,7 @@ def prepare(job,bus,output):
             encoded=json.dumps(old['results'],sort_keys=True,separators=(',',':'),allow_nan=False)
             if hashlib.sha256(encoded.encode()).hexdigest()!=old['results_sha256']:raise ValueError('Prior global result integrity mismatch')
             for key,row in old['results'].items():
+                row=normalize(row,width)
                 if key in results and results[key]!=row:raise ValueError('Phase-one/global financial disagreement')
                 results[key]=row
         raw=json.dumps(results,sort_keys=True,separators=(',',':'),allow_nan=False)

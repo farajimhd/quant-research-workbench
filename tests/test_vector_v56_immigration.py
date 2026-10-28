@@ -7,6 +7,12 @@ from tempfile import TemporaryDirectory
 from research.vectorized_backtest.v56.immigration import select
 
 class ImmigrationTests(unittest.TestCase):
+    def test_only_zero_gpu_padding_is_normalized(self):
+        from research.vectorized_backtest.v56.immigration_cache import normalize
+        self.assertEqual(normalize(dict(ticker_drawdown=[4,2,0,0],net_pnl=9),2),dict(ticker_drawdown=[4,2],net_pnl=9))
+        with self.assertRaises(ValueError):normalize(dict(ticker_drawdown=[4,2,1]),2)
+        with self.assertRaises(ValueError):normalize(dict(ticker_drawdown=[4]),2)
+
     def test_disjoint_quotas_include_profit_leader_and_preserve_score_leader(self):
         ids=list(range(200));panel=dict(eligible=[True]*200,closed_positions=[1]*200,score=list(range(200)),net_pnl=list(reversed(range(200))))
         result=select(ids,panel,{i:str(i) for i in ids},policy='score75-net25-v1')
