@@ -148,6 +148,8 @@ def run(job,node):
                 evolution.resume_checkpoint=saved;evolution.run({});unit=None;status('complete')
                 write_json(root/'complete.json',dict(status='complete',session_generations=50,global_generations=50,global_complete_sha256=sha(root/'phase-2/global/complete.json'),validation='display-only',job_sha256=digest(job)))
                 return
+            if job.get('global_restart') and node=='workstation':
+                return restart_global(job,node,root,bus,stops,status)
             parallel=job['machines'][node]['session_workers']>1
             if parallel:
                 from concurrent.futures import wait,FIRST_COMPLETED
@@ -207,6 +209,24 @@ def run(job,node):
             interrupted=any((Path(p)/'STOP').exists() for p in stops) and not failed
             if not interrupted:failed.append(unit or node)
             status('interrupted' if interrupted else 'failed',unit,traceback=traceback.format_exc());raise
+
+def restart_global(job,node,root,bus,stops,status):
+    """Reuse all sealed phase one; bound CPU I/O and overlap cache preparation."""
+    from concurrent.futures import ThreadPoolExecutor
+    from .immigration_cache import prepare as prepare_cache
+    status('verify-phase1-for-global-restart')
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        cache=pool.submit(prepare_cache,job,bus,root/'phase-2/replays')
+        exports={day:load_export(bus/'sessions'/day,job,day) for day in job['training_days']}
+        for day in job['training_days']:probe(job,node,day)
+        from research.vectorized_backtest.v42.probes import global_probe
+        p=global_probe(job['training'],job['training_days'],job['probe_root'])
+        imported=cache.result()
+    write_json(root/'phase-2/immigration-reuse.json',dict(sessions=imported,financial_metrics_imported=True))
+    derived=dict(job,campaign_stage='global',initialization_probe=str(p),initialization_probe_sha256=sha(p),parent_job_sha256=digest(job),promotion_exports={d:e['export_sha256'] for d,e in exports.items()})
+    status('global-stage','global');Evolution(derived,node,root/'phase-2',job['global_session_workers'],stops).run(exports)
+    status('complete');write_json(root/'complete.json',dict(status='complete',global_generations=50,job_sha256=digest(job)))
+
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--job',type=Path,required=True);p.add_argument('--node',choices=('laptop','workstation'),required=True);a=p.parse_args();job=json.loads(a.job.read_bytes())

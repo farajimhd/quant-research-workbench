@@ -7,13 +7,15 @@ from .genome import Individual
 from research.vectorized_backtest.v42.distributed_assets import sha,copy_verified
 from research.vectorized_backtest.v42.publication import write_json
 
-def records(folder,job,day):
+def records(folder,job,day,selection_policy=None,observer_root=None):
+    observer_root=observer_root or (Path(job["transport"])/"observer" if job.get("global_restart") else None)
+    selection_policy=selection_policy or job.get("immigration_policy", "score-only")
     folder=Path(folder);meta=json.loads((folder/'export.json').read_bytes())
     if meta['job_sha256']!=digest(job):
         from .resume_authority import export_job
         previous=export_job(job,day,meta)
         if sha(folder/'export.json')!=job['resume_transition']['exports'][day]:raise ValueError('Predecessor export digest changed')
-        return records(folder,previous,day)
+        return records(folder,previous,day,selection_policy,observer_root)
     if meta['day']!=day or meta['job_sha256']!=digest(job):raise ValueError('Export campaign/day changed')
     for name,expected in meta['files'].items():
         if Path(name).name!=name or sha(folder/name)!=expected:raise ValueError('Export evidence changed: '+name)
@@ -34,13 +36,15 @@ def records(folder,job,day):
     from .objectives import Objective
     if serializable(aggregate([receipt['metrics']],Objective(**job['objective'])))!=training['panel']:raise ValueError('Session source scores do not reconcile')
     panel=training['panel'];ids=training['ids'];pedigree={x['serial']:x for x in read('pedigree.json')};seen=set();out=[]
-    for i in sorted(range(len(ids)),key=lambda i:(-panel['score'][i],ids[i])):
-        if not panel['eligible'][i] or panel['closed_positions'][i]<=0:continue
-        m=Individual.restore(population['population'][i]);key=program_key(m)
-        if key in seen:continue
+    from .immigration import select
+    selected=select(ids,panel,{s:r['program_sha256'] for s,r in pedigree.items()},job['expert_capacity_per_session'],selection_policy)
+    if observer_root is not None:
+        nodes={str(serial):sum(len(n['nodes']) for n in payload['networks'].values()) for serial,payload in zip(ids,population['population'])}
+        write_json(Path(observer_root)/(day+'.json'),dict(export_sha256=sha(folder/'export.json'),nodes=nodes))
+    for entry in selected:
+        i=entry['index'];m=Individual.restore(population['population'][i]);key=program_key(m)
         if m.case_owner is not None or pedigree[ids[i]]['program_sha256']!=key:raise ValueError('Promoted pedigree mismatch')
-        seen.add(key);out.append(dict(payload=m.payload(),program_sha256=key,serial=ids[i],generation=state['completed'],score=panel['score'][i],pedigree=pedigree[ids[i]]))
-        if len(out)==job['expert_capacity_per_session']:break
+        out.append(dict(payload=m.payload(),program_sha256=key,serial=ids[i],generation=state['completed'],score=panel['score'][i],pedigree=pedigree[ids[i]],origin=entry))
     return dict(day=day,source_sha256=job['source_sha256'],objective=job['objective'],records=out,export_sha256=sha(folder/'export.json'),validation_opened=False)
 
 def publish(source,target,job,day):

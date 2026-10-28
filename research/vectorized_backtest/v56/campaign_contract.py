@@ -19,6 +19,8 @@ def check_structure(job,train,valid):
     if job['objective']!=dict(drawdown_weight=2.,loss_weight=1.):raise ValueError('V56 cost changed')
     e=Execution(**job['execution']).validate()
     if e.risk_limits_enabled or not e.risk_protection:raise ValueError('Admission limits off; financial diagnostics retained')
+    if job.get('global_restart') and (job.get('immigration_policy')!='score75-net25-v1' or job.get('resume_transition',{}).get('global_checkpoint')):raise ValueError('Global restart must use a fresh score/profit pool')
+    if job.get('immigration_policy','score-only') not in ('score-only','score75-net25-v1'):raise ValueError('Unknown immigration policy')
     if job['expert_capacity_per_session']!=128 or job['mutation_probe_size']!=32:raise ValueError('Expert/diagnostic envelope changed')
     if set(job['session_probe_sha256'])!=set(train):raise ValueError('Every training session needs a pinned probe')
     if 'founder_reuse' in job:raise ValueError('Full run must not import pilot financial results')

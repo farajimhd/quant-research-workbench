@@ -84,10 +84,12 @@ class Model:
         self.job=job;self.root=Path(job['campaign']);self.cache={};self.reports={};self.last_error=None;self.timing_cache={};self.strength_cache={}
         self.global_data=None;self.global_loading=None;self.global_error=None;self.global_thread=None;self.observer_stop=threading.Event();self.global_attempt=0.;self.global_day=None;self.global_role=None;self.summary_mode='combined'
         self.bus=remote(job['transport'],job['workstation_share'])
+        from .progress_archive import Archive
+        self.archive=Archive(self.bus,job.get('training_days',[]),self.observer_stop,job.get('global_restart',False))
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
         self.replay_samples={};self.replay_sample_scope=None
-        self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
+        self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
     def remember(self):
         self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation=self.navigation[-32:]
@@ -103,10 +105,12 @@ class Model:
             return self.cache.get(key,(None,default or {}))[1]
     def session_root(self,day):
         node=next(n for n,m in self.job['machines'].items() if day in m['session_days'])
-        path=self.root/'sessions'/day
+        path=Path(self.job.get('phase1_campaign',self.root))/'sessions'/day
         return path if node=='laptop' else remote(path,self.job['workstation_share'])
     def target(self):return self.session_root(self.day) if self.day else remote(self.root/'phase-2',self.job['workstation_share'])
-    def status(self):return self.read(self.target()/'full-status.json')
+    def session_state(self,day):
+        return self.archive.data[day]['status'] if day in self.archive.data else self.read(self.session_root(day)/'full-status.json')
+    def status(self):return self.session_state(self.day) if self.day else self.read(self.target()/'full-status.json')
     def close(self):self.observer_stop.set()
     def strength(self,path,state):
         from .progress_sessions import strength
@@ -129,6 +133,10 @@ class Model:
         return self.global_data
     def timing(self,path,state,running=False,complete=False):
         """Immutable seal durations are loaded once; active elapsed is approximate."""
+        day=Path(path).name
+        if day in self.archive.data and not (Path(path)/'global').exists():
+            seconds=self.archive.data[day]['last_seconds']
+            return dict(last=seconds,elapsed=None,work=None,eta=0,generation_eta=None,rows=[],rate=None,complete=True)
         root=Path(path)/'global';done=50 if complete else int(state.get('completed_generations',0));cache=self.timing_cache.setdefault(str(root),{})
         for generation in range(1,done+1):
             if generation in cache:continue
@@ -158,6 +166,7 @@ class Model:
             eta=generation_eta+max(0,50-done-1)*rate
         return dict(last=cache.get(done,(None,None))[0],elapsed=elapsed,work=total if rows else None,eta=eta,generation_eta=generation_eta,rows=rows,rate=rate,complete=complete)
     def report(self):
+        if self.day and self.day in self.archive.data:return self.archive.data[self.day]['report']
         if self.global_day:
             data=self.live_data if self.live_data and str(self.global_role)+':'+self.global_day in self.live_data['panels'] else self.global_data
             if data:
@@ -180,7 +189,7 @@ class Model:
         stopped=(self.root/'STOP').exists() or (self.bus/'STOP').exists()
         for day in self.job['training_days']:
             node=next(n for n,m in self.job['machines'].items() if day in m['session_days']);ns=nodes[node]
-            s=self.read(self.session_root(day)/'full-status.json');done=s.get('completed_generations',0)
+            s=self.session_state(day);done=s.get('completed_generations',0)
             complete=day in ns.get('completed',[]) or (self.bus/'sessions'/day/'export.json').exists()
             assigned=day in ns.get('active_sessions',[]) or ns.get('active')==day
             active=assigned and ns.get('status')=='session-stage'
@@ -235,6 +244,9 @@ class Model:
                     ids,token=population_metadata(root/'global'/f'generation-{generation:04d}'/'population.json')
                     path=root/'global'/f'generation-{generation:04d}'/'evaluated-pedigree.json'
                     records=json.loads(path.read_bytes()) if path.exists() else None
+                    if not self.origin_catalog:
+                        founders=json.loads((root/'global/generation-0001/evaluated-pedigree.json').read_bytes())
+                        self.origin_catalog={r['founder_index']:r['origins'][0] for r in founders if r.get('operation')=='session-expert' and r.get('origins')}
                     for key in pending:
                         if self.observer_stop.is_set():return
                         role,day=key.split(':',1)
@@ -268,8 +280,8 @@ class Model:
             return rows
         if self.view=='timings':return self.timing(self.target(),self.status())['rows']
         if self.view=='reproduction':return diagnostics(self.report().get('next_generation_reproduction') or {})
-        if self.view in ('operators','families','methods'):
-            category={'operators':'operator','families':'family','methods':'founder-method'}[self.view]
+        if self.view in ('operators','families','methods','origins','immigration'):
+            category={'operators':'operator','families':'family','methods':'founder-method','origins':'origin-session','immigration':'immigration'}[self.view]
             return sorted_rows([g for g in self.report().get('groups',[]) if g['category']==category],GROUP_SORT[self.sort],(self.sort not in ('gross_losses','drawdown','nodes'))!=self.reverse)
         if self.view=='global_ranking':
             from .full_common import ranking
@@ -307,9 +319,9 @@ class Model:
         if key=='d':self.view='timings';self.selection=0;self.global_day=None;return
         if key in ('h','\x1b'):self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;self.navigation=[];return
         if key=='g':self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
-        if key in ('o','f','m','a','i'):
+        if key in ('o','f','m','a','i','p','e'):
             self.remember()
-            self.view={'o':'operators','f':'families','m':'methods','a':'global_ranking' if self.global_day else 'ranking','i':'founders'}[key];self.selection=0;self.filter=None;return
+            self.view={'p':'origins','e':'immigration','o':'operators','f':'families','m':'methods','a':'global_ranking' if self.global_day else 'ranking','i':'founders'}[key];self.selection=0;self.filter=None;return
         if key=='t':self.validation=not self.validation;return
         if key=='s':
             fields=['score','net_pnl','gross_losses','drawdown','nodes'];self.sort=fields[(fields.index(self.sort)+1)%len(fields)];self.selection=0;return
@@ -324,8 +336,8 @@ class Model:
             self.remember()
             if self.view=='overview':self.day=row['day'];self.view='ranking';self.selection=0;self.filter=None;self.validation=False
             elif self.view=='global_sessions':self.global_day=row['day'];self.global_role=row['role'];self.view='global_ranking';self.selection=0
-            elif self.view in ('operators','families','methods'):
-                self.filter=({'operators':'operators','families':'founder_groups','methods':'founder_methods'}[self.view],row['group']);self.view='candidates';self.selection=0
+            elif self.view in ('operators','families','methods','origins','immigration'):
+                self.filter=({'operators':'operators','families':'founder_groups','methods':'founder_methods','origins':'source_sessions','immigration':'immigration_categories'}[self.view],row['group']);self.view='candidates';self.selection=0
             else:self.selected=row;self.view='detail';self.detail_page=0
 
 def render(model,width,height):
@@ -344,7 +356,7 @@ def render(model,width,height):
         title+=f' | {done}/24 complete';note=stage+'\n'+note
         compact=width<120
         columns=('Session','Generations','Replay','Last','Current','Work','ETA') if compact else ('Session','Host','Generations','Replay','Last gen','Current gen','Session work','Session ETA','Activity')
-        if model.summary_mode=='combined':columns=('Session','Generations','Replay','Top net $','Median $','Win %') if compact else ('Session','Host','Generations','Replay','Last','Current','Work','ETA','Best score','Top net $','Median $','Top DD $','Win %','Profit %')
+        if model.summary_mode=='combined':columns=('Session','Generations','Replay','Max net $','Median $','Win %') if compact else ('Session','Host','Generations','Replay','Last','Current','Work','ETA','Best score','Max net $','Median $','Max-net DD $','Win %','Profit %')
         for h in columns:table.add_column(h,no_wrap=True)
         for i,r in enumerate(rows[start:start+limit],start):
             p=r['progress'];activity=r['stage']+(f" {p.get('completed_seconds',0)}/{p.get('total_seconds',0)} clocks" if p else '')
@@ -366,7 +378,7 @@ def render(model,width,height):
     elif model.view=='global_sessions':
         rows=model.rows();compact=width<120
         timing=model.summary_mode=='timing'
-        columns=('Session','Split','Replay','Time','Top net $','DD $') if compact else ('Session','Split','Replay','Done/total','Time','ETA','Batches','New/reused','Stage') if timing else ('Session','Split','Replay','Time','Gen','Best score','Top net $','Median net $','Top DD $','Median DD $','Win %','Profit %','Candidates')
+        columns=('Session','Split','Replay','Time','Max net $','DD $') if compact else ('Session','Split','Replay','Done/total','Time','ETA','Batches','New/reused','Stage') if timing else ('Session','Split','Replay','Time','Gen','Best score','Max net $','Median net $','Max-net DD $','Median DD $','Win %','Profit %','Candidates')
         for h in columns:table.add_column(h,no_wrap=True,**({'max_width':18} if h=='Replay' else {}))
         for i,r in enumerate(rows[start:start+limit],start):
             s=r.get('strength',{});metrics=[number(s.get(k)) for k in ('top_net','median_net','top_drawdown')]
@@ -391,7 +403,7 @@ def render(model,width,height):
             note+=f"\nCandidates {counts['done']}/{counts['total'] or '?'} | new {sample.get('evaluated_candidates','?')} / reused {sample.get('reused_candidates','?')} | batches {sample.get('completed_local_batches',0)}/{sample.get('total_local_batches','?')} | ETA {duration(counts['eta'])}"
             caption+=' | ~ last observed update'
         caption+=' | C: timings / strength | VAL*: display-only | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
-    elif model.view in ('operators','families','methods'):
+    elif model.view in ('operators','families','methods','origins','immigration'):
         report=model.report();rows=model.rows()
         compact=width<120
         columns=('Group','Eval','Keep','Best score','Median net','Beat parent') if compact else ('Group','Eval','Keep','Best score','Median net','Change score','Loss $','DD $','Nodes','Beat parent')
@@ -434,8 +446,12 @@ def render(model,width,height):
             f"Score {number(r.get('score'))} | Net {number(r.get('net_pnl'))} | Loss {number(r.get('gross_losses'))} | DD {number(r.get('drawdown'))}",
             f"Closed trades {number(trades)} | Wins {number(wins)} | Win rate {number(win_rate)}% | Nodes {number(r.get('nodes'))}",
             f"Original founder: {r.get('original_founder','unavailable')} | families: {', '.join(r.get('founder_groups',[]))}",
-            f"Operators: {', '.join(r.get('operators',[]))}",f"Sessions: {', '.join(r.get('source_sessions',[]))}",f"Mix depth: {mix.get('depth','-')} | parents: {mix.get('parent_serials',r.get('parents',[]))}",
+            f"Selected by: {', '.join(r.get('immigration_categories',[]))}",f"Operators: {', '.join(r.get('operators',[]))}",f"Sessions: {', '.join(r.get('source_sessions',[]))}",f"Mix depth: {mix.get('depth','-')} | parents: {mix.get('parent_serials',r.get('parents',[]))}",
             f"Mutations: {mix.get('mutations','see sealed pedigree')} | U lists surviving descendants; founder score is never inherited."]
+        origins=r.get('origins') or [o for i,o in model.origin_catalog.items() if int(r.get('origin_mask','0'),16)&(1<<i)]
+        origin_page=origins[model.detail_page*4:model.detail_page*4+4]
+        lines.append(f'Phase-1 origins: {len(origins)} | N/B pages')
+        lines.extend(f"{o['day']} #{o['source_serial']} | score rank {o.get('score_rank','?')} / net rank {o.get('net_rank','?')} | {o.get('selection','?')}" for o in origin_page)
         table.add_column('Session');table.add_column('Score $',justify='right');table.add_column('Net $',justify='right');table.add_column('Loss $',justify='right');table.add_column('DD $',justify='right')
         generation=r.get('last_evaluated_generation',r.get('generation',model.report().get('generation',0)))
         data=model.read(model.target()/'global'/f'generation-{generation:04d}'/'session-metrics.json')
@@ -478,7 +494,7 @@ def render(model,width,height):
     layout['head'].update(header)
     names={'ranking':'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
     layout['body'].update(Panel(table,title=names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
-    layout['keys'].update(Text('1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups by O: crossover | F: founder family | M: mixing method\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G global | C columns | D timings | L lineage | Q close'))
+    layout['keys'].update(Text('1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G global | C columns | D timings | L lineage | Q close'))
     return layout
 
 def main():

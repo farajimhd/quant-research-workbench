@@ -31,6 +31,8 @@ class CompactPedigree:
             for record in parents_meta:mask |= int(record.get('founder_mask','0'),16)
             if mask:
                 self.records[int(serial)].update(founder_mask=hex(mask),global_founder=False,
+                    origin_mask=hex(__import__('functools').reduce(int.__or__,(int(r.get('origin_mask','0'),16) for r in parents_meta),0)),
+                    immigration_categories=sorted({g for r in parents_meta for g in r.get('immigration_categories',[])}),
                     founder_groups=sorted({g for r in parents_meta for g in r.get('founder_groups',[])}),
                     founder_methods=sorted({g for r in parents_meta for g in r.get('founder_methods',[])}),
                     source_sessions=sorted({g for r in parents_meta for g in r.get('source_sessions',[])}))

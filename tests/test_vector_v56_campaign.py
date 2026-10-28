@@ -38,7 +38,7 @@ class CampaignTests(unittest.TestCase):
         from tests.test_vector_v56_reproduction import members
         pop=members(2);token=digest([m.payload() for m in pop]);seen=[]
         class Future:
-            def result(self):return {'timings':[],'day':TRAIN[0],'clocks':2}
+            def result(self):return {'timings':[],'day':TRAIN[0],'clocks':2,'wall_seconds':0.01}
         class Pool:
             def submit(self,fn,day,next_day,payload,generation,got,width):
                 seen.append((payload,got));return Future()
@@ -106,7 +106,7 @@ class ProcessFixtureWorker:
         if digest(payload)!=token:raise ValueError('Changed population transport')
         self.config['fixture_barrier'].wait(20)
         started=time.time();time.sleep(.02)
-        return {'day':day,'clocks':3,'timings':[{'pid':os.getpid(),'lane':self.lane,'started':started,'finished':time.time()}]}
+        return {'day':day,'clocks':3,'wall_seconds':time.time()-started,'timings':[{'pid':os.getpid(),'lane':self.lane,'started':started,'finished':time.time()}]}
     def close(self):pass
 
 def initialize_process_fixture(cfg,events,lane):

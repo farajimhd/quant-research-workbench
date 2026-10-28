@@ -30,6 +30,8 @@ def seed(exports,job,probe,progress=None):
         for day,row,m in chosen:
             old=row['pedigree'];serial=mapping[(day,old['serial'])]
             rec=dict(old,serial=serial,generation=1,operation='session-expert',parents=[mapping[(day,int(i))] if i>=0 else -1 for i in old['parents']],ancestors=[[mapping[(day,int(i))],d] for i,d in old['ancestors']],source_day=day,source_serial=old['serial'],source_generation=row['generation'])
+            rec['origins']=[dict(day=day,source_serial=old['serial'],source_generation=row['generation'],**row.get('origin',{}))]
+            rec['immigration_categories']=[row.get('origin',{}).get('selection','score')]
             rec['label']=f"G001-{serial:06d}-session-{day}-{row['serial']}"
             members.append(m);records.append(rec);ids.append(serial);sources.append(dict(day=day,serial=row['serial'],score=row['score'],export_sha256=exports[day]['export_sha256']))
         pedigree=CompactPedigree(3,records,len(mapping));expert_count=len(members)
@@ -38,7 +40,7 @@ def seed(exports,job,probe,progress=None):
             by_day={day:[] for day in sorted(exports)}
             for index,(day,row,m) in enumerate(chosen):
                 serial=ids[index];by_day[day].append((serial,m));rec=pedigree.records[serial]
-                rec.update(global_founder=True,founder_index=index,founder_mask=hex(1<<index),founder_groups=['session-expert'],founder_methods=['session-expert'],source_sessions=[day])
+                rec.update(origin_mask=hex(1<<index),global_founder=True,founder_index=index,founder_mask=hex(1<<index),founder_groups=['session-expert'],founder_methods=['session-expert'],source_sessions=[day])
             fresh,blind,report=reproduce(by_day,job['seed'],progress=progress);families=['blind-reproduction']*len(fresh)
         else:
             from research.vectorized_backtest.v42.initial_population import initialize_random
@@ -58,6 +60,9 @@ def seed(exports,job,probe,progress=None):
             parents=[pedigree.records[int(parent)] for parent in meta['parent_serials']]
             if not parents:raise ValueError('Blind offspring requires donor ancestry')
             record=pedigree.records[int(serial)]
+            record['origin_mask']=hex(__import__('functools').reduce(int.__or__,(int(parent.get('origin_mask','0'),16) for parent in parents),0))
+            record['origins']=[o for parent in parents for o in parent.get('origins',[])]
+            record['immigration_categories']=sorted({v for parent in parents for v in parent.get('immigration_categories',[])})
             parts=record['label'].split('-');record['label']='-'.join([parts[0],*parts[3:]])
             annotate(record,parents)
     else:

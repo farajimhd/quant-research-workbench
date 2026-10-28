@@ -18,6 +18,7 @@ def summarize(ids,panel,records,retained=None,generation=0):
         r=by_id[int(serial)];tags=operators(r);families=r.get('founder_groups',[]);methods=r.get('founder_methods',[])
         row=dict(serial=int(serial),generation=generation,operators=tags,founder_groups=families,founder_methods=methods,
             original_founder=r.get('global_founder',False),founder_index=r.get('founder_index'),founder_mask=r.get('founder_mask','0x0'),
+            origin_mask=r.get('origin_mask','0x0'),origins=r.get('origins',[]),immigration_categories=r.get('immigration_categories',[]),
             source_sessions=r.get('source_sessions',[]),parents=r.get('parents',[]),operation=r.get('operation'),nodes=r.get('node_count'),
             mix=r.get('blind_mix'),eligible=bool(panel['eligible'][i]),retained=None if retained is None else int(serial) in retained,
             **{k:float(panel[k][i]) for k in FIELDS})
@@ -27,7 +28,7 @@ def summarize(ids,panel,records,retained=None,generation=0):
             if len(comparisons)!=len(parents):comparisons=[]
         row['beat_best_parent']=row['score']>max(comparisons) if comparisons else None
         rows.append(row)
-        categories=[('operator',tag) for tag in tags]+[('family',tag) for tag in families]+[('founder-method',tag) for tag in methods]
+        categories=[('operator',tag) for tag in tags]+[('family',tag) for tag in families]+[('founder-method',tag) for tag in methods]+[('origin-session',tag) for tag in row['source_sessions']]+[('immigration',tag) for tag in row['immigration_categories']]
         for category,tag in categories:groups.setdefault((category,tag),[]).append(row)
     summaries=[]
     for (category,tag),members in sorted(groups.items()):

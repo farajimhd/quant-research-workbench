@@ -7,8 +7,9 @@ def strength(rows):
     if not valid:return {}
     if any(not math.isfinite(float(r[k])) for r in valid for k in ('score','net_pnl','drawdown')):raise ValueError('Nonfinite session summary')
     top=max(valid,key=lambda r:(r['net_pnl'],r['score'],-r['serial']))
+    best=max(valid,key=lambda r:(r['score'],-r['serial']))
     trades=top['closed_positions'];wins=top.get('winning_positions')
-    return dict(top_net=top['net_pnl'],median_net=statistics.median(r['net_pnl'] for r in valid),top_drawdown=top['drawdown'],
+    return dict(best_score_net=best['net_pnl'],best_score_drawdown=best['drawdown'],best_score_serial=best['serial'],top_net=top['net_pnl'],median_net=statistics.median(r['net_pnl'] for r in valid),top_drawdown=top['drawdown'],
         top_win_rate=100*wins/trades if wins is not None and trades else None,best_score=max(r['score'] for r in valid),
         profitable_fraction=100*sum(r['net_pnl']>0 for r in valid)/len(valid),median_drawdown=statistics.median(r['drawdown'] for r in valid),candidates=len(valid),top_serial=top['serial'])
 
@@ -49,6 +50,9 @@ def load_global(job,root,generation,stop,progress=lambda done,total:None):
     from .objectives import Objective
     from research.vectorized_backtest.v42.distributed_assets import remote
     root=Path(root);folder=root/f'generation-{generation:04d}';seal=read_verified(folder/'complete.json');panels={};summaries={};done=0
+    from .evolution_report import summarize
+    records=read_verified(folder/'evaluated-pedigree.json',seal['evaluated_pedigree_sha256']) if seal.get('evaluated_pedigree_sha256') else None
+    reports={}
     total=len(job['training_days'])+len(job['validation_days'])
     for role in ('training','validation'):
         evidence=read_verified(folder/(role+'.json'),seal[role+'_sha256'])
@@ -62,11 +66,13 @@ def load_global(job,root,generation,stop,progress=lambda done,total:None):
             if receipt['day']!=day or receipt['split']!=role or receipt['population_sha256']!=evidence['population_sha256'] or not receipt['full_session'] or receipt['validation_opened']!=(role=='validation'):raise ValueError('Global session receipt identity changed')
             panel=aggregate([receipt['metrics']],Objective(**job['objective']))
             if len(panel['score'])!=len(ids):raise ValueError('Global session candidate alignment changed')
-            key=role+':'+day;panels[key]=dict(ids=ids,panel=panel);summary=strength(ranking(panel,ids))
+            key=role+':'+day
+            if records is not None:reports[key]=summarize(ids,panel,records,generation=generation)
+            panels[key]=dict(ids=ids,panel=panel);summary=strength(ranking(panel,ids))
             timing_path=path.parent/'timings.json';seconds=None
             if timing_path.exists():
                 timings=read_verified(timing_path)
                 if timings:seconds=sum(float(row.get(k,0)) for row in timings for k in ('load_seconds','rule_seconds','replay_seconds'))
             summaries[key]=dict(strength=summary,batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0)
             done+=1;progress(done,total)
-    return dict(generation=generation,panels=panels,summaries=summaries)
+    return dict(generation=generation,panels=panels,summaries=summaries,reports=reports)
