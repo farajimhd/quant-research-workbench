@@ -30,6 +30,7 @@ def checkpoint_contract(job,train,valid):
     if job.get('campaign_stage'):
         contract['campaign_context']={k:job.get(k) for k in ('campaign_stage','parent_job_sha256','initialization_probe_sha256','promotion_exports')}
     if job.get('immigration_policy'):contract['immigration_policy']=job['immigration_policy']
+    if job.get('selection',{}).get('profit_fresh_fraction'):contract['profit_fresh_fraction']=job['selection']['profit_fresh_fraction']
     return contract
 
 

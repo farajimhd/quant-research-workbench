@@ -89,9 +89,9 @@ class Model:
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
         self.replay_samples={};self.replay_sample_scope=None
-        self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
+        self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
     def remember(self):
-        self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','selection','filter','selected','validation','detail_page','sort','reverse')})
+        self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','aggregate_mode','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation=self.navigation[-32:]
     def read(self,path,default=None):
         path=Path(path);key=str(path)
@@ -171,6 +171,10 @@ class Model:
             eta=generation_eta+max(0,50-done-1)*rate
         return dict(last=cache.get(done,(None,None))[0],elapsed=elapsed,work=total if rows else None,eta=eta,generation_eta=generation_eta,rows=rows,rate=rate,complete=complete)
     def report(self):
+        if self.aggregate_mode:
+            live=self.live_snapshot(self.global_replays());sealed=self.global_snapshot()
+            data=live if live and live.get('aggregate') and (not sealed or live['generation']>=sealed['generation']) else sealed
+            return data.get('aggregate',{}) if data else {}
         if self.day and self.day in self.archive.data:return self.archive.data[self.day]['report']
         if self.global_day:
             data=self.live_data if self.live_data and str(self.global_role)+':'+self.global_day in self.live_data['panels'] else self.global_data
@@ -267,10 +271,40 @@ class Model:
                             report.update(scope=key,live=True)
                             for row in report['candidates']:row['metric_scope']=key
                             data['reports'][key]=report
+                        if records is not None:
+                            from .progress_global import combined
+                            data['aggregate']=combined(data,records,len(self.job['training_days']))
                     self.live_error=None
                 except Exception as error:self.live_error=str(error)
             self.live_thread=threading.Thread(target=collect,daemon=True);self.live_thread.start()
         return data
+
+    def timing_rows(self):
+        rows=[dict(label=f"Generation {r['generation']}",state='sealed',elapsed=r['seconds'],eta=0,reuse='-',**r) for r in self.timing(self.target(),self.status())['rows']]
+        if self.day:return rows
+        live=self.global_replays();self.live_snapshot(live)
+        for key,value in live.items():
+            if self.global_day and key!=str(self.global_role)+':'+self.global_day:continue
+            p=dict(value['progress'])
+            if self.live_data and key in self.live_data.get('summaries',{}):p={**self.live_data['summaries'][key].get('replay_details',{}),**p}
+            n=replay_numbers(dict(value,progress=p))
+            rows.append(dict(label=key,state=value['status'],elapsed=n['elapsed'],eta=n['eta'],reuse=f"{p.get('evaluated_candidates','?')}/{p.get('reused_candidates','?')}",generation=value['generation']))
+        return rows
+
+    def lineage_rows(self):
+        row=self.selected or {};mix=row.get('mix') or {};path=mix.get('provenance_file');rows=[]
+        if row.get('source_day'):rows.append(dict(step='Phase-1 source',parents=f"{row['source_day']} #{row.get('source_serial')}",operator='unchanged expert',depth=str(row.get('source_generation','-'))))
+        parents=[str(p) for p in row.get('parents',[]) if p>=0]
+        rows.append(dict(step=f"Candidate {row.get('serial')}",parents=', '.join(parents) or 'fresh / no parents',operator=row.get('operation','unknown'),depth='birth'))
+        for serial,distance in row.get('ancestors',[]):rows.append(dict(step='Ancestor',parents=str(serial),operator='parent link',depth=str(distance)))
+        for action in (row.get('crossover') or {}).get('actions',[]):rows.append(dict(step='Crossover action',parents=str(action.get('stage',action.get('action','-'))),operator=str(action.get('join',action.get('mode','-'))),depth='-'))
+        for edit in row.get('mutation_fields',[]):rows.append(dict(step='Mutation',parents=str(edit.get('stage','-')),operator=str(edit.get('field','-')),depth='-'))
+        if path:
+            detail=self.read(remote(path,self.job['workstation_share']))
+            from .identity import digest
+            if mix.get('provenance_sha256') and digest(detail)!=mix['provenance_sha256']:raise ValueError('Blind lineage provenance changed')
+            rows.extend(dict(step=str(v['id']),parents=', '.join(map(str,v['parents'])),operator=v['mode'],depth=str(v['depth'])) for v in detail.get('steps',[]))
+        return rows
 
     def rows(self):
         if self.view=='overview':return self.snapshot()[1]
@@ -285,7 +319,7 @@ class Model:
                         live[key]['progress']={**summary.get('replay_details',{}),**live[key]['progress']}
                     rows.append(dict(day=day,role=role,generation=source['generation'] if source else 0,replay=live[key],**summary))
             return rows
-        if self.view=='timings':return self.timing(self.target(),self.status())['rows']
+        if self.view=='timings':return self.timing_rows()
         if self.view=='reproduction':return diagnostics(self.report().get('next_generation_reproduction') or {})
         if self.view in ('operators','families','methods','origins','immigration'):
             category={'operators':'operator','families':'family','methods':'founder-method','origins':'origin-session','immigration':'immigration'}[self.view]
@@ -298,6 +332,7 @@ class Model:
             values=data['panels'][key];report=self.report();details={r['serial']:r for r in report.get('candidates',[])}
             rows=[dict(details.get(r['serial'],{}),**r,generation=data['generation'],metric_scope=key) for r in ranking(values['panel'],values['ids'])]
         elif self.view=='founders':rows=list(self.read(self.target()/'global/founder-results.json').values())
+        elif self.view=='ranking' and self.aggregate_mode:rows=self.report().get('candidates',[])
         elif self.view=='ranking':
             details={r['serial']:r for r in self.report().get('candidates',[])}
             rows=[dict(details.get(r['serial'],{}),**r) for r in self.status().get('validation_ranking' if self.validation else 'training_ranking',[])]
@@ -312,6 +347,7 @@ class Model:
     def key(self,key,height=40):
         if key in ('1','2'):
             self.remember();self.filter=None;self.selection=0
+            if not self.day and not self.global_day:self.aggregate_mode=True
             self.view=('global_ranking' if self.global_day else 'ranking') if key=='1' else 'operators'
             return
         if key=='back':
@@ -320,16 +356,25 @@ class Model:
             return
         if self.view in ('detail','lineage') and key in ('n','b'):
             self.detail_page=max(0,self.detail_page+(1 if key=='n' else -1));return
-        if key=='l' and self.selected:self.remember();self.view='lineage';self.detail_page=0;return
+        if key=='l':
+            if self.view not in ('detail','lineage'):
+                rows=self.rows()
+                if not rows or 'serial' not in rows[min(self.selection,len(rows)-1)]:return
+                self.selected=rows[min(self.selection,len(rows)-1)]
+            if self.selected:self.remember();self.view='lineage';self.detail_page=0
+            return
         if key=='v':self.view='reproduction';self.selection=0;return
         if key=='c':self.summary_mode='timing' if self.summary_mode=='combined' else 'combined';return
-        if key=='d':self.view='timings';self.selection=0;self.global_day=None;return
-        if key in ('h','\x1b'):self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;self.navigation=[];return
-        if key=='g':self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
+        if key=='d':self.remember();self.view='timings';self.selection=0;return
+        if key in ('h','\x1b'):self.aggregate_mode=False;self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;self.navigation=[];return
+        if key=='g':self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
         if key in ('o','f','m','a','i','p','e'):
             self.remember()
+            if not self.day and not self.global_day:self.aggregate_mode=True
             self.view={'p':'origins','e':'immigration','o':'operators','f':'families','m':'methods','a':'global_ranking' if self.global_day else 'ranking','i':'founders'}[key];self.selection=0;self.filter=None;return
-        if key=='t':self.validation=not self.validation;return
+        if key=='t':
+            if not self.aggregate_mode:self.validation=not self.validation
+            return
         if key=='s':
             fields=['score','net_pnl','gross_losses','drawdown','nodes'];self.sort=fields[(fields.index(self.sort)+1)%len(fields)];self.selection=0;return
         if key=='r':self.reverse=not self.reverse;return
@@ -342,16 +387,18 @@ class Model:
             row=rows[min(self.selection,len(rows)-1)]
             self.remember()
             if self.view=='overview':self.day=row['day'];self.view='ranking';self.selection=0;self.filter=None;self.validation=False
-            elif self.view=='global_sessions':self.global_day=row['day'];self.global_role=row['role'];self.view='global_ranking';self.selection=0
+            elif self.view=='global_sessions':self.aggregate_mode=False;self.global_day=row['day'];self.global_role=row['role'];self.view='global_ranking';self.selection=0
             elif self.view in ('operators','families','methods','origins','immigration'):
                 self.filter=({'operators':'operators','families':'founder_groups','methods':'founder_methods','origins':'source_sessions','immigration':'immigration_categories'}[self.view],row['group']);self.view='candidates';self.selection=0
             else:self.selected=row;self.view='detail';self.detail_page=0
 
 def render(model,width,height):
-    head_size=9 if model.view=='global_sessions' else 6
+    head_size=9 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V56 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     note='Score: P&L - losses - 2 x DD | risk caps OFF | validation display-only'
+    if model.aggregate_mode:
+        report=model.report();note=f"GLOBAL TRAINING: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
     table=Table(expand=True,padding=(0,0));limit=max(1,height-head_size-9);start=model.selection//limit*limit
     if model.view=='overview':
         nodes,rows,stopped=model.snapshot();done=sum(r['state']=='complete' for r in rows)
@@ -409,7 +456,7 @@ def render(model,width,height):
             counts=replay_numbers(live)
             note+=f"\nCandidates {counts['done']}/{counts['total'] or '?'} | new {sample.get('evaluated_candidates','?')} / reused {sample.get('reused_candidates','?')} | batches {sample.get('completed_local_batches',0)}/{sample.get('total_local_batches','?')} | ETA {duration(counts['eta'])}"
             caption+=' | ~ last observed update'
-        caption+=' | C: timings / strength | VAL*: display-only | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
+        caption+=' | A: all candidates | C: timings / strength | VAL*: display-only | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
     elif model.view in ('operators','families','methods','origins','immigration'):
         report=model.report();rows=model.rows()
         compact=width<120
@@ -425,10 +472,10 @@ def render(model,width,height):
             if model.day and model.view in ('families','methods'):caption='Founder families and mixing methods apply to global founders. O: session crossover comparison | Esc: back'
     elif model.view=='timings':
         rows=model.rows()
-        for h in ('Generation','Duration','Cumulative work','Timing period'):table.add_column(h,no_wrap=True)
-        for i,r in enumerate(rows[start:start+limit],start):table.add_row(str(r['generation']),duration(r['seconds']),duration(r['total']),'cache reuse' if r['cached_replay'] else 'current code' if r['current_source'] else 'before update',style=SELECTED if i==model.selection else None)
-        if not rows:table.add_row('No sealed generation','-','-','-')
-        caption='Measured generation wall times; excludes between-generation pauses and initial setup.'
+        for h in ('Generation / session','State','Elapsed','ETA','New/reused'):table.add_column(h,no_wrap=True)
+        for i,r in enumerate(rows[start:start+limit],start):table.add_row(r['label'],r['state'],duration(r['elapsed']),duration(r['eta']),r['reuse'],style=SELECTED if i==model.selection else None)
+        if not rows:table.add_row('No measured timing yet','pending','-','-','-')
+        caption='Sealed generation times + live session replay times | Esc: return | N/B page'
     elif model.view=='reproduction':
         report=model.report();items=model.rows()
         table.add_column('Reproduction diagnostic');table.add_column('Observed value',justify='right')
@@ -436,13 +483,10 @@ def render(model,width,height):
         if not items:table.add_row('No reproduction evidence','unavailable')
         caption=f"Successor creation after measured generation {report.get('generation',0)}; not the evaluated population's scores."
     elif model.view=='lineage':
-        row=model.selected or {};mix=row.get('mix') or {};path=mix.get('provenance_file')
-        detail=model.read(remote(path,model.job['workstation_share'])) if path else {}
-        for h in ('Step','Parents','Operator','Depth'):table.add_column(h)
-        steps=detail.get('steps',[]);offset=model.detail_page*limit
-        for step in steps[offset:offset+limit]:table.add_row(step['id'],', '.join(step['parents']),step['mode'],str(step['depth']))
-        if not steps:table.add_row('No blind mixing provenance','See candidate birth metadata','-','-')
-        caption=f"Candidate {row.get('serial')} | {len(steps)} recorded joins | page {model.detail_page+1} | N/B page"
+        rows=model.lineage_rows();offset=model.detail_page*limit
+        for h in ('Step','Parents / source','Operation','Distance / generation'):table.add_column(h)
+        for r in rows[offset:offset+limit]:table.add_row(r['step'],r['parents'],r['operator'],r['depth'])
+        caption=f"Candidate {(model.selected or {}).get('serial')} | {len(rows)} lineage records | N/B page | Esc: back"
     elif model.view=='detail':
         r=dict(model.selected or {})
         if 'winning_positions' not in r:
@@ -465,8 +509,9 @@ def render(model,width,height):
         table.add_column('Session');table.add_column('Score $',justify='right');table.add_column('Net $',justify='right');table.add_column('Loss $',justify='right');table.add_column('DD $',justify='right')
         generation=r.get('last_evaluated_generation',r.get('generation',model.report().get('generation',0)))
         data=model.read(model.target()/'global'/f'generation-{generation:04d}'/'session-metrics.json')
-        if not model.day and model.global_data and model.global_data['generation']==generation:
-            panels=model.global_data['panels'];first=next(iter(panels.values()),None)
+        detail_data=model.live_data if model.live_data and model.live_data['generation']==generation else model.global_data
+        if not model.day and detail_data and detail_data['generation']==generation:
+            panels=detail_data['panels'];first=next(iter(panels.values()),None)
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
         if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if r['metric_scope'].startswith('validation:') else '')
         if model.day:lines=[line for line in lines if not line.startswith(('Original founder:','Sessions:','Mutations:'))]
@@ -478,6 +523,17 @@ def render(model,width,height):
         else:table.add_row('Per-session detail unavailable','-','-','-','-')
         from rich.console import Group
         table=Group(Text('\n'.join(lines)),table);caption='One candidate: metrics and ancestry | Esc: back | L: lineage | - = unavailable'
+    elif model.aggregate_mode:
+        rows=model.rows();report=model.report();compact=width<120
+        columns=('Serial','Global score $','Global net $','DD sum $','Nodes') if compact else ('Serial','Global score $','Global net $','Loss $','DD sum $','Worst DD $','Win %','Trades','Nodes','Origins','Technique')
+        for h in columns:table.add_column(h,justify='right',no_wrap=True)
+        for i,r in enumerate(rows[start:start+limit],start):
+            cells=[str(r['serial']),number(r['score']),number(r['net_pnl'])]
+            if compact:cells.extend([number(r['drawdown']),str(r.get('nodes','-'))])
+            else:cells.extend([number(r['gross_losses']),number(r['drawdown']),number(r.get('worst_drawdown')),number(r.get('win_rate')),str(int(r['closed_positions'])),str(r.get('nodes','-')),str(len(r.get('source_sessions',[]))),', '.join(r.get('operators',[]))])
+            table.add_row(*cells,style=SELECTED if i==model.selection else None)
+        if not rows:table.add_row('Loading',*['-']*(len(columns)-1))
+        caption=f"GLOBAL TRAINING | {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'} | {len(rows)} candidates | sort {model.sort} | Enter detail | L lineage"
     else:
         rows=model.rows()
         compact=width<120;fields=('score','net_pnl','gross_losses','drawdown') if compact else ('score','net_pnl','gross_losses','drawdown','nodes')
@@ -502,11 +558,11 @@ def render(model,width,height):
         if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     layout['head'].update(header)
-    names={'ranking':'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
+    names={'ranking':'ALL GLOBAL CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
     layout['body'].update(Panel(table,title=names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
     if width<120:
-        keys='1 candidates | 2 groups | Enter open | Esc back | Q close\nO crossover | F family | M method | P source | E immigration\nArrows select | S sort | R reverse | N/B page | L lineage\nH overview | G global | C columns | D timings'
-    else:keys='1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G global | C columns | D timings | L lineage | Q close'
+        keys='1 candidates | 2 groups | Enter open | Esc back | Q close\nO crossover | F family | M method | P source | E immigration\nArrows select | S sort | R reverse | N/B page | L lineage\nH overview | G sessions | A all global | C columns | D timings'
+    else:keys='1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G sessions | A all global | C columns | D timings | L lineage | Q close'
     layout['keys'].update(Text(keys))
     return layout
 

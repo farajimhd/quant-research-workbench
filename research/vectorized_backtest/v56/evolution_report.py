@@ -18,6 +18,7 @@ def summarize(ids,panel,records,retained=None,generation=0):
         r=by_id[int(serial)];tags=operators(r);families=r.get('founder_groups',[]);methods=r.get('founder_methods',[])
         row=dict(serial=int(serial),generation=generation,operators=tags,founder_groups=families,founder_methods=methods,
             original_founder=r.get('global_founder',False),founder_index=r.get('founder_index'),founder_mask=r.get('founder_mask','0x0'),
+            ancestors=r.get('ancestors',[]),source_day=r.get('source_day'),source_serial=r.get('source_serial'),source_generation=r.get('source_generation'),mutation_fields=r.get('mutation_fields',[]),crossover=r.get('crossover'),
             origin_mask=r.get('origin_mask','0x0'),origins=r.get('origins',[]),immigration_categories=r.get('immigration_categories',[]),
             source_sessions=r.get('source_sessions',[]),parents=r.get('parents',[]),operation=r.get('operation'),nodes=r.get('node_count'),
             mix=r.get('blind_mix'),eligible=bool(panel['eligible'][i]),retained=None if retained is None else int(serial) in retained,

@@ -19,22 +19,33 @@ from research.vectorized_backtest.v56.identity import digest
 
 
 class ReproductionTests(unittest.TestCase):
-    def reproduce(self, scores, feasible=True, active=True):
+    def reproduce(self, scores, feasible=True, active=True, profit=False):
         pop = members(len(scores))
         pedigree = CompactPedigree(3)
         ids = pedigree.birth(pop, 1, [(-1, -1)] * len(pop), ['fresh'] * len(pop))
         values = np.asarray(scores, float)
         rng = np.random.default_rng(2021)
         observed=metrics(10,len(pop))
+        if profit:observed['net_pnl']=list(map(float,range(len(pop))))
         if not active:observed['closed_positions']=[0]*len(pop)
         with patch('research.vectorized_backtest.v56.initial_population.immigrant',
                    side_effect=lambda rng, probe: sample(rng, 1)[0]), \
              patch('research.vectorized_backtest.v56.whole_network.fits', return_value=feasible):
-            result, newids, telemetry = next_population(rng, pop, ids, pedigree, [], 2,
+            from research.vectorized_backtest.v56.lineage import Selection
+            result, newids, telemetry = next_population(rng, pop, ids, pedigree, [], 2,Selection(profit_fresh_fraction=.25 if profit else 0.),
                 session_values=values[None], session_eligible=np.ones((1, len(pop)), bool),
                 global_values=values, global_eligible=np.ones(len(pop), bool),
                 target_size=40, ordered=[observed], probe={})
         return result, newids, telemetry, pedigree, rng.bit_generator.state
+
+    def test_profit_leaders_replace_only_fresh_slots(self):
+        result,ids,t,ped,_=self.reproduce(list(range(100,60,-1)),profit=True)
+        self.assertEqual(len(result),40)
+        self.assertEqual(ids[:6].tolist(),[0,1,2,3,39,38])
+        self.assertEqual((t['elites'],t['profit_elites'],t['baseline_fresh'],t['requested_crossovers']),(4,2,6,28))
+        self.assertEqual(t['profit_elite_ids'],[39,38])
+        from research.vectorized_backtest.v56.allocation import budgets
+        b=budgets(1024);self.assertEqual((b['elites'],int(b['fresh']*.25),b['fresh']-int(b['fresh']*.25),b['crossovers']),(102,51,154,717))
 
     def test_repeatability_all_four_modes_and_unmutated_crossovers(self):
         a = self.reproduce(list(range(100, 60, -1)))

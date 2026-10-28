@@ -75,4 +75,8 @@ def load_global(job,root,generation,stop,progress=lambda done,total:None):
                 if timings:seconds=sum(float(row.get(k,0)) for row in timings for k in ('load_seconds','rule_seconds','replay_seconds'))
             summaries[key]=dict(strength=summary,batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0)
             done+=1;progress(done,total)
-    return dict(generation=generation,panels=panels,summaries=summaries,reports=reports)
+    result=dict(generation=generation,panels=panels,summaries=summaries,reports=reports)
+    if records is not None:
+        from .progress_global import combined
+        result['aggregate']=combined(result,records,len(job['training_days']))
+    return result

@@ -96,6 +96,17 @@ class UpdateTests(unittest.TestCase):
             bad=dict(job,objective='changed')
             with self.assertRaises(ValueError):predecessor(bad)
 
+    def test_profit_retention_transition_is_explicit_and_narrow(self):
+        old={k:'same' for k in ('training_sha256','validation_sha256','objective','execution','population','initial_multiplier','seed','phase1_generations','phase2_generations','ticker_parent_fraction','batch_size','asset_sha256')}
+        old.update(selection={'mutation_min':.2},training_days=['day'],validation_days=['valid'],source_sha256='old')
+        with TemporaryDirectory(dir=RUNTIME) as tmp:
+            path=Path(tmp)/'old.json';write_json(path,old)
+            transition=dict(predecessor_job=str(path),predecessor_job_sha256=sha(path),profit_retention=dict(from_fraction=0.,to_fraction=.25))
+            job=dict(old,selection=dict(old['selection'],profit_fresh_fraction=.25),resume_transition=transition)
+            self.assertEqual(predecessor(job),old)
+            with self.assertRaises(ValueError):predecessor(dict(job,resume_transition={k:v for k,v in transition.items() if k!='profit_retention'}))
+            with self.assertRaises(ValueError):predecessor(dict(job,selection=dict(job['selection'],mutation_min=.3)))
+
     def test_global_resume_uses_checkpoint_but_checks_export_and_probe_bindings(self):
         from research.vectorized_backtest.v56.resume_authority import global_resume
         with TemporaryDirectory(dir=RUNTIME) as tmp:

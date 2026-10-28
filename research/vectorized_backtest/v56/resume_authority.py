@@ -11,7 +11,9 @@ def predecessor(job):
     if sha(path)!=transition['predecessor_job_sha256']:raise ValueError('Predecessor job changed')
     old=json.loads(path.read_bytes())
     for key in ('training_sha256','validation_sha256','objective','execution','selection','population','initial_multiplier','seed','phase1_generations','phase2_generations','ticker_parent_fraction','batch_size','asset_sha256'):
-        if job[key]!=old[key]:raise ValueError('Resume changed campaign semantics: '+key)
+        if job[key]!=old[key]:
+            authorized=key=='selection' and isinstance(old['selection'],dict) and transition.get('profit_retention')==dict(from_fraction=old['selection'].get('profit_fresh_fraction',0.),to_fraction=.25) and job[key]==dict(old[key],profit_fresh_fraction=.25)
+            if not authorized:raise ValueError('Resume changed campaign semantics: '+key)
     if job.get('campaign_stage')=='session':
         if len(job['training_days'])!=1 or job['training_days'][0] not in old['training_days'] or job['validation_days']:raise ValueError('Invalid session projection')
     elif job['training_days']!=old['training_days'] or job['validation_days']!=old['validation_days']:raise ValueError('Resume changed splits')
@@ -34,6 +36,7 @@ def accept_checkpoint(job,path,saved,expected):
     bound=job['resume_transition'].get('global_checkpoint') if job.get('campaign_stage')=='global' else job['resume_transition']['checkpoints'].get(day)
     if not bound or sha(path)!=bound['checkpoint_sha256'] or saved['state_sha256']!=bound['state_sha256'] or digest(saved['contract'])!=bound['contract_sha256']:raise ValueError('Saved checkpoint differs from transition receipt')
     actual=dict(saved['contract']);actual['source_sha256']=expected['source_sha256'];actual['campaign_context']=dict(actual['campaign_context'],parent_job_sha256=expected['campaign_context']['parent_job_sha256'])
+    if job['resume_transition'].get('profit_retention') and expected.get('profit_fresh_fraction')==.25:actual['profit_fresh_fraction']=.25
     if actual!=expected:raise ValueError('Resume transition changed more than source/parent campaign identity')
 
 def export_job(job,day,meta):

@@ -29,9 +29,11 @@ class Selection:
     mutation_min:float=.20
     mutation_max:float=.85
 
+    profit_fresh_fraction:float=0.
     behavior_pairing:bool=True
 
     def validate(self):
+        if self.profit_fresh_fraction not in (0.,.25):raise ValueError('Unsupported profit retention fraction')
         if type(self.behavior_pairing) is not bool:raise ValueError('Invalid pairing settings')
         if (self.global_fraction,self.global_elite_fraction,self.global_fresh_fraction,self.local_fresh_fraction,self.champion_partners)!=(1.,.1,.2,.2,0):raise ValueError('V42 requires approved global-only reproduction budgets')
         if not 1<=self.ancestry_generations<=8 or not 1<=self.mate_attempts<=32:raise ValueError('Invalid bounded ancestry/mating')
@@ -160,7 +162,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     groups={c:p for c,p in groups.items() if p}
     allocation=quotas(cases,groups,target,generation) if isolation else {'SESSION':target}
     remaining=dict(allocation)
-    budget=budgets(target);elite_budget=budget['elites'];fresh_budget=budget['fresh'];cross_budget=target-elite_budget-fresh_budget
+    budget=budgets(target);elite_budget=budget['elites'];profit_budget=int(budget['fresh']*config.profit_fresh_fraction);fresh_budget=budget['fresh']-profit_budget;cross_budget=budget['crossovers']
     order=round_robin(groups,generation) if isolation else groups.get('SESSION',[])
     selected=[];keys=set()
     for i in order:
@@ -168,6 +170,13 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
         if key in keys or remaining[case]<=0:continue
         selected.append(i);keys.add(key);remaining[case]-=1
         if len(selected)==elite_budget:break
+    score_selected=list(selected);profit_selected=[]
+    net=np.asarray([m['net_pnl'] for m in ordered],float).sum(axis=0) if profit_budget else np.zeros(n)
+    for i in sorted(groups.get('SESSION',[]),key=lambda i:(-net[i],ids[i])):
+        if len(profit_selected)>=profit_budget:break
+        key=program_key(population[i])
+        if key in keys:continue
+        selected.append(i);profit_selected.append(i);keys.add(key);remaining['SESSION']-=1
     species=Species() if species is None else species;species.assign(population,ids,values,ordered,generation-1,eligible=valid)
     mates=MateIndex(pedigree,ids);root_key=generation_root(rng)
     children=[];parents=[];ops=[];metadata=[];duplicates=0;fallbacks=0;invalid_crossovers=0;whole_rejections={}
@@ -188,7 +197,8 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
         keys.add(key);children.append(m);parents.append((-1,-1));ops.append('fresh');remaining[case]-=1
         metadata.append(dict(route=reason,case=case if isolation else None,case_owner=m.case_owner))
     for _ in range(fresh_budget):fresh('fresh')
-    for _ in range(elite_budget-len(selected)):fresh('insufficient-active-elites')
+    for _ in range(elite_budget-len(score_selected)):fresh('insufficient-active-elites')
+    for _ in range(profit_budget-len(profit_selected)):fresh('insufficient-active-profit-leaders')
     def parent_mutation(pool,case,slot,reason):
         if not pool:
             fresh('no-active-eligible-parent',case);return
@@ -310,7 +320,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     assert len(result)==target
     telemetry=dict(species.telemetry,selection_policy='isolated-case-score' if isolation else 'unified-session-score',
         ticker_parent_fraction=.25,ticker_specialist_tickers=len(local_pools),ticker_parent_selections=local_parent_selections,global_parent_selections=global_parent_selections,active_parent_candidates=int((valid&active).sum()),reproduction_policy='v56-ranked-active-risk-cost-v2',
-        requested_elites=elite_budget,elites=len(selected),baseline_fresh=fresh_budget,requested_crossovers=cross_budget,
+        requested_elites=elite_budget,elites=len(score_selected),profit_elites=len(profit_selected),requested_profit_elites=profit_budget,score_elite_ids=[int(ids[i]) for i in score_selected],profit_elite_ids=[int(ids[i]) for i in profit_selected],baseline_fresh=fresh_budget,requested_crossovers=cross_budget,
         fresh_candidates=sum(o.startswith('fresh') for o in ops),crossovers=sum('crossover' in o for o in ops),
         parent_mutations=ops.count('parent_mutation'),post_crossover_mutation=False,
         mutations=len(chosen)+ops.count('parent_mutation'),mutation_rate=rate,structural_mutations=structural+sum(m.get('structural_mutation',False) for o,m in zip(ops,metadata) if o=='parent_mutation'),rejected_duplicates=duplicates,
