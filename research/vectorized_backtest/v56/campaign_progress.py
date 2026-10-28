@@ -69,6 +69,7 @@ class Model:
         self.bus=remote(job['transport'],job['workstation_share'])
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
+        self.replay_samples={};self.replay_sample_scope=None
     def remember(self):
         self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation=self.navigation[-32:]
@@ -170,11 +171,34 @@ class Model:
             timing=self.timing(self.session_root(day),s,running=active and state=='running' and not stopped,complete=complete)
             sessions.append(dict(day=day,node=node,done=50 if complete else done,state=state,stage=stage,progress=progress,timing=timing,strength=self.strength(self.session_root(day),s)))
         result=(nodes,sessions,stopped);self.snapshot_cache=(time.monotonic(),result);return result
+    def global_replays(self):
+        """Observe bounded progress samples; receipts, not samples, prove completion."""
+        root=remote(self.root/'phase-2',self.job['workstation_share']);state=self.read(root/'full-status.json')
+        sealed=state.get('completed_generations',0);generation=sealed
+        if (root/'global'/f'generation-{sealed+1:04d}'/'population.json').exists():generation=sealed+1
+        scope=(state.get('owner',{}).get('creation_time'),generation)
+        if self.replay_sample_scope!=scope:self.replay_samples={};self.replay_sample_scope=scope
+        stage=state.get('stage','');role='training' if stage=='Global training' else 'validation' if stage=='Phase 2 validation: display only' else None
+        event=state.get('worker_progress',{});day=event.get('day');now=time.time()
+        if role and day in self.job[role+'_days']:
+            self.replay_samples[role+':'+day]=dict(event)
+        rows={}
+        for split in ('training','validation'):
+            for day in self.job[split+'_days']:
+                key=split+':'+day;sample=self.replay_samples.get(key,{})
+                complete=bool(generation) and (root/'replays'/split/f'generation-{generation:04d}'/day/'receipt.json').exists()
+                active=role==split and day in state.get('active_sessions',[])
+                status='complete' if complete else state.get('status','running') if active else 'queued'
+                if active and status=='running' and not sample:sample=dict(stage='Active / awaiting update')
+                rows[key]=dict(generation=generation,status=status,progress=sample,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None)
+        return rows
+
     def rows(self):
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
             data=self.global_snapshot();generation=data['generation'] if data else 0
-            return [dict(day=day,role=role,generation=generation,**(data['summaries'].get(role+':'+day,{}) if data else {})) for role in ('training','validation') for day in self.job[role+'_days']]
+            live=self.global_replays()
+            return [dict(day=day,role=role,generation=generation,replay=live[role+':'+day],**(data['summaries'].get(role+':'+day,{}) if data else {})) for role in ('training','validation') for day in self.job[role+'_days']]
         if self.view=='timings':return self.timing(self.target(),self.status())['rows']
         if self.view=='reproduction':return diagnostics(self.report().get('next_generation_reproduction') or {})
         if self.view in ('operators','families','methods'):
@@ -224,7 +248,7 @@ class Model:
         if key=='r':self.reverse=not self.reverse;return
         if key=='u' and self.selected and self.selected.get('founder_index') is not None:
             self.filter=('descendant',self.selected['founder_index']);self.view='candidates';self.selection=0;return
-        rows=self.rows();step=max(1,height-15)
+        rows=self.rows();step=max(1,height-(16 if self.view=='global_sessions' else 15))
         if key in ('home','end'):self.selection=0 if key=='home' else max(0,len(rows)-1);return
         if key in ('j','k','n','b'):self.selection=max(0,min(len(rows)-1,self.selection+{'j':1,'k':-1,'n':step,'b':-step}[key]));return
         if key in ('\r','\n') and rows and self.view not in ('reproduction','detail','lineage','timings'):
@@ -237,10 +261,11 @@ class Model:
             else:self.selected=row;self.view='detail';self.detail_page=0
 
 def render(model,width,height):
-    layout=Layout();layout.split_column(Layout(name='head',size=6),Layout(name='body'),Layout(name='keys',size=4))
+    head_size=7 if model.view=='global_sessions' else 6
+    layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V56 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     note='Score: P&L - losses - 2 x DD | risk caps OFF | validation display-only'
-    table=Table(expand=True,padding=(0,0));limit=max(1,height-15);start=model.selection//limit*limit
+    table=Table(expand=True,padding=(0,0));limit=max(1,height-head_size-9);start=model.selection//limit*limit
     if model.view=='overview':
         nodes,rows,stopped=model.snapshot();done=sum(r['state']=='complete' for r in rows)
         stage='STOPPED' if stopped else ' | '.join(f"{n}: {s.get('status','unavailable')} ({len(s.get('active_sessions',[])) if s.get('status')=='session-stage' else 0} active)" for n,s in nodes.items())
@@ -272,17 +297,24 @@ def render(model,width,height):
             note+='\n'+selected['node']+' | '+selected['state']+' | '+selected['stage']
     elif model.view=='global_sessions':
         rows=model.rows();compact=width<120
-        columns=('Session','Split','Top net $','Median $','Top DD $','Win %') if compact else ('Session','Split','Gen','Best score','Top net $','Median net $','Top DD $','Median DD $','Win %','Profit %','Candidates','Replay work')
-        for h in columns:table.add_column(h,no_wrap=True)
+        columns=('Session','Split','Replay','Top net $','Median $','DD $') if compact else ('Session','Split','Replay','Gen','Best score','Top net $','Median net $','Top DD $','Median DD $','Win %','Profit %','Candidates','Replay work')
+        for h in columns:table.add_column(h,no_wrap=True,**({'max_width':18} if h=='Replay' else {}))
         for i,r in enumerate(rows[start:start+limit],start):
             s=r.get('strength',{});metrics=[number(s.get(k)) for k in ('top_net','median_net','top_drawdown')]
-            cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train']
-            cells+= [*metrics,number(s.get('top_win_rate'))] if compact else [str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-')),'cached' if r.get('cached') else duration(r.get('batch_seconds'))]
+            live=r['replay'];bar=replay_progress(live['progress'],live['status'])
+            if live['status']=='running' and live['age'] is not None and live['age']>10:bar.append(' ~',style='bright_yellow')
+            cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar]
+            cells+= metrics if compact else [str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-')),'cached' if r.get('cached') else duration(r.get('batch_seconds'))]
             table.add_row(*cells,style=SELECTED if i==model.selection else 'bright_magenta' if r['role']=='validation' else 'bright_cyan')
         loaded=model.global_data;caption=f"Sealed global generation {loaded['generation']}" if loaded else 'Global results not yet evaluated'
         if model.global_loading:caption+=f' | loading {model.global_loading[1]}/{model.global_loading[2]} sessions'
         if model.global_error:caption+=' | evidence unavailable: '+model.global_error
         caption+=f' | rows {start+1}-{min(start+limit,len(rows))}/{len(rows)}'
+        if rows:
+            selected=rows[min(model.selection,len(rows)-1)];live=selected['replay'];sample=live['progress']
+            note+='\nReplay gen '+str(live['generation'] or '-')+' | '+selected['day']+' | '+live['status']+' | '+sample.get('stage','')
+            if live['age'] is not None:note+=' | update '+duration(live['age'])+' ago'
+            caption+=' | ~ last observed update'
         caption+=' | VAL*: display-only | eligible candidates | DD / Win %: top-profit candidate | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
     elif model.view in ('operators','families','methods'):
         report=model.report();rows=model.rows()

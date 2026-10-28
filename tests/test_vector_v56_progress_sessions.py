@@ -12,6 +12,25 @@ ROOT=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v56/qualific
 ROOT.mkdir(parents=True,exist_ok=True)
 
 class SessionTests(unittest.TestCase):
+    def test_live_replay_samples_receipts_and_generation_reset(self):
+        with TemporaryDirectory(dir=ROOT) as tmp,patch('research.vectorized_backtest.v56.campaign_progress.remote',side_effect=lambda p,s:Path(p)):
+            root=Path(tmp);folder=root/'phase-2/global/generation-0001';folder.mkdir(parents=True);(folder/'population.json').write_text('{}')
+            job=dict(campaign=tmp,transport=tmp,workstation_share='fixture',training_days=['a','b'],validation_days=['c'],machines={})
+            model=Model(job);state=dict(completed_generations=0,status='running',stage='Global training',active_sessions=['a','b'],owner=dict(creation_time=1))
+            with patch.object(model,'read',return_value=state):
+                state['worker_progress']=dict(day='a',completed_local_batches=1,total_local_batches=6,completed_seconds=50,total_seconds=100,updated_epoch=1)
+                first=model.global_replays();self.assertEqual(first['training:a']['progress']['completed_seconds'],50)
+                self.assertEqual(first['training:b']['progress']['stage'],'Active / awaiting update')
+                state['worker_progress']=dict(day='b',stage='Load session',updated_epoch=2)
+                self.assertEqual(model.global_replays()['training:a']['progress']['completed_seconds'],50)
+                receipt=root/'phase-2/replays/training/generation-0001/a/receipt.json';receipt.parent.mkdir(parents=True);receipt.write_text('{}')
+                self.assertEqual(model.global_replays()['training:a']['status'],'complete')
+                self.assertEqual(model.global_replays()['validation:c']['status'],'queued')
+                next_folder=folder.with_name('generation-0002');next_folder.mkdir();(next_folder/'population.json').write_text('{}')
+                state.update(completed_generations=1,worker_progress={})
+                self.assertEqual(model.global_replays()['training:a']['progress']['stage'],'Active / awaiting update')
+                self.assertEqual(model.global_replays()['training:a']['generation'],2)
+
     def test_sealed_train_validation_summary_navigation_and_integrity(self):
         with TemporaryDirectory(dir=ROOT) as tmp:
             root=Path(tmp);folder=root/'phase-2/global/generation-0001';folder.mkdir(parents=True)
