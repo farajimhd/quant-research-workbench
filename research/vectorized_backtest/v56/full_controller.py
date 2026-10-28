@@ -144,6 +144,9 @@ class Controller:
             from .evolution_report import expose
             expose(root,folder)
             self.publish(phase=2,generation=generation,ranking_generation=generation,completed_generations=generation,training_ranking=ranking(panel,source_ids),validation_ranking=ranking(validation_panel,source_ids) if valid else [],validation_display_only=True)
+            # Finished episode ledgers have sealed receipts. Do not retain the
+            # previous generation's training/validation lists during new replay.
+            del ordered,validation,validation_result,training_receipts,validation_receipts,work,result
         write_json(root/'complete.json',dict(status='complete',checkpoint_sha256=sha(cp),completed=self.job['phase2_generations'],training_sessions=len(train),validation_sessions=len(valid),validation_independent=True))
 
     def run(self):

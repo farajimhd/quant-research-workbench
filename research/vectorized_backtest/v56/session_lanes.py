@@ -21,7 +21,8 @@ import torch
 from .data import SessionData
 from .evaluator import Execution, PopulationPrograms, replay_cohort
 from .genome import Individual
-from research.vectorized_backtest.v42.io_pipeline import Publisher, TransferStaging, prepare_host
+from research.vectorized_backtest.v42.io_pipeline import Publisher, prepare_host
+from .prefetch_pipeline import TransferStaging,NextSessionPrefetch,prepare_next,read_results,fingerprint
 from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
 from research.vectorized_backtest.v42.runtime import configure_caches
 
@@ -60,8 +61,7 @@ class Worker:
         self.staging=TransferStaging();self.loader=ThreadPoolExecutor(max_workers=1)
         from collections import OrderedDict
         self.plans=OrderedDict();self.plan_generation=None;self.plan_limit=config.get("plan_limit",2)
-        from research.vectorized_backtest.v42.prefetch import CPUOnlyPrefetch
-        self.prefetch=CPUOnlyPrefetch(self.loader,reserve_gib=config.get('host_reserve_gib',128.),
+        self.prefetch=NextSessionPrefetch(self.loader,reserve_gib=config.get('host_reserve_gib',128.),
             admission_gib=config.get('host_admission_gib',32.),report=self.prefetch_report)
         self.loads=0;self.uploads=0
         self.resident_results=None
@@ -106,6 +106,9 @@ class Worker:
         from research.vectorized_backtest.v42.publication import write_json
         write_json(Path(c['output'])/'quote-coverage'/f'{day}.json',dict(item.quote_coverage,input_identity=item.identity))
         return item
+
+    def read_ahead(self,day):
+        return prepare_next(self.read_host(day),Path(self.config['output'])/'result-cache'/(day+'.json'),self.config)
 
     def release_inactive_sessions(self):
         """Only between completed replays; evict recomputable data, not results."""
@@ -168,21 +171,23 @@ class Worker:
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
         identity=dict(source=c['source_sha256'],data=item.identity,execution=c['execution'],
                       split=c.get('split','training'),episode_capacity=c.get('episode_capacity',65536))
-        keys=prepared_keys if prepared_keys is not None else [v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)];cached={}
+        keys=prepared_keys if prepared_keys is not None else [v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)];cached={};cache_prefetched=False
+        transfer_prefetched=bool(getattr(item,'prefetched_transfer',None))
         resident=c.get('retain_session_residency',False) and c.get('reuse_results',True)
         if resident and self.resident_results is not None:
             prior_identity,cached=self.resident_results
             if prior_identity!=identity:raise ValueError('Resident result cache contract changed')
             cached=dict(cached)
         elif cache_path.exists() and c.get('reuse_results',True):
-            record=json.loads(cache_path.read_text(encoding='utf-8-sig'))
+            ahead=getattr(item,'prefetched_results',None)
+            cache_prefetched=bool(ahead and ahead[0]==str(cache_path) and ahead[1]==fingerprint(cache_path))
+            record=ahead[2] if cache_prefetched else read_results(cache_path)[1]
+            item.prefetched_results=None
             if record['identity']!=identity:
                 # Only an exact, archived cache receipt may cross the explicitly
                 # authorized source transition. Every numerical/input field stays equal.
                 from .resume_authority import accept_cache
                 accept_cache(c,cache_path,record,identity)
-            raw=json.dumps(record['results'],sort_keys=True,separators=(',',':'),allow_nan=False)
-            if sha256(raw.encode()).hexdigest()!=record['results_sha256']:raise ValueError('Result cache integrity mismatch')
             cached=record['results']
         missing=[i for i,k in enumerate(keys) if k not in cached]
         from .replay_batches import plan_batches
@@ -213,7 +218,7 @@ class Worker:
                     if old_day!=day:
                         old=self.host.pop(old_day);old.close();del old
                 gc.collect()
-                self.prefetch.start(next_day,self.read_host)
+                self.prefetch.start(next_day,self.read_ahead)
             with Publisher() as publisher,ThreadPoolExecutor(max_workers=1,thread_name_prefix='v56-results') as results_pool:
                 offset=0;pending_result=None;pending_timing=None
                 for batch_index,selection in enumerate(batches):
@@ -250,6 +255,7 @@ class Worker:
                     def replay_progress(done,total):
                         self.check_stop()
                         self.prefetch.release_under_pressure()
+                        if c.get('host_prefetch',False):self.prefetch.reconsider(next_day,self.read_ahead)
                         self.emit(day,stage='Replay positions',candidate_offset=offset,completed_seconds=done,total_seconds=total)
                     gate_options={'execution_gate':self.execution_gate} if self.execution_gate is not None else {}
                     gate_wait=self.execution_gate.wait_seconds if self.execution_gate is not None else 0.
@@ -267,7 +273,7 @@ class Worker:
                     timing=dict(day=day,offset=offset,candidates=actual,padded_candidates=len(members),
                         market_cached=market_cached,worker_load_count=self.loads,worker_upload_count=self.uploads,
                         configured_batch_size=c['batch_size'],maximum_replay_batch_size=ceiling,
-                        load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,rule_seconds=rule_seconds,
+                        load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,result_cache_prefetched=cache_prefetched,transfer_prefetched=transfer_prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
                     if plan.plan is not None:
                         timing.update({k:getattr(plan.plan,k)-v for k,v in prior.items()})
