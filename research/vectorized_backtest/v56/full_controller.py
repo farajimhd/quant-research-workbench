@@ -46,7 +46,8 @@ class Controller:
         contract=checkpoint_contract(self.job,train,valid)
         cp=root/'checkpoint.json';species=Species();completed=0;seals={}
         if cp.exists():
-            saved=read(cp)
+            saved=getattr(self,'resume_checkpoint',None)
+            if saved is None:saved=read(cp)
             from .resume_authority import accept_checkpoint
             accept_checkpoint(self.job,cp,saved,contract)
             if digest(saved['state'])!=saved['state_sha256']:raise ValueError('Global resume state changed')

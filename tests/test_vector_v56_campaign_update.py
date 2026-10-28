@@ -96,6 +96,18 @@ class UpdateTests(unittest.TestCase):
             bad=dict(job,objective='changed')
             with self.assertRaises(ValueError):predecessor(bad)
 
+    def test_global_resume_uses_checkpoint_but_checks_export_and_probe_bindings(self):
+        from research.vectorized_backtest.v56.resume_authority import global_resume
+        with TemporaryDirectory(dir=RUNTIME) as tmp:
+            root=Path(tmp);bus=root/'exchange';export=bus/'sessions/day/export.json';export.parent.mkdir(parents=True);write_json(export,dict(files={}))
+            probe=root/'calibration/global.npz';probe.parent.mkdir();probe.write_bytes(b'bound probe')
+            cp=root/'phase-2/global/checkpoint.json';cp.parent.mkdir(parents=True)
+            saved=dict(contract=dict(campaign_context=dict(campaign_stage='global',promotion_exports={'day':sha(export)},initialization_probe_sha256=sha(probe))),state=dict(population=['preserved']))
+            write_json(cp,saved);job=dict(campaign=tmp,training_days=['day'],probe_root=str(probe.parent))
+            derived,actual=global_resume(job,bus);self.assertEqual(actual,saved);self.assertEqual(derived['promotion_exports'],{'day':sha(export)})
+            export.write_text('{}')
+            with self.assertRaisesRegex(ValueError,'export binding'):global_resume(job,bus)
+
     def test_ui_navigation_and_compact_redirected_render(self):
         from research.vectorized_backtest.v56.campaign_progress import Model,render
         from rich.console import Console

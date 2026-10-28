@@ -139,6 +139,15 @@ def run(job,node):
         status('starting; verify saved evidence')
         try:
             days=job['machines'][node]['session_days']
+            if node=='workstation' and (root/'phase-2/global/checkpoint.json').exists():
+                stop_check(stops)
+                from .resume_authority import global_resume
+                derived,saved=global_resume(job,bus);completed.extend(days);skipped.extend(days)
+                unit='global';status('global-stage',unit)
+                evolution=Evolution(derived,node,root/'phase-2',job['global_session_workers'],stops)
+                evolution.resume_checkpoint=saved;evolution.run({});unit=None;status('complete')
+                write_json(root/'complete.json',dict(status='complete',session_generations=50,global_generations=50,global_complete_sha256=sha(root/'phase-2/global/complete.json'),validation='display-only',job_sha256=digest(job)))
+                return
             parallel=job['machines'][node]['session_workers']>1
             if parallel:
                 from concurrent.futures import wait,FIRST_COMPLETED

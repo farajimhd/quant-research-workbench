@@ -50,3 +50,20 @@ def accept_cache(config,path,record,expected):
     bound=config.get('result_cache_transition',{}).get(sha(path))
     prior=dict(record['identity']);prior['source']=expected['source']
     if not bound or record['identity']['source']!=bound['source'] or prior!=expected:raise ValueError('Result cache contract changed')
+
+
+def global_resume(job,bus):
+    """The saved global state supersedes decoding phase-one populations again.
+
+    Controller still validates the complete state, source transition and every
+    generation seal before replay. This reads that same checkpoint only once.
+    """
+    root=Path(job['campaign']);saved=json.loads((root/'phase-2/global/checkpoint.json').read_bytes())
+    context=saved['contract']['campaign_context'];exports=context.get('promotion_exports',{})
+    if context.get('campaign_stage')!='global' or set(exports)!=set(job['training_days']):raise ValueError('Global checkpoint promotion scope changed')
+    for day,expected in exports.items():
+        if sha(Path(bus)/'sessions'/day/'export.json')!=expected:raise ValueError('Global checkpoint export binding changed')
+    probe=Path(job['probe_root'])/'global.npz'
+    if sha(probe)!=context['initialization_probe_sha256']:raise ValueError('Global resume probe changed')
+    derived=dict(job,campaign_stage='global',initialization_probe=str(probe),initialization_probe_sha256=sha(probe),parent_job_sha256=digest(job),promotion_exports=exports)
+    return derived,saved
