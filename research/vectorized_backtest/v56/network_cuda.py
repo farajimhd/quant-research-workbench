@@ -2,6 +2,7 @@
 import torch
 import triton as tr
 import triton.language as tl
+import triton.language.extra.cuda.libdevice as libdevice
 from .config import FAN_IN,STATES
 
 @tr.jit
@@ -79,8 +80,8 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
                     if e<ec and (w!=0 or (op>=1 and op<=6)):
                         x=tl.gather(xx,tl.full((1,BLOCK),k,tl.int32),0).reshape((BLOCK,))
                         valid=tl.gather(kk,tl.full((1,BLOCK),k,tl.int32),0).reshape((BLOCK,))
-                        term=x*w;ok=ok|(valid&(w!=0))
-                        if op==0 or op==7 or op==8:z=z+term
+                        term=libdevice.mul_rn(x,w);ok=ok|(valid&(w!=0))
+                        if op==0 or op==7 or op==8:z=libdevice.add_rn(z,term)
                         elif op==1:aggregate=tl.maximum(aggregate,term)
                         elif op==2:aggregate=tl.minimum(aggregate,term)
                         elif op==3:aggregate=aggregate+term

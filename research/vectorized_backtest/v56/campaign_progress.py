@@ -241,6 +241,25 @@ class Model:
                 rows[key]=dict(generation=generation,status=status,progress=sample,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None)
         return rows
 
+    def diagnostic_replays(self):
+        """A separate receipt/progress scope; never feed main candidate metrics."""
+        root=remote(self.root/'phase-2',self.job['workstation_share']);state=self.read(root/'full-status.json')
+        generation=state.get('completed_generations',0)
+        if (root/'global'/f'generation-{generation+1:04d}'/'population.json').exists():generation+=1
+        scope=(state.get('owner',{}).get('creation_time'),generation)
+        if getattr(self,'diagnostic_scope',None)!=scope:self.diagnostic_scope=scope;self.diagnostic_samples={}
+        active=state.get('stage')=='Paired mutation diagnostic; selection and RNG isolated' and state.get('replay_generation')==generation
+        if active:
+            for day,sample in state.get('session_paths',{}).items():
+                if day in self.job['training_days']:self.diagnostic_samples[day]=dict(sample)
+        rows=[];now=time.time()
+        for day in self.job['training_days']:
+            sample=self.diagnostic_samples.get(day,{})
+            complete=bool(generation) and (root/'mutation-probe-replay/training'/f'generation-{generation:04d}'/day/'receipt.json').exists()
+            status='complete' if complete else state.get('status','running') if active and day in state.get('active_sessions',[]) else 'queued'
+            rows.append(dict(day=day,generation=generation,status=status,progress=sample,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None))
+        return rows
+
     def live_snapshot(self,live):
         generation=max((r['generation'] for r in live.values()),default=0)
         if not generation:return None
@@ -310,6 +329,7 @@ class Model:
         return rows
 
     def rows(self):
+        if self.view=='diagnostic_sessions':return self.diagnostic_replays()
         if self.view=='global_splits':return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
@@ -376,6 +396,8 @@ class Model:
         if key=='c':self.summary_mode='timing' if self.summary_mode=='combined' else 'combined';return
         if key=='d':self.remember();self.view='timings';self.selection=0;return
         if key in ('h','\x1b'):self.aggregate_mode=False;self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;self.navigation=[];return
+        if key=='x':
+            self.remember();self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='diagnostic_sessions';self.selection=0;self.filter=None;return
         if key=='g':self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
         if key in ('o','f','m','a','i','p','e'):
             self.remember()
@@ -392,7 +414,7 @@ class Model:
         rows=self.rows();step=max(1,height-(18 if self.view=='global_sessions' else 15))
         if key in ('home','end'):self.selection=0 if key=='home' else max(0,len(rows)-1);return
         if key in ('j','k','n','b'):self.selection=max(0,min(len(rows)-1,self.selection+{'j':1,'k':-1,'n':step,'b':-step}[key]));return
-        if key in ('\r','\n') and rows and self.view not in ('reproduction','detail','lineage','timings'):
+        if key in ('\r','\n') and rows and self.view not in ('reproduction','detail','lineage','timings','diagnostic_sessions'):
             row=rows[min(self.selection,len(rows)-1)]
             self.remember()
             if self.view=='overview':self.day=row['day'];self.view='ranking';self.selection=0;self.filter=None;self.validation=False
@@ -402,7 +424,7 @@ class Model:
             else:self.selected=row;self.view='detail';self.detail_page=0
 
 def render(model,width,height):
-    head_size=9 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
+    head_size=10 if model.view=='global_sessions' else 9 if model.view=='diagnostic_sessions' else 7 if model.aggregate_mode else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V56 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     note='Score: P&L - losses - 2 x DD | risk caps OFF | validation display-only'
@@ -438,6 +460,14 @@ def render(model,width,height):
             selected=rows[min(model.selection,len(rows)-1)];t=selected['timing']
             note+='\nSelected '+selected['day']+' | generation ETA '+('done' if t['complete'] else '~'+duration(t['generation_eta']) if t['generation_eta'] is not None else 'warming / unavailable')+' | Enter then D: generation history'
             note+='\n'+selected['node']+' | '+selected['state']+' | '+selected['stage']
+    elif model.view=='diagnostic_sessions':
+        rows=model.rows()
+        for h in ('Session','Replay','Clocks','Time','ETA','Candidates','Stage'):table.add_column(h,no_wrap=True)
+        for i,r in enumerate(rows[start:start+limit],start):
+            p=r['progress'];n=replay_numbers(r)
+            table.add_row(r['day'],replay_progress(p,r['status']),f"{p.get('completed_seconds','-')}/{p.get('total_seconds','-')}",duration(n['elapsed']),duration(n['eta']),str(p.get('total_candidates','-')),p.get('stage',r['status']),style=SELECTED if i==model.selection else 'bright_green' if r['status']=='complete' else 'bright_cyan')
+        note='MUTATION DIAGNOSTIC | separate replay population | selection and RNG unchanged'
+        caption='One row = diagnostic session | G: main results | Esc: back | No main candidate scores are overwritten'
     elif model.view=='global_sessions':
         rows=model.rows();compact=width<120
         timing=model.summary_mode=='timing'
@@ -570,15 +600,20 @@ def render(model,width,height):
         if model.view=='global_sessions':
             completed=sum(r['replay']['status']=='complete' for r in rows);work=sum(replay_numbers(r['replay'])['fraction'] for r in rows)
             header.append(f'\nOverall replay {completed}/{len(rows)} sessions ',style='white');header.append(progress_bar(work,len(rows),width=max(15,min(50,width-45))))
-        if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
+        if model.view in ('global_sessions','diagnostic_sessions') and model.job.get('mutation_probe_size',0):
+            diagnostic=model.diagnostic_replays();done=sum(r['status']=='complete' for r in diagnostic);work=sum(replay_numbers(r)['fraction'] for r in diagnostic)
+            header.append(f'\nMutation diagnostic {done}/{len(diagnostic)} ',style='bright_yellow');header.append(progress_bar(work,len(diagnostic),width=max(12,min(40,width-55))));header.append(' | X: sessions',style='bright_yellow')
+        if model.view not in ('global_sessions','diagnostic_sessions'):header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     layout['head'].update(header)
     names={'global_splits':'ALL GLOBAL > TRAINING / VALIDATION','ranking':'ALL GLOBAL '+model.aggregate_role.upper()+' CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
+    names['diagnostic_sessions']='MUTATION DIAGNOSTIC > SESSION REPLAYS'
     layout['body'].update(Panel(table,title=names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
     if width<120:
         keys='1 candidates | 2 groups | Enter open | Esc back | Q close\nO crossover | F family | M method | P source | E immigration\nArrows select | S sort | R reverse | N/B page | L lineage\nH overview | G sessions | A all global | C columns | D timings'
     else:keys='1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G sessions | A all global | C columns | D timings | L lineage | Q close'
     if model.view=='global_splits':keys='1 / T: Training | 2 / V: Validation | Arrows: select | Enter: open\nEach split has its own candidates, groups, sorting, and details.\nValidation is display-only and never influences selection.\nEsc: back | G: global sessions | Q: close panel'
+    if model.view=='diagnostic_sessions':keys='Arrows / J/K: select | N/B: page | Home/End: first/last\nDiagnostic replay only; results do not affect selection.\nG: main session results | A: all main candidates\nEsc: back | Q: close panel (optimizer continues)'
     layout['keys'].update(Text(keys))
     return layout
 
