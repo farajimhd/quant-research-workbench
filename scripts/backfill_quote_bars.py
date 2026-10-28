@@ -7,11 +7,12 @@ from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import json,sqlite3,time,uuid,threading,signal,gc,http.client
 from contextlib import closing
-from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
+from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED,as_completed
 from datetime import date,datetime,timezone
 from scripts import build_market_day as bars
 from pipelines.market_sip.events import quote_bars as sql
 from pipelines.market_sip.events import market_signals as signals
+from pipelines.market_sip.events import quote_execution as execution
 from pipelines.market_sip.flatfiles.repair_progress import Progress
 
 
@@ -119,14 +120,14 @@ def run(a):
         worker_local=threading.local();worker_clients=[]
         def guard():
             if stop.is_set() or (root/'stop.request').exists():raise InterruptedError('Graceful quote stop requested')
-        def work(row,prior,retry=0):
+        def work(row,prior,retry=0,shared_stage=None,prepared=None):
             day=row['source_date'];ticker=row['ticker'];key=(day,ticker);source_hash=certified[key][0]
             client=getattr(worker_local,'client',None)
             if client is None:
                 client=bars.Client(options);worker_local.client=client
                 with mutex:worker_clients.append(client)
             client.profiles=[];client.profile_totals={}
-            stage='quote_stage_'+uuid.uuid4().hex;attempt=str(uuid.uuid4());began=time.monotonic()
+            stage=shared_stage or 'quote_stage_'+uuid.uuid4().hex;attempt=prepared['attempt'] if prepared else str(uuid.uuid4());began=time.monotonic()
             with mutex:active_clients.append(client)
             name=threading.current_thread().name
             try:
@@ -139,19 +140,20 @@ def run(a):
                     signals.publish(client,'arte',parent_build,day,ticker,certified[key][3],source_hash,token_rows,*session_times[day])
                     with mutex:counts['reused']+=1
                     return
-                client.query(sql.stage_sql('arte',stage,day,ticker),'quote_canonical_scan',False)
-                source=bars.checked_source_evidence(row,client.query(sql.stage_evidence('arte',stage),'quote_source_fingerprint')[0])
+                if shared_stage is None:client.query(sql.stage_sql('arte',stage,day,ticker),'quote_canonical_scan',False)
+                source=prepared['source'] if prepared else bars.checked_source_evidence(row,client.query(sql.stage_evidence('arte',stage)+(f' WHERE ticker={sql.L(ticker)}' if shared_stage else ''),'quote_source_fingerprint')[0])
                 if bars.digest([source,plan['rules'],definition['version']])!=source_hash:
                     raise ValueError('Canonical content differs from completed trade source')
                 guard();progress.worker(name,'Persist 1s / roll up 5s, 10s, 30s',day=day,detail=ticker)
-                client.query(sql.base_insert('arte',stage,build,day,ticker,attempt),'quote_1s',False)
+                if not prepared:client.query(sql.base_insert('arte',stage,build,day,ticker,attempt)+(f' AND ticker={sql.L(ticker)}' if shared_stage else ''),'quote_1s',False)
                 for parent,target in zip(sql.FRAMES,sql.FRAMES[1:]):
-                    guard();client.query('INSERT INTO arte.quote_bars_v1 '+sql.rollup_select('arte',build,day,ticker,attempt,parent,target),'quote_rollup',False)
+                    guard()
+                    if not prepared:client.query('INSERT INTO arte.quote_bars_v1 '+sql.rollup_select('arte',build,day,ticker,attempt,parent,target),'quote_rollup',False)
                     if client.query(sql.parity('arte',build,day,ticker,attempt,parent,target),'quote_rollup_parity')[0]['n']:
                         raise ValueError('Quote rollup differs from exact parent OHLC')
                 e=client.query(sql.evidence('arte',build,day,ticker,attempt),'quote_final_readback')[0]
                 if int(e['bad']) or e['n']!=e['unique_keys']:raise ValueError('Quote key/value integrity failure')
-                expected=client.query(f'SELECT sum(quote_count) events,countIf(quote_count>0) buckets FROM arte.{stage}','quote_stage_totals')[0]
+                expected=client.query(f'SELECT sum(quote_count) events,countIf(quote_count>0) buckets FROM arte.{stage}{f" WHERE ticker={sql.L(ticker)}" if shared_stage else ""}','quote_stage_totals')[0]
                 actual=client.query(f"SELECT resolution_ms,side,sum(event_count) events,count() buckets FROM arte.quote_bars_v1 WHERE {sql.scope(build,day,ticker,attempt)} GROUP BY resolution_ms,side",'quote_conservation')
                 if int(expected['events']):
                     if len(actual)!=8 or any(int(x['events'])!=int(expected['events']) for x in actual):raise ValueError('Quote event conservation differs')
@@ -189,7 +191,8 @@ def run(a):
                 stop.set();raise
             finally:
                 try:
-                    try:client.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_stage_cleanup',False)
+                    try:
+                        if shared_stage is None and not prior:client.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_stage_cleanup',False)
                     except BaseException as error:
                         if not retryable_transport(error):raise
                         with closing(bars.Client(options,persistent=False)) as clean:
@@ -203,7 +206,7 @@ def run(a):
                             new_ticker_days_per_hour=counts['completed']*3600/elapsed,
                             eta_seconds=(len(units)-done)*elapsed/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
                     progress.worker(name,'Idle')
-        def resilient_work(row,prior):
+        def resilient_work(row,prior,shared_stage=None,prepared=None):
             for retry in range(3):
                 if retry:
                     guard()
@@ -211,8 +214,41 @@ def run(a):
                         saved=c.query(f"SELECT * FROM arte.quote_bars_coverage_v1 FINAL WHERE {sql.scope(build,row['source_date'],row['ticker'])}",'quote_retry_commit_reconciliation')
                     if len(saved)>1:raise ValueError('Ambiguous quote retry receipt')
                     prior=saved[0] if saved else None
-                try:return work(row,prior,retry)
+                try:return work(row,prior,retry,shared_stage,prepared)
                 except RetryUnit:time.sleep(.25*(retry+1))
+        def verify_prior(day,rows,saved):
+            guard();name=threading.current_thread().name
+            progress.worker(name,'Verify completed receipts',day=day,detail=f'{len(rows)} ticker-days')
+            try:
+                with closing(bars.Client(options)) as c:
+                    return execution.verify_completed(c,'arte',build,parent_build,day,rows,saved,certified,token_rows,policy,guard=guard)
+            finally:progress.worker(name,'Idle')
+        def batch_work(rows,saved):
+            day=rows[0]['source_date'];stage='quote_stage_'+uuid.uuid4().hex
+            fresh=[r for r in rows if r['ticker'] not in saved]
+            with closing(bars.Client(options)) as c:
+                began=time.monotonic()
+                try:
+                    guard()
+                    attempts={r['ticker']:str(uuid.uuid4()) for r in fresh};prepared_units={}
+                    progress.worker(threading.current_thread().name,'Canonical scan / quote batch',day=day,detail=f'{len(fresh)} ticker-days')
+                    if fresh:
+                        c.query(execution.stage_sql('arte',stage,day,list(attempts)),'quote_batched_canonical_scan',False)
+                        # Validate each source identity before any batched output.
+                        for row in fresh:
+                            t=row['ticker'];e=c.query(sql.stage_evidence('arte',stage)+f' WHERE ticker={sql.L(t)}','quote_batch_source_fingerprint')[0]
+                            source=bars.checked_source_evidence(row,e)
+                            prepared_units[t]=dict(attempt=attempts[t],source=source)
+                            if bars.digest([source,plan['rules'],definition['version']])!=certified[(day,t)][0]:raise ValueError('Canonical content differs from completed trade source')
+                        guard();execution.insert_batch(c,'arte',stage,build,day,attempts,guard=guard)
+                    for row in rows:resilient_work(row,saved.get(row['ticker']),stage if fresh else None,prepared_units.get(row['ticker']))
+                finally:
+                    if fresh:c.query(f'DROP TABLE IF EXISTS arte.{stage} SYNC','quote_batch_cleanup',False)
+                    with mutex:
+                        with (root/'batch-profiles.jsonl').open('a',encoding='utf-8') as f:
+                            f.write(json.dumps(dict(day=day,tickers=[r['ticker'] for r in rows],
+                                seconds=time.monotonic()-began,source_events=sum(int(r['event_count']) for r in rows),
+                                totals=c.profile_totals))+'\n')
         try:
             by_day={}
             for r in units:by_day.setdefault(r['source_date'],[]).append(r)
@@ -223,16 +259,30 @@ def run(a):
                         free=c.query("SELECT free_space FROM system.disks WHERE name='live_market_ssd'",'quote_storage_reserve')
                         if len(free)!=1 or int(free[0]['free_space'])<int(a.reserve_gib*1024**3):raise ValueError('Quote SSD reserve reached; preserve receipts before resume')
                         prior=c.query(f"SELECT * FROM arte.quote_bars_coverage_v1 FINAL WHERE build_id={sql.L(build)} AND session_date=toDate({sql.L(day)})",'quote_receipt_prefetch')
-                    saved={x['ticker']:x for x in prior};iterator=iter(rows);pending=set()
+                    saved={x['ticker']:x for x in prior}
+                    # Full row/hash verification in bounded grouped reads, not one
+                    # network conversation per already completed ticker-day.
+                    progress.update(message=f'{day}: verify receipts, then publish only missing units')
+                    reused=set();checks=[r for r in rows if r['ticker'] in saved]
+                    verifying=[pool.submit(verify_prior,day,checks[i:i+128],saved) for i in range(0,len(checks),128)]
+                    for future in as_completed(verifying):
+                        verified=future.result();reused.update(verified)
+                        with mutex:counts['reused']+=len(verified)
+                        progress.update(**counts,queued=max(0,len(units)-counts['reused']-counts['completed']))
+                    remaining=[r for r in rows if r['ticker'] not in reused]
+                    iterator=iter(execution.batches(remaining));pending=set()
                     while True:
                         while len(pending)<2*a.bar_workers and not stop.is_set():
                             r=next(iterator,None)
                             if r is None:break
-                            pending.add(pool.submit(resilient_work,r,saved.get(r['ticker'])))
+                            pending.add(pool.submit(batch_work,r,saved))
                         if not pending:break
                         finished,pending=wait(pending,timeout=1,return_when=FIRST_COMPLETED)
                         for f in finished:f.result()
-                        with progress.lock:progress.flush(force=True)
+                        elapsed=time.monotonic()-started;done=counts['completed']+counts['reused']
+                        progress.update(**counts,queued=max(0,len(units)-done-counts['failed']),elapsed=elapsed,
+                            new_ticker_days_per_hour=counts['completed']*3600/elapsed,
+                            eta_seconds=(len(units)-done)*elapsed/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
                     guard()
             bars.save(root/'quote-completion.json',dict(request=request,counts=counts,seconds=time.monotonic()-started,
                 profiles=profiles,luld_ready=True,halt_ready=True,official_bands=False,halt_state='unknown until explicit source status'))

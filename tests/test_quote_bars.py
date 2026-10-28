@@ -60,13 +60,31 @@ def test_exact_source_fingerprint_hidden_extremes_and_all_funnel_frames():
      c.query('INSERT INTO '+db+'.events FORMAT JSONEachRow\n'+'\n'.join(json.dumps(r) for r in rows),read=False)
      for ddl in q.ddl(db):c.query(ddl,read=False)
      c.query(q.stage_sql(db,'stage',day,'TEST',source='SELECT * FROM '+db+'.events'),read=False)
+     from pipelines.market_sip.events import quote_execution as execution
+     copies=[dict(r,ticker='TEST2',ordinal=r['ordinal']+1000) for r in rows]
+     c.query('INSERT INTO '+db+'.events FORMAT JSONEachRow\n'+'\n'.join(json.dumps(r) for r in copies),read=False)
+     c.query(execution.stage_sql(db,'batch_stage',day,['TEST','TEST2'],source='SELECT * FROM '+db+'.events'),read=False)
+     for ticker in ['TEST','TEST2']:
+      c.query(q.stage_sql(db,'single_'+ticker,day,ticker,source='SELECT * FROM '+db+'.events WHERE ticker='+q.L(ticker)),read=False)
+      assert c.query(q.stage_evidence(db,'batch_stage')+' WHERE ticker='+q.L(ticker))==c.query(q.stage_evidence(db,'single_'+ticker))
+     class BatchAdapter:
+      def query(self,query,label='query',read=True):return c.query(query,read=read)
+     attempts={'TEST':str(uuid.uuid4()),'TEST2':str(uuid.uuid4())}
+     execution.insert_batch(BatchAdapter(),db,'batch_stage','batch',day,attempts)
+     for t,a in attempts.items():
+      for parent,target in zip(q.FRAMES,q.FRAMES[1:]):
+       assert c.query(q.parity(db,'batch',day,t,a,parent,target))==[dict(n=0)]
+      assert c.query(q.evidence(db,'batch',day,t,a))[0]['bad']==0
+     cols=','.join(n for n in q.FIELDS if n not in ('build_id','ticker','attempt_id'))
+     assert c.query(f"SELECT {cols} FROM {db}.quote_bars_v1 WHERE build_id='batch' AND ticker='TEST' ORDER BY resolution_ms,side,bucket_index")==c.query(f"SELECT {cols} FROM {db}.quote_bars_v1 WHERE build_id='batch' AND ticker='TEST2' ORDER BY resolution_ms,side,bucket_index")
+     c.query('ALTER TABLE '+db+".events DELETE WHERE ticker='TEST2' SETTINGS mutations_sync=2",read=False)
      raw=c.query(f'SELECT count() n,uniqExact(ordinal) unique_ordinals,min(ordinal) first_ordinal,max(ordinal) last_ordinal,min(sip_timestamp_us) first_us,max(sip_timestamp_us) last_us,count() session_events,toUInt64(0) reporting_delayed_trades,sum(cityHash64(tuple(*))) hash FROM {db}.events')[0]
      assert c.query(q.stage_evidence(db,'stage'))==[raw]
      c.query(q.base_insert(db,'stage','b',day,'TEST',attempt),read=False)
      for p,t in zip(q.FRAMES,q.FRAMES[1:]):
       c.query('INSERT INTO '+db+'.quote_bars_v1 '+q.rollup_select(db,'b',day,'TEST',attempt,p,t),read=False)
       assert c.query(q.parity(db,'b',day,'TEST',attempt,p,t))==[dict(n=0)]
-     first=c.query(f"SELECT side,open_int,high_int,low_int,close_int,event_count FROM {db}.quote_bars_v1 WHERE resolution_ms=1000 ORDER BY bucket_index,side");assert first[0]==dict(side='bid',open_int=1000000,high_int=1100000,low_int=900000,close_int=1010000,event_count=4)
+     first=c.query(f"SELECT side,open_int,high_int,low_int,close_int,event_count FROM {db}.quote_bars_v1 WHERE build_id='b' AND resolution_ms=1000 ORDER BY bucket_index,side");assert first[0]==dict(side='bid',open_int=1000000,high_int=1100000,low_int=900000,close_int=1010000,event_count=4)
      from pipelines.market_sip.events import market_day_sql as market
      for ddl in market.ddl(db,include_liquidity_1s=True):c.query(ddl,read=False)
      class Adapter:
@@ -105,3 +123,22 @@ def test_exact_source_fingerprint_hidden_extremes_and_all_funnel_frames():
      finally:signals.source_sql=original_source
      assert c.query(q.evidence(db,'b',day,'TEST',attempt))[0]['n']==14;assert c.query(q.evidence(db,'b',day,'TEST',attempt))[0]['bad']==0;q.verify_storage(c.query,db,['events','stage','quote_bars_v1','quote_bars_coverage_v1'])
     finally:c.query('DROP DATABASE IF EXISTS '+db+' SYNC',read=False);c.close()
+
+
+def test_quote_scan_batches_bound_units_and_events():
+    from pipelines.market_sip.events.quote_execution import batches
+    rows=[dict(ticker=str(i),event_count=n) for i,n in enumerate([10]*17+[3_000_000,20])]
+    groups=list(batches(rows))
+    assert [r for group in groups for r in group]==rows
+    assert all(len(g)<=8 for g in groups)
+    assert all(sum(r['event_count'] for r in g)<=2_000_000 or len(g)==1 for g in groups)
+
+
+def test_batch_sql_preserves_raw_hash_before_grouping_ticker():
+    from pipelines.market_sip.events.quote_execution import stage_sql
+    q=stage_sql('arte','test','2026-05-13',['AAPL','MSFT'])
+    assert "PREWHERE ticker IN ('AAPL','MSFT')" in q
+    assert 'cityHash64(tuple(*)) raw_hash' in q
+    assert 'GROUP BY ticker,bucket_index' in q
+    assert 'ORDER BY (ticker,bucket_index)' in q
+
