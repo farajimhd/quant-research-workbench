@@ -131,6 +131,9 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
                     if op==16:h=tl.maximum(z0,z1);ok=k0&k1
         offset=(base+i)*U+u
         tl.store(current+offset,h,live);tl.store(current_known+offset,ok,live)
+        # The edge axis can change warp ownership relative to the scalar node
+        # layout. Publish every node before another warp gathers its value.
+        tl.debug_barrier()
     tl.store(OUT+(member*5+action)*U+u,ok&(h>tl.load(THRESHOLD+net)),live)
 
     if action==0 or action==2 or action==3:
