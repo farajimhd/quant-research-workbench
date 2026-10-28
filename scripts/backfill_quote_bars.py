@@ -34,6 +34,69 @@ def retryable_transport(error):
     return isinstance(error,(ConnectionError,TimeoutError,http.client.RemoteDisconnected))
 
 
+class QuoteClientPool:
+    """At most two persistent clients per worker plus one coordinator.
+
+    Batch, verification and unit boundaries do not close healthy sockets.
+    Transport counters make connection churn observable without storing secrets.
+    """
+    def __init__(self,options,workers,idle_seconds=2.,factory=None,connections_per_second=8.):
+        self.options=options;self.limit=2*workers+1;self.idle_seconds=idle_seconds
+        self.factory=factory or bars.Client;self.local=threading.local();self.lock=threading.Lock()
+        self.clients=[];self.created=0;self.connections=0
+        if connections_per_second<=0:raise ValueError('Positive connection budget required')
+        self.connection_rate=connections_per_second;self.tokens=float(self.limit)
+        self.refilled=time.monotonic();self.connection_wait=0.
+
+    def get(self,role):
+        if role not in ('unit','control'):raise ValueError('Unknown quote client role')
+        client=getattr(self.local,role,None)
+        if client is None:
+            with self.lock:
+                if len(self.clients)>=self.limit:raise RuntimeError('Quote client pool limit reached')
+                client=self.factory(self.options)
+                client.http.max_persistent_idle_seconds=self.idle_seconds
+                client.cancel_http.max_persistent_idle_seconds=self.idle_seconds
+                original=client.http._new_connection
+                def counted():
+                    self.acquire_connection()
+                    return original()
+                client.http._new_connection=counted
+                self.clients.append(client);self.created+=1
+            setattr(self.local,role,client)
+        return client
+
+    def acquire_connection(self):
+        # Bound port churn even during abnormal keep-alive/reconnect behavior.
+        # The initial burst opens the bounded pool; healthy sockets need no tokens.
+        began=time.monotonic()
+        while True:
+            with self.lock:
+                now=time.monotonic()
+                self.tokens=min(float(self.limit),self.tokens+(now-self.refilled)*self.connection_rate)
+                self.refilled=now
+                if self.tokens>=1:
+                    self.tokens-=1;self.connections+=1;self.connection_wait+=now-began
+                    return
+                delay=(1-self.tokens)/self.connection_rate
+            time.sleep(delay)
+
+    def discard(self,role):
+        client=getattr(self.local,role,None)
+        if client is not None:
+            client.close();setattr(self.local,role,None)
+            with self.lock:self.clients.remove(client)
+
+    def snapshot(self):
+        with self.lock:return dict(clients_created=self.created,clients_live=len(self.clients),
+            client_limit=self.limit,connection_creations=self.connections,idle_seconds=self.idle_seconds,
+            connections_per_second=self.connection_rate,connection_wait_seconds=self.connection_wait)
+
+    def close(self):
+        for client in self.clients:client.close()
+        self.clients.clear()
+
+
 def cleanup_stage(client,options,stage,on_retry=lambda retry:None):
     """Retry only idempotent owned DROP after confirmed query cancellation.
 
@@ -104,6 +167,9 @@ def run(a):
         reporting=bars.reporting_coverage(c,a.start_date,a.end_date)
         free=c.query("SELECT free_space FROM system.disks WHERE name='live_market_ssd'",'quote_storage_reserve')
         if len(free)!=1 or int(free[0]['free_space'])<int(a.reserve_gib*1024**3):raise ValueError('Quote SSD reserve is unavailable')
+        keepalive=c.query("SELECT value FROM system.server_settings WHERE name='keep_alive_timeout'",'quote_transport_keepalive')
+        if len(keepalive)!=1 or float(keepalive[0]['value'])<=0:raise ValueError('Positive server HTTP keep-alive timeout required')
+        idle_seconds=min(5.,float(keepalive[0]['value'])/2)
         token_rows=c.query('SELECT * FROM market_sip_compact.event_condition_token_reference ORDER BY token_id','signal_dictionary')
         signals.token_sets(token_rows)
         request['signal_dictionary_hash']=bars.digest(token_rows)
@@ -139,7 +205,7 @@ def run(a):
         session_times={str(stamp.date()):(int(r.market_open.timestamp()*1e6),int(r.market_close.timestamp()*1e6)) for stamp,r in schedule.iterrows()}
         old_signal=signal.signal(signal.SIGINT,lambda *_:stop.set())
         counts=dict(completed=0,reused=0,failed=0);profiles={};active_clients=[];verification_seconds=0.
-        worker_local=threading.local();worker_clients=[]
+        client_pool=QuoteClientPool(options,a.bar_workers,idle_seconds)
         profile_stream=(root/'profiles.jsonl').open('a',encoding='utf-8',buffering=1024*1024)
         batch_stream=(root/'batch-profiles.jsonl').open('a',encoding='utf-8',buffering=1024*1024)
         last_profile_flush=time.monotonic()
@@ -147,10 +213,7 @@ def run(a):
             if stop.is_set() or (root/'stop.request').exists():raise InterruptedError('Graceful quote stop requested')
         def work(row,prior,retry=0,shared_stage=None,prepared=None):
             day=row['source_date'];ticker=row['ticker'];key=(day,ticker);source_hash=certified[key][0]
-            client=getattr(worker_local,'client',None)
-            if client is None:
-                client=bars.Client(options);worker_local.client=client
-                with mutex:worker_clients.append(client)
+            client=client_pool.get('unit')
             client.profiles=[];client.profile_totals={}
             stage=shared_stage or 'quote_stage_'+uuid.uuid4().hex;attempt=prepared['attempt'] if prepared else str(uuid.uuid4());began=time.monotonic()
             with mutex:active_clients.append(client)
@@ -206,7 +269,7 @@ def run(a):
                             f.write(json.dumps(dict(day=day,ticker=ticker,retry=retry+1,
                                 error=client.clean_error(error),last_query=client.profiles[-1] if client.profiles else None))+'\n')
                     progress.emit(f'{day} {ticker}: transport interrupted; reconcile receipt before bounded retry {retry+1}/2')
-                    client.close();worker_local.client=None
+                    client_pool.discard('unit')
                     raise RetryUnit() from error
                 with mutex:
                     if isinstance(error,(InterruptedError,KeyboardInterrupt)):
@@ -244,60 +307,61 @@ def run(a):
             guard();name=threading.current_thread().name
             progress.worker(name,'Verify completed receipts',day=day,detail=f'{len(rows)} ticker-days')
             try:
-                with closing(bars.Client(options)) as c:
-                    return execution.verify_completed(c,'arte',build,parent_build,day,rows,saved,certified,token_rows,policy,guard=guard)
+                c=client_pool.get('control')
+                return execution.verify_completed(c,'arte',build,parent_build,day,rows,saved,certified,token_rows,policy,guard=guard)
             except BaseException:
                 stop.set();raise
             finally:progress.worker(name,'Idle')
         def batch_work(rows,saved):
             day=rows[0]['source_date'];stage='quote_stage_'+uuid.uuid4().hex
             fresh=[r for r in rows if r['ticker'] not in saved]
-            with closing(bars.Client(options)) as c:
-                began=time.monotonic()
+            c=client_pool.get('control')
+            c.profiles=[];c.profile_totals={}
+            began=time.monotonic()
+            try:
+                guard()
+                attempts={r['ticker']:str(uuid.uuid4()) for r in fresh};prepared_units={}
+                progress.worker(threading.current_thread().name,'Canonical scan / quote batch',day=day,detail=f'{len(fresh)} ticker-days')
+                if fresh:
+                    c.query(execution.stage_sql('arte',stage,day,list(attempts)),'quote_batched_canonical_scan',False)
+                    # Validate each source identity before any batched output.
+                    for row in fresh:
+                        t=row['ticker'];e=c.query(sql.stage_evidence('arte',stage)+f' WHERE ticker={sql.L(t)}','quote_batch_source_fingerprint')[0]
+                        source=bars.checked_source_evidence(row,e)
+                        prepared_units[t]=dict(attempt=attempts[t],source=source)
+                        if bars.digest([source,plan['rules'],definition['version']])!=certified[(day,t)][0]:raise ValueError('Canonical content differs from completed trade source')
+                    guard();execution.insert_batch(c,'arte',stage,build,day,attempts,guard=guard)
+                for row in rows:resilient_work(row,saved.get(row['ticker']),stage if fresh else None,prepared_units.get(row['ticker']))
+            except BaseException:
+                stop.set();raise
+            finally:
+                original=sys.exception()
                 try:
-                    guard()
-                    attempts={r['ticker']:str(uuid.uuid4()) for r in fresh};prepared_units={}
-                    progress.worker(threading.current_thread().name,'Canonical scan / quote batch',day=day,detail=f'{len(fresh)} ticker-days')
                     if fresh:
-                        c.query(execution.stage_sql('arte',stage,day,list(attempts)),'quote_batched_canonical_scan',False)
-                        # Validate each source identity before any batched output.
-                        for row in fresh:
-                            t=row['ticker'];e=c.query(sql.stage_evidence('arte',stage)+f' WHERE ticker={sql.L(t)}','quote_batch_source_fingerprint')[0]
-                            source=bars.checked_source_evidence(row,e)
-                            prepared_units[t]=dict(attempt=attempts[t],source=source)
-                            if bars.digest([source,plan['rules'],definition['version']])!=certified[(day,t)][0]:raise ValueError('Canonical content differs from completed trade source')
-                        guard();execution.insert_batch(c,'arte',stage,build,day,attempts,guard=guard)
-                    for row in rows:resilient_work(row,saved.get(row['ticker']),stage if fresh else None,prepared_units.get(row['ticker']))
-                except BaseException:
-                    stop.set();raise
+                        if original and any('Cancellation could not be confirmed' in n for n in getattr(original,'__notes__',())):
+                            original.add_note(f'Owned stage arte.{stage} retained until query ownership drains.')
+                        else:cleanup_stage(c,options,stage,on_retry=lambda retry:progress.emit(f'{day}: reconnect owned stage cleanup ({retry}/2); committed receipts preserved'))
+                except BaseException as cleanup_error:
+                    stop.set()
+                    if original:
+                        original.add_note('Owned stage cleanup also failed; reconcile before resume.')
+                        raise original from cleanup_error
+                    raise
                 finally:
-                    original=sys.exception()
-                    try:
-                        if fresh:
-                            if original and any('Cancellation could not be confirmed' in n for n in getattr(original,'__notes__',())):
-                                original.add_note(f'Owned stage arte.{stage} retained until query ownership drains.')
-                            else:cleanup_stage(c,options,stage,on_retry=lambda retry:progress.emit(f'{day}: reconnect owned stage cleanup ({retry}/2); committed receipts preserved'))
-                    except BaseException as cleanup_error:
-                        stop.set()
-                        if original:
-                            original.add_note('Owned stage cleanup also failed; reconcile before resume.')
-                            raise original from cleanup_error
-                        raise
-                    finally:
-                        with mutex:
-                            batch_stream.write(json.dumps(dict(day=day,tickers=[r['ticker'] for r in rows],
-                                seconds=time.monotonic()-began,source_events=sum(int(r['event_count']) for r in rows),
-                                totals=c.profile_totals))+'\n')
+                    with mutex:
+                        batch_stream.write(json.dumps(dict(day=day,tickers=[r['ticker'] for r in rows],
+                            seconds=time.monotonic()-began,source_events=sum(int(r['event_count']) for r in rows),
+                            totals=c.profile_totals))+'\n')
         try:
             by_day={}
             for r in units:by_day.setdefault(r['source_date'],[]).append(r)
             with ThreadPoolExecutor(max_workers=a.bar_workers,thread_name_prefix='QUOTE') as pool:
                 for day,rows in sorted(by_day.items()):
                     guard()
-                    with closing(bars.Client(options,persistent=False)) as c:
-                        free=c.query("SELECT free_space FROM system.disks WHERE name='live_market_ssd'",'quote_storage_reserve')
-                        if len(free)!=1 or int(free[0]['free_space'])<int(a.reserve_gib*1024**3):raise ValueError('Quote SSD reserve reached; preserve receipts before resume')
-                        prior=c.query(f"SELECT * FROM arte.quote_bars_coverage_v1 FINAL WHERE build_id={sql.L(build)} AND session_date=toDate({sql.L(day)})",'quote_receipt_prefetch')
+                    c=client_pool.get('control')
+                    free=c.query("SELECT free_space FROM system.disks WHERE name='live_market_ssd'",'quote_storage_reserve')
+                    if len(free)!=1 or int(free[0]['free_space'])<int(a.reserve_gib*1024**3):raise ValueError('Quote SSD reserve reached; preserve receipts before resume')
+                    prior=c.query(f"SELECT * FROM arte.quote_bars_coverage_v1 FINAL WHERE build_id={sql.L(build)} AND session_date=toDate({sql.L(day)})",'quote_receipt_prefetch')
                     saved={x['ticker']:x for x in prior}
                     # Full row/hash verification in bounded grouped reads, not one
                     # network conversation per already completed ticker-day.
@@ -308,9 +372,9 @@ def run(a):
                     for future in as_completed(verifying):
                         verified=future.result();reused.update(verified)
                         with mutex:counts['reused']+=len(verified)
-                        progress.update(**counts,queued=max(0,len(units)-counts['reused']-counts['completed']))
+                        progress.update(**counts,transport=client_pool.snapshot(),queued=max(0,len(units)-counts['reused']-counts['completed']))
                     verification_seconds+=time.monotonic()-verification_started
-                    progress.update(phase='build',verification_seconds=verification_seconds)
+                    progress.update(phase='build',verification_seconds=verification_seconds,transport=client_pool.snapshot())
                     remaining=[r for r in rows if r['ticker'] not in reused]
                     iterator=iter(execution.batches(remaining));pending=set()
                     while True:
@@ -327,12 +391,12 @@ def run(a):
                             with mutex:profile_stream.flush();batch_stream.flush()
                             last_profile_flush=time.monotonic()
                         elapsed=time.monotonic()-started;productive=max(.001,elapsed-verification_seconds);done=counts['completed']+counts['reused']
-                        progress.update(**counts,queued=max(0,len(units)-done-counts['failed']),elapsed=elapsed,
+                        progress.update(**counts,transport=client_pool.snapshot(),queued=max(0,len(units)-done-counts['failed']),elapsed=elapsed,
                             new_ticker_days_per_hour=counts['completed']*3600/productive,
                             eta_seconds=(len(units)-done)*productive/counts['completed'] if counts['completed']>=max(3,a.bar_workers) else None)
                     guard()
             bars.save(root/'quote-completion.json',dict(request=request,counts=counts,seconds=time.monotonic()-started,
-                profiles=profiles,luld_ready=True,halt_ready=True,official_bands=False,halt_state='unknown until explicit source status'))
+                profiles=profiles,transport=client_pool.snapshot(),luld_ready=True,halt_ready=True,official_bands=False,halt_state='unknown until explicit source status'))
             progress.update(status='complete',queued=0);return 0
         except BaseException as error:
             interrupted=isinstance(error,(InterruptedError,KeyboardInterrupt))
@@ -344,5 +408,5 @@ def run(a):
             raise
         finally:
             profile_stream.close();batch_stream.close()
-            for client in worker_clients:client.close()
+            client_pool.close()
             signal.signal(signal.SIGINT,old_signal)

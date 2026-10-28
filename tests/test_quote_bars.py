@@ -207,3 +207,56 @@ def test_quote_failure_panel_stays_open_for_resume():
     assert monitor_finished(dict(step='quotes',status='complete'))
     assert not monitor_finished(dict(step='quotes',status='complete',monitor_warning='stale read'))
     assert monitor_finished(dict(step='bars',status='failed'))
+
+
+def test_quote_pool_reuses_bounded_clients_across_batches_and_verification():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from types import SimpleNamespace
+    from scripts.backfill_quote_bars import QuoteClientPool
+    closed=[]
+    class Client:
+        def __init__(self,*args):
+            self.http=SimpleNamespace(_new_connection=lambda:object())
+            self.cancel_http=SimpleNamespace()
+        def close(self):closed.append(self)
+    pool=QuoteClientPool(object(),4,idle_seconds=5,factory=Client)
+    pool.get('control');barrier=threading.Barrier(4)
+    def work(_):
+        control=pool.get('control');unit=pool.get('unit');barrier.wait()
+        for i in range(100):
+            assert pool.get('control') is control and pool.get('unit') is unit
+        control.http._new_connection()
+        assert control.http.max_persistent_idle_seconds==5
+    with ThreadPoolExecutor(max_workers=4) as workers:list(workers.map(work,range(4)))
+    assert pool.snapshot()['clients_created']==9
+    assert pool.snapshot()['clients_live']==9
+    assert pool.snapshot()['connection_creations']==4
+    pool.close();assert len(closed)==9
+
+
+def test_quote_pool_discards_failed_client_without_closing_other_role():
+    from types import SimpleNamespace
+    from scripts.backfill_quote_bars import QuoteClientPool
+    class Client:
+        def __init__(self,*a):
+            self.http=SimpleNamespace(_new_connection=lambda:object())
+            self.cancel_http=SimpleNamespace();self.closed=False
+        def close(self):self.closed=True
+    pool=QuoteClientPool(object(),1,factory=Client)
+    control=pool.get('control');unit=pool.get('unit');pool.discard('unit')
+    assert unit.closed and not control.closed
+    assert pool.get('unit') is not unit and pool.get('control') is control
+    pool.close()
+
+
+def test_connection_creation_budget_bounds_churn(monkeypatch):
+    from scripts import backfill_quote_bars as runner
+    clock=[100.];waits=[]
+    monkeypatch.setattr(runner.time,'monotonic',lambda:clock[0])
+    def sleep(seconds):waits.append(seconds);clock[0]+=seconds
+    monkeypatch.setattr(runner.time,'sleep',sleep)
+    pool=runner.QuoteClientPool(object(),1,connections_per_second=8)
+    for _ in range(11):pool.acquire_connection()
+    assert len(waits)==8 and abs(sum(waits)-1.)<.0001
+    assert pool.snapshot()['connection_creations']==11
