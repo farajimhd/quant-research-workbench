@@ -7,7 +7,7 @@ class PopulationPreparation:
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='v42-population-pack')
         self.payload=None;self.token=None;self.future=None;self.hits=0;self.misses=0;self.parent=None;self.subset_hits=0
     def submit(self,payload,token):
-        if self.payload is payload and self.token==token:
+        if self.token==token and self.future is not None:
             self.hits+=1;return self.future
         self.misses+=1;self.parent=None;self.payload=payload;self.token=token
         self.future=self.pool.submit(prepare,payload,token);return self.future

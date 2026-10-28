@@ -30,6 +30,9 @@ def progress_bar(done,total,width=10,color='bright_cyan'):
 def replay_progress(progress,state='running'):
     if state=='complete':return progress_bar(1,1,color='bright_green')
     if state!='running':return Text(state,style='bright_red' if state in ('failed','STALE') else 'bright_yellow')
+    if progress.get('total_candidates') and progress.get('total_seconds'):
+        done=progress.get('completed_candidates',0)+progress.get('batch_candidates',0)*min(1.,progress.get('completed_seconds',0)/progress['total_seconds'])
+        return progress_bar(done,progress['total_candidates'])
     total=progress.get('total_seconds');batches=progress.get('total_local_batches')
     if total and batches:
         return progress_bar((progress.get('completed_local_batches') or 0)+min(1.,(progress.get('completed_seconds') or 0)/total),batches)
@@ -54,6 +57,15 @@ def duration(seconds):
     if seconds>=3600:return f'{seconds//3600}h{seconds%3600//60:02d}m'
     if seconds>=60:return f'{seconds//60}m{seconds%60:02d}s'
     return f'{seconds}s'
+
+def replay_numbers(live):
+    p=live['progress'];total=p.get('total_candidates',0);done=p.get('completed_candidates',0)
+    if p.get('total_seconds'):done+=p.get('batch_candidates',0)*min(1.,p.get('completed_seconds',0)/p['total_seconds'])
+    if live['status']=='complete':done=total
+    elapsed=p.get('session_seconds') if live['status']=='complete' else max(0,time.time()-p['session_started_epoch']) if p.get('session_started_epoch') else None
+    fraction=min(1.,done/total) if total else 1. if live['status']=='complete' else 0.
+    eta=elapsed*(1-fraction)/fraction if elapsed is not None and fraction>=.05 and live['status']=='running' else None
+    return dict(done=int(min(done,total)),total=total,elapsed=elapsed,eta=eta,fraction=fraction)
 
 def diagnostics(value,prefix=''):
     rows=[]
@@ -141,6 +153,11 @@ class Model:
             eta=generation_eta+max(0,50-done-1)*rate
         return dict(last=cache.get(done,(None,None))[0],elapsed=elapsed,work=total if rows else None,eta=eta,generation_eta=generation_eta,rows=rows,rate=rate,complete=complete)
     def report(self):
+        if self.global_day:
+            data=self.live_data if self.live_data and str(self.global_role)+':'+self.global_day in self.live_data['panels'] else self.global_data
+            if data:
+                key=str(self.global_role)+':'+self.global_day
+                if key in data.get('reports',{}):return data['reports'][key]
         root=self.target()/'global';report=self.read(root/'evolution-report.json')
         if report:return report
         status=self.status();g=status.get('ranking_generation',status.get('completed_generations',0))
@@ -181,6 +198,9 @@ class Model:
         if self.replay_sample_scope!=scope:self.replay_samples={};self.replay_sample_scope=scope
         stage=state.get('stage','');role='training' if stage=='Global training' else 'validation' if stage=='Phase 2 validation: display only' else None
         event=state.get('worker_progress',{});day=event.get('day');now=time.time()
+        if role and state.get('replay_generation')==generation and state.get('replay_role')==role:
+            for d,sample in state.get('session_paths',{}).items():
+                if d in self.job[role+'_days']:self.replay_samples[role+':'+d]=dict(sample)
         if role and day in self.job[role+'_days']:
             self.replay_samples[role+':'+day]=dict(event)
         rows={}
@@ -199,7 +219,7 @@ class Model:
         if not generation:return None
         if self.live_data is None or self.live_data['generation']!=generation:
             if self.live_thread and self.live_thread.is_alive():return None
-            self.live_data=dict(generation=generation,panels={},summaries={});self.live_error=None
+            self.live_data=dict(generation=generation,panels={},summaries={},reports={});self.live_error=None
         data=self.live_data
         pending=[key for key,r in live.items() if r['status']=='complete' and key not in data['summaries']]
         if pending and not (self.live_thread and self.live_thread.is_alive()) and time.monotonic()-self.live_attempt>2:
@@ -208,10 +228,18 @@ class Model:
                 try:
                     from .progress_sessions import population_metadata,load_live_session
                     ids,token=population_metadata(root/'global'/f'generation-{generation:04d}'/'population.json')
+                    path=root/'global'/f'generation-{generation:04d}'/'evaluated-pedigree.json'
+                    records=json.loads(path.read_bytes()) if path.exists() else None
                     for key in pending:
                         if self.observer_stop.is_set():return
                         role,day=key.split(':',1);panel,summary=load_live_session(self.job,root,generation,role,day,ids,token)
                         data['panels'][key]=panel;data['summaries'][key]=summary
+                        if records is not None:
+                            from .evolution_report import summarize
+                            report=summarize(ids,panel['panel'],records,generation=generation)
+                            report.update(scope=key,live=True)
+                            for row in report['candidates']:row['metric_scope']=key
+                            data['reports'][key]=report
                     self.live_error=None
                 except Exception as error:self.live_error=str(error)
             self.live_thread=threading.Thread(target=collect,daemon=True);self.live_thread.start()
@@ -225,7 +253,10 @@ class Model:
             for role in ('training','validation'):
                 for day in self.job[role+'_days']:
                     key=role+':'+day;source=current if current and key in current['summaries'] else data
-                    rows.append(dict(day=day,role=role,generation=source['generation'] if source else 0,replay=live[key],**(source['summaries'].get(key,{}) if source else {})))
+                    summary=source['summaries'].get(key,{}) if source else {}
+                    if live[key]['status']=='complete' and source and source['generation']==live[key]['generation']:
+                        live[key]['progress']={**summary.get('replay_details',{}),**live[key]['progress']}
+                    rows.append(dict(day=day,role=role,generation=source['generation'] if source else 0,replay=live[key],**summary))
             return rows
         if self.view=='timings':return self.timing(self.target(),self.status())['rows']
         if self.view=='reproduction':return diagnostics(self.report().get('next_generation_reproduction') or {})
@@ -237,7 +268,7 @@ class Model:
             data=self.global_snapshot();key=str(self.global_role)+':'+str(self.global_day)
             if self.live_data and key in self.live_data['panels'] and (not data or self.live_data['generation']>=data['generation']):data=self.live_data
             if not data or key not in data['panels']:return []
-            values=data['panels'][key];report=self.read(self.target()/'global'/f"generation-{data['generation']:04d}"/'evolution-report.json');details={r['serial']:r for r in report.get('candidates',[])}
+            values=data['panels'][key];report=self.report();details={r['serial']:r for r in report.get('candidates',[])}
             rows=[dict(details.get(r['serial'],{}),**r,generation=data['generation'],metric_scope=key) for r in ranking(values['panel'],values['ids'])]
         elif self.view=='founders':rows=list(self.read(self.target()/'global/founder-results.json').values())
         elif self.view=='ranking':
@@ -277,7 +308,7 @@ class Model:
         if key=='r':self.reverse=not self.reverse;return
         if key=='u' and self.selected and self.selected.get('founder_index') is not None:
             self.filter=('descendant',self.selected['founder_index']);self.view='candidates';self.selection=0;return
-        rows=self.rows();step=max(1,height-(16 if self.view=='global_sessions' else 15))
+        rows=self.rows();step=max(1,height-(18 if self.view=='global_sessions' else 15))
         if key in ('home','end'):self.selection=0 if key=='home' else max(0,len(rows)-1);return
         if key in ('j','k','n','b'):self.selection=max(0,min(len(rows)-1,self.selection+{'j':1,'k':-1,'n':step,'b':-step}[key]));return
         if key in ('\r','\n') and rows and self.view not in ('reproduction','detail','lineage','timings'):
@@ -290,7 +321,7 @@ class Model:
             else:self.selected=row;self.view='detail';self.detail_page=0
 
 def render(model,width,height):
-    head_size=7 if model.view=='global_sessions' else 6
+    head_size=9 if model.view=='global_sessions' else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V56 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     note='Score: P&L - losses - 2 x DD | risk caps OFF | validation display-only'
@@ -326,14 +357,17 @@ def render(model,width,height):
             note+='\n'+selected['node']+' | '+selected['state']+' | '+selected['stage']
     elif model.view=='global_sessions':
         rows=model.rows();compact=width<120
-        columns=('Session','Split','Replay','Top net $','Median $','DD $') if compact else ('Session','Split','Replay','Gen','Best score','Top net $','Median net $','Top DD $','Median DD $','Win %','Profit %','Candidates','Replay work')
+        timing=model.summary_mode=='timing'
+        columns=('Session','Split','Replay','Time','Top net $','DD $') if compact else ('Session','Split','Replay','Done/total','Time','ETA','Batches','New/reused','Stage') if timing else ('Session','Split','Replay','Time','Gen','Best score','Top net $','Median net $','Top DD $','Median DD $','Win %','Profit %','Candidates')
         for h in columns:table.add_column(h,no_wrap=True,**({'max_width':18} if h=='Replay' else {}))
         for i,r in enumerate(rows[start:start+limit],start):
             s=r.get('strength',{});metrics=[number(s.get(k)) for k in ('top_net','median_net','top_drawdown')]
-            live=r['replay'];bar=replay_progress(live['progress'],live['status'])
+            live=r['replay'];bar=replay_progress(live['progress'],live['status']);numbers=replay_numbers(live)
             if live['status']=='running' and live['age'] is not None and live['age']>10:bar.append(' ~',style='bright_yellow')
-            cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar]
-            cells+= metrics if compact else [str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-')),'cached' if r.get('cached') else duration(r.get('batch_seconds'))]
+            p=live['progress'];elapsed=duration(numbers['elapsed'] if numbers['elapsed'] is not None else r.get('batch_seconds'))
+            if compact:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,elapsed,metrics[0],metrics[2]]
+            elif timing:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,f"{numbers['done']}/{numbers['total'] or '?'}",elapsed,duration(numbers['eta']),f"{p.get('completed_local_batches',0)}/{p.get('total_local_batches','?')}",f"{p.get('evaluated_candidates','?')}/{p.get('reused_candidates','?')}",p.get('stage',live['status'])]
+            else:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,elapsed,str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-'))]
             table.add_row(*cells,style=SELECTED if i==model.selection else 'bright_magenta' if r['role']=='validation' else 'bright_cyan')
         loaded=model.global_data;caption=f"Last seal {loaded['generation']}" if loaded else 'No sealed global generation yet'
         caption+=' | metrics update after each replay; Gen = metric generation'
@@ -345,8 +379,10 @@ def render(model,width,height):
             selected=rows[min(model.selection,len(rows)-1)];live=selected['replay'];sample=live['progress']
             note+='\nReplay gen '+str(live['generation'] or '-')+' | '+selected['day']+' | '+live['status']+' | '+sample.get('stage','')
             if live['age'] is not None:note+=' | update '+duration(live['age'])+' ago'
+            counts=replay_numbers(live)
+            note+=f"\nCandidates {counts['done']}/{counts['total'] or '?'} | new {sample.get('evaluated_candidates','?')} / reused {sample.get('reused_candidates','?')} | batches {sample.get('completed_local_batches',0)}/{sample.get('total_local_batches','?')} | ETA {duration(counts['eta'])}"
             caption+=' | ~ last observed update'
-        caption+=' | VAL*: display-only | eligible candidates | DD / Win %: top-profit candidate | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
+        caption+=' | C: timings / strength | VAL*: display-only | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
     elif model.view in ('operators','families','methods'):
         report=model.report();rows=model.rows()
         compact=width<120
@@ -425,7 +461,10 @@ def render(model,width,height):
         note+='\nGeneration ETA '+('~'+duration(t['generation_eta']) if t['generation_eta'] is not None else '-')+' | D: measured generation history'
     header=Text(title+'\n'+note,style='bright_cyan')
     if model.view!='overview':
-        header.append(f"\nGenerations {state.get('completed_generations',0)}/50 ",style='white');header.append(progress_bar(state.get('completed_generations',0),50,color='bright_green'))
+        header.append(f"\nGenerations {state.get('completed_generations',0)}/50 ",style='white');header.append(progress_bar(state.get('completed_generations',0),50,width=max(20,min(60,width-38)) if model.view=='global_sessions' else 10,color='bright_green'))
+        if model.view=='global_sessions':
+            completed=sum(r['replay']['status']=='complete' for r in rows);work=sum(replay_numbers(r['replay'])['fraction'] for r in rows)
+            header.append(f'\nOverall replay {completed}/{len(rows)} sessions ',style='white');header.append(progress_bar(work,len(rows),width=max(15,min(50,width-45))))
         if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     layout['head'].update(header)

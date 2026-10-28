@@ -16,6 +16,7 @@ class SessionTests(unittest.TestCase):
         with TemporaryDirectory(dir=ROOT) as tmp,patch('research.vectorized_backtest.v56.campaign_progress.remote',side_effect=lambda p,s:Path(p)):
             root=Path(tmp);folder=root/'phase-2/global/generation-0001';folder.mkdir(parents=True)
             (folder/'population.json').write_text(json.dumps(dict(ids=[41],population=[],population_sha256='a'*64),sort_keys=True,separators=(',',':')))
+            (folder/'evaluated-pedigree.json').write_text(json.dumps([dict(serial=41,node_count=77,operation='crossover',whole_network=True,whole_mode='xor',founder_groups=['2'],founder_methods=['tree:union'],parents=[1,2],source_sessions=['2026-08-13'])]))
             job=dict(campaign=tmp,transport=tmp,workstation_share='fixture',training_days=['2026-08-13'],validation_days=[],machines={},objective=dict(drawdown_weight=2.,loss_weight=1.),execution={})
             state=dict(completed_generations=0,status='running',stage='Global training',active_sessions=['2026-08-13'])
             (root/'phase-2/full-status.json').write_text(json.dumps(state))
@@ -26,6 +27,9 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(model.live_thread.is_alive());self.assertIsNone(model.live_error)
             row=model.rows()[0];self.assertEqual((row['generation'],row['strength']['top_net'],row['replay']['status']),(1,100,'complete'))
             self.assertFalse((folder/'complete.json').exists())
+            model.key('\r');self.assertEqual(model.rows()[0]['serial'],41)
+            self.assertEqual(model.rows()[0]['nodes'],77);self.assertEqual(model.rows()[0]['operators'],['whole:xor'])
+            model.key('o');self.assertEqual(model.rows()[0]['group'],'whole:xor')
             model.key('\r');self.assertEqual(model.rows()[0]['serial'],41)
             model.close()
 

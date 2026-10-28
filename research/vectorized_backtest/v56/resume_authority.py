@@ -30,8 +30,8 @@ def lineage_jobs(job):
 def accept_checkpoint(job,path,saved,expected):
     if saved['contract']==expected:return
     old=predecessor(job);day=job['training_days'][0]
-    if old is None or job.get('campaign_stage')!='session':raise ValueError('Unapproved checkpoint source transition')
-    bound=job['resume_transition']['checkpoints'].get(day)
+    if old is None or job.get('campaign_stage') not in ('session','global'):raise ValueError('Unapproved checkpoint source transition')
+    bound=job['resume_transition'].get('global_checkpoint') if job.get('campaign_stage')=='global' else job['resume_transition']['checkpoints'].get(day)
     if not bound or sha(path)!=bound['checkpoint_sha256'] or saved['state_sha256']!=bound['state_sha256'] or digest(saved['contract'])!=bound['contract_sha256']:raise ValueError('Saved checkpoint differs from transition receipt')
     actual=dict(saved['contract']);actual['source_sha256']=expected['source_sha256'];actual['campaign_context']=dict(actual['campaign_context'],parent_job_sha256=expected['campaign_context']['parent_job_sha256'])
     if actual!=expected:raise ValueError('Resume transition changed more than source/parent campaign identity')

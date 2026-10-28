@@ -36,11 +36,13 @@ def load_live_session(job,root,generation,role,day,ids,token):
     if receipt['day']!=day or receipt['split']!=role or receipt['population_sha256']!=token or not receipt['full_session'] or receipt['validation_opened']!=(role=='validation') or receipt['execution']!=job['execution']:raise ValueError('Live replay receipt identity changed')
     panel=aggregate([receipt['metrics']],Objective(**job['objective']))
     if len(panel['score'])!=len(ids):raise ValueError('Live replay candidate alignment changed')
-    timing_path=path.parent/'timings.json';seconds=None
+    timing_path=path.parent/'timings.json';seconds=None;timings=[]
     if timing_path.exists():
         timings=read_verified(timing_path)
         if timings:seconds=sum(float(row.get(k,0)) for row in timings for k in ('load_seconds','rule_seconds','replay_seconds'))
-    return dict(ids=ids,panel=panel),dict(strength=strength(ranking(panel,ids)),batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0)
+    replay=dict(total_candidates=len(ids),completed_candidates=len(ids),evaluated_candidates=receipt.get('evaluated_candidates'),reused_candidates=receipt.get('reused_candidates'),
+        completed_local_batches=len(timings),total_local_batches=len(timings),session_seconds=seconds,stage='Session complete')
+    return dict(ids=ids,panel=panel),dict(strength=strength(ranking(panel,ids)),batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0,replay_details=replay)
 
 def load_global(job,root,generation,stop,progress=lambda done,total:None):
     from .full_common import aggregate,ranking

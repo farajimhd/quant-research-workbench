@@ -152,6 +152,9 @@ class Worker:
         from hashlib import sha256
         self.batch_progress={}
         c=self.config;started=perf_counter();self.emit(day,stage='Load session',candidate_offset=0)
+        if payload is None:
+            if self.population_preparer is None or self.population_preparer.token!=token:raise ValueError('Missing immutable worker population')
+            payload=self.population_preparer.payload
         prepared=self.population_preparer.submit(payload,token) if self.population_preparer else None
         self.prefetch.release_under_pressure()
         item=self.prefetch.take(day)
@@ -189,7 +192,9 @@ class Worker:
             larger=fixed+ceiling*(c.get('episode_capacity',65536)+replay_width)*32
             if larger>c['lane_memory_bytes']:ceiling=c['batch_size']
         batches=plan_batches(population,missing,replay_width,c['batch_size'],ceiling)
-        self.batch_progress=dict(completed_local_batches=0,total_local_batches=len(batches))
+        self.batch_progress=dict(completed_local_batches=0,total_local_batches=len(batches),total_candidates=len(population),
+            reused_candidates=len(population)-len(missing),evaluated_candidates=len(missing),completed_candidates=len(population)-len(missing),
+            session_started_epoch=time()-(perf_counter()-started),load_seconds=perf_counter()-started)
         timings=[];execution=Execution(**c['execution'])
         try:
             if missing:
@@ -209,10 +214,11 @@ class Worker:
                         old=self.host.pop(old_day);old.close();del old
                 gc.collect()
                 self.prefetch.start(next_day,self.read_host)
-            with Publisher() as publisher:
-                offset=0
+            with Publisher() as publisher,ThreadPoolExecutor(max_workers=1,thread_name_prefix='v56-results') as results_pool:
+                offset=0;pending_result=None;pending_timing=None
                 for batch_index,selection in enumerate(batches):
                     self.batch_progress['completed_local_batches']=batch_index
+                    self.batch_progress.update(completed_candidates=len(population)-len(missing)+offset,batch_candidates=len(selection),completed_seconds=0)
                     members=[population[i] for i in selection]
                     # Native candidate tails avoid replaying artificial duplicates.
                     actual=len(members)
@@ -252,11 +258,12 @@ class Worker:
                         progress=replay_progress,**gate_options)[0]
                     metrics={k:v.detach().cpu().tolist() if isinstance(v,torch.Tensor) else v for k,v in result.items()}
 
-                    from .financial import ticker_totals
-                    metrics['ticker_pnl']=ticker_totals(metrics,item)
-                    from .ticker_selection import ticker_scores
-                    metrics['ticker_score']=ticker_scores(metrics,item)
-                    for j,i in enumerate(selection):cached[keys[i]]={k:v[j] for k,v in metrics.items()}
+                    # One bounded CPU result transaction overlaps the next GPU
+                    # batch. Publication still waits for every result and error.
+                    if pending_result is not None:
+                        values,seconds=pending_result.result();cached.update(values);pending_timing['attribution_seconds']=seconds
+                    from .session_pipeline import finish_metrics
+                    pending_result=results_pool.submit(finish_metrics,metrics,item,selection,keys)
                     timing=dict(day=day,offset=offset,candidates=actual,padded_candidates=len(members),
                         market_cached=market_cached,worker_load_count=self.loads,worker_upload_count=self.uploads,
                         configured_batch_size=c['batch_size'],maximum_replay_batch_size=ceiling,
@@ -264,9 +271,13 @@ class Worker:
                         replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
                     if plan.plan is not None:
                         timing.update({k:getattr(plan.plan,k)-v for k,v in prior.items()})
-                    timings.append(timing);del gates,result
-                    self.emit(day,stage='Batch complete',candidate_offset=offset,completed_local_batches=len(timings))
+                    timings.append(timing);pending_timing=timing;del gates,result
+                    self.emit(day,stage='Batch complete',candidate_offset=offset,completed_local_batches=len(timings),
+                        completed_candidates=len(population)-len(missing)+offset+len(selection),gpu_gate_wait_seconds=self.execution_gate.wait_seconds if self.execution_gate else 0.)
                     offset+=len(selection)
+                if pending_result is not None:
+                    values,seconds=pending_result.result();cached.update(values);pending_timing['attribution_seconds']=seconds
+                self.emit(day,stage='Publish session results',completed_candidates=len(population))
                 selected={key:cached[key] for key in keys}
                 raw=json.dumps(selected,sort_keys=True,separators=(',',':'),allow_nan=False)
                 publisher.write(cache_path,dict(identity=identity,results=selected,results_sha256=sha256(raw.encode()).hexdigest()))
@@ -433,25 +444,19 @@ class SessionLanes:
                     try:future.result()
                     except BaseException:pass
                 self.independent_progress=None
-        for first in range(0,len(days),self.workers):
-            cohort=days[first:first+self.workers];started=perf_counter()
-            self.panel.begin_sessions(cohort)
-            if output_override is not None:
-                futures=[self.pools[lane].submit(evaluate_scoped,day,
-                    days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
-                    payload,generation,token,fixed_widths[day],str(output_override),isolate_results) for lane,day in enumerate(cohort)]
-            else:
-                futures=[self.pools[lane].submit(self.proxies[lane].run if self.config.get('shared_replay') else evaluate,day,
-                    days[first+self.workers+lane] if first+self.workers+lane<len(days) else None,
-                    payload,generation,token,fixed_widths[day]) for lane,day in enumerate(cohort)]
-            results=[future.result() for future in futures]
+        from .session_pipeline import SessionProgress,independent_sessions
+        self.independent_progress=SessionProgress(self.panel,days,len(population),generation,self.config.get('split','training'))
+        def submit(lane,index,day,next_day):
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
-            for result in results:
-                timings.extend(result['timings'])
-                self.panel.session_progress(dict(day=result['day'],stage='Session complete',
-                    completed_local_batches=len(result['timings']),completed_seconds=result['clocks'],total_seconds=result['clocks']))
-            self.panel.complete_sessions(len(cohort),perf_counter()-started)
-        return timings
+            # The generation's immutable population crosses IPC once per lane.
+            request=payload if index==0 or not self.config.get('immutable_population_cache') else None
+            if output_override is not None:return self.pools[lane].submit(evaluate_scoped,day,next_day,request,generation,token,fixed_widths[day],str(output_override),isolate_results)
+            return self.pools[lane].submit(evaluate,day,next_day,request,generation,token,fixed_widths[day])
+        try:
+            results=independent_sessions(days,self.workers,submit,self.independent_progress)
+            if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
+            return [timing for result in results for timing in result['timings']]
+        finally:self.independent_progress=None
 
     def release_plans(self):
         if self.config.get('shared_replay'):

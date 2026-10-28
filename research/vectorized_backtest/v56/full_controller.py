@@ -76,10 +76,12 @@ class Controller:
             started=time.perf_counter();folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True);self.stage='Session training' if self.job.get('campaign_stage')=='session' else 'Global training'
             source_population=[m.payload() for m in members];source_ids=ids.copy();token=digest(source_population)
             write_json(folder/'population.json',dict(population=source_population,ids=ids.tolist(),population_sha256=token))
-            ordered,training_receipts=self.evaluate('training',train,members,generation);session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
             for serial,member in zip(source_ids,members):pedigree.records[int(serial)]['node_count']=sum(len(n.nodes) for n in member.networks.values())
             birth_records=[pedigree.records[int(i)] for i in source_ids]
+            # Identity/ancestry are known before replay. Publish them now so
+            # completed session receipts can be explored before the global seal.
             write_json(folder/'evaluated-pedigree.json',birth_records)
+            ordered,training_receipts=self.evaluate('training',train,members,generation);session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
             from .offspring_audit import summarize
             write_json(folder/'offspring-audit.json',summarize(birth_records,panel,generation))
             self.stage='Score evaluated population';self.publish()

@@ -43,6 +43,19 @@ def prepare(previous,laptop_code,workstation_code):
             target=audit/'cache'/cache.relative_to(session)
             copy_verified(cache,target,receipt)
             transition['result_caches'][receipt]=dict(source=record['identity']['source'],day=day,backup=str(target))
+    global_root=remote(root/'phase-2',old['workstation_share']);cp=global_root/'global/checkpoint.json'
+    if cp.exists():
+        saved=json.loads(cp.read_bytes())
+        if digest(saved['state'])!=saved['state_sha256']:raise ValueError('Global checkpoint state integrity changed')
+        transition['global_checkpoint']=dict(checkpoint_sha256=sha(cp),state_sha256=saved['state_sha256'],contract_sha256=digest(saved['contract']),completed=saved['state']['completed'])
+        audit=global_root/'resume-audit'/commit[:9];audit.mkdir(parents=True,exist_ok=True)
+        copy_verified(cp,audit/'checkpoint.json',sha(cp))
+        for cache in replay_caches(global_root):
+            record=json.loads(cache.read_bytes());receipt=sha(cache)
+            from .resume_authority import source_allowed
+            if not source_allowed(old,record['identity']['source']):raise ValueError('Unexpected global cache source')
+            target=audit/'cache'/cache.relative_to(global_root);copy_verified(cache,target,receipt)
+            transition['result_caches'][receipt]=dict(source=record['identity']['source'],day=cache.stem,backup=str(target))
     machines={n:dict(m,code=str(laptop_code if n=='laptop' else workstation_code),session_workers=1 if n=='laptop' else 2) for n,m in old['machines'].items()}
     job=dict(old,version='v56-full-v2',commit=commit,source_sha256=source_hash(),machines=machines,entry_suffix='-v2-'+commit[:9],resume_transition=transition,
         global_initialization=dict(version='v56-blind-mix-v1',experts=3072,offspring=3072,group_quota=512,require_surviving_contributions=True))

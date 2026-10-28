@@ -88,6 +88,9 @@ class UpdateTests(unittest.TestCase):
             job=dict(old,source_sha256='new',campaign_stage='session',validation_days=[],resume_transition=dict(predecessor_job=str(path),predecessor_job_sha256=sha(path),checkpoints={'day':dict(checkpoint_sha256=sha(cp),state_sha256='state',contract_sha256=digest(contract))}))
             expected=dict(contract,source_sha256='new',campaign_context=dict(parent_job_sha256='new-parent'))
             self.assertEqual(predecessor(job),old);accept_checkpoint(job,cp,saved,expected)
+            global_job=dict(job,campaign_stage='global',validation_days=old['validation_days'],resume_transition=dict(job['resume_transition'],global_checkpoint=job['resume_transition']['checkpoints']['day']))
+            accept_checkpoint(global_job,cp,saved,expected)
+            with self.assertRaises(ValueError):accept_checkpoint(dict(global_job,resume_transition=dict(global_job['resume_transition'],global_checkpoint={})),cp,saved,expected)
             bad=copy.deepcopy(saved);bad['state_sha256']='changed'
             with self.assertRaises(ValueError):accept_checkpoint(job,cp,bad,expected)
             bad=dict(job,objective='changed')
