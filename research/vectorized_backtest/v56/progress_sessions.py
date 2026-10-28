@@ -78,5 +78,6 @@ def load_global(job,root,generation,stop,progress=lambda done,total:None):
     result=dict(generation=generation,panels=panels,summaries=summaries,reports=reports)
     if records is not None:
         from .progress_global import combined
-        result['aggregate']=combined(result,records,len(job['training_days']))
+        result['aggregates']={role:combined(result,records,len(job[role+'_days']),role) for role in ('training','validation')}
+        result['aggregate']=result['aggregates']['training']
     return result

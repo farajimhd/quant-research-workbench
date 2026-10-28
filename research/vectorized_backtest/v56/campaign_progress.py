@@ -89,9 +89,9 @@ class Model:
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
         self.replay_samples={};self.replay_sample_scope=None
-        self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
+        self.aggregate_role='training';self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
     def remember(self):
-        self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','aggregate_mode','selection','filter','selected','validation','detail_page','sort','reverse')})
+        self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','aggregate_mode','aggregate_role','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation=self.navigation[-32:]
     def read(self,path,default=None):
         path=Path(path);key=str(path)
@@ -170,11 +170,13 @@ class Model:
             generation_eta=max(rate*.1,rate-(elapsed or 0.))
             eta=generation_eta+max(0,50-done-1)*rate
         return dict(last=cache.get(done,(None,None))[0],elapsed=elapsed,work=total if rows else None,eta=eta,generation_eta=generation_eta,rows=rows,rate=rate,complete=complete)
+    def aggregate_report(self,role):
+        live=self.live_snapshot(self.global_replays());sealed=self.global_snapshot()
+        data=live if live and (not sealed or live['generation']>=sealed['generation']) else sealed
+        report=data.get('aggregates',{}).get(role) if data else None
+        return report or dict(generation=data['generation'] if data else 0,candidates=[],groups=[],coverage=0,total=len(self.job.get(role+'_days',[])),scope='global-'+role,partial=True)
     def report(self):
-        if self.aggregate_mode:
-            live=self.live_snapshot(self.global_replays());sealed=self.global_snapshot()
-            data=live if live and live.get('aggregate') and (not sealed or live['generation']>=sealed['generation']) else sealed
-            return data.get('aggregate',{}) if data else {}
+        if self.aggregate_mode:return self.aggregate_report(self.aggregate_role)
         if self.day and self.day in self.archive.data:return self.archive.data[self.day]['report']
         if self.global_day:
             data=self.live_data if self.live_data and str(self.global_role)+':'+self.global_day in self.live_data['panels'] else self.global_data
@@ -273,7 +275,8 @@ class Model:
                             data['reports'][key]=report
                         if records is not None:
                             from .progress_global import combined
-                            data['aggregate']=combined(data,records,len(self.job['training_days']))
+                            data.setdefault('aggregates',{})[role]=combined(data,records,len(self.job[role+'_days']),role)
+                            data['aggregate']=data['aggregates'].get('training')
                     self.live_error=None
                 except Exception as error:self.live_error=str(error)
             self.live_thread=threading.Thread(target=collect,daemon=True);self.live_thread.start()
@@ -307,6 +310,7 @@ class Model:
         return rows
 
     def rows(self):
+        if self.view=='global_splits':return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
             data=self.global_snapshot();generation=data['generation'] if data else 0
@@ -331,7 +335,7 @@ class Model:
             if not data or key not in data['panels']:return []
             values=data['panels'][key];report=self.report();details={r['serial']:r for r in report.get('candidates',[])}
             rows=[dict(details.get(r['serial'],{}),**r,generation=data['generation'],metric_scope=key) for r in ranking(values['panel'],values['ids'])]
-        elif self.view=='founders':rows=list(self.read(self.target()/'global/founder-results.json').values())
+        elif self.view=='founders':rows=[r for r in self.report().get('candidates',[]) if r.get('original_founder')] if self.aggregate_mode else list(self.read(self.target()/'global/founder-results.json').values())
         elif self.view=='ranking' and self.aggregate_mode:rows=self.report().get('candidates',[])
         elif self.view=='ranking':
             details={r['serial']:r for r in self.report().get('candidates',[])}
@@ -345,6 +349,11 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if key=='a' and not self.day:
+            self.remember();self.aggregate_mode=False;self.global_day=None;self.view='global_splits';self.selection=0;self.filter=None;self.selected=None;return
+        if self.view=='global_splits' and key in ('1','2','t','v','\r','\n'):
+            role=('training' if key in ('1','t') else 'validation') if key not in ('\r','\n') else ('training','validation')[min(self.selection,1)]
+            self.remember();self.aggregate_role=role;self.aggregate_mode=True;self.view='ranking';self.selection=0;self.filter=None;self.validation=role=='validation';return
         if key in ('1','2'):
             self.remember();self.filter=None;self.selection=0
             if not self.day and not self.global_day:self.aggregate_mode=True
@@ -398,7 +407,7 @@ def render(model,width,height):
     title=f"V56 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     note='Score: P&L - losses - 2 x DD | risk caps OFF | validation display-only'
     if model.aggregate_mode:
-        report=model.report();note=f"GLOBAL TRAINING: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
+        report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
     table=Table(expand=True,padding=(0,0));limit=max(1,height-head_size-9);start=model.selection//limit*limit
     if model.view=='overview':
         nodes,rows,stopped=model.snapshot();done=sum(r['state']=='complete' for r in rows)
@@ -457,6 +466,11 @@ def render(model,width,height):
             note+=f"\nCandidates {counts['done']}/{counts['total'] or '?'} | new {sample.get('evaluated_candidates','?')} / reused {sample.get('reused_candidates','?')} | batches {sample.get('completed_local_batches',0)}/{sample.get('total_local_batches','?')} | ETA {duration(counts['eta'])}"
             caption+=' | ~ last observed update'
         caption+=' | A: all candidates | C: timings / strength | VAL*: display-only | Enter: session ranking' if not compact else ' | N/B page | VAL*: display-only'
+    elif model.view=='global_splits':
+        for h in ('Path','Sessions ready','Candidates','Purpose'):table.add_column(h)
+        for i,r in enumerate(model.rows()):
+            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
+        caption='1 Training | 2 Validation | Enter: open selected path'
     elif model.view in ('operators','families','methods','origins','immigration'):
         report=model.report();rows=model.rows()
         compact=width<120
@@ -513,12 +527,13 @@ def render(model,width,height):
         if not model.day and detail_data and detail_data['generation']==generation:
             panels=detail_data['panels'];first=next(iter(panels.values()),None)
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
-        if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if r['metric_scope'].startswith('validation:') else '')
+        if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if 'validation' in r['metric_scope'] else '')
         if model.day:lines=[line for line in lines if not line.startswith(('Original founder:','Sessions:','Mutations:'))]
         if r.get('serial') in data.get('ids',[]):
             index=data['ids'].index(r['serial'])
             page_size=max(1,height-24);offset=model.detail_page*page_size
-            for day,p in list(data.get('sessions',{}).items())[offset:offset+page_size]:table.add_row(day,*(number(p[k][index]) for k in ('score','net_pnl','gross_losses','drawdown')))
+            sessions=[(day,p) for day,p in data.get('sessions',{}).items() if not model.aggregate_mode or day.startswith(model.aggregate_role+':')]
+            for day,p in sessions[offset:offset+page_size]:table.add_row(day,*(number(p[k][index]) for k in ('score','net_pnl','gross_losses','drawdown')))
         elif model.day:table.add_row(model.day,*(number(r.get(k)) for k in ('score','net_pnl','gross_losses','drawdown')))
         else:table.add_row('Per-session detail unavailable','-','-','-','-')
         from rich.console import Group
@@ -533,7 +548,7 @@ def render(model,width,height):
             else:cells.extend([number(r['gross_losses']),number(r['drawdown']),number(r.get('worst_drawdown')),number(r.get('win_rate')),str(int(r['closed_positions'])),str(r.get('nodes','-')),str(len(r.get('source_sessions',[]))),', '.join(r.get('operators',[]))])
             table.add_row(*cells,style=SELECTED if i==model.selection else None)
         if not rows:table.add_row('Loading',*['-']*(len(columns)-1))
-        caption=f"GLOBAL TRAINING | {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'} | {len(rows)} candidates | sort {model.sort} | Enter detail | L lineage"
+        caption=f"GLOBAL {model.aggregate_role.upper()} | {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'} | {len(rows)} candidates | sort {model.sort} | Enter detail | L lineage"
     else:
         rows=model.rows()
         compact=width<120;fields=('score','net_pnl','gross_losses','drawdown') if compact else ('score','net_pnl','gross_losses','drawdown','nodes')
@@ -558,11 +573,12 @@ def render(model,width,height):
         if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     layout['head'].update(header)
-    names={'ranking':'ALL GLOBAL CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
+    names={'global_splits':'ALL GLOBAL > TRAINING / VALIDATION','ranking':'ALL GLOBAL '+model.aggregate_role.upper()+' CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
     layout['body'].update(Panel(table,title=names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
     if width<120:
         keys='1 candidates | 2 groups | Enter open | Esc back | Q close\nO crossover | F family | M method | P source | E immigration\nArrows select | S sort | R reverse | N/B page | L lineage\nH overview | G sessions | A all global | C columns | D timings'
     else:keys='1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G sessions | A all global | C columns | D timings | L lineage | Q close'
+    if model.view=='global_splits':keys='1 / T: Training | 2 / V: Validation | Arrows: select | Enter: open\nEach split has its own candidates, groups, sorting, and details.\nValidation is display-only and never influences selection.\nEsc: back | G: global sessions | Q: close panel'
     layout['keys'].update(Text(keys))
     return layout
 
