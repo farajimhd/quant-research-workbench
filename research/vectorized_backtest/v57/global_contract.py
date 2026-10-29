@@ -24,7 +24,11 @@ def check(job):
     if job['ticker_parent_fraction']!=.25 or job['selection_risk_caps'] is not False:raise ValueError('Parent selection changed')
     original=json.loads(Path(job['source_job']).read_bytes())
     if job['execution']!=dict(original['execution'],risk_limits_enabled=False):raise ValueError('Execution changed')
-    if any(job.get(k) for k in ('resume_transition','result_cache_transition','continuation','promotion_exports')):raise ValueError('Fresh campaign cannot inherit fitness')
+    if any(job.get(k) for k in ('continuation','promotion_exports')):raise ValueError('Fresh campaign cannot inherit external fitness')
+    if job.get('resume_transition'):
+        from .resume_authority import global_predecessor
+        global_predecessor(job)
+    elif job.get('result_cache_transition'):raise ValueError('Cache transition requires a pinned predecessor')
     from .calibration import load_probe
     metadata=load_probe(job['initialization_probe'],job['training'])['metadata']
     if metadata['validation_opened'] or not set(metadata['days']).issubset(train) or len(metadata['days'])<2:raise ValueError('Training-only multi-session calibration required')

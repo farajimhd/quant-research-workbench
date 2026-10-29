@@ -45,9 +45,11 @@ class Global(Evolution):
                 reused_candidates=sum(extra['result_reused']),evaluated_candidates=len(self.paired_probe['mutants'])-sum(extra['result_reused']))
             if combined_keys is not None:extra_receipt['program_keys']=combined_keys[n:]
             writes.extend([(path,receipt),(extra_path,extra_receipt)])
-            result['diagnostic']=extra;result['diagnostic_ref']=dict(receipt=extra_path,receipt_sha256=None)
+            from .controller_metrics import compact
+            result['diagnostic']=compact(extra);result['diagnostic_ref']=dict(receipt=extra_path,receipt_sha256=None)
             self.published_receipts.extend([rawpath,extra_path])
-        result['metrics']=receipt['metrics'];result['ref']=dict(receipt=path,receipt_sha256=None)
+        from .controller_metrics import compact
+        result['metrics']=compact(receipt['metrics']);result['ref']=dict(receipt=path,receipt_sha256=None)
         self.published_receipts.append(path)
         self.publication_lane.submit(publish_replays,writes,True)
 

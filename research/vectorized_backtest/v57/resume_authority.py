@@ -4,9 +4,22 @@ from pathlib import Path
 from .identity import digest
 from research.vectorized_backtest.v42.distributed_assets import sha
 
+def global_predecessor(job):
+    transition=job.get('resume_transition',{});path=Path(transition.get('predecessor_job',''))
+    if not path.is_file() or sha(path)!=transition.get('predecessor_job_sha256'):raise ValueError('Global predecessor changed')
+    old=json.loads(path.read_bytes())
+    mutable={'source_sha256','code','commit','resume_transition','result_cache_transition'}
+    def semantics(value):
+        value=json.loads(json.dumps({k:v for k,v in value.items() if k not in mutable}))
+        value['machines']['workstation']['code']=None
+        return value
+    if semantics(job)!=semantics(old):raise ValueError('Global continuation changed campaign semantics')
+    return old
+
 def predecessor(job):
     transition=job.get('resume_transition')
     if not transition:return None
+    if job.get('version')=='v57-global-v1':return global_predecessor(job)
     path=Path(transition['predecessor_job'])
     if sha(path)!=transition['predecessor_job_sha256']:raise ValueError('Predecessor job changed')
     old=json.loads(path.read_bytes())
@@ -33,6 +46,12 @@ def lineage_jobs(job):
 
 def accept_checkpoint(job,path,saved,expected):
     if saved['contract']==expected:return
+    if job.get('version')=='v57-global-v1':
+        global_predecessor(job)
+        bound=job['resume_transition'].get('global_checkpoint',{})
+        if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Global checkpoint differs from bound receipt')
+        if dict(saved['contract'],source_sha256=expected['source_sha256'])!=expected:raise ValueError('Global continuation changed more than implementation source')
+        return
     if job.get('version')=='v57-pilot-v2':
         transition=job.get('resume_transition',{});prior=Path(transition.get('predecessor_job',''))
         if not prior.is_file() or sha(prior)!=transition.get('predecessor_job_sha256'):raise ValueError('Pinned pilot predecessor changed')

@@ -6,6 +6,43 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_global_resume_binds_checkpoint_and_preserves_campaign(self):
+        import tempfile,json,copy
+        from research.vectorized_backtest.v57.resume_authority import accept_checkpoint
+        from research.vectorized_backtest.v57.identity import digest
+        from research.vectorized_backtest.v42.distributed_assets import sha
+        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/resume-tests');root.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            root=Path(tmp);prior=root/'prior.json';cp=root/'checkpoint.json'
+            old=dict(version='v57-global-v1',source_sha256='old',code='old',commit='old',selection={'rate':.25},machines={'workstation':{'code':'old'}})
+            prior.write_text(json.dumps(old));saved=dict(contract={'source_sha256':'old','population':1024},state_sha256='state')
+            cp.write_text(json.dumps(saved));job=copy.deepcopy(old);job.update(source_sha256='new',code='new',commit='new')
+            job['machines']['workstation']['code']='new'
+            job['resume_transition']=dict(predecessor_job=str(prior),predecessor_job_sha256=sha(prior),global_checkpoint=dict(checkpoint_sha256=sha(cp),state_sha256='state',contract_sha256=digest(saved['contract'])))
+            expected=dict(saved['contract'],source_sha256='new');accept_checkpoint(job,cp,saved,expected)
+            job['selection']['rate']=.5
+            with self.assertRaisesRegex(ValueError,'semantics'):accept_checkpoint(job,cp,saved,expected)
+            job['selection']['rate']=.25;cp.write_text('{}')
+            with self.assertRaisesRegex(ValueError,'bound receipt'):accept_checkpoint(job,cp,saved,expected)
+
+    def test_compact_controller_inputs_preserve_scores_behavior_and_specialists(self):
+        from research.vectorized_backtest.v57.controller_metrics import compact
+        from research.vectorized_backtest.v57.full_common import aggregate
+        from research.vectorized_backtest.v57.behavior_sketch import sketch
+        from research.vectorized_backtest.v57.ticker_selection import specialist_pools
+        m=dict(net_pnl=[10.,-3.],drawdown=[5.,7.],closed_positions=[2.,1.],winning_positions=[1.,0.],
+            maximum_position_risk=[1.,2.],maximum_stop_distance=[.1,.2],terminal_valid=[True,True],
+            capital_dollar_seconds=[100.,200.],turnover=[300.,400.],episode_profits=[[12.,-2.],[-3.]],
+            episode_entry_clocks=[[1,4],[3]],episode_exit_clocks=[[3,8],[7]],episode_listings=[[0,0],[1]],
+            ticker_score=[{'a':-4.},{'b':-6.}],unused_display_field=[[1],[2]])
+        c=compact(m)
+        for k,v in aggregate([m,m]).items():np.testing.assert_array_equal(v,aggregate([c,c])[k])
+        for a,b in zip(sketch(m,2),sketch(c,2)):np.testing.assert_array_equal(a,b)
+        args=(np.ones(2,bool),np.ones(2,bool),np.arange(2))
+        self.assertEqual(specialist_pools([m],*args),specialist_pools([c],*args))
+        self.assertIsInstance(m['episode_profits'][0],list)
+        self.assertFalse(c['episode_profits'][0].flags.writeable)
+
     def test_positions_available_before_generation_seal(self):
         import tempfile,json
         from research.vectorized_backtest.v57.position_details import load
@@ -86,9 +123,12 @@ class GlobalTests(unittest.TestCase):
         path=str(c.root/'replays/training/generation-0001/2026-08-13/receipt.json')
         receipt=dict(population_sha256='combined',split='training',validation_opened=False,full_session=True,execution=c.job['execution'],case_owners=[None]*3,
                      metrics={'net_pnl':[1,2,999],'result_reused':[False]*3},program_keys=['a','b','c'])
+        from research.vectorized_backtest.v57.controller_metrics import SCALARS,LEDGERS
+        for key in SCALARS:receipt['metrics'].setdefault(key,[0]*3)
+        for key in LEDGERS:receipt['metrics'][key]=[[],[],[]]
         result={'writes':[(path,receipt)]}
         c.session_result('2026-08-13',result,'training',1)
-        self.assertEqual(result['metrics']['net_pnl'],[1,2]);self.assertEqual(result['diagnostic']['net_pnl'],[999])
+        np.testing.assert_array_equal(result['metrics']['net_pnl'],[1,2]);np.testing.assert_array_equal(result['diagnostic']['net_pnl'],[999])
         self.assertNotIn('writes',result)
         writes=c.publication_lane.submit.call_args.args[1]
         self.assertEqual(writes[0][1]['population_sha256'],'combined')
