@@ -369,6 +369,16 @@ def evaluate(*args):
         import traceback
         raise RuntimeError(traceback.format_exc()) from None
 def cleanup():_worker.close()
+
+def preload(day,payload,token):
+    """CPU-only demand preparation while the other split owns GPU replay."""
+    _worker.population_preparer.submit(payload,token)
+    _worker.prefetch.start(day,_worker.read_ahead)
+
+def evaluate_preloaded(day,next_day,payload,generation,token,width,parent_token,extra):
+    if _worker.population_preparer.token==parent_token:
+        _worker.population_preparer.append_members(parent_token,payload,[Individual.restore(p) for p in extra],token)
+    return evaluate(day,next_day,payload,generation,token,width)
 def evaluate_scoped(day,next_day,payload,generation,token,replay_width,output,isolate_results):
     with output_scope(_worker,output,isolate_results=isolate_results):
         return _worker.run(day,next_day,payload,generation,token,replay_width)
@@ -421,6 +431,8 @@ class SessionLanes:
         return self
 
     def generation(self,days,population,generation,token,*,prepared_population=None,output_override=None,isolate_results=False):
+        for future in getattr(self,'preload_futures',[]):future.result()
+        self.preload_futures=[]
         if output_override is not None and self.config.get('shared_replay'):raise ValueError('Scoped output requires independent process lanes')
         if isolate_results and output_override is None:raise ValueError('Result isolation requires an explicit output destination')
         from .lineage import program_key
@@ -469,7 +481,9 @@ class SessionLanes:
         def submit(lane,index,day,next_day):
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             # The generation's immutable population crosses IPC once per lane.
-            request=payload if index==0 or not self.config.get('immutable_population_cache') else None
+            request=payload if (index==0 and getattr(self,'preloaded_token',None)!=token) or not self.config.get('immutable_population_cache') else None
+            if index==0 and prepared_population and getattr(self,'preloaded_token',None)==prepared_population['main_token']:
+                return self.pools[lane].submit(evaluate_preloaded,day,next_day,payload,generation,token,fixed_widths[day],prepared_population['main_token'],prepared_population['extra'])
             if output_override is not None:return self.pools[lane].submit(evaluate_scoped,day,next_day,request,generation,token,fixed_widths[day],str(output_override),isolate_results)
             return self.pools[lane].submit(evaluate,day,next_day,request,generation,token,fixed_widths[day])
         try:
@@ -477,7 +491,11 @@ class SessionLanes:
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             if self.config.get('defer_publication'):return results
             return [timing for result in results for timing in result['timings']]
-        finally:self.independent_progress=None
+        finally:self.independent_progress=None;self.preloaded_token=None
+
+    def preload(self,days,snapshot):
+        self.preloaded_token=snapshot.token
+        self.preload_futures=[pool.submit(preload,day,snapshot.payload,snapshot.token) for pool,day in zip(self.pools,days[:self.workers])]
 
     def release_plans(self):
         if self.config.get('shared_replay'):

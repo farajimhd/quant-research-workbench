@@ -72,6 +72,7 @@ class Controller:
             from .population_snapshot import Snapshot
             self.successor_snapshot=Snapshot(successor)
             self.frozen_raw,frozen_hash=self.successor_snapshot.successor(newids,rng.bit_generator.state)
+            if generation<self.job['phase2_generations'] and hasattr(self,'prepare_successor'):self.prepare_successor(self.successor_snapshot)
         else:
             frozen=dict(population=[m.payload() for m in successor],ids=newids.tolist(),rng=rng.bit_generator.state)
             frozen_hash=digest(frozen);emit(folder/'successor.json',dict(**frozen,sha256=frozen_hash,training_only=True))

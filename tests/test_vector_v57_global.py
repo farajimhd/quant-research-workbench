@@ -6,6 +6,13 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_prefetch_failure_propagates_before_replay_dispatch(self):
+        from concurrent.futures import Future
+        from research.vectorized_backtest.v57.session_lanes import SessionLanes
+        lanes=object.__new__(SessionLanes);future=Future();future.set_exception(ValueError('bad prefetched authority'))
+        lanes.preload_futures=[future]
+        with self.assertRaisesRegex(ValueError,'bad prefetched authority'):lanes.generation([],[],1,'token')
+
     def test_indexed_cache_roundtrip_and_receipt_tamper(self):
         import tempfile,json
         from research.vectorized_backtest.v57.publication_lane import publish_replays

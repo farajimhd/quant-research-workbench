@@ -51,6 +51,22 @@ class Global(Evolution):
         self.published_receipts.append(path)
         self.publication_lane.submit(publish_replays,writes,True)
 
+    def get_lanes(self,role):
+        if role not in self.split_lanes:
+            cfg=config(self.job,'workstation',role)
+            cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
+                # Inductor/Triton keys bind graphs and kernels. UI/publication
+                # source changes must not discard those content-addressed caches.
+                compile_cache_root=str(Path('D:/TradingML/runtimes/v57c/global')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
+            cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
+            cfg['neural_tile']=32
+            cfg['gpu_execution_gate']=self.job['campaign']
+            self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
+        return self.split_lanes[role]
+
+    def prepare_successor(self,snapshot):
+        self.get_lanes('training').preload(self.job['training_days'],snapshot)
+
     def evaluate(self,role,days,members,generation):
         stop_check(self.stop_roots)
         if days!=self.job[role+'_days'] or not days:raise ValueError('Global split changed')
@@ -60,18 +76,13 @@ class Global(Evolution):
         token=digest([m.payload() for m in population]) if mutants else snapshot.token
         self.active_request=(len(members),snapshot.token,token)
         self.diagnostic_token=digest([m.payload() for m in mutants])
-        if role not in self.split_lanes:
-            cfg=config(self.job,'workstation',role)
-            cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
-                # Inductor/Triton keys bind graphs and kernels. UI/publication
-                # source changes must not discard those content-addressed caches.
-                compile_cache_root=str(Path('D:/TradingML/runtimes/v57c/global')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
-            cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
-            cfg['gpu_execution_gate']=self.job['campaign']
-            self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
+        lanes=self.get_lanes(role)
+        if role=='training' and self.job['validation_days']:
+            self.get_lanes('validation').preload(self.job['validation_days'],snapshot)
         self.stage='Global training' if role=='training' else 'Validation replay + training-only reproduction'
         self.publish(phase=2,generation=generation,total_sessions=len(days),replay_role=role,evaluated_population=len(members))
-        results=self.split_lanes[role].generation(days,population,generation,token)
+        pair=dict(main_token=snapshot.token,extra=[m.payload() for m in mutants]) if mutants else None
+        results=lanes.generation(days,population,generation,token,prepared_population=pair)
         if mutants:
             self.paired_probe['metrics']=[r['diagnostic'] for r in results]
             self.paired_probe['receipts']={r['day']:r['diagnostic_ref'] for r in results}
