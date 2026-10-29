@@ -101,11 +101,14 @@ class Model:
         self.replay_samples={};self.replay_sample_scope=None
         self.aggregate_role='training';self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
         self.initial_mode=False
+        self.full_mode=False;self.full_data=None
         from .initial_progress import InitialData
         self.initial=InitialData(job,self.global_root().parent,self.observer_stop)
     def remember(self):
         self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','aggregate_mode','aggregate_role','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation[-1]['initial_mode']=getattr(self,'initial_mode',False)
+        self.navigation[-1]['full_mode']=getattr(self,'full_mode',False)
+        self.navigation[-1]['full_data']=getattr(self,'full_data',None)
         self.navigation=self.navigation[-32:]
     def read(self,path,default=None):
         path=Path(path);key=str(path)
@@ -159,7 +162,7 @@ class Model:
             self.strength_cache[key]=strength(state.get('training_ranking',[]))
         return self.strength_cache[key]
     def global_snapshot(self):
-        target=self.global_root();state=self.read(target/'full-status.json');generation=state.get('ranking_generation',state.get('completed_generations',0))
+        target=self.global_root();state=self.status();generation=state.get('completed_generations',0)
         if generation and (self.global_data is None or self.global_data['generation']!=generation or self.global_data.get('loading')) and not (self.global_thread and self.global_thread.is_alive()) and time.monotonic()-self.global_attempt>10:
             self.global_attempt=time.monotonic();self.global_loading=(generation,0,36);self.global_error=None
             def collect():
@@ -216,7 +219,14 @@ class Model:
         data=live if live and (not sealed or live['generation']>=sealed['generation']) else sealed
         report=data.get('aggregates',{}).get(role) if data else None
         return report or dict(generation=data['generation'] if data else 0,candidates=[],groups=[],coverage=0,total=len(self.job.get(role+'_days',[])),scope='global-'+role,partial=True)
+    def full_report(self):
+        data=self.global_snapshot()
+        if self.full_data is None and data and not data.get('loading') and len(data.get('panels',{}))==len(self.job['training_days'])+len(self.job['validation_days']):
+            self.full_data=data
+        report=self.full_data.get('aggregates',{}).get('training') if self.full_data else None
+        return report or dict(generation=0,candidates=[],groups=[],coverage=0,total=len(self.job['training_days']),partial=True,scope='full-results')
     def report(self):
+        if getattr(self,'full_mode',False):return self.full_report()
         if getattr(self,'initial_mode',False):return self.initial.report()
         if self.aggregate_mode:return self.aggregate_report(self.aggregate_role)
         if self.day and self.day in self.archive.data:return self.archive.data[self.day]['report']
@@ -382,13 +392,13 @@ class Model:
         if getattr(self,'initial_mode',False):return self.initial.candidate_sessions(self.selected['serial'])
         r=self.selected or {};generation=r.get('last_evaluated_generation',r.get('generation',self.report().get('generation',0)))
         data=self.read(self.target()/'global'/f'generation-{generation:04d}'/'session-metrics.json')
-        current=self.live_data if self.live_data and self.live_data['generation']==generation else self.global_data
+        current=self.full_data if getattr(self,'full_mode',False) else self.live_data if self.live_data and self.live_data['generation']==generation else self.global_data
         if not self.day and current and current['generation']==generation and current['panels']:
             first=next(iter(current['panels'].values()))
             data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in current['panels'].items()})
         if r.get('serial') not in data.get('ids',[]):return []
         index=data['ids'].index(r['serial'])
-        return [dict(session=k if ':' in k else 'training:'+k,**{name:p[name][index] for name in ('score','net_pnl','gross_losses','drawdown')}) for k,p in data.get('sessions',{}).items() if not self.aggregate_mode or (k if ':' in k else 'training:'+k).startswith(self.aggregate_role+':')]
+        return [dict(session=k if ':' in k else 'training:'+k,**{name:p[name][index] for name in ('score','net_pnl','gross_losses','drawdown')}) for k,p in data.get('sessions',{}).items() if getattr(self,'full_mode',False) or not self.aggregate_mode or (k if ':' in k else 'training:'+k).startswith(self.aggregate_role+':')]
 
     def open_positions(self,session):
         self.position_rows=[];self.position_error=None;self.position_session=session
@@ -417,7 +427,9 @@ class Model:
         if self.view=='detail':return self.candidate_sessions()
         if self.view=='positions':return sorted_rows(self.position_rows,self.sort,not self.reverse)
         if self.view=='position_detail':return list(self.position_selected.items())
-        if self.view=='global_splits':return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]+[dict(role='initial',**self.initial.report())]
+        if self.view=='global_splits':
+            full=dict(self.full_report(),coverage=len(self.full_data['panels']) if self.full_data else 0,total=len(self.job['training_days'])+len(self.job['validation_days']))
+            return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]+[dict(role='initial',**self.initial.report()),dict(role='full results',**full)]
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
             data=self.global_snapshot();generation=data['generation'] if data else 0
@@ -457,6 +469,11 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if self.view=='global_splits' and (key=='4' or (key in ('\r','\n') and self.selection==3)):
+            self.remember();self.initial_mode=False;self.full_mode=True;self.full_data=None
+            self.aggregate_mode=True;self.aggregate_role='training';self.day=None;self.global_day=None
+            self.view='ranking';self.selection=0;self.filter=None;self.selected=None;return
+        if key in ('a','g','h','i') or (self.view=='global_splits' and key in ('1','2','3','t','v','\r','\n')):self.full_mode=False;self.full_data=None
         if key=='i' or (self.view=='global_splits' and (key=='3' or (key in ('\r','\n') and self.selection==2))):
             self.remember();self.initial_mode=True;self.aggregate_mode=True;self.aggregate_role='training';self.day=None;self.global_day=None
             self.view='ranking';self.selection=0;self.filter=None;self.selected=None;return
@@ -490,7 +507,7 @@ class Model:
         if key=='c':self.summary_mode='timing' if self.summary_mode=='combined' else 'combined';return
         if key=='d':self.remember();self.view='timings';self.selection=0;return
         if key in ('h','\x1b'):self.aggregate_mode=False;self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;self.navigation=[];return
-        if key=='g':self.initial_mode=False;self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
+        if key=='g':self.full_mode=False;self.full_data=None;self.initial_mode=False;self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
         if key in ('o','f','m','a','i','p','e'):
             self.remember()
             if not self.day and not self.global_day:self.aggregate_mode=True
@@ -602,8 +619,8 @@ def render(model,width,height):
     elif model.view=='global_splits':
         for h in ('Path','Sessions ready','Candidates','Purpose'):table.add_column(h)
         for i,r in enumerate(model.rows()):
-            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Rescored saved founders' if r['role']=='initial' else 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
-        caption='1 Training | 2 Validation | 3 / I Initial founders | Enter: open selected path'
+            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Latest completed generation; all 36 sessions' if r['role']=='full results' else 'Rescored saved founders' if r['role']=='initial' else 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
+        caption='1 Training | 2 Validation | 3 Initial | 4 Full results | Enter: open selected path'
     elif model.view in ('operators','families','methods','origins','immigration'):
         report=model.report();rows=model.rows()
         compact=width<120
@@ -726,14 +743,20 @@ def render(model,width,height):
         header=Text('V58 INITIAL FOUNDERS | 6,144 saved founders rescored with V58 concentration | NOT current generation\nTraining only | No founder GPU replay | G: live run | A: global paths',style='bright_cyan')
         if model.initial.error:header.append('\n'+model.initial.error,style='bright_red')
         elif model.view=='detail':header.append(f'\nSession details: {len(model.initial.sessions)}/24 loaded in background')
+    if getattr(model,'full_mode',False):
+        report=model.full_report();generation=report.get('generation',0)
+        header=Text(f'V58 FULL RESULTS | Completed generation {generation or "loading"} | 24 training + 12 validation sessions\nRanked by training score; validation display-only | Snapshot stays fixed while browsing | A: choose path',style='bright_cyan')
+        if not model.full_data:header.append('\nLoading complete saved results in background; live partial results are excluded.',style='bright_yellow')
+        if model.global_error:header.append('\n'+model.global_error,style='bright_red')
     layout['head'].update(header)
     names={'global_splits':'ALL GLOBAL > TRAINING / VALIDATION','ranking':'ALL GLOBAL '+model.aggregate_role.upper()+' CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
     if getattr(model,'initial_mode',False):caption='INITIAL FOUNDERS | V58 training scores | '+caption
+    if getattr(model,'full_mode',False):caption='FULL RESULTS | latest complete snapshot | '+caption
     layout['body'].update(Panel(table,title=('INITIAL FOUNDERS > '+model.view.upper()) if getattr(model,'initial_mode',False) else names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
     if width<120:
         keys='1 candidates | 2 groups | Enter open | Esc back | Q close\nO crossover | F family | M method | P source | E immigration\nArrows select | S sort | R reverse | N/B page | L lineage\nH overview | G sessions | A all global | C columns | D timings'
     else:keys='1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G sessions | A all global | C columns | D timings | L lineage | Q close'
-    if model.view=='global_splits':keys='1 / T: Training | 2 / V: Validation | Arrows: select | Enter: open\nEach split has its own candidates, groups, sorting, and details.\nValidation is display-only and never influences selection.\nEsc: back | G: global sessions | Q: close panel'
+    if model.view=='global_splits':keys='1 Training (live) | 2 Validation (live) | 3 Initial | 4 Full results\nFull results: latest completed generation, all 36 candidate sessions.\nArrows: select | Enter: open | Validation is display-only.\nEsc: back | G: global sessions | Q: close panel'
     keys=keys.replace('Q: close panel','3 / I: initial founders | Q: close panel').replace('Q: close','I: initial founders | Q: close').replace('Q close','I initial | Q close')
     layout['keys'].update(Text(keys))
     return layout
