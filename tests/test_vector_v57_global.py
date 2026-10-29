@@ -6,6 +6,23 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_concurrent_validation_progress_uses_explicit_split(self):
+        from unittest.mock import patch
+        from research.vectorized_backtest.v57.campaign_progress import Model,replay_numbers
+        model=object.__new__(Model)
+        model.job={'training_days':['2026-08-13'],'validation_days':['2026-09-02']}
+        model.global_root=lambda:Path('D:/TradingML/runtimes/progress-fixture')
+        model.replay_sample_scope=None;model.replay_samples={}
+        model.read=Mock(return_value=dict(completed_generations=0,
+            stage='Validation replay + training-only reproduction',replay_generation=1,replay_role='validation',
+            active_sessions=['2026-09-02'],session_paths={'2026-09-02':dict(
+                completed_candidates=1024,total_candidates=2048,completed_seconds=50,total_seconds=100,batch_candidates=1024)}))
+        with patch.object(Path,'exists',lambda path:path.name=='population.json'):
+            rows=model.global_replays()
+        self.assertEqual(rows['validation:2026-09-02']['status'],'running')
+        self.assertEqual(replay_numbers(rows['validation:2026-09-02'])['fraction'],.75)
+        self.assertEqual(rows['training:2026-08-13']['status'],'queued')
+
     def test_transition_cache_reuses_layout_not_tensor_storage(self):
         import torch
         from unittest.mock import patch

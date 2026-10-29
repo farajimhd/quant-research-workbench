@@ -239,7 +239,11 @@ class Model:
         if (root/'global'/f'generation-{sealed+1:04d}'/'population.json').exists():generation=sealed+1
         scope=(state.get('owner',{}).get('creation_time'),generation)
         if self.replay_sample_scope!=scope:self.replay_samples={};self.replay_sample_scope=scope
-        stage=state.get('stage','');role='training' if stage=='Global training' else 'validation' if stage=='Phase 2 validation: display only' else None
+        stage=state.get('stage','');role='training' if stage=='Global training' else 'validation' if stage in ('Phase 2 validation: display only','Validation replay + training-only reproduction') else None
+        # Stage labels describe concurrent CPU work too; the replay split is
+        # authoritative, except for the separately displayed mutation diagnostic.
+        if stage!='Paired mutation diagnostic; selection and RNG isolated' and state.get('replay_generation')==generation and state.get('replay_role') in ('training','validation'):
+            role=state['replay_role']
         event=state.get('worker_progress',{});day=event.get('day');now=time.time()
         if role and state.get('replay_generation')==generation and state.get('replay_role')==role:
             for d,sample in state.get('session_paths',{}).items():
