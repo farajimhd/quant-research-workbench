@@ -43,11 +43,19 @@ All profiles, deployment snapshots, logs and results belong beneath
 D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57.
 
 Laptop replay uses 32-lane GPU tiles. Byte-identical position-independent entry
-graphs share a replay result, including their size head; genomes remain intact.
+graphs share a replay result only after dependency analysis proves both heads
+independent of candidate state; genomes remain intact. Decision bridges read
+the candidate's opened clock implicitly, so any entry graph containing one
+remains individual (including zero-age bridges). Position-state inputs, delayed
+edges and unknown operators also fail sharing eligibility.
 An entry tile may skip outside current membership; management may skip if every
 listing is flat. Original arithmetic is preserved inside active tiles.
 No features, financial gates, candidates or clocks are removed. Source upgrades
 resume only from an explicitly hash-bound checkpoint and result-cache receipt.
+Replay caches and checkpoint contracts bind `state-independent-entry-v2`.
+Earlier result caches and checkpoints cannot be admitted by a source-only
+transition: historical scores need auditing/replay before continuation.
+The fix does not rewrite historical receipts or selected populations.
 
 Fresh proposal calibration runs on one bounded CPU lane during main replay,
 using a cloned RNG and the exact same slot-addressed proposals. Diagnostic

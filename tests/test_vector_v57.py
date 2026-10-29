@@ -12,6 +12,34 @@ def metrics(profits,listings):
     return dict(net_pnl=[sum(p) for p in profits],drawdown=[2.]*n,closed_positions=[len(p) for p in profits],winning_positions=[sum(v>0 for v in p) for p in profits],maximum_position_risk=[1.]*n,maximum_stop_distance=[.1]*n,terminal_valid=[True]*n,episode_profits=profits,episode_listings=listings,episode_exit_clocks=[list(range(len(p))) for p in profits])
 
 class V57Tests(unittest.TestCase):
+    def test_entry_sharing_detects_implicit_state_and_sizing_dependencies(self):
+        from dataclasses import replace
+        from research.vectorized_backtest.v57.entry_sharing import independent,representatives
+        from research.vectorized_backtest.v57.genome import INPUTS,MARKET_INPUTS
+        member=sample(np.random.default_rng(2),1)[0]
+        pure=Network((Neuron((0,),(1.,),0.),)).validate()
+        sized=Network((Neuron((0,),(1.,),0.),Neuron((INPUTS,),(0.,),.5,op='decision'),
+                       Neuron((INPUTS,),(1.,),0.,op='identity')),size_source=1).validate()
+        zero_age=replace(sized,nodes=(sized.nodes[0],replace(sized.nodes[1],bias=0.),sized.nodes[2]))
+        self.assertTrue(independent(pure));self.assertFalse(independent(sized));self.assertFalse(independent(zero_age))
+        self.assertFalse(independent(Network((Neuron((MARKET_INPUTS,),(1.,),0.),))))
+        self.assertFalse(independent(Network((Neuron((-1,),(1.,),0.),))))
+        self.assertFalse(independent(Network((Neuron((0,),(1.,),0.,op='future_state_operator'),))))
+        a=replace(member,networks=dict(member.networks,entry=pure))
+        b=replace(member,networks=dict(member.networks,entry=sized))
+        self.assertEqual(representatives([a,a,b,b]),[0,0,2,3])
+
+    def test_source_transition_cannot_admit_old_sharing_cache(self):
+        import tempfile,json,hashlib
+        from research.vectorized_backtest.v57.resume_authority import accept_cache
+        from research.vectorized_backtest.v57.entry_sharing import VERSION
+        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/cache-contract-tests');root.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            p=Path(tmp)/'cache.json';record=dict(identity=dict(source='old',data='same'),results={})
+            p.write_text(json.dumps(record));key=hashlib.sha256(p.read_bytes()).hexdigest()
+            cfg=dict(result_cache_transition={key:dict(source='old')})
+            with self.assertRaises(ValueError):accept_cache(cfg,p,record,dict(source='new',data='same',entry_sharing=VERSION))
+
     def test_snapshot_exact_canonical_and_mutation_detection(self):
         from research.vectorized_backtest.v57.population_snapshot import Snapshot,envelope,dumps
         from research.vectorized_backtest.v57.identity import digest
@@ -50,15 +78,17 @@ class V57Tests(unittest.TestCase):
         from types import SimpleNamespace
         from research.vectorized_backtest.v57.paired_replay import evaluate
         from research.vectorized_backtest.v57.identity import digest
+        from research.vectorized_backtest.v57.entry_sharing import VERSION
         root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/cold-cache-tests');root.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root) as tmp:
             r=Path(tmp);output=r/'training';cache=output/'result-cache';cache.mkdir(parents=True)
-            (cache/'2026-08-13.json').write_text(json.dumps(dict(identity=dict(source='same'),results={},results_sha256=digest({}))))
+            identity=dict(source='same',entry_sharing=VERSION)
+            (cache/'2026-08-13.json').write_text(json.dumps(dict(identity=identity,results={},results_sha256=digest({}))))
             worker=SimpleNamespace(config=dict(output=str(output),source_sha256='same'),resident_results=None,population_preparer=None)
             class ReachedReplay(Exception):pass
             def run(*args):
                 self.assertEqual(worker.last_result_day,'2026-08-13')
-                self.assertEqual(worker.resident_results,({'source':'same'},{}))
+                self.assertEqual(worker.resident_results,(identity,{}))
                 raise ReachedReplay()
             worker.run=run;members=sample(np.random.default_rng(89),2)
             controller=SimpleNamespace(worker=worker,root=r,paired_probe=dict(mutants=members[1:]))
@@ -149,6 +179,8 @@ class V57Tests(unittest.TestCase):
             sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
             new=dict(job,source_sha256='new',resume_transition=dict(predecessor_job=str(old),predecessor_job_sha256=sha(old),pilot_checkpoint=dict(checkpoint_sha256=sha(cp),state_sha256='state',contract_sha256=digest(saved['contract']))))
             expected=dict(saved['contract'],source_sha256='new');accept_checkpoint(new,cp,saved,expected)
+            from research.vectorized_backtest.v57.entry_sharing import VERSION
+            with self.assertRaises(ValueError):accept_checkpoint(new,cp,saved,dict(expected,entry_sharing=VERSION))
             with self.assertRaises(ValueError):accept_checkpoint(dict(new,population=512),cp,saved,expected)
             cp.write_text('{}')
             with self.assertRaises(ValueError):accept_checkpoint(new,cp,saved,expected)

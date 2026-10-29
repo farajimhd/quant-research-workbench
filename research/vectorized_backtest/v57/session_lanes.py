@@ -169,7 +169,8 @@ class Worker:
         else:population,prepared_keys,packed_population,_=prepared.result()
         root=require_runtime(Path(c['output'])/f'generation-{generation:04d}'/day)
         cache_path=require_runtime(Path(c['output'])/'result-cache')/(day+'.json')
-        identity=dict(source=c['source_sha256'],data=item.identity,execution=c['execution'],
+        from .entry_sharing import VERSION as entry_sharing_version
+        identity=dict(source=c['source_sha256'],entry_sharing=entry_sharing_version,data=item.identity,execution=c['execution'],
                       split=c.get('split','training'),episode_capacity=c.get('episode_capacity',65536))
         keys=prepared_keys if prepared_keys is not None else [v.get('canonical_sha256') or program_key(m) for v,m in zip(payload,population)];cached={};cache_prefetched=False
         transfer_prefetched=bool(getattr(item,'prefetched_transfer',None))

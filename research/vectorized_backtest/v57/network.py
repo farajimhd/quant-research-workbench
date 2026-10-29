@@ -34,13 +34,9 @@ class NetworkPlan:
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in packed['values']]
         self.operations=torch.as_tensor(packed['operations'],device=device)
         self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
-        # Entry graphs cannot read position state. Share only byte-identical
-        # entry programs; financial state and management graphs stay individual.
-        import json
-        representatives={};entry=[]
-        for i,member in enumerate(members):
-            key=json.dumps(member.networks['entry'].payload(),sort_keys=True,separators=(',',':'))
-            entry.append(representatives.setdefault(key,i))
+        # Explicit inputs alone do not capture decision bridges' OPENED reads.
+        from .entry_sharing import representatives
+        entry=representatives(members)
         self.entry_representatives=torch.tensor(entry,device=device,dtype=torch.int32)
         from .genome import MARKET_INPUTS,INPUTS
         masks=[]

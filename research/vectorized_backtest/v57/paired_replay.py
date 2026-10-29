@@ -24,7 +24,8 @@ def evaluate(controller,members,generation,day,width,payload,main_token):
     if resident is None and cache_path.exists():
         from .prefetch_pipeline import read_results
         from .resume_authority import accept_cache
-        record=read_results(cache_path)[1];expected=dict(record['identity'],source=worker.config['source_sha256'])
+        from .entry_sharing import VERSION
+        record=read_results(cache_path)[1];expected=dict(record['identity'],source=worker.config['source_sha256'],entry_sharing=VERSION)
         accept_cache(worker.config,cache_path,record,expected)
         resident=(expected,record['results'])
     diagnostic_keys={program_key(m) for m in mutants}
