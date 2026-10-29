@@ -1,0 +1,42 @@
+"""Resident, source-bound top-of-book execution quotes; no runtime lookup per tick."""
+import numpy as np
+import torch
+from research.vectorized_backtest.v42.data import SessionData as BaseSessionData
+
+QUOTE_VERSION = 'v57-asof-top-of-book-1s-v1'
+
+
+def quote_arrays(market, source_rows, clocks, maximum_age=1.):
+    if maximum_age != 1.:
+        raise ValueError('V58 uses the existing one-second quote validity contract')
+    source = np.asarray(source_rows)
+    known = source >= 0; safe = source.clip(0)
+    bid = np.asarray(market['bid'])[safe].astype(np.float64)
+    ask = np.asarray(market['ask'])[safe].astype(np.float64)
+    stamps = np.asarray(market['quote_us'])[safe]
+    age = np.asarray(clocks)[:, None] - stamps / 1e6
+    valid = (known & np.isfinite(bid) & np.isfinite(ask) & (bid > 0) &
+             (ask >= bid) & (stamps > 0) & (age >= 0) & (age <= maximum_age))
+    # Neutral unused values avoid 0*NaN in financial arithmetic or action feedback.
+    bid[~valid] = 0.; ask[~valid] = 0.
+    return dict(bid=bid, ask=ask, quote_valid=valid)
+
+
+class SessionData(BaseSessionData):
+    def __init__(self, *args, maximum_quote_age_seconds=1., **kwargs):
+        super().__init__(*args, **kwargs)
+        arrays = quote_arrays(self.market, self.bank['source_rows'], self.arrays['clocks'], maximum_quote_age_seconds)
+        added = sum(v.nbytes for v in arrays.values())
+        if self.bytes + added > kwargs.get('maximum_gib', 4.) * 2**30:
+            self.close(); raise MemoryError('Execution quote tensors exceed price/rank admission')
+        self.bytes += added
+        self.host_tensors.update({k: torch.from_numpy(v) for k, v in arrays.items()})
+        self.tensors.update({k: v.to(self.device) for k, v in self.host_tensors.items()
+                             if k in arrays})
+        valid = arrays['quote_valid']; observed = self.host_tensors['observed'].numpy()
+        self.quote_coverage = dict(version=QUOTE_VERSION, maximum_age_seconds=maximum_quote_age_seconds,
+            cells=int(valid.size), valid_cells=int(valid.sum()), observed_cells=int(observed.sum()),
+            observed_with_valid_quote=int((valid & observed).sum()),
+            terminal_valid_quotes=int(valid[-1].sum()), listings=int(valid.shape[1]),
+            additional_host_bytes=added, missing_quote_fill='reject; never close-price fallback')
+        self.identity['execution_quotes'] = dict(version=QUOTE_VERSION, maximum_age_seconds=maximum_quote_age_seconds)
