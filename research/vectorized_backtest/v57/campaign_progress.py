@@ -128,7 +128,22 @@ class Model:
     def status(self):
         if self.day:return self.session_state(self.day)
         state=self.read(self.target()/'full-status.json')
-        if state:return state
+        if state:
+            # The controller publishes while the ordered writer is still sealing.
+            # Refresh the displayed completion count from the atomic checkpoint
+            # prefix without decoding its large population payload.
+            path=self.target()/'global/checkpoint.json'
+            try:
+                stamp=(path.stat().st_mtime_ns,path.stat().st_size)
+                prior=getattr(self,'checkpoint_status_cache',None)
+                if prior is None or prior[0]!=stamp:
+                    import re
+                    with path.open('rb') as stream:prefix=stream.read(65536)
+                    match=re.search(rb',"state":\{"completed":([0-9]+)[,}]',prefix)
+                    self.checkpoint_status_cache=(stamp,int(match[1]) if match else 0)
+                state=dict(state,completed_generations=max(state.get('completed_generations',0),self.checkpoint_status_cache[1]))
+            except OSError:pass
+            return state
         node=self.read(self.bus/'workstation-status.json')
         return dict(status='running' if node.get('status','').startswith('verify-') else node.get('status','queued'),stage=node.get('status','Waiting for coordinator'),completed_generations=0)
     def close(self):self.observer_stop.set()
