@@ -23,7 +23,7 @@ from .evaluator import Execution, PopulationPrograms, replay_cohort
 from .genome import Individual
 from research.vectorized_backtest.v42.io_pipeline import Publisher, prepare_host
 from .prefetch_pipeline import TransferStaging,NextSessionPrefetch,prepare_next,read_results,fingerprint
-from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
+from .runtime_path import require_runtime
 from research.vectorized_backtest.v42.runtime import configure_caches
 
 _worker=None
