@@ -14,7 +14,7 @@ class GlobalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=root) as tmp:
             receipt=str(Path(tmp)/'receipt.json');cache=str(Path(tmp)/'cache.json');identity={'source':'test'}
             results={'a':{'net_pnl':12.,'episode_profits':[12.]},'b':{'net_pnl':-2.,'episode_profits':[-2.]}}
-            publish_replays([(cache,dict(identity=identity,results=results)),(receipt,dict(result_identity=identity,program_keys=['a','b'],metrics=dict(net_pnl=[12.,-2.],episode_profits=[[12.],[-2.]],result_reused=[False,False])))],True)
+            publish_replays([(cache,dict(identity=identity,results=results)),(receipt,dict(result_identity=identity,program_keys=['a','b'],metrics=dict(net_pnl=[12.,-2.],episode_profits=[[12.],[-2.]],result_reused=[False,False]))),(str(Path(tmp)/'timings.json'),[{'seconds':1.}])],True)
             self.assertNotIn('results',json.loads(Path(cache).read_bytes()))
             self.assertEqual(read_results(cache)[1]['results'],results)
             Path(receipt).write_text('{}')

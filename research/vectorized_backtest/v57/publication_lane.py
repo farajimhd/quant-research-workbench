@@ -37,7 +37,7 @@ def publish_replays(writes,indexed=False):
     hashes={}
     indices=[]
     if indexed:
-        receipts=[(path,value) for path,value in writes if value.get('program_keys') and 'metrics' in value]
+        receipts=[(path,value) for path,value in writes if isinstance(value,dict) and value.get('program_keys') and 'metrics' in value]
         keep=[]
         for path,value in writes:
             if 'results' not in value:keep.append((path,value));continue

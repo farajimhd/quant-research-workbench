@@ -280,6 +280,7 @@ class Worker:
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,result_cache_prefetched=cache_prefetched,transfer_prefetched=transfer_prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
                     timing['replay_started_epoch']=replay_start
+                    timing.update(getattr(plan.plan,'last_replay_profile',{}))
                     timing['since_previous_replay_seconds']=None if previous_finished is None else replay_start-previous_finished
                     self.previous_replay_finished=timing['finished_epoch']
                     if plan.plan is not None:

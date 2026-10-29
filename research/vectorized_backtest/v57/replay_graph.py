@@ -113,6 +113,8 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         from .gpu_gate import enqueue_turns
         return enqueue_turns(graph,total,block,execution_gate,device,progress)
     pending=deque();reported=0;completed=0;last_report=0.
+    replay_started=time.perf_counter()
+    gpu_start=torch.cuda.Event(enable_timing=True);gpu_end=torch.cuda.Event(enable_timing=True);gpu_start.record()
     def publish_completed(force=False):
         nonlocal reported,completed,last_report
         while pending and pending[0][1].query():completed=pending.popleft()[0]
@@ -128,4 +130,7 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         publish_completed()
         if pending:time.sleep(.025)
     torch.cuda.synchronize(device)
+    gpu_end.record();gpu_end.synchronize()
+    network_plan.last_replay_profile=dict(compiler_warmup_seconds=warm_seconds,graph_capture_seconds=capture_seconds,
+        chronological_replay_seconds=time.perf_counter()-replay_started,gpu_elapsed_seconds=gpu_start.elapsed_time(gpu_end)/1000)
     if progress is not None:publish_completed(force=True)
