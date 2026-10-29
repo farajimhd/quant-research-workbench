@@ -22,12 +22,17 @@ class MutationProgressTests(unittest.TestCase):
                 rows=model.diagnostic_replays();self.assertEqual(replay_numbers(rows[0])['fraction'],.5);self.assertEqual(rows[1]['status'],'queued')
                 probe=root/'phase-2/mutation-probe-replay/training/generation-0002/b/receipt.json';probe.parent.mkdir(parents=True);probe.write_text('{}')
                 self.assertEqual(model.diagnostic_replays()[1]['status'],'complete')
-                model.view='global_sessions';model.key('x');self.assertEqual(model.view,'diagnostic_sessions')
-                with patch.object(model,'timing',return_value=dict(last=20,elapsed=10,work=20,eta=None,generation_eta=None)):
+                model.view='global_sessions'
+                data=dict(generation=2,summaries={'training:a':dict(strength=dict(top_net=123.,candidates=1024))})
+                with patch.object(model,'global_snapshot',return_value=data),patch.object(model,'live_snapshot',return_value=None),patch.object(model,'timing',return_value=dict(last=20,elapsed=10,work=20,eta=None,generation_eta=None)):
+                    self.assertEqual(model.rows()[0]['strength']['top_net'],123.)
+                    self.assertEqual(model.rows()[0]['strength']['candidates'],1024)
+                    self.assertEqual(replay_numbers(model.rows()[0]['replay'])['fraction'],.5)
                     for width,height in ((80,24),(160,45)):
                         out=io.StringIO();Console(file=out,width=width,height=height,color_system=None).print(render(model,width,height));text=out.getvalue()
-                        self.assertIn('MUTATION DIAGNOSTIC',text);self.assertIn('50%',text);self.assertIn('1/2',text);self.assertNotIn('\x1b',text)
-                model.key('back');self.assertEqual(model.view,'global_sessions')
+                        self.assertIn('GLOBAL SESSION RESULTS',text);self.assertIn('50%',text);self.assertIn('1/2',text);self.assertNotIn('\\x1b',text)
+                        self.assertIn('Max net $',text)
+                    model.key('a');self.assertEqual(model.view,'global_splits');model.key('back');self.assertEqual(model.view,'global_sessions')
                 state['stage']='Phase 2 validation: display only';state['owner']['creation_time']=2;status.write_text(json.dumps(state));model.cache.clear()
                 self.assertFalse(model.diagnostic_replays()[0]['progress'])
             finally:model.close()
