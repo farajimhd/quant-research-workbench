@@ -19,6 +19,7 @@ def main():
     parser.add_argument('--job',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--maximum-batch',type=int,default=1024,choices=(1024,2048,4096,6144))
     parser.add_argument('--offset',type=int,default=0);parser.add_argument('--count',type=int,default=6144)
+    parser.add_argument('--neural-tile',type=int,default=64,choices=(32,64,128,256))
     parser.add_argument('--compare',type=Path);parser.add_argument('--reproduce',action='store_true')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
@@ -34,7 +35,7 @@ def main():
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
-    local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch)
+    local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile)
     c=Global(local);c.publication_lane=Lane();c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
     thread=__import__('threading').Thread(target=c.pump,daemon=True);thread.start()
     started=time.perf_counter()
