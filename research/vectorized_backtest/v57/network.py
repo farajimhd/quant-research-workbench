@@ -34,6 +34,21 @@ class NetworkPlan:
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in packed['values']]
         self.operations=torch.as_tensor(packed['operations'],device=device)
         self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
+        # Entry graphs cannot read position state. Share only byte-identical
+        # entry programs; financial state and management graphs stay individual.
+        import json
+        representatives={};entry=[]
+        for i,member in enumerate(members):
+            key=json.dumps(member.networks['entry'].payload(),sort_keys=True,separators=(',',':'))
+            entry.append(representatives.setdefault(key,i))
+        self.entry_representatives=torch.tensor(entry,device=device,dtype=torch.int32)
+        from .genome import MARKET_INPUTS,INPUTS
+        masks=[]
+        for member in members:
+            used={0}  # Workspace tile applicability always needs held state.
+            used.update(s-MARKET_INPUTS for net in member.networks.values() for node in net.nodes for s in node.sources if MARKET_INPUTS<=s<INPUTS)
+            masks.append(sum(1<<s for s in used))
+        self.state_used=torch.tensor(masks,device=device,dtype=torch.int32)
         # Execute long action graphs first; genotype and output order stay intact.
         self.cuda_network_order=torch.as_tensor(np.argsort(-packed['values'][3],kind='stable').astype(np.int32),device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)

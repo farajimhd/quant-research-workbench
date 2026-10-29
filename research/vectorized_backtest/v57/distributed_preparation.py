@@ -25,6 +25,31 @@ class PopulationPreparation:
             if digest([m.payload() for m in members])!=token:raise ValueError('Training/validation genome alignment changed')
             return members,[keys[i] for i in selection],select_packed(packed,selection),0.
         self.future=self.pool.submit(gather);return True
+    def submit_members(self,members,token):
+        """Pack the already validated immutable successor without decoding JSON."""
+        payload=[m.payload() for m in members]
+        from .identity import digest
+        if digest(payload)!=token:raise ValueError('Successor preparation identity changed')
+        self.parent=None;self.payload=payload;self.token=token;self.misses+=1
+        def pack():
+            from .lineage import program_key
+            from .network_pack import pack_networks
+            from .validation_cache import validation_scope
+            started=perf_counter()
+            with validation_scope(capacity=min(32768,max(4096,len(members)*15))):
+                return members,[program_key(m) for m in members],pack_networks(members),perf_counter()-started
+        self.future=self.pool.submit(pack);return self.future
+    def append_members(self,parent_token,payload,extra,token):
+        if self.token!=parent_token or self.future is None:return False
+        source=self.future;parent_payload=self.payload
+        def append():
+            from .identity import digest
+            from .network_pack import pack_networks,concatenate_packed
+            from .lineage import program_key
+            if digest(payload)!=token or payload!=parent_payload+[m.payload() for m in extra]:raise ValueError('Paired preparation identity mismatch')
+            members,keys,packed,_=source.result();started=perf_counter()
+            return members+extra,keys+[program_key(m) for m in extra],concatenate_packed(packed,pack_networks(extra)),perf_counter()-started
+        self.payload=payload;self.token=token;self.parent=None;self.future=self.pool.submit(append);return True
     def close(self):self.pool.shutdown(wait=True,cancel_futures=True)
 
 def prepare(payload,token):

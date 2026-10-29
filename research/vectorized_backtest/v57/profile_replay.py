@@ -32,6 +32,7 @@ def main():
         optimized=baseline.signals if a.baseline_only else active.signals;reference=None;rows=[]
         cases=[('generic',baseline.signals,128),('feedforward',optimized,128)]
         if a.blocks:cases=[('tile-'+b,optimized,int(b)) for b in a.blocks.split(',')]
+        if os.environ.get('V57_COMPARE_PREFIX')=='1':cases=[('baseline',baseline.signals,32),('optimized',optimized,32)]
         for name,signals,block in ([] if a.full_only else cases):
             plan.cuda_block=block
             active.signals=signals
@@ -45,10 +46,18 @@ def main():
             assert signature==reference,'Financial parity failed'
             rows.append(dict(mode=name,seconds=times,median_seconds=float(np.median(times)),metrics_sha256=signature,candidates=len(members),clocks=a.clocks));print(rows[-1],flush=True)
             del ev;gc.collect()
+        if os.environ.get('V57_PROFILE_CUDA')=='1':
+            from torch.profiler import profile,ProfilerActivity
+            ev=replay_cohort([item],members,[plan],execution=Execution(**j['execution']),backend='compile',trace=True,capture_only=True)
+            ev.replay.reset();torch.cuda.synchronize()
+            with profile(activities=[ProfilerActivity.CPU,ProfilerActivity.CUDA]) as measured:
+                ev.replay.enqueue();torch.cuda.synchronize()
+            (output/'cuda-profile.txt').write_text(measured.key_averages().table(sort_by='self_cuda_time_total',row_limit=24),encoding='utf-8')
+            del ev
         active.signals=optimized
         result=dict(rows=rows,speedup=rows[0]['median_seconds']/rows[-1]['median_seconds'] if rows else None,exact_financial_parity=True,source_sha256=source_hash())
         if a.full_receipt:
-            if rows:plan.cuda_block=int(min(rows,key=lambda r:r['median_seconds'])['mode'].split('-')[-1]) if a.blocks else 128
+            if rows:plan.cuda_block=int(min(rows,key=lambda r:r['median_seconds'])['mode'].split('-')[-1]) if a.blocks and not os.environ.get('V57_COMPARE_PREFIX') else 32
             item.clocks=full_clocks;start=time.perf_counter()
             raw=replay_cohort([item],members,[plan],execution=Execution(**j['execution']),backend='compile',trace=True)[0]
             full_seconds=time.perf_counter()-start

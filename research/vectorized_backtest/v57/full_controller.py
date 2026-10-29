@@ -31,6 +31,7 @@ def checkpoint_contract(job,train,valid):
         contract['campaign_context']={k:job.get(k) for k in ('campaign_stage','parent_job_sha256','initialization_probe_sha256','promotion_exports')}
     if job.get('immigration_policy'):contract['immigration_policy']=job['immigration_policy']
     if job.get('selection',{}).get('profit_fresh_fraction'):contract['profit_fresh_fraction']=job['selection']['profit_fresh_fraction']
+    if job.get('score_version'):contract['score_version']=job['score_version']
     if job.get('validation_schedule')=='concurrent-training-only-v1':contract['validation']='display-only; isolated training-only reproduction concurrent with replay'
     return contract
 
@@ -53,7 +54,7 @@ class Controller:
             # Retain parents plus offspring for this bounded transaction;
             # 4096 entries thrash even on the 5120 parental action graphs.
             with validation_scope(capacity=min(32768,max(4096,len(members)*15))):
-                successor,newids,diversity=next_population(rng,members,source_ids,pedigree,[],generation+1,Selection(**self.job['selection']),session_values=panel['score'][None],session_eligible=panel['eligible'][None],global_values=panel['score'],global_eligible=panel['eligible'],target_size=self.job['population'],species=species,ordered=ordered,case_values=None,case_ids=None,probe=probe)
+                successor,newids,diversity=next_population(rng,members,source_ids,pedigree,[],generation+1,Selection(**self.job['selection']),session_values=panel['score'][None],session_eligible=panel['eligible'][None],global_values=panel['score'],global_eligible=panel['eligible'],target_size=self.job['population'],species=species,ordered=ordered,case_values=None,case_ids=None,probe=probe,fresh_prefetch=getattr(self,'fresh_prefetch',None))
         else:successor,newids,diversity=members,source_ids,dict(reproduction_performed=False)
         if generation<self.job['phase2_generations']:
             audit=read(folder/'offspring-audit.json');selected=set(map(int,source_ids)) & set(map(int,newids))
@@ -111,29 +112,56 @@ class Controller:
         for generation in range(completed+1,self.job['phase2_generations']+1):
             started=time.perf_counter();folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True);self.stage='Session training' if self.job.get('campaign_stage')=='session' else 'Global training'
             source_population=[m.payload() for m in members];source_ids=ids.copy();token=digest(source_population)
+            preparer=getattr(getattr(self,'worker',None),'population_preparer',None)
+            if preparer is not None and preparer.token!=token:preparer.submit_members(members,token)
             write_json(folder/'population.json',dict(population=source_population,ids=ids.tolist(),population_sha256=token))
             for serial,member in zip(source_ids,members):pedigree.records[int(serial)]['node_count']=sum(len(n.nodes) for n in member.networks.values())
             birth_records=[pedigree.records[int(i)] for i in source_ids]
             # Identity/ancestry are known before replay. Publish them now so
             # completed session receipts can be explored before the global seal.
             write_json(folder/'evaluated-pedigree.json',birth_records)
-            ordered,training_receipts=self.evaluate('training',train,members,generation)
+            from .allocation import budgets
+            from .reproduction_prefetch import FreshPrefetch
+            count=budgets(self.job['population'])['fresh'];count-=int(count*self.job['selection'].get('profit_fresh_fraction',0.))
+            self.fresh_prefetch=FreshPrefetch(rng,generation+1,count,probe) if generation<self.job['phase2_generations'] else None
+            if not valid and self.job.get('mutation_probe_size',0):
+                from .mutation_probe import prepare_probe
+                self.paired_probe=prepare_probe(self,members,source_ids,birth_records,generation)
+            try:
+                ordered,training_receipts=self.evaluate('training',train,members,generation)
+            except BaseException:
+                if self.fresh_prefetch:self.fresh_prefetch.close();self.fresh_prefetch=None
+                raise
             from .generation_pipeline import overlap
             self.stage='Phase 2 validation: display only' if valid else 'Training-only reproduction'
             self.publish(reproduction_stage='Queued')
             work=lambda:self.reproduce(root,folder,members,source_ids,birth_records,token,ordered,training_receipts,train,objective,generation,rng,pedigree,species,probe)
             concurrent=bool(valid and self.job.get('validation_schedule')=='concurrent-training-only-v1')
+            probe_concurrent=bool(not valid and self.job.get('mutation_probe_size',0))
             self.publish(validation_overlap=concurrent,transition_started_epoch=time.time())
-            result,validation_result,timing=overlap(work,lambda:self.evaluate('validation',valid,members,generation),concurrent, bool(valid))
+            if probe_concurrent:
+                from .mutation_probe import run_probe
+                diagnostic_panel=aggregate(ordered,objective)
+                self.stage='Reproduction + paired mutation diagnostic';self.publish()
+                result,validation_result,timing=overlap(work,lambda:run_probe(self,folder,members,source_ids,birth_records,diagnostic_panel,generation),True)
+                timing['mutation_probe_concurrent']=True
+            else:
+                result,validation_result,timing=overlap(work,lambda:self.evaluate('validation',valid,members,generation),concurrent, bool(valid))
+            if self.fresh_prefetch:self.fresh_prefetch.close();self.fresh_prefetch=None
             panel,successor,newids,diversity,frozen_hash,reproduction_seconds=result
             validation,validation_receipts=validation_result if valid else (None,{})
             validation_panel=aggregate(validation,objective) if valid else None
             timing['reproduction_seconds']=reproduction_seconds
             write_json(folder/'transition-timings.json',timing)
-            if self.job.get('mutation_probe_size',0):
+            if self.job.get('mutation_probe_size',0) and not probe_concurrent:
                 from .mutation_probe import run_probe
                 self.stage='Paired mutation diagnostic; selection and RNG isolated';self.publish()
                 run_probe(self,folder,members,source_ids,birth_records,panel,generation)
+            # Successor is frozen and diagnostics no longer own the preparation
+            # slot. Pack next generation on one CPU lane during seal publication.
+            preparer=getattr(getattr(self,'worker',None),'population_preparer',None)
+            if preparer is not None and generation<self.job['phase2_generations']:
+                preparer.submit_members(successor,digest([m.payload() for m in successor]))
             if digest(dict(population=[m.payload() for m in successor],ids=newids.tolist(),rng=rng.bit_generator.state))!=frozen_hash:raise ValueError('Validation changed successor or training RNG')
             write_json(folder/'validation.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(validation_panel) if valid else {},ranking=ranking(validation_panel,source_ids) if valid else [],opened=bool(valid),receipts=validation_receipts,display_only=True,successor_sha256_before=frozen_hash,successor_sha256_after=frozen_hash))
             observational={name:sha(folder/name) for name in ('evolution-report.json','founder-results.json','session-metrics.json','transition-timings.json') if (folder/name).exists()}
@@ -143,6 +171,8 @@ class Controller:
             write_checkpoint(cp,contract,state)
             from .evolution_report import expose
             expose(root,folder)
+            write_json(folder/'generation-timings.json',dict(generation=generation,seal_sha256=seals[str(generation)],
+                full_generation_seconds=time.perf_counter()-started,includes_checkpoint_and_observer_publication=True))
             self.publish(phase=2,generation=generation,ranking_generation=generation,completed_generations=generation,training_ranking=ranking(panel,source_ids),validation_ranking=ranking(validation_panel,source_ids) if valid else [],validation_display_only=True)
             # Finished episode ledgers have sealed receipts. Do not retain the
             # previous generation's training/validation lists during new replay.

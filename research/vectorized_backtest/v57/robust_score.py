@@ -20,7 +20,8 @@ def combine(panels):
     out={k:np.sum([p[k] for p in panels],axis=0) for k in keys}
     nets=np.asarray([p['net_pnl'] for p in panels]);best=nets.argmax(axis=0);cols=np.arange(nets.shape[1])
     costs=nets-np.asarray([p['gross_losses'] for p in panels])-np.asarray([p['drawdown'] for p in panels])
-    out['session_component']=costs.sum(axis=0)-np.where(nets[best,cols]>0,costs[best,cols],0.)
+    # Trim profit only: the winning day's losses and equity drawdown still count.
+    out['session_component']=costs.sum(axis=0)-np.maximum(nets[best,cols],0.)
     out['score']=out['ticker_component']+out['session_component']
     out['eligible']=np.logical_and.reduce([p['eligible'] for p in panels])
     out['maximum_position_risk']=np.maximum.reduce([p['maximum_position_risk'] for p in panels])

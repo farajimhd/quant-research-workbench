@@ -6,7 +6,7 @@ import triton.language.extra.cuda.libdevice as libdevice
 from .config import FAN_IN,STATES
 
 @tr.jit
-def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.constexpr,BLOCK:tl.constexpr):
+def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,USED,OUT,U:tl.constexpr,STATES:tl.constexpr,BLOCK:tl.constexpr):
     # Share position loads/calculations across channels for each listing tile.
     member=tl.program_id(0);u=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=u<U
     clock=tl.load(CLOCK).to(tl.float64)
@@ -16,16 +16,17 @@ def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,OUT,U:tl.constexpr,STATES:tl.c
     opened=tl.load(OPENED+member*U+u,live,0);price=tl.load(PREVIOUS+u,live,0)
     known_price=(price==price)&(tl.abs(price)<float('inf'))&(price>0)
     for state in tl.static_range(STATES):
-        if state==0:x64=held.to(tl.float64)
-        elif state==1:x64=tl.where(held&known_price,price/tl.maximum(avg,1e-12)-1.,0.)
-        elif state==2:x64=tl.where(held,(clock-opened)/3600.,0.)
-        elif state==3:x64=tl.where(held&known_price,q*price/1000.,0.)
-        elif state==4:x64=tl.where(held,(avg-stop)/tl.maximum(avg,1e-12),0.)
-        elif state==5:x64=adds/20.
-        elif state==6:x64=tl.where(held,(clock-last)/300.,0.)
-        else:x64=tl.load(FEEDBACK+(member*U+u)*(STATES-7)+state-7,live,0).to(tl.float64)
-        x=2./(1.+tl.exp(2.*-x64.to(tl.float32)))-1.
-        tl.store(OUT+(member*STATES+state)*U+u,x,live)
+        if (tl.load(USED+member)&(1<<state))!=0:
+            if state==0:x64=held.to(tl.float64)
+            elif state==1:x64=tl.where(held&known_price,price/tl.maximum(avg,1e-12)-1.,0.)
+            elif state==2:x64=tl.where(held,(clock-opened)/3600.,0.)
+            elif state==3:x64=tl.where(held&known_price,q*price/1000.,0.)
+            elif state==4:x64=tl.where(held,(avg-stop)/tl.maximum(avg,1e-12),0.)
+            elif state==5:x64=adds/20.
+            elif state==6:x64=tl.where(held,(clock-last)/300.,0.)
+            else:x64=tl.load(FEEDBACK+(member*U+u)*(STATES-7)+state-7,live,0).to(tl.float64)
+            x=2./(1.+tl.exp(2.*-x64.to(tl.float32)))-1.
+            tl.store(OUT+(member*STATES+state)*U+u,x,live)
 
 
 @tr.jit
@@ -42,7 +43,7 @@ def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     if SORTED:
         net_order=tl.load(ORDER+tl.program_id(0)//TILES)
@@ -60,7 +61,8 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
     old_known=MEMORY_KNOWN;current_known=KNOWN
     held=tl.load(POSITION_STATES+(member*STATES)*U+u,live,0)>0
     entry_allowed=tl.load(ENTRY_ALLOWED+u,live,False)
-    active=live&tl.where(action==0,~held&entry_allowed,held)
+    representative=tl.load(ENTRY_REP+member)
+    active=live&tl.where(action==0,entry_allowed&(representative==member),held)
     tl.store(OUT+(member*5+action)*U+u,False,live)
     if tl.sum(active.to(tl.int32),0)>0:
         # Preserve the original lane masks/arithmetic within an active tile.
@@ -161,23 +163,28 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     block=getattr(plan,'cuda_block',128)
     if owned:block=32
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
-    state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
+    state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.state_used,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
     scheduled=not owned and block in (32,64,128)
     tiles=tr.cdiv(owned_k,block)
     grid=(b*5*tiles,) if scheduled else (b,5,tiles)
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
-        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.entry_allowed,plan.memory,plan.memory_known,plan.ratios,
+        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.entry_allowed,plan.entry_representatives,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
         plan.cuda_network_order,tiles,scheduled,num_warps=(1 if block==32 else 2) if scheduled else 4,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
-    pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,b*u,u,256)
+    pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,plan.entry_representatives,plan.ratios,b*u,u,256)
     return result
 
 @tr.jit
-def pack(A,OUT,PHASE,COUNT:tl.constexpr,U:tl.constexpr,BLOCK:tl.constexpr):
+def pack(A,OUT,PHASE,ENTRY_REP,RATIOS,COUNT:tl.constexpr,U:tl.constexpr,BLOCK:tl.constexpr):
     x=tl.program_id(0)*BLOCK+tl.arange(0,BLOCK);live=x<COUNT;base=(x//U)*5*U+x%U
     bits=tl.full((BLOCK,),0,tl.int32)
-    for action in tl.static_range(5):bits=bits | (tl.load(A+base+action*U,live,False).to(tl.int32)<<action)
+    representative=tl.load(ENTRY_REP+x//U,live,0)
+    for action in tl.static_range(5):
+        address=tl.where(action==0,representative*5*U+x%U,base+action*U)
+        bits=bits | (tl.load(A+address,live,False).to(tl.int32)<<action)
+    ratio=tl.load(RATIOS+(representative*U+x%U)*3,live,1.)
+    tl.store(RATIOS+x*3,ratio,live&(representative!=x//U))
     tl.store(OUT+x,bits,live)
     # Device-side phase survives every graph replay, including one-clock graphs.
     # Only this program writes it; the next launch waits for the whole kernel.

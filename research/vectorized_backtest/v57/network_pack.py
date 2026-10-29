@@ -40,3 +40,11 @@ def select_packed(packed, selection):
                        *(v[nets] for v in values[5:])),
         operations=packed['operations'][rows],edge_counts=packed['edge_counts'][rows],
         total_nodes=total,kernel_nodes=1<<(int(counts.max())-1).bit_length(),offsets_cpu=offsets)
+
+
+def concatenate_packed(first,second):
+    values=[np.concatenate((a,b)) for a,b in zip(first['values'],second['values'])]
+    counts=values[3];values[4]=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)
+    return dict(values=tuple(values),operations=np.concatenate((first['operations'],second['operations'])),
+        edge_counts=np.concatenate((first['edge_counts'],second['edge_counts'])),total_nodes=int(counts.sum()),
+        kernel_nodes=max(first['kernel_nodes'],second['kernel_nodes']),offsets_cpu=values[4])

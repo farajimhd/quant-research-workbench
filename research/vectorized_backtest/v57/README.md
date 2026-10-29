@@ -8,13 +8,13 @@ Fitness is the sum of two components:
 1. For each ticker-date, remove its largest strictly positive closed-position
    profit. Sum remaining profits minus remaining gross losses. Position-level
    marked-to-market paths are unavailable, so this component has no drawdown.
-2. Exclude the session with highest strictly positive net profit, including its
-   loss and drawdown components. Sum net profit minus gross losses minus session
-   drawdowns for the remaining sessions. Ties use the first manifest day.
+2. Subtract the highest strictly positive session net profit from total net
+   profit, then subtract ALL session gross losses and equity drawdowns. The
+   trimmed session's losses and drawdown remain penalized.
 
 All-losing groups never discard losses. Empty groups contribute zero unless
 an observed equity drawdown remains. On the one-day pilot, a positive session
-has zero session component; the ticker component still drives evolution.
+has session component `-gross_losses - drawdown`, plus its trimmed ticker score.
 Ticker-specialist parent ranks sum the trimmed ticker-date costs. Parent draw
 allocation remains 25% ticker specialists / 75% overall score. No risk admission
 caps are reintroduced. Financial net/loss/drawdown reports remain untrimmed.
@@ -42,8 +42,24 @@ validation. This pilot does not establish out-of-session generalization.
 All profiles, deployment snapshots, logs and results belong beneath
 D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57.
 
-Laptop replay uses 32-lane GPU tiles. A tile may skip entry if every listing is
-held or outside current membership, and may skip management if every listing is
-flat. Original arithmetic and lane masks are preserved inside active tiles.
+Laptop replay uses 32-lane GPU tiles. Byte-identical position-independent entry
+graphs share a replay result, including their size head; genomes remain intact.
+An entry tile may skip outside current membership; management may skip if every
+listing is flat. Original arithmetic is preserved inside active tiles.
 No features, financial gates, candidates or clocks are removed. Source upgrades
 resume only from an explicitly hash-bound checkpoint and result-cache receipt.
+
+Fresh proposal calibration runs on one bounded CPU lane during main replay,
+using a cloned RNG and the exact same slot-addressed proposals. Diagnostic
+mutants share GPU batch capacity with training but publish separate receipts;
+their reports overlap reproduction, and successor packing overlaps seal
+publication. Diagnostics never feed selection or the retained training cache.
+Full generation timings include
+checkpoint and observer publication; older seals predate that final timing field.
+
+Candidate detail -> select session -> Enter opens its saved position ledger.
+S cycles sorting and R reverses it. Receipt verification/loading runs only in
+the observer, with one active read and one coalesced pending selection. Replay
+clocks and listing IDs are shown as recorded; absent prices/fills are not inferred.
+The global session table fixes its column widths and shows replay elapsed time,
+average session replay and average generation duration over the last five seals.

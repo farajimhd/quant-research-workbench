@@ -42,6 +42,11 @@ def accept_checkpoint(job,path,saved,expected):
         bound=transition.get('pilot_checkpoint',{})
         if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Pilot checkpoint differs from bound receipt')
         actual=dict(saved['contract'],source_sha256=expected['source_sha256'])
+        change=transition.get('score_change')
+        if change:
+            if change!=dict(from_version=old.get('score_version'),to_version='profit-only-trim-v2') or job.get('score_version')!=change['to_version']:
+                raise ValueError('Unapproved trimming score transition')
+            actual['score_version']=job['score_version']
         if actual!=expected:raise ValueError('Pilot continuation changed more than implementation source')
         return
     old=predecessor(job);day=job['training_days'][0]

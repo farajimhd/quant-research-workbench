@@ -41,6 +41,11 @@ class Pilot(Controller):
         self.publish(phase=2,generation=generation,completed_generations=generation-1,
                      evaluated_population=len(members),completed_sessions=0,total_sessions=1,replay_generation=generation,replay_role=role,active_sessions=days)
         width=len(json.loads((Path(self.worker.config['history'])/day/'complete.json').read_bytes())['listing_ids'])
+        paired=getattr(self,'paired_probe',None)
+        if paired and paired['generation']==generation and paired['mutants']:
+            from .paired_replay import evaluate
+            self.publish(paired_diagnostic_candidates=len(paired['mutants']))
+            return evaluate(self,members,generation,day,width,payload,token)
         self.worker.run(day,None,payload,generation,token,width)
         receipt_path=Path(self.worker.config['output'])/f'generation-{generation:04d}'/day/'receipt.json'
         receipt=json.loads(receipt_path.read_bytes())
@@ -83,6 +88,7 @@ class Pilot(Controller):
                 raise
             finally:
                 self.stop.set();thread.join(5);self.worker.close()
+                if getattr(self,'fresh_prefetch',None):self.fresh_prefetch.close();self.fresh_prefetch=None
 
 
 def main():

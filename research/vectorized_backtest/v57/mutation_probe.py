@@ -10,7 +10,7 @@ from .objectives import Objective
 from research.vectorized_backtest.v42.publication import write_json
 
 
-def run_probe(controller, folder, members, ids, records, panel, generation):
+def prepare_probe(controller, members, ids, records, generation):
     frozen = digest([m.payload() for m in members])
     # Stable hash ordering avoids choosing only the first scheduled operator.
     candidates = [i for i, r in enumerate(records) if r['generation'] == generation
@@ -35,10 +35,23 @@ def run_probe(controller, folder, members, ids, records, panel, generation):
         mutants.append(child)
         pairs.append(dict(serial=int(ids[i]), operator=('whole:' + records[i]['whole_mode'])
                           if records[i].get('whole_network') else 'mask',
-                          baseline={k:bool(v[i]) if k == 'eligible' else float(v[i])
-                                    for k, v in panel.items()}, mutation_fields=fields))
+                          mutation_fields=fields))
+    return dict(generation=generation,frozen=frozen,mutants=mutants,pairs=pairs,rejected=rejected,requested=len(candidates))
+
+
+def run_probe(controller, folder, members, ids, records, panel, generation):
+    prepared=getattr(controller,'paired_probe',None)
+    if not prepared or prepared['generation']!=generation:prepared=prepare_probe(controller,members,ids,records,generation)
+    frozen=prepared['frozen'];mutants=prepared['mutants'];pairs=prepared['pairs'];rejected=prepared['rejected']
+    indices={int(serial):i for i,serial in enumerate(ids)}
+    for pair in pairs:
+        i=indices[pair['serial']]
+        pair['baseline']={k:bool(v[i]) if k=='eligible' else float(v[i]) for k,v in panel.items()}
     receipts = {}
-    if mutants:
+    if mutants and prepared.get('metrics') is not None:
+        receipts=prepared['receipts'];result=aggregate([prepared['metrics']],Objective(**controller.job['objective']))
+        for j,pair in enumerate(pairs):pair['mutated']={k:bool(v[j]) if k=='eligible' else float(v[j]) for k,v in result.items()}
+    elif mutants:
         # Reuse read-only market residency, but never overwrite main replay receipts
         # or admit diagnostic results into its resident result cache.
         worker = controller.worker
@@ -58,5 +71,5 @@ def run_probe(controller, folder, members, ids, records, panel, generation):
         raise ValueError('Mutation diagnostic changed the training cohort')
     write_json(folder / 'mutation-probe.json', dict(generation=generation,
         diagnostic_only=True, selection_updated=False, training_rng_used=False,
-        requested=len(candidates), evaluated=len(pairs), rejected=rejected,
+        requested=prepared['requested'], evaluated=len(pairs),batched_with_training='metrics' in prepared, rejected=rejected,
         population_sha256=frozen, receipts=receipts, pairs=pairs))

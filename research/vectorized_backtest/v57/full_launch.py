@@ -13,7 +13,7 @@ def prepare(source,root,code,*,generations=50,comparison=None):
     root=require_runtime(root);code=Path(code)
     if (root/'pilot-job.json').exists():raise ValueError('Existing pilot must be audited, not recreated')
     original=json.loads(Path(source).read_bytes());probe=Path(original['probe_root'])/'2026-08-13.npz'
-    job=dict(version='v57-pilot-v2',source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
+    job=dict(version='v57-pilot-v2',score_version='profit-only-trim-v2',source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
         commit=json.loads((code/'deployment.json').read_bytes())['commit'],campaign=str(root),code=str(code),
         training=original['training'],training_sha256=original['training_sha256'],validation_sha256=original['validation_sha256'],
         training_days=['2026-08-13'],validation_days=[],initialization_probe=str(probe),initialization_probe_sha256=sha(probe),

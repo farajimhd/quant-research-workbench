@@ -88,6 +88,7 @@ class Model:
         self.archive=Archive(self.bus,job.get('training_days',[]),self.observer_stop,job.get('global_restart',False))
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
+        self.position_rows=[];self.position_error=None;self.position_thread=None;self.position_session=None;self.position_request=None;self.position_lock=threading.Lock()
         self.replay_samples={};self.replay_sample_scope=None
         self.aggregate_role='training';self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
     def remember(self):
@@ -148,6 +149,10 @@ class Model:
         for generation in range(1,done+1):
             if generation in cache:continue
             seal=self.read(root/f'generation-{generation:04d}'/'complete.json');seconds=seal.get('wall_seconds')
+            full=self.read(root/f'generation-{generation:04d}'/'generation-timings.json')
+            if full.get('includes_checkpoint_and_observer_publication'):
+                from research.vectorized_backtest.v42.distributed_assets import sha
+                if full.get('seal_sha256')==sha(root/f'generation-{generation:04d}'/'complete.json'):seconds=full['full_generation_seconds']
             if isinstance(seconds,(int,float)) and math.isfinite(seconds) and seconds>=0:
                 reused=False
                 if seal.get('source_sha256')==self.job.get('source_sha256'):
@@ -335,7 +340,43 @@ class Model:
             rows.extend(dict(step=str(v['id']),parents=', '.join(map(str,v['parents'])),operator=v['mode'],depth=str(v['depth'])) for v in detail.get('steps',[]))
         return rows
 
+    def candidate_sessions(self):
+        r=self.selected or {};generation=r.get('last_evaluated_generation',r.get('generation',self.report().get('generation',0)))
+        data=self.read(self.target()/'global'/f'generation-{generation:04d}'/'session-metrics.json')
+        current=self.live_data if self.live_data and self.live_data['generation']==generation else self.global_data
+        if not self.day and current and current['generation']==generation and current['panels']:
+            first=next(iter(current['panels'].values()))
+            data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in current['panels'].items()})
+        if r.get('serial') not in data.get('ids',[]):return []
+        index=data['ids'].index(r['serial'])
+        return [dict(session=k if ':' in k else 'training:'+k,**{name:p[name][index] for name in ('score','net_pnl','gross_losses','drawdown')}) for k,p in data.get('sessions',{}).items() if not self.aggregate_mode or (k if ':' in k else 'training:'+k).startswith(self.aggregate_role+':')]
+
+    def open_positions(self,session):
+        self.position_rows=[];self.position_error=None;self.position_session=session
+        r=dict(self.selected);generation=r.get('last_evaluated_generation',r.get('generation',self.report().get('generation',0)))
+        request=(self.target(),generation,r['serial'],session)
+        def collect():
+            while not self.observer_stop.is_set():
+                with self.position_lock:
+                    current=self.position_request
+                    if current is None:self.position_thread=None;return
+                rows=[];error=None
+                try:
+                    from .position_details import load
+                    rows=load(*current,self.job['workstation_share'],job=self.job)
+                except Exception as exc:error=str(exc)
+                with self.position_lock:
+                    if current==self.position_request:
+                        self.position_rows=rows;self.position_error=error;self.position_request=None
+        with self.position_lock:
+            self.position_request=request
+            if self.position_thread is None:
+                self.position_thread=threading.Thread(target=collect,daemon=True);self.position_thread.start()
+
     def rows(self):
+        if self.view=='detail':return self.candidate_sessions()
+        if self.view=='positions':return sorted_rows(self.position_rows,self.sort,not self.reverse)
+        if self.view=='position_detail':return list(self.position_selected.items())
         if self.view=='global_splits':return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
@@ -376,6 +417,7 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if self.view=='positions' and key in ('a','g','h','o','f','m','i','p','e','1','2','d'):self.sort='score'
         if key=='a' and not self.day:
             self.remember();self.aggregate_mode=False;self.global_day=None;self.view='global_splits';self.selection=0;self.filter=None;self.selected=None;return
         if self.view=='global_splits' and key in ('1','2','t','v','\r','\n'):
@@ -390,7 +432,7 @@ class Model:
             if self.navigation:
                 for k,v in self.navigation.pop().items():setattr(self,k,v)
             return
-        if self.view in ('detail','lineage') and key in ('n','b'):
+        if self.view=='lineage' and key in ('n','b'):
             self.detail_page=max(0,self.detail_page+(1 if key=='n' else -1));return
         if key=='l':
             if self.view not in ('detail','lineage'):
@@ -412,28 +454,30 @@ class Model:
             if not self.aggregate_mode:self.validation=not self.validation
             return
         if key=='s':
-            fields=['score','net_pnl','gross_losses','drawdown','nodes'];self.sort=fields[(fields.index(self.sort)+1)%len(fields)];self.selection=0;return
+            fields=['net_pnl','entry_clocks','exit_clocks','duration','listing_id','position'] if self.view=='positions' else ['score','net_pnl','gross_losses','drawdown','nodes'];self.sort=fields[(fields.index(self.sort)+1)%len(fields)] if self.sort in fields else fields[0];self.selection=0;return
         if key=='r':self.reverse=not self.reverse;return
         if key=='u' and self.selected and self.selected.get('founder_index') is not None:
             self.filter=('descendant',self.selected['founder_index']);self.view='candidates';self.selection=0;return
         rows=self.rows();step=max(1,height-(18 if self.view=='global_sessions' else 15))
         if key in ('home','end'):self.selection=0 if key=='home' else max(0,len(rows)-1);return
         if key in ('j','k','n','b'):self.selection=max(0,min(len(rows)-1,self.selection+{'j':1,'k':-1,'n':step,'b':-step}[key]));return
-        if key in ('\r','\n') and rows and self.view not in ('reproduction','detail','lineage','timings'):
+        if key in ('\r','\n') and rows and self.view not in ('reproduction','position_detail','lineage','timings'):
             row=rows[min(self.selection,len(rows)-1)]
             self.remember()
-            if self.view=='overview':self.day=row['day'];self.view='ranking';self.selection=0;self.filter=None;self.validation=False
+            if self.view=='positions':self.position_selected=row;self.view='position_detail';self.selection=0
+            elif self.view=='detail':self.view='positions';self.selection=0;self.sort='net_pnl';self.open_positions(row['session'])
+            elif self.view=='overview':self.day=row['day'];self.view='ranking';self.selection=0;self.filter=None;self.validation=False
             elif self.view=='global_sessions':self.aggregate_mode=False;self.global_day=row['day'];self.global_role=row['role'];self.view='global_ranking';self.selection=0
             elif self.view in ('operators','families','methods','origins','immigration'):
                 self.filter=({'operators':'operators','families':'founder_groups','methods':'founder_methods','origins':'source_sessions','immigration':'immigration_categories'}[self.view],row['group']);self.view='candidates';self.selection=0
-            else:self.selected=row;self.view='detail';self.detail_page=0
+            else:self.selected=row;self.view='detail';self.detail_page=0;self.selection=0
 
 def render(model,width,height):
     head_size=9 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V57 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     if model.job.get('version')=='v57-pilot-v2':title=f"V57 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
-    note='Score: trimmed ticker + trimmed session (DD x1) | risk caps OFF | validation display-only'
+    note='Score: trimmed profits - losses - all session DD | risk caps OFF | validation display-only'
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
     table=Table(expand=True,padding=(0,0));limit=max(1,height-head_size-9);start=model.selection//limit*limit
@@ -469,20 +513,34 @@ def render(model,width,height):
     elif model.view=='global_sessions':
         rows=model.rows();compact=width<120
         timing=model.summary_mode=='timing'
-        columns=('Session','Split','Replay','Time','Max net $','DD $') if compact else ('Session','Split','Replay','Done/total','Time','ETA','Batches','New/reused','Stage') if timing else ('Session','Split','Replay','Time','Gen','Best score','Max net $','Median net $','Max-net DD $','Median DD $','Win %','Profit %','Candidates')
-        for h in columns:table.add_column(h,no_wrap=True,**({'max_width':18} if h=='Replay' else {}))
+        columns=('Session','Split','Replay / elapsed','Avg replay','Avg gen','Max net $','DD $') if compact else ('Session','Split','Replay / elapsed','Avg replay','Avg gen','Done/total','ETA','Batches','New/reused','Stage') if timing else ('Session','Split','Replay / elapsed','Avg replay','Avg gen','Gen','Best score','Max net $','Median net $','Max-net DD $','Median DD $','Win %','Profit %','Candidates')
+        widths={'Session':10,'Split':5,'Replay / elapsed':24,'Avg replay':10,'Avg gen':8,'Gen':3,'Stage':24,'Win %':6,'Profit %':8,'Candidates':10}
+        for h in columns:table.add_column(h,no_wrap=True,width=widths.get(h,12),overflow='ellipsis')
+        history=model.timing(model.global_root(),model.status()).get('rows',[])
+        measured=[v['seconds'] for v in history if v['generation']>1 and not v['cached_replay']][-5:]
+        avg_generation=duration(statistics.mean(measured)) if measured else '-'
         for i,r in enumerate(rows[start:start+limit],start):
             s=r.get('strength',{});metrics=[number(s.get(k)) for k in ('top_net','median_net','top_drawdown')]
             live=r['replay'];bar=replay_progress(live['progress'],live['status']);numbers=replay_numbers(live)
             if live['status']=='running' and live['age'] is not None and live['age']>10:bar.append(' ~',style='bright_yellow')
             p=live['progress'];elapsed=duration(numbers['elapsed'] if numbers['elapsed'] is not None else r.get('batch_seconds'))
-            if compact:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,elapsed,metrics[0],metrics[2]]
-            elif timing:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,f"{numbers['done']}/{numbers['total'] or '?'}",elapsed,duration(numbers['eta']),f"{p.get('completed_local_batches',0)}/{p.get('total_local_batches','?')}",f"{p.get('evaluated_candidates','?')}/{p.get('reused_candidates','?')}",p.get('stage',live['status'])]
-            else:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,elapsed,str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-'))]
+            # Width and padding stay fixed as elapsed grows; content never sizes columns.
+            bar.append(' '+elapsed.rjust(7))
+            samples=[]
+            for record in history[-5:]:
+                if record['generation']<=1:continue
+                path=model.global_root()/'replays'/r['role']/f"generation-{record['generation']:04d}"/r['day']/'timings.json'
+                batch=model.read(path,[])
+                if batch:samples.append(sum(v.get('replay_seconds',0)+v.get('rule_seconds',0)+v.get('load_seconds',0) for v in batch))
+            avg_replay=duration(statistics.mean(samples)) if samples else '-'
+            if compact:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,avg_replay,avg_generation,metrics[0],metrics[2]]
+            elif timing:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,avg_replay,avg_generation,f"{numbers['done']}/{numbers['total'] or '?'}",duration(numbers['eta']),f"{p.get('completed_local_batches',0)}/{p.get('total_local_batches','?')}",f"{p.get('evaluated_candidates','?')}/{p.get('reused_candidates','?')}",p.get('stage',live['status'])]
+            else:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,avg_replay,avg_generation,str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-'))]
             table.add_row(*cells,style=SELECTED if i==model.selection else 'bright_magenta' if r['role']=='validation' else 'bright_cyan')
         loaded=model.global_data;caption=f"Last seal {loaded['generation']}" if loaded else 'No sealed global generation yet'
-        caption+=' | metrics update after each replay; Gen = metric generation'
+        caption+=' | elapsed = current replay; averages = last 5 measured generations; Gen = metric generation'
         if model.status().get('stage')=='Paired mutation diagnostic; selection and RNG isolated':caption+=' | Replay/Time: mutation diagnostic; financial columns: main population'
+        if model.status().get('paired_diagnostic_candidates'):caption+=f" | replay includes {model.status()['paired_diagnostic_candidates']} isolated diagnostics"
         if model.global_loading:caption+=f' | loading {model.global_loading[1]}/{model.global_loading[2]} sessions'
         if model.global_error:caption+=' | evidence unavailable: '+model.global_error
         if model.live_error:caption+=' | live evidence unavailable: '+model.live_error
@@ -530,6 +588,19 @@ def render(model,width,height):
         for h in ('Step','Parents / source','Operation','Distance / generation'):table.add_column(h)
         for r in rows[offset:offset+limit]:table.add_row(r['step'],r['parents'],r['operator'],r['depth'])
         caption=f"Candidate {(model.selected or {}).get('serial')} | {len(rows)} lineage records | N/B page | Esc: back"
+    elif model.view=='position_detail':
+        table.add_column('Recorded field',width=22);table.add_column('Value')
+        for field,value in model.rows()[start:start+limit]:table.add_row(field,str(value))
+        caption='Position evidence | UTC timestamps | arrows / N/B scroll | Esc back'
+    elif model.view=='positions':
+        rows=model.rows()
+        for label in ('Position','Ticker','State','Net $','Entry UTC','Exit UTC','Seconds'):table.add_column(label,no_wrap=True)
+        for i,row in enumerate(rows[start:start+limit],start):
+            table.add_row(str(row['position']),str(row.get('ticker',row['listing_id'])),row['status'],number(row['net_pnl']),str(row.get('entry_utc','-'))[11:19],str(row.get('exit_utc','-'))[11:19],str(row.get('duration_seconds','-')),style=SELECTED if i==model.selection else None)
+        caption=f"Candidate {model.selected['serial']} | {model.position_session} | {len(rows)} positions | sort {model.sort} | S sort / R reverse | Enter: all recorded fields"
+        if model.position_thread and model.position_thread.is_alive():caption+=' | Loading saved receipt'
+        if model.position_error:caption+=' | '+model.position_error
+        caption+=' | saved ledger; no fill prices/quantities'
     elif model.view=='detail':
         r=dict(model.selected or {})
         if 'winning_positions' not in r:
@@ -558,15 +629,12 @@ def render(model,width,height):
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
         if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if 'validation' in r['metric_scope'] else '')
         if model.day:lines=[line for line in lines if not line.startswith(('Original founder:','Sessions:','Mutations:'))]
-        if r.get('serial') in data.get('ids',[]):
-            index=data['ids'].index(r['serial'])
-            page_size=max(1,height-24);offset=model.detail_page*page_size
-            sessions=[(day,p) for day,p in data.get('sessions',{}).items() if not model.aggregate_mode or day.startswith(model.aggregate_role+':')]
-            for day,p in sessions[offset:offset+page_size]:table.add_row(day,*(number(p[k][index]) for k in ('score','net_pnl','gross_losses','drawdown')))
-        elif model.day:table.add_row(model.day,*(number(r.get(k)) for k in ('score','net_pnl','gross_losses','drawdown')))
-        else:table.add_row('Per-session detail unavailable','-','-','-','-')
+        sessions=model.candidate_sessions();page_size=max(1,height-24);offset=(model.selection//page_size)*page_size
+        for i,row in enumerate(sessions[offset:offset+page_size],offset):
+            table.add_row(row['session'],*(number(row[k]) for k in ('score','net_pnl','gross_losses','drawdown')),style=SELECTED if i==model.selection else None)
+        if not sessions:table.add_row('Per-session detail unavailable','-','-','-','-')
         from rich.console import Group
-        table=Group(Text('\n'.join(lines)),table);caption='One candidate: metrics and ancestry | Esc: back | L: lineage | - = unavailable'
+        table=Group(Text('\n'.join(lines)),table);caption='Arrows: select session | Enter: positions | Esc: back | L: lineage | - = unavailable'
     elif model.aggregate_mode:
         rows=model.rows();report=model.report();compact=width<120
         columns=('Serial','Global score $','Global net $','DD sum $','Nodes') if compact else ('Serial','Global score $','Global net $','Loss $','DD sum $','Worst DD $','Win %','Trades','Nodes','Origins','Technique')

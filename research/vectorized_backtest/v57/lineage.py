@@ -139,7 +139,7 @@ def training_shortlist(global_values,eligible,order,valid,size,generation,ids,*,
 
 
 
-def next_population(rng,population,ids,pedigree,rank,generation,config=Selection(),*,session_values,session_eligible,global_values,global_eligible,target_size=None,behavior=None,species=None,ordered=None,case_values=None,case_ids=None,probe=None):
+def next_population(rng,population,ids,pedigree,rank,generation,config=Selection(),*,session_values,session_eligible,global_values,global_eligible,target_size=None,behavior=None,species=None,ordered=None,case_values=None,case_ids=None,probe=None,fresh_prefetch=None):
     """One score pool in mixed phase; strictly owned case pools in phase0."""
     from dataclasses import replace
     from .species import Species
@@ -188,7 +188,8 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
         if remaining[case]<=0:raise ValueError('Case allocation exhausted')
         for attempt in range(64):
             from .initial_population import immigrant
-            m=immigrant(Proposal(root_key,(generation,len(children),'immigrant',attempt)),probe)
+            m=fresh_prefetch.get(root_key,generation,len(children),attempt) if fresh_prefetch is not None else None
+            if m is None:m=immigrant(Proposal(root_key,(generation,len(children),'immigrant',attempt)),probe)
             if isolation:m=replace(m,case_owner=case).validate()
             key=program_key(m)
             if key not in keys:break
@@ -231,6 +232,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     action_counts=1+balanced(cross_budget,SETTINGS['action_weights'],generation)
     starts=np.cumsum(action_counts)-action_counts
     modes=balanced(int(action_counts.sum()),SETTINGS['action_mode_weights'],generation)
+    species_labels=np.asarray(species.labels)
     cross_slot=0;whole_offset=0;group=0;sibling_requests={1:0,2:0,3:0};sibling_realized={1:0,2:0,3:0}
     for case,slots in list(remaining.items()):
         left=slots;pool=groups.get(case,[])
@@ -244,7 +246,11 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                 if not pool:break
                 first_pool=parent_pool(slot,0,pool)
                 a=int(first_pool[(rank_index(len(first_pool),slot,generation)+attempt)%len(first_pool)])
-                options=[i for i in parent_pool(slot,1,pool) if mates.unrelated(a)[i] and (species.labels[i]==species.labels[a])==(route=='within')]
+                # Preserve rank order and RNG draws while filtering the packed
+                # parent indices in NumPy, not repeated Python ancestry lookups.
+                candidates=np.asarray(parent_pool(slot,1,pool),dtype=np.int64)
+                allowed=mates.unrelated(a)[candidates] & ((species_labels[candidates]==species_labels[a])==(route=='within'))
+                options=candidates[allowed].tolist()
                 if whole:
                     from .whole_network import fits
                     stages=(STAGES[(slot+generation)%len(STAGES)],)

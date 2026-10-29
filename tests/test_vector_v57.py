@@ -15,17 +15,50 @@ class V57Tests(unittest.TestCase):
     def test_trim_and_best_day(self):
         a=metrics([[100.,20.,-5.]],[[1,1,1]])
         b=metrics([[30.,-10.]],[[1,1]])
-        # ticker A:115-5-100=10; B:20-10-30=-20; remaining session B:20-10-2=8
-        p=aggregate([a,b]);self.assertEqual(p['ticker_component'][0],-10);self.assertEqual(p['session_component'][0],8);self.assertEqual(p['score'][0],-2)
-        self.assertEqual(aggregate([a])['score'][0],10)
+        # ticker A=10; B=-20; session costs=108+8 minus best profit115 =>1; retain both drawdowns.
+        p=aggregate([a,b]);self.assertEqual(p['ticker_component'][0],-10);self.assertEqual(p['session_component'][0],1);self.assertEqual(p['score'][0],-9)
+        self.assertEqual(aggregate([a])['score'][0],3)
     def test_all_losses_not_discarded(self):
         p=aggregate([metrics([[-5.,-10.]],[[1,2]])]);self.assertEqual(p['ticker_component'][0],-30);self.assertEqual(p['session_component'][0],-32)
     def test_empty_and_single_win(self):
-        p=aggregate([metrics([[],[50.]],[[],[1]])]);np.testing.assert_array_equal(p['score'],[-2.,0.])
+        p=aggregate([metrics([[],[50.]],[[],[1]])]);np.testing.assert_array_equal(p['score'],[-2.,-2.])
+    def test_local_reproduction_uses_same_trimmed_cost(self):
+        from research.vectorized_backtest.v57.objectives import local_panel
+        m=metrics([[100.,20.,-5.],[-10.,-5.]],[[0,0,0],[0,0]])
+        m.update(ticker_pnl=[{'0':115.},{'0':-15.}],stop_risk_dollar_seconds=[0.,0.],capital_dollar_seconds=[0.,0.])
+        panel=local_panel([m]);expected=aggregate([m])['score']
+        for key in ('selection_score','specialist'):np.testing.assert_array_equal(panel[key],expected)
+        for key in ('values','case_scores'):np.testing.assert_array_equal(panel[key],expected[None])
+        self.assertEqual(expected[0],3.)
+
     def test_recurrence_rejected(self):
         with self.assertRaises(ValueError):Network((Neuron((-1,0),(1.,1.),0.),)).validate()
         for m in sample(np.random.default_rng(42),32):
             self.assertTrue(all(s>=0 for n in m.networks.values() for node in n.nodes for s in node.sources))
+
+    def test_packed_append_matches_full_preparation(self):
+        from research.vectorized_backtest.v57.network_pack import pack_networks,concatenate_packed
+        members=sample(np.random.default_rng(31),4)
+        expected=pack_networks(members);actual=concatenate_packed(pack_networks(members[:2]),pack_networks(members[2:]))
+        for a,b in zip(actual['values'],expected['values']):np.testing.assert_array_equal(a,b)
+        for key in ('operations','edge_counts','offsets_cpu'):np.testing.assert_array_equal(actual[key],expected[key])
+        self.assertEqual(actual['total_nodes'],expected['total_nodes'])
+
+    def test_position_receipt_alignment_and_sorting(self):
+        import json,tempfile,hashlib
+        from research.vectorized_backtest.v57.position_details import load
+        from research.vectorized_backtest.v57.campaign_progress import sorted_rows
+        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/position-tests');root.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            r=Path(tmp);folder=r/'global/generation-0002';folder.mkdir(parents=True)
+            receipt=r/'receipt.json';receipt.write_text(json.dumps(dict(population_sha256='pool',day='2026-08-13',split='training',listing_ids=[42],metrics=dict(episode_profits=[[5.,-2.]],episode_listings=[[0,0]],episode_entry_clocks=[[2,9]],episode_exit_clocks=[[7,11]],open_episode_listings=[[]],open_episode_realized=[[]]))))
+            evidence=dict(population_sha256='pool',ids=[71],receipts={'2026-08-13':dict(receipt=str(receipt),receipt_sha256=hashlib.sha256(receipt.read_bytes()).hexdigest())})
+            (folder/'training.json').write_text(json.dumps(evidence))
+            rows=load(r,2,71,'training:2026-08-13','unused')
+            self.assertEqual([v['listing_id'] for v in rows],[42,42]);self.assertEqual(rows[0]['duration'],5)
+            self.assertEqual(sorted_rows(rows,'net_pnl',False)[0]['net_pnl'],-2.)
+            receipt.write_text('{}')
+            with self.assertRaises(ValueError):load(r,2,71,'training:2026-08-13','unused')
     def test_opposite_split_alignment(self):
         train=aggregate([metrics([[100.,20.]],[[1,1]])]);val=aggregate([metrics([[-10.]],[[1]])])
         data=dict(generation=1,panels={'training:a':dict(ids=[7],panel=train),'validation:b':dict(ids=[7],panel=val)})
