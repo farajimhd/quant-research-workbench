@@ -6,6 +6,21 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_transition_cache_reuses_layout_not_tensor_storage(self):
+        import torch
+        from unittest.mock import patch
+        from research.vectorized_backtest.v57 import replay_graph as graph
+        graph._TRANSITIONS.clear()
+        try:
+            with patch.object(graph,'scoped_compile',side_effect=lambda *a,**kw:object()) as compile:
+                first=graph.transition_program((torch.zeros(2),1),False)
+                self.assertIs(first,graph.transition_program((torch.ones(2),1),False))
+                self.assertIsNot(first,graph.transition_program((torch.zeros(3),1),False))
+                self.assertEqual(compile.call_count,2)
+                for n in range(40):graph.transition_program((torch.zeros(n+4),1),False)
+                self.assertEqual(len(graph._TRANSITIONS),32)
+        finally:graph._TRANSITIONS.clear()
+
     def test_prefetch_failure_propagates_before_replay_dispatch(self):
         from concurrent.futures import Future
         from research.vectorized_backtest.v57.session_lanes import SessionLanes
