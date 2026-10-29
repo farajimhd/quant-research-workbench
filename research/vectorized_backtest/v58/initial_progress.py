@@ -27,6 +27,14 @@ class InitialData:
             seal=read_verified(self.path(manifest['seal']),manifest['seal_sha256'])
             source=self.path(manifest['training']).parent
             records=read_verified(source/'evaluated-pedigree.json',seal['evaluated_pedigree_sha256'])
+            from research.vectorized_backtest.v42.templates import FAMILIES
+            records=[dict(r) for r in records]
+            for record in records:
+                contributions=record.get('family_contributions')
+                if contributions is not None:
+                    if len(contributions)!=len(FAMILIES):raise ValueError('Founder family provenance shape differs')
+                    record['founder_groups']=[name for name,count in zip(FAMILIES,contributions) if count]
+                    record['founder_methods']=['random' if record.get('random_ancestry') else 'template']
             evidence=read_verified(self.root/'founder-bootstrap/training.json')
             from .robust_score import VERSION,COEFFICIENT
             if evidence['score_version']!=VERSION or evidence['coefficient']!=COEFFICIENT:raise ValueError('Initial score version differs')
