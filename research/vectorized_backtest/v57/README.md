@@ -41,3 +41,9 @@ The authorized pilot is laptop CUDA, August 13, 2026, 50 generations, population
 validation. This pilot does not establish out-of-session generalization.
 All profiles, deployment snapshots, logs and results belong beneath
 D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57.
+
+Laptop replay uses 32-lane GPU tiles. A tile may skip entry if every listing is
+held or outside current membership, and may skip management if every listing is
+flat. Original arithmetic and lane masks are preserved inside active tiles.
+No features, financial gates, candidates or clocks are removed. Source upgrades
+resume only from an explicitly hash-bound checkpoint and result-cache receipt.

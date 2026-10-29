@@ -42,7 +42,7 @@ def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     if SORTED:
         net_order=tl.load(ORDER+tl.program_id(0)//TILES)
@@ -58,94 +58,100 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
     phase=tl.load(PHASE)&1
     old=MEMORY;current=WORK
     old_known=MEMORY_KNOWN;current_known=KNOWN
-    h=tl.full((BLOCK,),0,tl.float32);ok=tl.full((BLOCK,),False,tl.int1)
-    for i in range(ncount):
-        z=tl.full((BLOCK,),0,tl.float32)+tl.load(BIAS+base+i);ok=tl.full((BLOCK,),False,tl.int1)
-        op=tl.load(OPS+base+i)
-        aggregate=tl.full((BLOCK,),0,tl.float32)
-        if op==1:aggregate=tl.full((BLOCK,),-float('inf'),tl.float32)
-        elif op==2:aggregate=tl.full((BLOCK,),float('inf'),tl.float32)
-        elif op==4:aggregate=tl.full((BLOCK,),1,tl.float32)
-        query=tl.full((BLOCK,),0,tl.float32);key=tl.full((BLOCK,),0,tl.float32)
-        peak=tl.full((BLOCK,),-float('inf'),tl.float32);den=tl.full((BLOCK,),0,tl.float32)
-        # Fetch independent edges together, then consume each row in exact edge
-        # order. No reduction/reassociation; masked padding and zero weights keep
-        # the original operator-specific semantics.
-        if op<9:
-            ec=tl.load(EDGE_COUNTS+base+i)
-            for first in range(0,ec,4):
-                values=();knowns=();weights=()
-                for k in tl.static_range(4):
-                    source=tl.load(SOURCES+(base+i)*FAN+first+k,first+k<ec,0)
-                    edge_weight=tl.load(WEIGHTS+(base+i)*FAN+first+k,first+k<ec,0)
-                    enabled=(first+k<ec)&((edge_weight!=0)|((op>=1)&(op<=6)))
-                    value,known=fetch_value(V,VALID,POSITION_STATES,old,old_known,current,current_known,base,member,source,enabled,u,live,U,C,STATES)
-                    values+=(value,);knowns+=(known,);weights+=(edge_weight,)
-                for k in tl.static_range(4):
-                    e=first+k
-                    w=weights[k]
-                    if e<ec and (w!=0 or (op>=1 and op<=6)):
-                        x=values[k]
-                        valid=knowns[k]
-                        term=libdevice.mul_rn(x,w);ok=ok|(valid&(w!=0))
-                        if op==0 or op==7 or op==8:z=libdevice.add_rn(z,term)
-                        elif op==1:aggregate=tl.maximum(aggregate,term)
-                        elif op==2:aggregate=tl.minimum(aggregate,term)
-                        elif op==3:aggregate=aggregate+term
-                        elif op==4:aggregate=aggregate*term
-                        elif op==5:
-                            if e==0:query=term
-                            else:aggregate=aggregate+term
-                        elif op==6:
-                            if e==0:query=term
-                            elif e%2==1:key=term
-                            else:
-                                logit=query*key;next_peak=tl.maximum(peak,logit)
-                                scale=tl.exp(peak-next_peak);weight=tl.exp(logit-next_peak)
-                                aggregate=aggregate*scale+weight*term;den=den*scale+weight;peak=next_peak
-        if op==1 or op==2 or op==4 or op==5:z=z+aggregate
-        elif op==3:z=z+aggregate/tl.load(EDGE_COUNTS+base+i)
-        elif op==6:z=z+aggregate/den
-        h=2./(1.+tl.exp(2.*-z))-1.
-        if op==5:h=h/(1.+tl.exp(-query))
-        elif op==7:h=tl.minimum(1.,tl.maximum(-1.,z))
-        if op>=9:
-            source=tl.load(SOURCES+(base+i)*FAN)-3*C-STATES
-            x0=tl.load(current+(base+source)*U+u,live,0)
-            k0=tl.load(current_known+(base+source)*U+u,live,False)
-            if op==9:
-                threshold=tl.load(WEIGHTS+(base+i)*FAN)
-                age_limit=tl.floor(tl.load(BIAS+base+i)*3600.+.5)
-                age=tl.load(CLOCK).to(tl.float64)-tl.load(OPENED+member*U+u,live,0)
-                h=(k0&(x0>threshold)&(age>=age_limit)).to(tl.float32);ok=k0
-            elif op==13:
-                h=x0*tl.load(WEIGHTS+(base+i)*FAN)+tl.load(BIAS+base+i);ok=k0
-            else:
-                source1=tl.load(SOURCES+(base+i)*FAN+1)-3*C-STATES
-                x1=tl.load(current+(base+source1)*U+u,live,0)
-                k1=tl.load(current_known+(base+source1)*U+u,live,False)
-                ok=k0|k1
-                if op==10:h=((x0>.5)|(x1>.5)).to(tl.float32)
-                elif op==11:h=((x0>.5)&(x1>.5)).to(tl.float32)
-                elif op==12:h=((x0>.5)^(x1>.5)).to(tl.float32)
-                elif op==15:
-                    h=((x0>.5)==(x1>.5)).to(tl.float32);ok=k0&k1
-                elif op==14 or op==16:
-                    s2=tl.load(SOURCES+(base+i)*FAN+2)-3*C-STATES
-                    s3=tl.load(SOURCES+(base+i)*FAN+3)-3*C-STATES
-                    z0=tl.load(current+(base+s2)*U+u,live,0);z1=tl.load(current+(base+s3)*U+u,live,0)
-                    h=tl.where(x0>.5,tl.where(x1>.5,tl.maximum(z0,z1),z0),tl.where(x1>.5,z1,0.))
-                    if op==16:h=tl.maximum(z0,z1);ok=k0&k1
-        offset=(base+i)*U+u
-        tl.store(current+offset,h,live);tl.store(current_known+offset,ok,live)
-    tl.store(OUT+(member*5+action)*U+u,ok&(h>tl.load(THRESHOLD+net)),live)
+    held=tl.load(POSITION_STATES+(member*STATES)*U+u,live,0)>0
+    entry_allowed=tl.load(ENTRY_ALLOWED+u,live,False)
+    active=live&tl.where(action==0,~held&entry_allowed,held)
+    tl.store(OUT+(member*5+action)*U+u,False,live)
+    if tl.sum(active.to(tl.int32),0)>0:
+        # Preserve the original lane masks/arithmetic within an active tile.
+        h=tl.full((BLOCK,),0,tl.float32);ok=tl.full((BLOCK,),False,tl.int1)
+        for i in range(ncount):
+            z=tl.full((BLOCK,),0,tl.float32)+tl.load(BIAS+base+i);ok=tl.full((BLOCK,),False,tl.int1)
+            op=tl.load(OPS+base+i)
+            aggregate=tl.full((BLOCK,),0,tl.float32)
+            if op==1:aggregate=tl.full((BLOCK,),-float('inf'),tl.float32)
+            elif op==2:aggregate=tl.full((BLOCK,),float('inf'),tl.float32)
+            elif op==4:aggregate=tl.full((BLOCK,),1,tl.float32)
+            query=tl.full((BLOCK,),0,tl.float32);key=tl.full((BLOCK,),0,tl.float32)
+            peak=tl.full((BLOCK,),-float('inf'),tl.float32);den=tl.full((BLOCK,),0,tl.float32)
+            # Fetch independent edges together, then consume each row in exact edge
+            # order. No reduction/reassociation; masked padding and zero weights keep
+            # the original operator-specific semantics.
+            if op<9:
+                ec=tl.load(EDGE_COUNTS+base+i)
+                for first in range(0,ec,4):
+                    values=();knowns=();weights=()
+                    for k in tl.static_range(4):
+                        source=tl.load(SOURCES+(base+i)*FAN+first+k,first+k<ec,0)
+                        edge_weight=tl.load(WEIGHTS+(base+i)*FAN+first+k,first+k<ec,0)
+                        enabled=(first+k<ec)&((edge_weight!=0)|((op>=1)&(op<=6)))
+                        value,known=fetch_value(V,VALID,POSITION_STATES,old,old_known,current,current_known,base,member,source,enabled,u,live,U,C,STATES)
+                        values+=(value,);knowns+=(known,);weights+=(edge_weight,)
+                    for k in tl.static_range(4):
+                        e=first+k
+                        w=weights[k]
+                        if e<ec and (w!=0 or (op>=1 and op<=6)):
+                            x=values[k]
+                            valid=knowns[k]
+                            term=libdevice.mul_rn(x,w);ok=ok|(valid&(w!=0))
+                            if op==0 or op==7 or op==8:z=libdevice.add_rn(z,term)
+                            elif op==1:aggregate=tl.maximum(aggregate,term)
+                            elif op==2:aggregate=tl.minimum(aggregate,term)
+                            elif op==3:aggregate=aggregate+term
+                            elif op==4:aggregate=aggregate*term
+                            elif op==5:
+                                if e==0:query=term
+                                else:aggregate=aggregate+term
+                            elif op==6:
+                                if e==0:query=term
+                                elif e%2==1:key=term
+                                else:
+                                    logit=query*key;next_peak=tl.maximum(peak,logit)
+                                    scale=tl.exp(peak-next_peak);weight=tl.exp(logit-next_peak)
+                                    aggregate=aggregate*scale+weight*term;den=den*scale+weight;peak=next_peak
+            if op==1 or op==2 or op==4 or op==5:z=z+aggregate
+            elif op==3:z=z+aggregate/tl.load(EDGE_COUNTS+base+i)
+            elif op==6:z=z+aggregate/den
+            h=2./(1.+tl.exp(2.*-z))-1.
+            if op==5:h=h/(1.+tl.exp(-query))
+            elif op==7:h=tl.minimum(1.,tl.maximum(-1.,z))
+            if op>=9:
+                source=tl.load(SOURCES+(base+i)*FAN)-3*C-STATES
+                x0=tl.load(current+(base+source)*U+u,live,0)
+                k0=tl.load(current_known+(base+source)*U+u,live,False)
+                if op==9:
+                    threshold=tl.load(WEIGHTS+(base+i)*FAN)
+                    age_limit=tl.floor(tl.load(BIAS+base+i)*3600.+.5)
+                    age=tl.load(CLOCK).to(tl.float64)-tl.load(OPENED+member*U+u,live,0)
+                    h=(k0&(x0>threshold)&(age>=age_limit)).to(tl.float32);ok=k0
+                elif op==13:
+                    h=x0*tl.load(WEIGHTS+(base+i)*FAN)+tl.load(BIAS+base+i);ok=k0
+                else:
+                    source1=tl.load(SOURCES+(base+i)*FAN+1)-3*C-STATES
+                    x1=tl.load(current+(base+source1)*U+u,live,0)
+                    k1=tl.load(current_known+(base+source1)*U+u,live,False)
+                    ok=k0|k1
+                    if op==10:h=((x0>.5)|(x1>.5)).to(tl.float32)
+                    elif op==11:h=((x0>.5)&(x1>.5)).to(tl.float32)
+                    elif op==12:h=((x0>.5)^(x1>.5)).to(tl.float32)
+                    elif op==15:
+                        h=((x0>.5)==(x1>.5)).to(tl.float32);ok=k0&k1
+                    elif op==14 or op==16:
+                        s2=tl.load(SOURCES+(base+i)*FAN+2)-3*C-STATES
+                        s3=tl.load(SOURCES+(base+i)*FAN+3)-3*C-STATES
+                        z0=tl.load(current+(base+s2)*U+u,live,0);z1=tl.load(current+(base+s3)*U+u,live,0)
+                        h=tl.where(x0>.5,tl.where(x1>.5,tl.maximum(z0,z1),z0),tl.where(x1>.5,z1,0.))
+                        if op==16:h=tl.maximum(z0,z1);ok=k0&k1
+            offset=(base+i)*U+u
+            tl.store(current+offset,h,live);tl.store(current_known+offset,ok,live)
+        tl.store(OUT+(member*5+action)*U+u,ok&(h>tl.load(THRESHOLD+net)),live)
 
-    if action==0 or action==2 or action==3:
-        head=tl.load(SIZE_SOURCE+net);value=tl.load(current+(base+head)*U+u,live,0)
-        z=value*tl.load(SIZE_WEIGHT+net)+tl.load(SIZE_BIAS+net)
-        fraction=(2./(1.+tl.exp(-2.*z))-1.+1.)*.5
-        channel=tl.where(action==0,0,tl.where(action==2,1,2))
-        tl.store(RATIOS+(member*U+u)*3+channel,fraction,live)
+        if action==0 or action==2 or action==3:
+            head=tl.load(SIZE_SOURCE+net);value=tl.load(current+(base+head)*U+u,live,0)
+            z=value*tl.load(SIZE_WEIGHT+net)+tl.load(SIZE_BIAS+net)
+            fraction=(2./(1.+tl.exp(-2.*z))-1.+1.)*.5
+            channel=tl.where(action==0,0,tl.where(action==2,1,2))
+            tl.store(RATIOS+(member*U+u)*3+channel,fraction,live)
 
 
 def signals(plan,values,valid,position,opened,previous,index,out=None):
@@ -156,13 +162,13 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     if owned:block=32
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
     state_kernel[(b,tr.cdiv(u,256))](position,opened,previous,index,plan.feedback,plan.position_states,u,len(STATES),256,enable_fp_fusion=False)
-    scheduled=not owned and block in (64,128)
+    scheduled=not owned and block in (32,64,128)
     tiles=tr.cdiv(owned_k,block)
     grid=(b*5*tiles,) if scheduled else (b,5,tiles)
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
-        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.memory,plan.memory_known,plan.ratios,
+        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.entry_allowed,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
-        plan.cuda_network_order,tiles,scheduled,num_warps=2 if scheduled else 4,enable_fp_fusion=False)
+        plan.cuda_network_order,tiles,scheduled,num_warps=(1 if block==32 else 2) if scheduled else 4,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
     pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,b*u,u,256)
     return result

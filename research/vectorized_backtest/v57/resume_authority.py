@@ -33,6 +33,17 @@ def lineage_jobs(job):
 
 def accept_checkpoint(job,path,saved,expected):
     if saved['contract']==expected:return
+    if job.get('version')=='v57-pilot-v2':
+        transition=job.get('resume_transition',{});prior=Path(transition.get('predecessor_job',''))
+        if not prior.is_file() or sha(prior)!=transition.get('predecessor_job_sha256'):raise ValueError('Pinned pilot predecessor changed')
+        old=json.loads(prior.read_bytes())
+        mutable={'source_sha256','code','commit','resume_transition','result_cache_transition'}
+        if any(job.get(k)!=v for k,v in old.items() if k not in mutable):raise ValueError('Pilot continuation changed campaign semantics')
+        bound=transition.get('pilot_checkpoint',{})
+        if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Pilot checkpoint differs from bound receipt')
+        actual=dict(saved['contract'],source_sha256=expected['source_sha256'])
+        if actual!=expected:raise ValueError('Pilot continuation changed more than implementation source')
+        return
     old=predecessor(job);day=job['training_days'][0]
     if old is None or job.get('campaign_stage') not in ('session','global'):raise ValueError('Unapproved checkpoint source transition')
     bound=job['resume_transition'].get('global_checkpoint') if job.get('campaign_stage')=='global' else job['resume_transition']['checkpoints'].get(day)

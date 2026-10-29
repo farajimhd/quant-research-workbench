@@ -50,6 +50,22 @@ class V57Tests(unittest.TestCase):
             child.validate();crossed+=1
         self.assertGreater(crossed,0)
 
+    def test_pilot_resume_preserves_state_and_contract(self):
+        import json,hashlib,tempfile
+        from research.vectorized_backtest.v57.resume_authority import accept_checkpoint
+        from research.vectorized_backtest.v57.identity import digest
+        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/resume-tests');root.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            old=Path(tmp)/'old.json';cp=Path(tmp)/'checkpoint.json'
+            job=dict(version='v57-pilot-v2',source_sha256='old',objective={'drawdown_weight':1},population=1024,training_days=['2026-08-13'])
+            old.write_text(json.dumps(job));saved=dict(contract={'source_sha256':'old','population':1024},state_sha256='state');cp.write_text(json.dumps(saved))
+            sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+            new=dict(job,source_sha256='new',resume_transition=dict(predecessor_job=str(old),predecessor_job_sha256=sha(old),pilot_checkpoint=dict(checkpoint_sha256=sha(cp),state_sha256='state',contract_sha256=digest(saved['contract']))))
+            expected=dict(saved['contract'],source_sha256='new');accept_checkpoint(new,cp,saved,expected)
+            with self.assertRaises(ValueError):accept_checkpoint(dict(new,population=512),cp,saved,expected)
+            cp.write_text('{}')
+            with self.assertRaises(ValueError):accept_checkpoint(new,cp,saved,expected)
+
     def test_terminal_opposite_split_columns(self):
         import io
         from unittest.mock import patch

@@ -108,6 +108,9 @@ class NetworkPlan:
             from torch.nn.functional import pad
             extra=position.shape[2]-v.shape[0];v=pad(v,(0,0,0,extra));valid=pad(valid,(0,0,0,extra),value=False)
         if self.device.type=='cuda':
+            self.entry_allowed=data.tensors['membership'].index_select(0,index.reshape(1)).reshape(-1)
+            if len(self.entry_allowed)<position.shape[2]:
+                self.entry_allowed=torch.nn.functional.pad(self.entry_allowed,(0,position.shape[2]-len(self.entry_allowed)),value=False)
             from .network_cuda import signals
             return signals(self,v,valid,position,opened,previous,index,out)
         states=state_values(position,previous,opened,index.to(torch.float64),self.feedback)[0];rows=[]
