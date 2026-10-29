@@ -37,6 +37,11 @@ def prepare_full(*args,**kwargs):
 
 
 def main():
+    import sys
+    if '--global-only' in sys.argv:
+        p=argparse.ArgumentParser();p.add_argument('--global-only',action='store_true');p.add_argument('--source-job',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--code',type=Path,required=True);a=p.parse_args()
+        from .global_contract import prepare as prepare_global
+        print(prepare_global(a.source_job,a.output,a.code)['campaign']);return
     p=argparse.ArgumentParser();p.add_argument('--source-job',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--code',type=Path,required=True);p.add_argument('--full',action='store_true');p.add_argument('--workstation-code',type=Path);p.add_argument('--generations',type=int,default=50);p.add_argument('--comparison-source',type=Path);a=p.parse_args()
     if a.full and (a.workstation_code is None or a.generations!=50):p.error('Full campaign requires --workstation-code and 50 generations')
     j=(prepare_full(a.source_job,a.output,a.code,a.workstation_code) if a.full else prepare(a.source_job,a.output,a.code,generations=a.generations,comparison=a.comparison_source));print(j['campaign'])

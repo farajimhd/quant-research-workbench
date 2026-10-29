@@ -1,5 +1,6 @@
 """Bounded process-owned publication, ordered seals, no CUDA or selection access."""
 import json,time,multiprocessing
+import threading
 from pathlib import Path
 from hashlib import sha256
 from concurrent.futures import ProcessPoolExecutor
@@ -32,10 +33,10 @@ def resolve(value,hashes):
         for v in value:resolve(v,hashes)
 
 
-def finish_generation(packet):
-    p=packet;root=Path(p['root']);folder=Path(p['folder']);hashes={}
+def publish_replays(writes):
+    hashes={}
     # Results are passed directly from replay memory. The writer never replays.
-    for path,value in p['replay_writes']:
+    for path,value in writes:
         if 'results' in value:
             raw=__import__('research.vectorized_backtest.v57.population_snapshot',fromlist=['dumps']).dumps(value['results'])
             value=dict(value,results_sha256=sha256(raw.encode()).hexdigest())
@@ -43,6 +44,14 @@ def finish_generation(packet):
         else:
             resolve(value,hashes);write_json(path,value)
         hashes[str(path)]=sha(path)
+    return hashes
+
+
+def finish_generation(packet):
+    p=packet;root=Path(p['root']);folder=Path(p['folder'])
+    hashes=publish_replays(p['replay_writes'])
+    # Multi-session replay receipts were streamed through this same ordered lane.
+    for path in p.get('published_receipts',[]):hashes[path]=sha(path)
     for path,value in p['artifacts']:
         resolve(value,hashes);write_json(path,value)
     frozen=p['frozen_raw'];frozen_hash=sha256(frozen.encode()).hexdigest()
@@ -51,7 +60,7 @@ def finish_generation(packet):
     _write_text(folder/'successor.json',envelope(dict(ids=p['state']['ids'],rng=p['state']['rng'],sha256=frozen_hash,training_only=True),population=p['successor_raw']))
     from .evolution_report import publish,expose
     publish(root,folder,*p['report'])
-    write_json(folder/'validation.json',p['validation'])
+    resolve(p['validation'],hashes);write_json(folder/'validation.json',p['validation'])
     mapping={'training.json':'training_sha256','validation.json':'validation_sha256','successor.json':'successor_sha256',
              'population.json':'population_sha256','reproduction.json':'reproduction_sha256','births.json':'births_sha256',
              'evaluated-pedigree.json':'evaluated_pedigree_sha256','offspring-audit.json':'offspring_audit_sha256'}
@@ -77,15 +86,20 @@ class Lane:
     def __init__(self):
         self.pool=ProcessPoolExecutor(max_workers=1,mp_context=multiprocessing.get_context('spawn'))
         self.pending=[]
+        self.lock=threading.RLock()
 
     def submit(self,fn,*args):
+        with self.lock:return self._submit(fn,*args)
+
+    def _submit(self,fn,*args):
         # At most one generation finishing plus one next-generation start.
         while len(self.pending)>=2:self.pending.pop(0).result()
         self.check();future=self.pool.submit(fn,*args);self.pending.append(future);return future
 
     def check(self):
-        for future in self.pending:
-            if future.done():future.result()
+        with self.lock:
+            for future in self.pending:
+                if future.done():future.result()
 
     def close(self):
         try:

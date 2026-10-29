@@ -28,6 +28,8 @@ class SessionProgress:
             row.update(event);self.publish()
 
     def finish(self,day,result):
+        callback=getattr(self.panel,'session_result',None)
+        if callback is not None:callback(day,result,self.role,self.generation)
         with self.lock:
             self.rows[day].update(status='complete',stage='Session complete',completed_candidates=self.population,
                 completed_local_batches=len(result['timings']),completed_seconds=result['clocks'],total_seconds=result['clocks'],

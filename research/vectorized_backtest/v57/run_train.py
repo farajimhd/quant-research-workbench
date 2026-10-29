@@ -13,6 +13,10 @@ def main():
         if hashlib.sha256((code/name).read_bytes()).hexdigest()!=expected:raise ValueError('Pinned source changed: '+name)
     os.environ.update(NUMBA_CACHE_DIR=str(root/'numba-cache'),TORCHINDUCTOR_CACHE_DIR=str(root/'compiler-cache/inductor'),TRITON_CACHE_DIR=str(root/'compiler-cache/triton'))
     print(f'V57: {job["phase2_generations"]} generations on {job["training_days"]}; output {root}',flush=True)
+    if job.get('version')=='v57-global-v1':
+        from .global_runner import run
+        run(job)
+        return
     from .pilot import main as run
     sys.argv=['pilot','--job',str(a.job)];run()
 

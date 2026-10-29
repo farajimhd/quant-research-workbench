@@ -8,6 +8,9 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 
 
 def check_job(job):
+    if job.get('version')=='v57-global-v1':
+        from .global_contract import check
+        return check(job)
     if job.get('version') in ('v57-full-v1','v57-full-v2'):
         from .campaign_contract import check_full_job
         return check_full_job(job)

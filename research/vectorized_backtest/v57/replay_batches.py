@@ -4,7 +4,7 @@ from .config import STATES
 
 def plan_batches(population, missing, width, base_size=512, maximum_size=1024,
                  *, workspace_bytes=4*2**30):
-    if not 1<=base_size<=maximum_size<=1024 or width<1:
+    if not 1<=base_size<=maximum_size<=6144 or width<1:
         raise ValueError('Invalid bounded replay batch configuration')
     batches=[];offset=0
     while offset<len(missing):

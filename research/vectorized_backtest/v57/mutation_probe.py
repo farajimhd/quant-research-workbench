@@ -50,7 +50,7 @@ def run_probe(controller, folder, members, ids, records, panel, generation):
         pair['baseline']={k:bool(v[i]) if k=='eligible' else float(v[i]) for k,v in panel.items()}
     receipts = {}
     if mutants and prepared.get('metrics') is not None:
-        receipts=prepared['receipts'];result=aggregate([prepared['metrics']],Objective(**controller.job['objective']))
+        receipts=prepared['receipts'];result=aggregate(prepared['metrics'] if isinstance(prepared['metrics'],list) else [prepared['metrics']],Objective(**controller.job['objective']))
         for j,pair in enumerate(pairs):pair['mutated']={k:bool(v[j]) if k=='eligible' else float(v[j]) for k,v in result.items()}
     elif mutants:
         # Reuse read-only market residency, but never overwrite main replay receipts

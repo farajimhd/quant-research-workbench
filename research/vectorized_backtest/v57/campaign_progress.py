@@ -88,6 +88,7 @@ class Model:
         self.archive=Archive(self.bus,job.get('training_days',[]),self.observer_stop,job.get('global_restart',False))
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
+        if job.get('version')=='v57-global-v1':self.view='global_sessions'
         self.position_rows=[];self.position_error=None;self.position_thread=None;self.position_session=None;self.position_request=None;self.position_lock=threading.Lock()
         self.replay_samples={};self.replay_sample_scope=None
         self.aggregate_role='training';self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
@@ -109,7 +110,10 @@ class Model:
         node=next(n for n,m in self.job['machines'].items() if day in m['session_days'])
         path=Path(self.job.get('phase1_campaign',self.root))/'sessions'/day
         return path if node=='laptop' else remote(path,self.job['workstation_share'])
-    def global_root(self):return self.root if self.job.get('version')=='v57-pilot-v2' else remote(self.root/'phase-2',self.job['workstation_share'])
+    def global_root(self):
+        if self.job.get('version')=='v57-pilot-v2':return self.root
+        if self.job.get('version')=='v57-global-v1' and __import__('socket').gethostname().upper()=='DESKTOP-SAAI85T':return self.root/'phase-2'
+        return remote(self.root/'phase-2',self.job['workstation_share'])
     def target(self):return self.session_root(self.day) if self.day else self.global_root()
     def session_state(self,day):
         return self.archive.data[day]['status'] if day in self.archive.data else self.read(self.session_root(day)/'full-status.json')
@@ -145,7 +149,8 @@ class Model:
         if day in self.archive.data and not (Path(path)/'global').exists():
             seconds=self.archive.data[day]['last_seconds'];saved=self.read(self.bus/'observer-timings'/(day+'.json'));rows=saved.get('rows',[])
             return dict(last=seconds,elapsed=None,work=rows[-1]['total'] if rows else None,eta=0,generation_eta=None,rows=rows,rate=None,complete=True)
-        root=Path(path)/'global';done=50 if complete else int(state.get('completed_generations',0));cache=self.timing_cache.setdefault(str(root),{})
+        target=self.job.get('phase2_generations',50) if Path(path)==self.global_root() else 50
+        root=Path(path)/'global';done=target if complete else int(state.get('completed_generations',0));cache=self.timing_cache.setdefault(str(root),{})
         for generation in range(1,done+1):
             if generation in cache:continue
             seal=self.read(root/f'generation-{generation:04d}'/'complete.json');seconds=seal.get('wall_seconds')
@@ -165,7 +170,7 @@ class Model:
             if generation>done:continue
             total+=seconds;rows.append(dict(generation=generation,seconds=seconds,total=total,current_source=source==self.job.get('source_sha256'),cached_replay=reused))
         elapsed=None
-        if running and done<50:
+        if running and done<target:
             try:
                 started=(root/f'generation-{done+1:04d}'/'population.json').stat().st_mtime
                 if started>=state.get('owner',{}).get('creation_time',float('inf')):elapsed=max(0.,time.time()-started)
@@ -175,7 +180,7 @@ class Model:
         eta=0. if complete else None;generation_eta=None
         if running and rate is not None:
             generation_eta=max(rate*.1,rate-(elapsed or 0.))
-            eta=generation_eta+max(0,50-done-1)*rate
+            eta=generation_eta+max(0,target-done-1)*rate
         return dict(last=cache.get(done,(None,None))[0],elapsed=elapsed,work=total if rows else None,eta=eta,generation_eta=generation_eta,rows=rows,rate=rate,complete=complete)
     def aggregate_report(self,role):
         live=self.live_snapshot(self.global_replays());sealed=self.global_snapshot()
@@ -202,6 +207,7 @@ class Model:
             if len(self.reports)>26:self.reports.pop(next(iter(self.reports)))
         return self.reports[key]
     def snapshot(self):
+        if self.job.get('version')=='v57-global-v1':return ({'workstation':self.status() or {}},[],(self.root/'STOP').exists())
         if self.snapshot_cache and time.monotonic()-self.snapshot_cache[0]<1:return self.snapshot_cache[1]
         nodes={n:self.read(self.bus/(n+'-status.json')) for n in self.job['machines']};sessions=[]
         if self.job.get('version')=='v57-pilot-v2':
@@ -417,6 +423,7 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if self.job.get('version')=='v57-global-v1' and key in ('h','\x1b'):key='g'
         if self.view=='positions' and key in ('a','g','h','o','f','m','i','p','e','1','2','d'):self.sort='score'
         if key=='a' and not self.day:
             self.remember();self.aggregate_mode=False;self.global_day=None;self.view='global_splits';self.selection=0;self.filter=None;self.selected=None;return
@@ -477,6 +484,7 @@ def render(model,width,height):
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V57 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     if model.job.get('version')=='v57-pilot-v2':title=f"V57 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
+    if model.job.get('version')=='v57-global-v1':title=f"V57 WORKSTATION | GLOBAL ONLY | {model.job['phase2_generations']} generations | 24 train / 12 validation"
     note='Score: trimmed profits - losses - all session DD | risk caps OFF | validation display-only'
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
@@ -666,7 +674,8 @@ def render(model,width,height):
         note+='\nGeneration ETA '+('~'+duration(t['generation_eta']) if t['generation_eta'] is not None else '-')+' | D: measured generation history'
     header=Text(title+'\n'+note,style='bright_cyan')
     if model.view!='overview':
-        header.append(f"\nGenerations {state.get('completed_generations',0)}/50 ",style='white');header.append(progress_bar(state.get('completed_generations',0),50,width=max(20,min(60,width-38)) if model.view=='global_sessions' else 10,color='bright_green'))
+        total=model.job.get('phase2_generations',50)
+        header.append(f"\nGenerations {state.get('completed_generations',0)}/{total} ",style='white');header.append(progress_bar(state.get('completed_generations',0),total,width=max(20,min(60,width-38)) if model.view=='global_sessions' else 10,color='bright_green'))
         if model.view=='global_sessions':
             diagnostic=state.get('stage')=='Paired mutation diagnostic; selection and RNG isolated'
             active_rows=[r for r in rows if r['role']=='training'] if diagnostic else rows

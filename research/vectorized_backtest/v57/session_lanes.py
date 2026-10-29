@@ -353,10 +353,14 @@ class Worker:
 def initialize(config,events,lane):
     global _worker
     _worker=Worker(config,events,lane)
+    _worker.defer_publication=bool(config.get('defer_publication',False))
 
 
 def evaluate(*args):
-    try:return _worker.run(*args)
+    try:
+        result=_worker.run(*args)
+        if getattr(_worker,'defer_publication',False):result['writes']=_worker.deferred_writes
+        return result
     except Exception as error:
         # Compiler exceptions may capture non-pickleable closure cells. Preserve
         # the real worker traceback as text across the process boundary.
@@ -408,7 +412,7 @@ class SessionLanes:
         # Admission below still bounds the combined resident allocation.
         c['capture_gib']=float(c.get('capture_gib',4.))
         if not .25<=c['capture_gib']<=16.:raise ValueError('Capture cache must be between 0.25 and 16 GiB per worker')
-        c['lane_memory_bytes']=torch.cuda.mem_get_info(c['device'])[0]*.8/self.workers if torch.device(c['device']).type=='cuda' else 0
+        c['lane_memory_bytes']=torch.cuda.mem_get_info(c['device'])[0]*.8/c.get('total_gpu_workers',self.workers) if torch.device(c['device']).type=='cuda' else 0
         self.pools=[ProcessPoolExecutor(max_workers=1,mp_context=self.context,
             initializer=initialize,initargs=(c,self.events,lane)) for lane in range(self.workers)]
         self.thread=threading.Thread(target=self.pump,name='v18-session-progress',daemon=True);self.thread.start()
@@ -469,6 +473,7 @@ class SessionLanes:
         try:
             results=independent_sessions(days,self.workers,submit,self.independent_progress)
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
+            if self.config.get('defer_publication'):return results
             return [timing for result in results for timing in result['timings']]
         finally:self.independent_progress=None
 
