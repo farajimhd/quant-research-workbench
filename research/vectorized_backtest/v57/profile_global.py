@@ -46,7 +46,9 @@ def main():
                     metrics_sha256=digest(panels),initial_replay_target_seconds=45)
         write_json(root/'profile.json',report);print(json.dumps(report),flush=True)
     finally:
-        c.halt.set();thread.join(5);c.close_lanes()
+        c.halt.set();thread.join(5)
+        try:c.close_lanes()
+        finally:c.publication_lane.close()
 
 
 if __name__=='__main__':main()

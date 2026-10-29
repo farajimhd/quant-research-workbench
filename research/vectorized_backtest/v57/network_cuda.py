@@ -65,7 +65,11 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
     active=live&tl.where(action==0,entry_allowed&(representative==member),held)
     tl.store(OUT+(member*5+action)*U+u,False,live)
     if tl.sum(active.to(tl.int32),0)>0:
-        # Preserve the original lane masks/arithmetic within an active tile.
+        # V57 has no delayed edges or action feedback. Only eligible entry
+        # listings and held management listings can affect this transition.
+        # Keep arithmetic/order identical on active lanes; avoid scratch/feature
+        # traffic for the other listings in an otherwise active CUDA tile.
+        live=active
         h=tl.full((BLOCK,),0,tl.float32);ok=tl.full((BLOCK,),False,tl.int1)
         for i in range(ncount):
             z=tl.full((BLOCK,),0,tl.float32)+tl.load(BIAS+base+i);ok=tl.full((BLOCK,),False,tl.int1)

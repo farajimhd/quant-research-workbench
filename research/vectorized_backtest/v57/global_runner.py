@@ -61,7 +61,7 @@ class Global(Evolution):
         if role not in self.split_lanes:
             cfg=config(self.job,'workstation',role)
             cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
-                compile_cache_root=str(Path(self.job['campaign'])/'compiler-cache'/role),defer_publication=True,total_gpu_workers=4)
+                compile_cache_root=str(Path('D:/TradingML/runtimes/v57c')/self.job['source_sha256'][:12]/role),defer_publication=True,total_gpu_workers=2)
             cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
             self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
         self.stage='Global training' if role=='training' else 'Validation replay + training-only reproduction'
