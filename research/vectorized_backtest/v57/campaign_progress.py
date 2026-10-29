@@ -14,6 +14,14 @@ from research.vectorized_backtest.v42.distributed_assets import remote
 def number(value):return '-' if value is None else f'{value:,.2f}'
 SELECTED='bold bright_yellow on blue'
 
+def active_generation(root,state):
+    """Publication may lag replay; never infer the live cohort from seals alone."""
+    sealed=state.get('completed_generations',0)
+    for generation in (state.get('generation'),state.get('replay_generation'),sealed+1):
+        if isinstance(generation,int) and generation>=sealed and (root/'global'/f'generation-{generation:04d}'/'population.json').exists():
+            return generation
+    return sealed
+
 def read_key(getwch):
     """Consume the whole Windows extended key; scan codes are not shortcuts."""
     key=getwch()
@@ -237,8 +245,7 @@ class Model:
     def global_replays(self):
         """Observe bounded progress samples; receipts, not samples, prove completion."""
         root=self.global_root();state=self.read(root/'full-status.json')
-        sealed=state.get('completed_generations',0);generation=sealed
-        if (root/'global'/f'generation-{sealed+1:04d}'/'population.json').exists():generation=sealed+1
+        generation=active_generation(root,state)
         scope=(state.get('owner',{}).get('creation_time'),generation)
         if self.replay_sample_scope!=scope:self.replay_samples={};self.replay_sample_scope=scope
         stage=state.get('stage','');role='training' if stage=='Global training' else 'validation' if stage in ('Phase 2 validation: display only','Validation replay + training-only reproduction') else None
@@ -250,7 +257,7 @@ class Model:
         if role and state.get('replay_generation')==generation and state.get('replay_role')==role:
             for d,sample in state.get('session_paths',{}).items():
                 if d in self.job[role+'_days']:self.replay_samples[role+':'+d]=dict(sample)
-        if role and day in self.job[role+'_days']:
+        if role and day in self.job[role+'_days'] and state.get('replay_generation',generation)==generation:
             self.replay_samples[role+':'+day]=dict(event)
         rows={}
         for split in ('training','validation'):
@@ -266,8 +273,7 @@ class Model:
     def diagnostic_replays(self):
         """A separate receipt/progress scope; never feed main candidate metrics."""
         root=self.global_root();state=self.read(root/'full-status.json')
-        generation=state.get('completed_generations',0)
-        if (root/'global'/f'generation-{generation+1:04d}'/'population.json').exists():generation+=1
+        generation=active_generation(root,state)
         scope=(state.get('owner',{}).get('creation_time'),generation)
         if getattr(self,'diagnostic_scope',None)!=scope:self.diagnostic_scope=scope;self.diagnostic_samples={}
         active=state.get('stage')=='Paired mutation diagnostic; selection and RNG isolated' and state.get('replay_generation')==generation

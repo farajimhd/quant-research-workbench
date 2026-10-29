@@ -6,6 +6,21 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_live_replay_ahead_of_publication_ignores_prior_receipts(self):
+        from unittest.mock import patch
+        from research.vectorized_backtest.v57.campaign_progress import Model,replay_numbers
+        model=object.__new__(Model);model.job={'training_days':[],'validation_days':['valid']}
+        model.global_root=lambda:Path('D:/TradingML/runtimes/progress-fixture')
+        model.replay_sample_scope=None;model.replay_samples={}
+        model.read=Mock(return_value=dict(completed_generations=1,generation=3,replay_generation=3,
+            replay_role='validation',stage='Validation replay + training-only reproduction',active_sessions=['valid'],
+            session_paths={'valid':dict(completed_candidates=0,total_candidates=1024,batch_candidates=1024,completed_seconds=25,total_seconds=100)}))
+        def exists(path):return path.name=='population.json' or ('generation-0002' in str(path) and path.name=='receipt.json')
+        with patch.object(Path,'exists',exists):rows=model.global_replays()
+        row=rows['validation:valid']
+        self.assertEqual(row['generation'],3);self.assertEqual(row['status'],'running')
+        self.assertEqual(replay_numbers(row)['fraction'],.25)
+
     def test_saved_training_rows_publish_before_validation_ledger_load(self):
         from threading import Event
         from unittest.mock import patch
