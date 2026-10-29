@@ -100,8 +100,12 @@ class Model:
         self.position_rows=[];self.position_error=None;self.position_thread=None;self.position_session=None;self.position_request=None;self.position_lock=threading.Lock()
         self.replay_samples={};self.replay_sample_scope=None
         self.aggregate_role='training';self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
+        self.initial_mode=False
+        from .initial_progress import InitialData
+        self.initial=InitialData(job,self.global_root().parent,self.observer_stop)
     def remember(self):
         self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','aggregate_mode','aggregate_role','selection','filter','selected','validation','detail_page','sort','reverse')})
+        self.navigation[-1]['initial_mode']=getattr(self,'initial_mode',False)
         self.navigation=self.navigation[-32:]
     def read(self,path,default=None):
         path=Path(path);key=str(path)
@@ -213,6 +217,7 @@ class Model:
         report=data.get('aggregates',{}).get(role) if data else None
         return report or dict(generation=data['generation'] if data else 0,candidates=[],groups=[],coverage=0,total=len(self.job.get(role+'_days',[])),scope='global-'+role,partial=True)
     def report(self):
+        if getattr(self,'initial_mode',False):return self.initial.report()
         if self.aggregate_mode:return self.aggregate_report(self.aggregate_role)
         if self.day and self.day in self.archive.data:return self.archive.data[self.day]['report']
         if self.global_day:
@@ -374,6 +379,7 @@ class Model:
         return rows
 
     def candidate_sessions(self):
+        if getattr(self,'initial_mode',False):return self.initial.candidate_sessions(self.selected['serial'])
         r=self.selected or {};generation=r.get('last_evaluated_generation',r.get('generation',self.report().get('generation',0)))
         data=self.read(self.target()/'global'/f'generation-{generation:04d}'/'session-metrics.json')
         current=self.live_data if self.live_data and self.live_data['generation']==generation else self.global_data
@@ -388,6 +394,7 @@ class Model:
         self.position_rows=[];self.position_error=None;self.position_session=session
         r=dict(self.selected);generation=r.get('last_evaluated_generation',r.get('generation',self.report().get('generation',0)))
         request=(self.target(),generation,r['serial'],session)
+        if getattr(self,'initial_mode',False):request=(self.initial.source_root,1,r['serial'],session)
         def collect():
             while not self.observer_stop.is_set():
                 with self.position_lock:
@@ -410,7 +417,7 @@ class Model:
         if self.view=='detail':return self.candidate_sessions()
         if self.view=='positions':return sorted_rows(self.position_rows,self.sort,not self.reverse)
         if self.view=='position_detail':return list(self.position_selected.items())
-        if self.view=='global_splits':return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]
+        if self.view=='global_splits':return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]+[dict(role='initial',**self.initial.report())]
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
             data=self.global_snapshot();generation=data['generation'] if data else 0
@@ -450,6 +457,10 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if key=='i' or (self.view=='global_splits' and (key=='3' or (key in ('\r','\n') and self.selection==2))):
+            self.remember();self.initial_mode=True;self.aggregate_mode=True;self.aggregate_role='training';self.day=None;self.global_day=None
+            self.view='ranking';self.selection=0;self.filter=None;self.selected=None;return
+        if key in ('a','g','h') or (self.view=='global_splits' and key in ('1','2','t','v','\r','\n')):self.initial_mode=False
         if self.job.get('version')=='v58-global-v1' and key in ('h','\x1b'):key='g'
         if self.view=='positions' and key in ('a','g','h','o','f','m','i','p','e','1','2','d'):self.sort='score'
         if key=='a' and not self.day:
@@ -479,7 +490,7 @@ class Model:
         if key=='c':self.summary_mode='timing' if self.summary_mode=='combined' else 'combined';return
         if key=='d':self.remember();self.view='timings';self.selection=0;return
         if key in ('h','\x1b'):self.aggregate_mode=False;self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;self.navigation=[];return
-        if key=='g':self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
+        if key=='g':self.initial_mode=False;self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
         if key in ('o','f','m','a','i','p','e'):
             self.remember()
             if not self.day and not self.global_day:self.aggregate_mode=True
@@ -591,8 +602,8 @@ def render(model,width,height):
     elif model.view=='global_splits':
         for h in ('Path','Sessions ready','Candidates','Purpose'):table.add_column(h)
         for i,r in enumerate(model.rows()):
-            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
-        caption='1 Training | 2 Validation | Enter: open selected path'
+            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Rescored saved founders' if r['role']=='initial' else 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
+        caption='1 Training | 2 Validation | 3 / I Initial founders | Enter: open selected path'
     elif model.view in ('operators','families','methods','origins','immigration'):
         report=model.report();rows=model.rows()
         compact=width<120
@@ -711,13 +722,19 @@ def render(model,width,height):
             header.append(f'\n{label} {completed}/{len(active_rows)} sessions ',style='white');header.append(progress_bar(work,len(active_rows),width=max(15,min(50,width-45))))
         if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
+    if getattr(model,'initial_mode',False):
+        header=Text('V58 INITIAL FOUNDERS | 6,144 saved founders rescored with V58 concentration | NOT current generation\nTraining only | No founder GPU replay | G: live run | A: global paths',style='bright_cyan')
+        if model.initial.error:header.append('\n'+model.initial.error,style='bright_red')
+        elif model.view=='detail':header.append(f'\nSession details: {len(model.initial.sessions)}/24 loaded in background')
     layout['head'].update(header)
     names={'global_splits':'ALL GLOBAL > TRAINING / VALIDATION','ranking':'ALL GLOBAL '+model.aggregate_role.upper()+' CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
-    layout['body'].update(Panel(table,title=names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
+    if getattr(model,'initial_mode',False):caption='INITIAL FOUNDERS | V58 training scores | '+caption
+    layout['body'].update(Panel(table,title=('INITIAL FOUNDERS > '+model.view.upper()) if getattr(model,'initial_mode',False) else names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
     if width<120:
         keys='1 candidates | 2 groups | Enter open | Esc back | Q close\nO crossover | F family | M method | P source | E immigration\nArrows select | S sort | R reverse | N/B page | L lineage\nH overview | G sessions | A all global | C columns | D timings'
     else:keys='1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G sessions | A all global | C columns | D timings | L lineage | Q close'
     if model.view=='global_splits':keys='1 / T: Training | 2 / V: Validation | Arrows: select | Enter: open\nEach split has its own candidates, groups, sorting, and details.\nValidation is display-only and never influences selection.\nEsc: back | G: global sessions | Q: close panel'
+    keys=keys.replace('Q: close panel','3 / I: initial founders | Q: close panel').replace('Q: close','I: initial founders | Q: close')
     layout['keys'].update(Text(keys))
     return layout
 
