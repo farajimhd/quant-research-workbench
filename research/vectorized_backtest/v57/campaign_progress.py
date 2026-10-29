@@ -199,6 +199,9 @@ class Model:
     def snapshot(self):
         if self.snapshot_cache and time.monotonic()-self.snapshot_cache[0]<1:return self.snapshot_cache[1]
         nodes={n:self.read(self.bus/(n+'-status.json')) for n in self.job['machines']};sessions=[]
+        if self.job.get('version')=='v57-pilot-v2':
+            state=self.read(self.root/'full-status.json')
+            nodes['laptop']=dict(status='session-stage',active_sessions=self.job['training_days'],completed=self.job['training_days'] if state.get('status')=='complete' else [],owner=state.get('owner',{}))
         for node,value in nodes.items():
             if not value and all(d in self.archive.data for d in self.job['machines'][node]['session_days']):nodes[node]=dict(status='phase-1 complete (archived)',completed=self.job['machines'][node]['session_days'])
         stopped=(self.root/'STOP').exists() or (self.bus/'STOP').exists()
@@ -429,7 +432,7 @@ def render(model,width,height):
     head_size=9 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V57 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
-    if model.job.get('version')=='v57-pilot-v2':title=f"V57 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.view}"
+    if model.job.get('version')=='v57-pilot-v2':title=f"V57 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
     note='Score: trimmed ticker + trimmed session (DD x1) | risk caps OFF | validation display-only'
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
