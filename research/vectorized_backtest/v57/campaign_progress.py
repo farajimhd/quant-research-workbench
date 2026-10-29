@@ -133,11 +133,13 @@ class Model:
         return self.strength_cache[key]
     def global_snapshot(self):
         target=self.global_root();state=self.read(target/'full-status.json');generation=state.get('ranking_generation',state.get('completed_generations',0))
-        if generation and (self.global_data is None or self.global_data['generation']!=generation) and not (self.global_thread and self.global_thread.is_alive()) and time.monotonic()-self.global_attempt>10:
+        if generation and (self.global_data is None or self.global_data['generation']!=generation or self.global_data.get('loading')) and not (self.global_thread and self.global_thread.is_alive()) and time.monotonic()-self.global_attempt>10:
             self.global_attempt=time.monotonic();self.global_loading=(generation,0,36);self.global_error=None
             def collect():
                 from .progress_sessions import load_global
-                try:self.global_data=load_global(self.job,target/'global',generation,self.observer_stop,lambda done,total:setattr(self,'global_loading',(generation,done,total)))
+                def partial(value):
+                    if self.global_data is None or self.global_data['generation']==generation:self.global_data=value
+                try:self.global_data=load_global(self.job,target/'global',generation,self.observer_stop,lambda done,total:setattr(self,'global_loading',(generation,done,total)),partial)
                 except InterruptedError:pass
                 except Exception as error:self.global_error=str(error)
                 finally:self.global_loading=None

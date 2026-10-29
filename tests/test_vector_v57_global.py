@@ -6,6 +6,31 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_saved_training_rows_publish_before_validation_ledger_load(self):
+        from threading import Event
+        from unittest.mock import patch
+        from research.vectorized_backtest.v57.progress_sessions import load_global
+        from research.vectorized_backtest.v57.full_common import aggregate
+        m=dict(net_pnl=[5.],drawdown=[1.],closed_positions=[1.],winning_positions=[1.],maximum_position_risk=[1.],maximum_stop_distance=[.1],terminal_valid=[True],episode_profits=[[5.]],episode_exit_clocks=[[2]],episode_listings=[[0]])
+        panel={k:v.tolist() for k,v in aggregate([m]).items()};events=[]
+        def read(path,expected=None):
+            name=Path(path).name
+            if name=='complete.json':return dict(training_sha256='t',validation_sha256='v',observational_reports={'session-metrics.json':'s'})
+            if name=='session-metrics.json':return dict(ids=[7],sessions={'train':panel})
+            if name in ('training.json','validation.json'):
+                role=name[:-5];day='train' if role=='training' else 'valid'
+                return dict(ids=[7],population_sha256='pool',display_only=True,receipts={day:dict(receipt=day+'.json',receipt_sha256='r')})
+            if name=='valid.json':
+                self.assertEqual(len(events),1)
+                return dict(day='valid',split='validation',population_sha256='pool',full_session=True,validation_opened=True,metrics=m)
+            raise AssertionError('Unexpected full receipt read: '+name)
+        job=dict(training_days=['train'],validation_days=['valid'],objective=dict(drawdown_weight=1.,loss_weight=1.))
+        with patch('research.vectorized_backtest.v57.progress_sessions.read_verified',side_effect=read),patch.object(Path,'exists',return_value=False):
+            result=load_global(job,Path('D:/TradingML/runtimes/observer-test'),1,Event(),partial=events.append)
+        self.assertEqual(list(events[0]['summaries']),['training:train'])
+        self.assertEqual(len(result['summaries']),2)
+        self.assertNotIn('loading',result)
+
     def test_global_resume_binds_checkpoint_and_preserves_campaign(self):
         import tempfile,json,copy
         from research.vectorized_backtest.v57.resume_authority import accept_checkpoint

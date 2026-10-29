@@ -45,7 +45,7 @@ def load_live_session(job,root,generation,role,day,ids,token):
         completed_local_batches=len(timings),total_local_batches=len(timings),session_seconds=seconds,stage='Session complete')
     return dict(ids=ids,panel=panel),dict(strength=strength(ranking(panel,ids)),batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0,replay_details=replay)
 
-def load_global(job,root,generation,stop,progress=lambda done,total:None):
+def load_global(job,root,generation,stop,progress=lambda done,total:None,partial=lambda value:None):
     from .full_common import aggregate,ranking
     from .objectives import Objective
     from research.vectorized_backtest.v42.distributed_assets import remote
@@ -53,6 +53,8 @@ def load_global(job,root,generation,stop,progress=lambda done,total:None):
     from .evolution_report import summarize
     records=read_verified(folder/'evaluated-pedigree.json',seal['evaluated_pedigree_sha256']) if seal.get('evaluated_pedigree_sha256') else None
     reports={}
+    saved_hash=seal.get('observational_reports',{}).get('session-metrics.json')
+    saved=read_verified(folder/'session-metrics.json',saved_hash) if saved_hash else {}
     total=len(job['training_days'])+len(job['validation_days'])
     for role in ('training','validation'):
         evidence=read_verified(folder/(role+'.json'),seal[role+'_sha256'])
@@ -62,9 +64,16 @@ def load_global(job,root,generation,stop,progress=lambda done,total:None):
             if stop.is_set():raise InterruptedError('Observer closed')
             ref=evidence['receipts'][day];path=Path(ref['receipt'])
             if str(root).startswith('\\\\'):path=remote(path,job['workstation_share'])
-            receipt=read_verified(path,ref['receipt_sha256'])
-            if receipt['day']!=day or receipt['split']!=role or receipt['population_sha256']!=evidence['population_sha256'] or not receipt['full_session'] or receipt['validation_opened']!=(role=='validation'):raise ValueError('Global session receipt identity changed')
-            panel=aggregate([receipt['metrics']],Objective(**job['objective']))
+            cached_panel=saved.get('sessions',{}).get(role+':'+day,saved.get('sessions',{}).get(day) if role=='training' else None)
+            receipt=None
+            if cached_panel is not None:
+                import numpy as np
+                if saved['ids']!=ids:raise ValueError('Saved session panel IDs changed')
+                panel={k:np.asarray(v) for k,v in cached_panel.items()}
+            else:
+                receipt=read_verified(path,ref['receipt_sha256'])
+                if receipt['day']!=day or receipt['split']!=role or receipt['population_sha256']!=evidence['population_sha256'] or not receipt['full_session'] or receipt['validation_opened']!=(role=='validation'):raise ValueError('Global session receipt identity changed')
+                panel=aggregate([receipt['metrics']],Objective(**job['objective']))
             if len(panel['score'])!=len(ids):raise ValueError('Global session candidate alignment changed')
             key=role+':'+day
             if records is not None:reports[key]=summarize(ids,panel,records,generation=generation)
@@ -73,8 +82,9 @@ def load_global(job,root,generation,stop,progress=lambda done,total:None):
             if timing_path.exists():
                 timings=read_verified(timing_path)
                 if timings:seconds=sum(float(row.get(k,0)) for row in timings for k in ('load_seconds','rule_seconds','replay_seconds'))
-            summaries[key]=dict(strength=summary,batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0)
+            summaries[key]=dict(strength=summary,batch_seconds=seconds,cached=receipt.get('evaluated_candidates')==0 if receipt is not None else None)
             done+=1;progress(done,total)
+            partial(dict(generation=generation,panels=dict(panels),summaries=dict(summaries),reports=dict(reports),loading=True))
     result=dict(generation=generation,panels=panels,summaries=summaries,reports=reports)
     if records is not None:
         from .progress_global import combined
