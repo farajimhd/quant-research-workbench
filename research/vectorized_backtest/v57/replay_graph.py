@@ -111,7 +111,11 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
                                    graph_capture_host_seconds=capture_seconds),execution_gate)
     if execution_gate is not None:
         from .gpu_gate import enqueue_turns
-        return enqueue_turns(graph,total,block,execution_gate,device,progress)
+        started=time.perf_counter()
+        result=enqueue_turns(graph,total,block,execution_gate,device,progress)
+        network_plan.last_replay_profile=dict(compiler_warmup_seconds=warm_seconds,graph_capture_seconds=capture_seconds,
+            chronological_replay_seconds=time.perf_counter()-started)
+        return result
     pending=deque();reported=0;completed=0;last_report=0.
     replay_started=time.perf_counter()
     gpu_start=torch.cuda.Event(enable_timing=True);gpu_end=torch.cuda.Event(enable_timing=True);gpu_start.record()
