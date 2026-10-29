@@ -6,6 +6,28 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_cuda_active_task_compaction_exact_actions_and_sizing(self):
+        import torch
+        if not torch.cuda.is_available():self.skipTest('CUDA unavailable')
+        from research.vectorized_backtest.v57.genome import sample,MARKET_INPUTS
+        from research.vectorized_backtest.v57.network import NetworkPlan
+        from research.vectorized_backtest.v57.network_cuda import signals
+        from research.vectorized_backtest.v42.features import CATALOG
+        members=sample(np.random.default_rng(123),8)
+        for width in (67,257):
+            plan=NetworkPlan(members,'cuda');plan.cuda_block=64;plan.prepare(8,width)
+            try:
+                torch.manual_seed(123);plan.entry_allowed=torch.rand(width,device='cuda')>.8
+                position=torch.zeros((1,8,width,9),device='cuda',dtype=torch.float64)
+                position[...,0]=(torch.rand((1,8,width),device='cuda')>.9).double();position[...,1]=1
+                opened=torch.zeros((1,8,width),device='cuda',dtype=torch.float64)
+                previous=torch.ones((1,1,width),device='cuda',dtype=torch.float64)
+                values=torch.rand((width,MARKET_INPUTS),device='cuda');valid=torch.ones((width,len(CATALOG)),device='cuda',dtype=torch.bool);clock=torch.tensor(20,device='cuda')
+                plan.compact_tasks=False;plan.reset();expected=signals(plan,values,valid,position,opened,previous,clock).clone();ratios=plan.ratios.clone()
+                plan.compact_tasks=True;plan.reset();actual=signals(plan,values,valid,position,opened,previous,clock)
+                self.assertTrue(torch.equal(expected,actual));self.assertTrue(torch.equal(ratios,plan.ratios))
+            finally:plan.close()
+
     def test_prefetch_failure_propagates_before_replay_dispatch(self):
         from concurrent.futures import Future
         from research.vectorized_backtest.v57.session_lanes import SessionLanes

@@ -59,7 +59,7 @@ class Global(Evolution):
                 # source changes must not discard those content-addressed caches.
                 compile_cache_root=str(Path('D:/TradingML/runtimes/v57c/global')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
             cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
-            cfg['neural_tile']=32
+            cfg['neural_tile']=64
             cfg['gpu_execution_gate']=self.job['campaign']
             self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
         return self.split_lanes[role]

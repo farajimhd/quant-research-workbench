@@ -43,14 +43,7 @@ def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
-    """One clock of scratch, directly indexed; no N-way register gathers."""
-    if SORTED:
-        net_order=tl.load(ORDER+tl.program_id(0)//TILES)
-        member=net_order//5;action=net_order%5
-        j=(tl.program_id(0)%TILES)*BLOCK+tl.arange(0,BLOCK)
-    else:
-        member=tl.program_id(0);action=tl.program_id(1);j=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK)
+def workspace_task(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,member,action,j):
     if OWNED:
         u=tl.load(OWNER_IDS+member*OWNED_K+j,j<OWNED_K,-1);live=(j<OWNED_K)&(u>=0)&(u<U)
     else:
@@ -159,11 +152,47 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
             channel=tl.where(action==0,0,tl.where(action==2,1,2))
             tl.store(RATIOS+(member*U+u)*3+channel,fraction,live)
 
+@tr.jit
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr):
+    if SORTED:
+        net_order=tl.load(ORDER+tl.program_id(0)//TILES)
+        member=net_order//5;action=net_order%5
+        j=(tl.program_id(0)%TILES)*BLOCK+tl.arange(0,BLOCK)
+    else:
+        member=tl.program_id(0);action=tl.program_id(1);j=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK)
+    workspace_task(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED,OWNED_K,U,C,STATES,FAN,BLOCK,member,action,j)
+
+
+@tr.jit
+def active_tasks(POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,TASKS,COUNT,U:tl.constexpr,STATES:tl.constexpr,BLOCK:tl.constexpr,TILES:tl.constexpr,PAD_TILES:tl.constexpr,K:tl.constexpr):
+    member=tl.program_id(0)
+    tile=tl.arange(0,PAD_TILES);lane=tl.arange(0,BLOCK)
+    u=tile[:,None]*BLOCK+lane[None,:];live=u<U
+    held=tl.load(POSITION_STATES+member*STATES*U+u,live,0)>0
+    entry=tl.load(ENTRY_ALLOWED+u,live,False)
+    held_tiles=tl.sum(held.to(tl.int32),1)>0
+    entry_tiles=(tl.sum(entry.to(tl.int32),1)>0)&(tl.load(ENTRY_REP+member)==member)
+    k=tl.arange(0,K);action=k//PAD_TILES;t=k%PAD_TILES
+    active=(action<5)&(t<TILES)&tl.where(action==0,tl.gather(entry_tiles,t,0),tl.gather(held_tiles,t,0))
+    count=tl.sum(active.to(tl.int32),0);base=tl.atomic_add(COUNT,count)
+    offset=tl.cumsum(active.to(tl.int32),0)-1
+    tl.store(TASKS+base+offset,(member*5+action)*TILES+t,active)
+
+
+@tr.jit
+def compact_workspace(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,TASKS,COUNT,TILES:tl.constexpr,PROGRAMS:tl.constexpr):
+    count=tl.load(COUNT)
+    for index in range(tl.program_id(0),count,PROGRAMS):
+        task=tl.load(TASKS+index);net=task//TILES
+        member=net//5;action=net%5;j=(task%TILES)*BLOCK+tl.arange(0,BLOCK)
+        workspace_task(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED,OWNED_K,U,C,STATES,FAN,BLOCK,member,action,j)
+
+
 
 def signals(plan,values,valid,position,opened,previous,index,out=None):
     b=position.shape[1];u=position.shape[2];values=values.T.contiguous();valid=valid.T.contiguous()
     owners=getattr(plan,'owner_indices',None);owned=owners is not None;owned_k=owners.shape[1] if owned else u
-    actions=(torch.zeros if owned else torch.empty)((b,5,u),device=position.device,dtype=torch.bool)
+    actions=torch.zeros((b,5,u),device=position.device,dtype=torch.bool)
     block=getattr(plan,'cuda_block',128)
     if owned:block=32
     if block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
@@ -171,10 +200,18 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     scheduled=not owned and block in (32,64,128)
     tiles=tr.cdiv(owned_k,block)
     grid=(b*5*tiles,) if scheduled else (b,5,tiles)
-    workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
+    arguments=(values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.entry_allowed,plan.entry_representatives,plan.memory,plan.memory_known,plan.ratios,
-        plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
-        plan.cuda_network_order,tiles,scheduled,num_warps=(1 if block==32 else 2) if scheduled else 4,enable_fp_fusion=False)
+        plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block)
+    if owned or not getattr(plan,'compact_tasks',True):
+        workspace_kernel[grid](*arguments,plan.cuda_network_order,tiles,scheduled,num_warps=(1 if block==32 else 2) if scheduled else 4,enable_fp_fusion=False)
+    else:
+        tasks=torch.empty((b*5*tiles,),device=position.device,dtype=torch.int32)
+        count=torch.zeros((),device=position.device,dtype=torch.int32)
+        padded=tr.next_power_of_2(tiles)
+        active_tasks[(b,)](plan.position_states,plan.entry_allowed,plan.entry_representatives,tasks,count,u,len(STATES),block,tiles,padded,tr.next_power_of_2(5*padded),num_warps=4)
+        programs=min(b*5*tiles,1024)
+        compact_workspace[(programs,)](*arguments,tasks,count,tiles,programs,num_warps=1 if block==32 else 2,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
     pack[(tr.cdiv(b*u,256),)](actions,result,plan.buffer_phase,plan.entry_representatives,plan.ratios,b*u,u,256)
     return result
