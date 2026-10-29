@@ -15,6 +15,7 @@ from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 
 
 class Pilot(Controller):
+    pipeline_enabled=True
     def __init__(self,job):
         self.job=job;self.root=Path(job['campaign']);self.stage='Starting direct phase2 pilot'
         self.owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time())
@@ -29,6 +30,12 @@ class Pilot(Controller):
 
     def pump(self):
         while not self.stop.wait(1):
+            publication=getattr(self,'publication_future',None)
+            if publication is not None and publication.done():
+                try:
+                    sealed=publication.result()['generation'];self.sealed_generation=sealed
+                    self.publish(completed_generations=sealed,publication_pending_generation=None)
+                except BaseException as error:self.publish(publication_error=str(error))
             try:event=self.events.get_nowait()
             except queue.Empty:self.publish();continue
             self.publish(worker_progress=event,session_paths={self.job['training_days'][0]:dict(event,updated_epoch=time.time())})
@@ -37,8 +44,10 @@ class Pilot(Controller):
         if role!='training' or days!=self.job['training_days']:
             raise ValueError('This pilot cannot open another session or validation data')
         if (self.root/'STOP').exists():raise InterruptedError('V57 pilot stop requested')
-        payload=[m.payload() for m in members];token=digest(payload);day=days[0]
-        self.publish(phase=2,generation=generation,completed_generations=generation-1,
+        snapshot=getattr(self,'cohort_snapshot',None)
+        payload=snapshot.payload if snapshot is not None else [m.payload() for m in members]
+        token=snapshot.verify(members) if snapshot is not None else digest(payload);day=days[0]
+        self.publish(phase=2,generation=generation,completed_generations=getattr(self,'sealed_generation',generation-1),
                      evaluated_population=len(members),completed_sessions=0,total_sessions=1,replay_generation=generation,replay_role=role,active_sessions=days)
         width=len(json.loads((Path(self.worker.config['history'])/day/'complete.json').read_bytes())['listing_ids'])
         paired=getattr(self,'paired_probe',None)
@@ -48,12 +57,13 @@ class Pilot(Controller):
             return evaluate(self,members,generation,day,width,payload,token)
         self.worker.run(day,None,payload,generation,token,width)
         receipt_path=Path(self.worker.config['output'])/f'generation-{generation:04d}'/day/'receipt.json'
-        receipt=json.loads(receipt_path.read_bytes())
+        deferred=getattr(self.worker,'defer_publication',False)
+        receipt=next(value for path,value in self.worker.deferred_writes if path==str(receipt_path)) if deferred else json.loads(receipt_path.read_bytes())
         if (receipt['population_sha256']!=token or not receipt['full_session']
             or receipt['validation_opened'] or receipt['execution']!=self.job['execution']
             or any(x is not None for x in receipt['case_owners'])):
             raise ValueError('Pilot financial receipt changed')
-        return [receipt['metrics']],{day:dict(receipt=str(receipt_path),receipt_sha256=sha(receipt_path))}
+        return [receipt['metrics']],{day:dict(receipt=str(receipt_path),receipt_sha256=None if deferred else sha(receipt_path))}
 
     def run(self):
         check_job(self.job)

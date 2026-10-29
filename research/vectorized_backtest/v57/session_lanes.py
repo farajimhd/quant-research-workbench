@@ -219,7 +219,9 @@ class Worker:
                         old=self.host.pop(old_day);old.close();del old
                 gc.collect()
                 self.prefetch.start(next_day,self.read_ahead)
-            with Publisher() as publisher,ThreadPoolExecutor(max_workers=1,thread_name_prefix='v57-results') as results_pool:
+            from .publication_lane import Buffer
+            deferred=getattr(self,'defer_publication',False)
+            with (Buffer() if deferred else Publisher()) as publisher,ThreadPoolExecutor(max_workers=1,thread_name_prefix='v57-results') as results_pool:
                 offset=0;pending_result=None;pending_timing=None
                 for batch_index,selection in enumerate(batches):
                     self.batch_progress['completed_local_batches']=batch_index
@@ -251,6 +253,7 @@ class Worker:
                             rule_tiles=e['tiles'],total_rule_tiles=e['total_tiles']))
                     if device.type=='cuda':torch.cuda.synchronize(device)
                     rule_seconds=perf_counter()-batch_start;replay_start=time();replay_clock=perf_counter()
+                    previous_finished=getattr(self,'previous_replay_finished',None)
                     self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
                     def replay_progress(done,total):
                         self.check_stop()
@@ -275,6 +278,9 @@ class Worker:
                         configured_batch_size=c['batch_size'],maximum_replay_batch_size=ceiling,
                         load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,result_cache_prefetched=cache_prefetched,transfer_prefetched=transfer_prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
+                    timing['replay_started_epoch']=replay_start
+                    timing['since_previous_replay_seconds']=None if previous_finished is None else replay_start-previous_finished
+                    self.previous_replay_finished=timing['finished_epoch']
                     if plan.plan is not None:
                         timing.update({k:getattr(plan.plan,k)-v for k,v in prior.items()})
                     timings.append(timing);pending_timing=timing;del gates,result
@@ -285,8 +291,8 @@ class Worker:
                     values,seconds=pending_result.result();cached.update(values);pending_timing['attribution_seconds']=seconds
                 self.emit(day,stage='Publish session results',completed_candidates=len(population))
                 selected={key:cached[key] for key in keys}
-                raw=json.dumps(selected,sort_keys=True,separators=(',',':'),allow_nan=False)
-                publisher.write(cache_path,dict(identity=identity,results=selected,results_sha256=sha256(raw.encode()).hexdigest()))
+                raw=None if deferred else json.dumps(selected,sort_keys=True,separators=(',',':'),allow_nan=False)
+                publisher.write(cache_path,dict(identity=identity,results=selected,results_sha256=None if deferred else sha256(raw.encode()).hexdigest()))
                 merged={k:[cached[key][k] for key in keys] for k in cached[keys[0]]}
                 missing_set=set(missing)
                 merged['result_reused']=[i not in missing_set for i in range(len(population))]
@@ -299,6 +305,7 @@ class Worker:
             # Only retain a successfully published generation. The disk cache
             # remains hashed and is revalidated on process/session restart.
             if resident:self.resident_results=(identity,selected)
+            if deferred:self.deferred_writes=publisher.writes
             self.emit(day,stage='Session complete',completed_local_batches=len(timings),completed_seconds=item.clocks-1)
             return dict(day=day,timings=timings,wall_seconds=perf_counter()-started,pid=os.getpid(),clocks=item.clocks-1)
         except BaseException as error:

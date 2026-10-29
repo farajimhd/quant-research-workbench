@@ -1,5 +1,6 @@
 """CPU-only deterministic network packing; no CUDA calls or random draws."""
 import numpy as np
+from itertools import chain
 from .genome import STAGES,OPS
 from .config import FAN_IN
 
@@ -12,17 +13,18 @@ def pack_networks(members):
     threshold=np.array([n.threshold for n in nets],np.float32)
     size_source=np.array([n.size_source if n.size_source>=0 else len(n.nodes)-1 for n in nets],np.int32)
     size_weight=np.array([n.size_weight for n in nets],np.float32);size_bias=np.array([n.size_bias for n in nets],np.float32)
-    for index,net in enumerate(nets):
-        net.validate()
-        for j,node in enumerate(net.nodes):
-            row=int(offsets[index])+j;bias[row]=node.bias;edge_counts[row]=len(node.sources)
-            # The full catalog is packed in identity order, so market, state,
-            # current-node and delayed-node source indices already match.
-            count=len(node.sources)
-            sources[row,:count]=node.sources
-            weights[row,:count]=node.weights
+    for net in nets:net.validate()
+    nodes=[node for net in nets for node in net.nodes]
+    edge_counts=np.fromiter((len(n.sources) for n in nodes),np.int32,count=total_nodes)
+    bias=np.fromiter((n.bias for n in nodes),np.float32,count=total_nodes)
+    rows=np.repeat(np.arange(total_nodes),edge_counts)
+    edge_offsets=np.cumsum(np.r_[0,edge_counts[:-1]])
+    columns=np.arange(len(rows))-np.repeat(edge_offsets,edge_counts)
+    sources[rows,columns]=np.fromiter(chain.from_iterable(n.sources for n in nodes),np.int32,count=len(rows))
+    weights[rows,columns]=np.fromiter(chain.from_iterable(n.weights for n in nodes),np.float32,count=len(rows))
     values=(sources,weights,bias,counts,offsets,threshold,size_source,size_weight,size_bias)
-    return dict(values=values,operations=np.array([OPS.index(n.op) for net in nets for n in net.nodes],np.int32),
+    operations={op:i for i,op in enumerate(OPS)}
+    return dict(values=values,operations=np.fromiter((operations[n.op] for n in nodes),np.int32,count=total_nodes),
         edge_counts=edge_counts,total_nodes=total_nodes,kernel_nodes=kernel_nodes,offsets_cpu=offsets_cpu)
 
 

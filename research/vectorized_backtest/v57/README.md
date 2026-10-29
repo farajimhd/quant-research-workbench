@@ -52,10 +52,25 @@ resume only from an explicitly hash-bound checkpoint and result-cache receipt.
 Fresh proposal calibration runs on one bounded CPU lane during main replay,
 using a cloned RNG and the exact same slot-addressed proposals. Diagnostic
 mutants share GPU batch capacity with training but publish separate receipts;
-their reports overlap reproduction, and successor packing overlaps seal
-publication. Diagnostics never feed selection or the retained training cache.
-Full generation timings include
-checkpoint and observer publication; older seals predate that final timing field.
+their reports consume those same in-memory results. Diagnostics never feed
+selection or the retained training cache. Species structural descriptions are
+prefetched alongside fresh proposals; mask crossover caches immutable parent
+topology and remaps packed source indices with NumPy without changing RNG order.
+
+The pilot prioritizes reproduction and successor packing. One bounded publication
+process writes replay receipts, reports and checkpoints while the next cohort
+replays. At most one generation finish and one generation start are queued.
+Publication errors propagate before another reproduction; shutdown drains the
+writer. Checkpoints advance only after every bound receipt/report is durable.
+A crash during speculative replay resumes the last sealed generation, never an
+unpublished successor. The observer's completed count follows durable seals.
+
+Each frozen cohort has one canonical population encoding, reused for identities,
+successor evidence and checkpoint embedding. Frozen network identities and mutable
+policy/age metadata are checked before reuse. Full generation timings include
+checkpoint and observer publication; `critical_path_seconds` reports dispatch
+readiness, and replay timings include `since_previous_replay_seconds` to expose
+the actual GPU-to-GPU gap. Older seals predate these timing fields.
 
 Candidate detail -> select session -> Enter opens its saved position ledger.
 S cycles sorting and R reverses it. Receipt verification/loading runs only in

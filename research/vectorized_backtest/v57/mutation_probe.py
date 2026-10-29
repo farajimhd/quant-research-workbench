@@ -11,7 +11,8 @@ from research.vectorized_backtest.v42.publication import write_json
 
 
 def prepare_probe(controller, members, ids, records, generation):
-    frozen = digest([m.payload() for m in members])
+    snapshot=getattr(controller,'cohort_snapshot',None)
+    frozen = snapshot.verify(members) if snapshot is not None else digest([m.payload() for m in members])
     # Stable hash ordering avoids choosing only the first scheduled operator.
     candidates = [i for i, r in enumerate(records) if r['generation'] == generation
                   and r['operation'] == 'crossover']
@@ -67,9 +68,10 @@ def run_probe(controller, folder, members, ids, records, panel, generation):
                                    for k, v in result.items()}
         finally:
             worker.config['output'], worker.resident_results = output, resident
-    if digest([m.payload() for m in members]) != frozen:
+    snapshot=getattr(controller,'cohort_snapshot',None)
+    if (snapshot.verify(members) if snapshot is not None else digest([m.payload() for m in members])) != frozen:
         raise ValueError('Mutation diagnostic changed the training cohort')
-    write_json(folder / 'mutation-probe.json', dict(generation=generation,
+    getattr(controller,'artifact_write',write_json)(folder / 'mutation-probe.json', dict(generation=generation,
         diagnostic_only=True, selection_updated=False, training_rng_used=False,
         requested=prepared['requested'], evaluated=len(pairs),batched_with_training='metrics' in prepared, rejected=rejected,
         population_sha256=frozen, receipts=receipts, pairs=pairs))

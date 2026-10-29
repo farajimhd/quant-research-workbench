@@ -17,6 +17,11 @@ def slots(net):
     return result
 
 def encode(net):
+    from .validation_cache import topology
+    return topology(net,lambda:_encode(net))
+
+
+def _encode(net):
     ids=slots(net)
     def key(s):return ('delay',ids[-s-1]) if s<0 else ('input',s) if s<INPUTS else ('node',ids[s-INPUTS])
     return {slot:(n,tuple(key(s) for s in n.sources)) for slot,n in zip(ids,net.nodes)}
@@ -86,7 +91,20 @@ def network(rng,a,b,mode):
     if len(order)!=len(live) or order[-1]!=root:raise ValueError('Mask creates instantaneous cycle/output dependency')
     index={s:i for i,s in enumerate(order)}
     def source(k):return k[1] if k[0]=='input' else -index[k[1]]-1 if k[0]=='delay' else INPUTS+index[k[1]]
-    nodes=tuple(replace(merged[s][0],sources=tuple(source(k) for k in merged[s][1]),slot=s) for s in order)
+    # Remap the packed source array with vector operations. Stable slot lookup
+    # and dependency ordering remain discrete; their tie order must not change.
+    blocks=[merged[s][1] for s in order]
+    lengths=np.fromiter(map(len,blocks),np.int64,count=len(blocks))
+    flat=[k for block in blocks for k in block]
+    kinds=np.fromiter((0 if k[0]=='input' else 1 if k[0]=='node' else 2 for k in flat),np.int8,count=len(flat))
+    values=np.fromiter((k[1] if k[0]=='input' else index[k[1]] for k in flat),np.int64,count=len(flat))
+    remapped=np.where(kinds==0,values,np.where(kinds==1,INPUTS+values,-values-1)).tolist()
+    ends=np.cumsum(lengths);starts=np.r_[0,ends[:-1]]
+    nodes=[]
+    for s,first,last in zip(order,starts,ends):
+        node=merged[s][0];sources=tuple(remapped[first:last])
+        nodes.append(node if node.sources==sources and node.slot==s else replace(node,sources=sources,slot=s))
+    nodes=tuple(nodes)
     return Network(nodes,float(numbers(rng,a.threshold,b.threshold)),index[size],float(numbers(rng,a.size_weight,b.size_weight)),float(numbers(rng,a.size_bias,b.size_bias))).validate()
 
 def cross(rng,a,b):

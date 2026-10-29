@@ -39,14 +39,32 @@ class PopulationPreparation:
             with validation_scope(capacity=min(32768,max(4096,len(members)*15))):
                 return members,[program_key(m) for m in members],pack_networks(members),perf_counter()-started
         self.future=self.pool.submit(pack);return self.future
-    def append_members(self,parent_token,payload,extra,token):
+    def submit_snapshot(self,snapshot,keys=None,validated=()):
+        """Snapshot checked once; reuse its canonical token and typed members."""
+        snapshot.verify(snapshot.members)
+        if self.token==snapshot.token and self.future is not None:return self.future
+        self.parent=None;self.payload=snapshot.payload;self.token=snapshot.token;self.misses+=1
+        def pack():
+            from .lineage import program_key
+            from .network_pack import pack_networks
+            from .validation_cache import validation_scope
+            started=perf_counter()
+            with validation_scope(capacity=32768,certificate=validated):
+                members=list(snapshot.members)
+                return members,list(keys) if keys is not None else [program_key(m) for m in members],pack_networks(members),perf_counter()-started
+        self.future=self.pool.submit(pack);return self.future
+    def append_members(self,parent_token,payload,extra,token,snapshot=None):
         if self.token!=parent_token or self.future is None:return False
         source=self.future;parent_payload=self.payload
         def append():
             from .identity import digest
             from .network_pack import pack_networks,concatenate_packed
             from .lineage import program_key
-            if digest(payload)!=token or payload!=parent_payload+[m.payload() for m in extra]:raise ValueError('Paired preparation identity mismatch')
+            if snapshot is not None:
+                snapshot.verify(snapshot.members);n=len(snapshot.payload)
+                if snapshot.token!=parent_token or len(payload)!=n+len(extra) or any(a is not b for a,b in zip(payload[:n],snapshot.payload)) or payload[n:]!=[m.payload() for m in extra]:
+                    raise ValueError('Paired snapshot identity mismatch')
+            elif digest(payload)!=token or payload!=parent_payload+[m.payload() for m in extra]:raise ValueError('Paired preparation identity mismatch')
             members,keys,packed,_=source.result();started=perf_counter()
             return members+extra,keys+[program_key(m) for m in extra],concatenate_packed(packed,pack_networks(extra)),perf_counter()-started
         self.payload=payload;self.token=token;self.parent=None;self.future=self.pool.submit(append);return True

@@ -12,6 +12,39 @@ def metrics(profits,listings):
     return dict(net_pnl=[sum(p) for p in profits],drawdown=[2.]*n,closed_positions=[len(p) for p in profits],winning_positions=[sum(v>0 for v in p) for p in profits],maximum_position_risk=[1.]*n,maximum_stop_distance=[.1]*n,terminal_valid=[True]*n,episode_profits=profits,episode_listings=listings,episode_exit_clocks=[list(range(len(p))) for p in profits])
 
 class V57Tests(unittest.TestCase):
+    def test_snapshot_exact_canonical_and_mutation_detection(self):
+        from research.vectorized_backtest.v57.population_snapshot import Snapshot,envelope,dumps
+        from research.vectorized_backtest.v57.identity import digest
+        members=sample(np.random.default_rng(11),3);snap=Snapshot(members)
+        self.assertEqual(snap.token,digest([m.payload() for m in members]))
+        self.assertEqual(envelope(dict(z=1),population=snap.raw),dumps(dict(z=1,population=[m.payload() for m in members])))
+        ids=np.arange(3);state=np.random.default_rng(7).bit_generator.state
+        raw,key=snap.successor(ids,state)
+        self.assertEqual(key,digest(dict(population=[m.payload() for m in members],ids=ids.tolist(),rng=state)))
+        members[0].minimum_age['exit']=123
+        with self.assertRaises(ValueError):snap.verify(members)
+
+    def test_publication_process_errors_propagate(self):
+        from research.vectorized_backtest.v57.publication_lane import Lane
+        lane=Lane()
+        try:
+            future=lane.submit(int,'not-an-integer')
+            with self.assertRaises(ValueError):future.result(timeout=20)
+            with self.assertRaises(ValueError):lane.check()
+        finally:
+            with self.assertRaises(ValueError):lane.close()
+
+    def test_validation_reuse_never_admits_unknown_graph(self):
+        from research.vectorized_backtest.v57.validation_cache import validation_scope,certificate
+        members=sample(np.random.default_rng(19),2)
+        with validation_scope(capacity=32768):
+            for member in members:member.validate()
+            approved=certificate(members)
+        invalid=Network(members[0].networks['entry'].nodes,threshold=2.)
+        with validation_scope(capacity=32768,certificate=approved):
+            self.assertIs(members[0].networks['entry'].validate(),members[0].networks['entry'])
+            with self.assertRaises(ValueError):invalid.validate()
+
     def test_trim_and_best_day(self):
         a=metrics([[100.,20.,-5.]],[[1,1,1]])
         b=metrics([[30.,-10.]],[[1,1]])

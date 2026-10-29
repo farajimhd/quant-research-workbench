@@ -43,11 +43,12 @@ class Controller:
     def reproduce(self,root,folder,members,source_ids,birth_records,token,ordered,training_receipts,train,objective,generation,rng,pedigree,species,probe):
         """Training-only CPU lane: validation values and worker handles are absent."""
         started=time.perf_counter()
+        emit=getattr(self,'artifact_write',write_json)
         session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
         from .offspring_audit import summarize
-        write_json(folder/'offspring-audit.json',summarize(birth_records,panel,generation))
+        audit=summarize(birth_records,panel,generation)
         self.publish(reproduction_stage='Score training population')
-        write_json(folder/'training.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(panel),ranking=ranking(panel,source_ids),receipts=training_receipts))
+        emit(folder/'training.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(panel),ranking=ranking(panel,source_ids),receipts=training_receipts))
         self.publish(reproduction_stage='Select active parents and reproduce')
         if generation<self.job['phase2_generations']:
             from .validation_cache import validation_scope
@@ -55,20 +56,32 @@ class Controller:
             # 4096 entries thrash even on the 5120 parental action graphs.
             with validation_scope(capacity=min(32768,max(4096,len(members)*15))):
                 successor,newids,diversity=next_population(rng,members,source_ids,pedigree,[],generation+1,Selection(**self.job['selection']),session_values=panel['score'][None],session_eligible=panel['eligible'][None],global_values=panel['score'],global_eligible=panel['eligible'],target_size=self.job['population'],species=species,ordered=ordered,case_values=None,case_ids=None,probe=probe,fresh_prefetch=getattr(self,'fresh_prefetch',None))
+                if getattr(self,'publication_lane',None):
+                    from .validation_cache import certificate
+                    from .lineage import program_key
+                    self.successor_validated=certificate(successor)
+                    self.successor_keys=[program_key(m) for m in successor]
         else:successor,newids,diversity=members,source_ids,dict(reproduction_performed=False)
         if generation<self.job['phase2_generations']:
-            audit=read(folder/'offspring-audit.json');selected=set(map(int,source_ids)) & set(map(int,newids))
+            selected=set(map(int,source_ids)) & set(map(int,newids))
             audit['retained_ids']=sorted(selected);audit['selection_observed']=True
-            write_json(folder/'offspring-audit.json',audit)
-        frozen=dict(population=[m.payload() for m in successor],ids=newids.tolist(),rng=rng.bit_generator.state)
-        frozen_hash=digest(frozen);write_json(folder/'successor.json',dict(**frozen,sha256=frozen_hash,training_only=True))
-        write_json(folder/'reproduction.json',dict(generation=generation,successor_sha256=frozen_hash,
+        emit(folder/'offspring-audit.json',audit)
+        if getattr(self,'publication_lane',None):
+            from .population_snapshot import Snapshot
+            self.successor_snapshot=Snapshot(successor)
+            self.frozen_raw,frozen_hash=self.successor_snapshot.successor(newids,rng.bit_generator.state)
+        else:
+            frozen=dict(population=[m.payload() for m in successor],ids=newids.tolist(),rng=rng.bit_generator.state)
+            frozen_hash=digest(frozen);emit(folder/'successor.json',dict(**frozen,sha256=frozen_hash,training_only=True))
+        emit(folder/'reproduction.json',dict(generation=generation,successor_sha256=frozen_hash,
             training_only=True,telemetry=diversity))
         born=[pedigree.records[int(i)] for i in newids if pedigree.records[int(i)]['generation']==generation+1]
-        write_json(folder/'births.json',born)
+        emit(folder/'births.json',born)
         from .evolution_report import publish as report_evolution
         per_session={day:serializable(metrics) for day,metrics in zip(train,session_panels)}
-        report_evolution(root,folder,source_ids,panel,birth_records,set(map(int,newids)) if generation<self.job['phase2_generations'] else None,diversity,generation,per_session)
+        report=(source_ids,panel,birth_records,set(map(int,newids)) if generation<self.job['phase2_generations'] else None,diversity,generation,per_session)
+        if getattr(self,'publication_lane',None):self.pending_report=report
+        else:report_evolution(root,folder,*report)
         self.publish(reproduction=diversity,reproduction_stage='Complete',reproduction_seconds=time.perf_counter()-started,reproduction_finished_epoch=time.time())
         return panel,successor,newids,diversity,frozen_hash,time.perf_counter()-started
 
@@ -109,6 +122,9 @@ class Controller:
             state=global_seed(exports,self.job,probe,**options);state.update(completed=0,seals={},species=species.state)
             write_json(root/'initial-pool.json',state);write_checkpoint(cp,contract,state)
         members=[Individual.restore(p) for p in state['population']];ids=np.asarray(state['ids']);pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);rng=np.random.default_rng();rng.bit_generator.state=state['rng']
+        if getattr(self,'pipeline_enabled',False):
+            from .generation_flow import evolve
+            return evolve(self,root,train,valid,contract,state,members,ids,pedigree,rng,species,probe,objective)
         for generation in range(completed+1,self.job['phase2_generations']+1):
             started=time.perf_counter();folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True);self.stage='Session training' if self.job.get('campaign_stage')=='session' else 'Global training'
             source_population=[m.payload() for m in members];source_ids=ids.copy();token=digest(source_population)

@@ -6,6 +6,7 @@ from contextvars import ContextVar
 _active = ContextVar('v42_network_validation', default=None)
 CAPACITY = 4096
 _capacity = ContextVar('v57_validation_capacity', default=CAPACITY)
+_topology = ContextVar('v57_topology_cache',default=None)
 
 
 def known_immutable(network):
@@ -14,11 +15,12 @@ def known_immutable(network):
 
 
 @contextmanager
-def validation_scope(*, capacity=CAPACITY):
+def validation_scope(*, capacity=CAPACITY, certificate=()):
     if type(capacity) is not int or not 1<=capacity<=32768:
         raise ValueError('Invalid bounded validation cache capacity')
-    token = _active.set(OrderedDict())
+    token = _active.set(OrderedDict((id(n),n) for n in certificate))
     limit = _capacity.set(capacity)
+    topology=_topology.set(OrderedDict())
     try:
         from .identity_cache import identity_scope
         with identity_scope(capacity=capacity):
@@ -26,6 +28,22 @@ def validation_scope(*, capacity=CAPACITY):
     finally:
         _active.reset(token)
         _capacity.reset(limit)
+        _topology.reset(topology)
+
+
+def certificate(members):
+    """Retain only successful, structurally immutable validations from this scope."""
+    return tuple({id(n):n for m in members for n in m.networks.values() if known_immutable(n)}.values())
+
+
+def topology(network,build):
+    cache=_topology.get();key=id(network)
+    if cache is not None and key in cache and cache[key][0] is network:return cache[key][1]
+    value=build()
+    if cache is not None and (known_immutable(network) or immutable(network)):
+        cache[key]=(network,value)
+        if len(cache)>_capacity.get():cache.popitem(last=False)
+    return value
 
 
 def immutable(network):
