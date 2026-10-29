@@ -64,18 +64,21 @@ def main():
         for day in days:
             timing=json.loads((c.root/'replays/training/generation-0001'/day/'timings.json').read_bytes())
             rows.append(dict(day=day,batches=len(timing),gpu_replay_seconds=sum(t['replay_seconds'] for t in timing),timings=timing))
+        # Compare complete published financial evidence, not the compact subset
+        # retained by the controller solely for selection and behavior.
+        published=[json.loads((c.root/'replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics'] for day in days]
         report=dict(population=len(members),population_sha256=c.cohort_snapshot.token,maximum_batch=args.maximum_batch,days=days,
                     two_session_return_seconds=returned-started,two_session_published_seconds=time.perf_counter()-started,sessions=rows,
-                    metrics_sha256=digest(panels),initial_replay_target_seconds=45)
+                    metrics_sha256=digest(published),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
         if args.compare:
             expected=[]
             for day in days:
                 original=json.loads((args.compare/'phase-2/replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics']
                 expected.append({k:v[args.offset:args.offset+args.count] for k,v in original.items()})
-            report['exact_financial_parity']=digest(expected)==digest(panels)
+            report['exact_financial_parity']=digest(expected)==digest(published)
             if not report['exact_financial_parity']:
-                report['differences']={day:[k for k in actual if actual[k]!=prior[k]] for day,actual,prior in zip(days,panels,expected)}
+                report['differences']={day:[k for k in actual if actual[k]!=prior[k]] for day,actual,prior in zip(days,published,expected)}
         write_json(root/'profile.json',report);print(json.dumps(report),flush=True)
         if report.get('exact_financial_parity') is False:raise ValueError('Financial parity failed')
     finally:
