@@ -6,6 +6,20 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_indexed_cache_roundtrip_and_receipt_tamper(self):
+        import tempfile,json
+        from research.vectorized_backtest.v57.publication_lane import publish_replays
+        from research.vectorized_backtest.v57.prefetch_pipeline import read_results
+        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/cache-contract-tests');root.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            receipt=str(Path(tmp)/'receipt.json');cache=str(Path(tmp)/'cache.json');identity={'source':'test'}
+            results={'a':{'net_pnl':12.,'episode_profits':[12.]},'b':{'net_pnl':-2.,'episode_profits':[-2.]}}
+            publish_replays([(cache,dict(identity=identity,results=results)),(receipt,dict(result_identity=identity,program_keys=['a','b'],metrics=dict(net_pnl=[12.,-2.],episode_profits=[[12.],[-2.]],result_reused=[False,False])))],True)
+            self.assertNotIn('results',json.loads(Path(cache).read_bytes()))
+            self.assertEqual(read_results(cache)[1]['results'],results)
+            Path(receipt).write_text('{}')
+            with self.assertRaises(ValueError):read_results(cache)
+
     def test_paired_session_keeps_training_and_diagnostics_separate(self):
         from research.vectorized_backtest.v57.global_runner import Global
         c=object.__new__(Global);c.root=Path('D:/TradingML/runtimes/test-global')
@@ -14,7 +28,7 @@ class GlobalTests(unittest.TestCase):
         c.publication_lane=SimpleNamespace(submit=Mock())
         path=str(c.root/'replays/training/generation-0001/2026-08-13/receipt.json')
         receipt=dict(population_sha256='combined',split='training',validation_opened=False,full_session=True,execution=c.job['execution'],case_owners=[None]*3,
-                     metrics={'net_pnl':[1,2,999],'result_reused':[False]*3})
+                     metrics={'net_pnl':[1,2,999],'result_reused':[False]*3},program_keys=['a','b','c'])
         result={'writes':[(path,receipt)]}
         c.session_result('2026-08-13',result,'training',1)
         self.assertEqual(result['metrics']['net_pnl'],[1,2]);self.assertEqual(result['diagnostic']['net_pnl'],[999])
@@ -23,6 +37,7 @@ class GlobalTests(unittest.TestCase):
         self.assertEqual(writes[0][1]['population_sha256'],'combined')
         self.assertEqual(writes[1][1]['population_sha256'],'main')
         self.assertEqual(writes[2][1]['population_sha256'],'diagnostic')
+        self.assertEqual(writes[1][1]['program_keys'],['a','b']);self.assertEqual(writes[2][1]['program_keys'],['c'])
 
     def test_large_execution_batch_keeps_order_and_workspace_admission(self):
         from research.vectorized_backtest.v57.replay_batches import plan_batches

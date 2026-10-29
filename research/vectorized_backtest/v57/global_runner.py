@@ -34,20 +34,22 @@ class Global(Evolution):
             rawpath=str(self.root/'paired-replay'/f'generation-{generation:04d}'/day/'receipt.json')
             # The immutable combined receipt remains available for diagnostic auditing.
             writes=[(rawpath if name==path else name,value) for name,value in writes]
-            metrics=receipt['metrics'];main={k:v[:n] for k,v in metrics.items()};extra={k:v[n:] for k,v in metrics.items()}
+            metrics=receipt['metrics'];main={k:v[:n] for k,v in metrics.items()};extra={k:v[n:] for k,v in metrics.items()};combined_keys=receipt.get('program_keys')
             receipt=dict(receipt,metrics=main,population_sha256=token,case_owners=receipt['case_owners'][:n],
                 paired_replay=dict(receipt=rawpath,sha256=None,offset=0,count=n),
                 reused_candidates=sum(main['result_reused']),evaluated_candidates=n-sum(main['result_reused']))
+            if 'program_keys' in receipt:receipt['program_keys']=receipt['program_keys'][:n]
             extra_path=str(self.root/'mutation-probe-replay'/f'generation-{generation:04d}'/day/'receipt.json')
             extra_receipt=dict(receipt,metrics=extra,population_sha256=self.diagnostic_token,case_owners=[None]*len(self.paired_probe['mutants']),
                 paired_replay=dict(receipt=rawpath,sha256=None,offset=n,count=len(self.paired_probe['mutants'])),
                 reused_candidates=sum(extra['result_reused']),evaluated_candidates=len(self.paired_probe['mutants'])-sum(extra['result_reused']))
+            if combined_keys is not None:extra_receipt['program_keys']=combined_keys[n:]
             writes.extend([(path,receipt),(extra_path,extra_receipt)])
             result['diagnostic']=extra;result['diagnostic_ref']=dict(receipt=extra_path,receipt_sha256=None)
             self.published_receipts.extend([rawpath,extra_path])
         result['metrics']=receipt['metrics'];result['ref']=dict(receipt=path,receipt_sha256=None)
         self.published_receipts.append(path)
-        self.publication_lane.submit(publish_replays,writes)
+        self.publication_lane.submit(publish_replays,writes,True)
 
     def evaluate(self,role,days,members,generation):
         stop_check(self.stop_roots)
@@ -61,7 +63,7 @@ class Global(Evolution):
         if role not in self.split_lanes:
             cfg=config(self.job,'workstation',role)
             cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
-                compile_cache_root=str(Path('D:/TradingML/runtimes/v57c')/self.job['source_sha256'][:12]/role),defer_publication=True,total_gpu_workers=2)
+                compile_cache_root=str(Path('D:/TradingML/runtimes/v57c')/self.job['source_sha256'][:12]/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
             cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
             self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
         self.stage='Global training' if role=='training' else 'Validation replay + training-only reproduction'

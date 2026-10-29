@@ -298,6 +298,7 @@ class Worker:
                 missing_set=set(missing)
                 merged['result_reused']=[i not in missing_set for i in range(len(population))]
                 publisher.write(root/'receipt.json',dict(day=day,metrics=merged,identity=item.identity,
+                    **({'program_keys':keys,'result_identity':identity} if c.get('indexed_results') else {}),
                     population_sha256=token,case_owners=[m.case_owner for m in population],full_session=True,split=c.get('split','training'),
                     validation_opened=c.get('split')=='validation',execution=asdict(execution),
                     listing_ids=item.listing_ids.tolist(),reused_candidates=len(population)-len(missing),

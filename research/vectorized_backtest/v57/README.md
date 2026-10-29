@@ -86,3 +86,23 @@ the observer, with one active read and one coalesced pending selection. Replay
 clocks and listing IDs are shown as recorded; absent prices/fills are not inferred.
 The global session table fixes its column widths and shows replay elapsed time,
 average session replay and average generation duration over the last five seals.
+
+Workstation global-only campaigns use `full_launch --global-only` and a separate
+`v57-global-v1` contract: 24 training sessions, 12 display-only validation sessions,
+200 generations, 6,144 fresh founders and a 1,024-candidate evolved population.
+No phase-one genomes or financial results are imported. Calibration uses the
+existing bounded multi-session training probe. Cost, parent selection and graph
+budgets remain unchanged. `run_train --job <global-job.json>` dispatches this path.
+
+Two persistent replay lanes run each split. Training-only reproduction overlaps
+validation; completed session receipts stream to the ordered publication process.
+Result caches reference a hashed receipt instead of duplicating its full ledger.
+Reading a cache verifies that receipt and its program-row alignment. Checkpoints
+still advance only after every receipt and generation artifact is durable.
+Compiler paths use the short runtime cache root to avoid Windows path failures.
+
+`profile_global` measures two complete training sessions, optionally a specified
+founder slice, with exact metric comparison and reproduction timing. Larger
+execution batches are profiling options only; they do not change population,
+graph size, episode capacity, arithmetic or candidate order. The agreed 45-second
+target applies to each 1,024-candidate session replay, not all 6,144 founders.

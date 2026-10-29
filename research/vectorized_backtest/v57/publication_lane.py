@@ -33,8 +33,19 @@ def resolve(value,hashes):
         for v in value:resolve(v,hashes)
 
 
-def publish_replays(writes):
+def publish_replays(writes,indexed=False):
     hashes={}
+    indices=[]
+    if indexed:
+        receipts=[(path,value) for path,value in writes if value.get('program_keys') and 'metrics' in value]
+        keep=[]
+        for path,value in writes:
+            if 'results' not in value:keep.append((path,value));continue
+            matches=[(p,r) for p,r in receipts if r.get('result_identity')==value['identity'] and set(r['program_keys'])==set(value['results'])]
+            if not matches:raise ValueError('No complete bound receipt for result index')
+            receipt_path,receipt=matches[0]
+            indices.append((path,dict(format='v57-receipt-index-v1',identity=value['identity'],receipt=receipt_path)))
+        writes=keep
     # Results are passed directly from replay memory. The writer never replays.
     for path,value in writes:
         if 'results' in value:
@@ -43,6 +54,9 @@ def publish_replays(writes):
             _write_text(path,envelope({k:v for k,v in value.items() if k!='results'},results=raw))
         else:
             resolve(value,hashes);write_json(path,value)
+        hashes[str(path)]=sha(path)
+    for path,value in indices:
+        write_json(path,dict(value,receipt_sha256=hashes[value['receipt']]))
         hashes[str(path)]=sha(path)
     return hashes
 

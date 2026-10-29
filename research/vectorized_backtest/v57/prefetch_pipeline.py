@@ -13,6 +13,14 @@ def fingerprint(path):
 
 def read_results(path):
     before=fingerprint(path);record=json.loads(Path(path).read_bytes())
+    if record.get('format')=='v57-receipt-index-v1':
+        raw=Path(record['receipt']).read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=record['receipt_sha256']:raise ValueError('Indexed result receipt integrity mismatch')
+        receipt=json.loads(raw);keys=receipt['program_keys'];metrics=receipt['metrics']
+        if receipt['result_identity']!=record['identity'] or any(len(v)!=len(keys) for v in metrics.values()):raise ValueError('Indexed result alignment changed')
+        record['results']={key:{k:v[i] for k,v in metrics.items() if k!='result_reused'} for i,key in enumerate(keys)}
+        if fingerprint(path)!=before:raise ValueError('Result cache changed while preparing')
+        return before,record
     raw=json.dumps(record['results'],sort_keys=True,separators=(',',':'),allow_nan=False)
     if hashlib.sha256(raw.encode()).hexdigest()!=record['results_sha256']:raise ValueError('Result cache integrity mismatch')
     if fingerprint(path)!=before:raise ValueError('Result cache changed while preparing')
