@@ -30,7 +30,12 @@ def evaluate(controller,members,generation,day,width,payload,main_token):
     diagnostic_keys={program_key(m) for m in mutants}
     # Diagnostic proposals must actually replay, even if their identity happened
     # to occur in an older training cohort. Never retain them in the parent cache.
-    if resident:worker.resident_results=(resident[0],{k:v for k,v in resident[1].items() if k not in diagnostic_keys})
+    if resident:
+        worker.resident_results=(resident[0],{k:v for k,v in resident[1].items() if k not in diagnostic_keys})
+        # Worker.run invalidates residency on a day change. This cache has just
+        # been validated for this day; preserve it on the first cold-resume call
+        # instead of falling through to an obsolete combined diagnostic cache.
+        worker.last_result_day=day
     worker.config['output']=str(controller.root/'paired-replay')
     try:
         worker.run(day,None,combined,generation,combined_token,width)

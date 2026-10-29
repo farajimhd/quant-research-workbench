@@ -45,6 +45,27 @@ class V57Tests(unittest.TestCase):
             self.assertIs(members[0].networks['entry'].validate(),members[0].networks['entry'])
             with self.assertRaises(ValueError):invalid.validate()
 
+    def test_cold_resume_keeps_validated_training_cache(self):
+        import json,tempfile
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v57.paired_replay import evaluate
+        from research.vectorized_backtest.v57.identity import digest
+        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/cold-cache-tests');root.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            r=Path(tmp);output=r/'training';cache=output/'result-cache';cache.mkdir(parents=True)
+            (cache/'2026-08-13.json').write_text(json.dumps(dict(identity=dict(source='same'),results={},results_sha256=digest({}))))
+            worker=SimpleNamespace(config=dict(output=str(output),source_sha256='same'),resident_results=None,population_preparer=None)
+            class ReachedReplay(Exception):pass
+            def run(*args):
+                self.assertEqual(worker.last_result_day,'2026-08-13')
+                self.assertEqual(worker.resident_results,({'source':'same'},{}))
+                raise ReachedReplay()
+            worker.run=run;members=sample(np.random.default_rng(89),2)
+            controller=SimpleNamespace(worker=worker,root=r,paired_probe=dict(mutants=members[1:]))
+            payload=[members[0].payload()]
+            with self.assertRaises(ReachedReplay):evaluate(controller,members[:1],2,'2026-08-13',1,payload,digest(payload))
+            self.assertEqual(worker.config['output'],str(output))
+
     def test_trim_and_best_day(self):
         a=metrics([[100.,20.,-5.]],[[1,1,1]])
         b=metrics([[30.,-10.]],[[1,1]])
