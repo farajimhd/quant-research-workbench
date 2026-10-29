@@ -9,13 +9,23 @@ def load(root,generation,serial,session,share,job=None):
     role,day=session.split(':',1)
     folder=Path(root)/'global'/f'generation-{generation:04d}'
     seal=read_verified(folder/'complete.json') if (folder/'complete.json').exists() else None
-    evidence=read_verified(folder/(role+'.json'),seal[role+'_sha256'] if seal else None)
+    if role not in ('training','validation'):raise ValueError('Unknown position split')
+    if seal:
+        evidence=read_verified(folder/(role+'.json'),seal[role+'_sha256'])
+    else:
+        from .progress_sessions import population_metadata
+        ids,token=population_metadata(folder/'population.json')
+        path=Path(root)/'replays'/role/f'generation-{generation:04d}'/day/'receipt.json'
+        evidence=dict(ids=ids,population_sha256=token,receipts={day:dict(receipt=str(path),receipt_sha256=None)})
     index=evidence['ids'].index(serial)
     reference=evidence['receipts'][day];path=Path(reference['receipt'])
-    if str(root).startswith('\\\\'):path=remote(path,share)
+    if str(root).startswith('\\\\') and not str(path).startswith('\\\\'):path=remote(path,share)
     receipt=read_verified(path,reference['receipt_sha256'])
     if receipt['population_sha256']!=evidence['population_sha256'] or receipt['day']!=day or receipt['split']!=role:
         raise ValueError('Position receipt identity mismatch')
+    if not seal and (not receipt['full_session'] or receipt['validation_opened']!=(role=='validation') or (job and receipt['execution']!=job['execution'])):
+        raise ValueError('Unsealed position receipt authority mismatch')
+    if any(len(values)!=len(evidence['ids']) for values in receipt['metrics'].values()):raise ValueError('Position candidate alignment mismatch')
     metrics=receipt['metrics'];profits=metrics['episode_profits'][index]
     fields={k:v[index] for k,v in metrics.items() if k.startswith('episode_')}
     if any(len(v)!=len(profits) for v in fields.values()):raise ValueError('Position trace alignment mismatch')

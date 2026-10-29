@@ -138,6 +138,7 @@ class V57Tests(unittest.TestCase):
             receipt=r/'receipt.json';receipt.write_text(json.dumps(dict(population_sha256='pool',day='2026-08-13',split='training',listing_ids=[42],metrics=dict(episode_profits=[[5.,-2.]],episode_listings=[[0,0]],episode_entry_clocks=[[2,9]],episode_exit_clocks=[[7,11]],open_episode_listings=[[]],open_episode_realized=[[]]))))
             evidence=dict(population_sha256='pool',ids=[71],receipts={'2026-08-13':dict(receipt=str(receipt),receipt_sha256=hashlib.sha256(receipt.read_bytes()).hexdigest())})
             (folder/'training.json').write_text(json.dumps(evidence))
+            (folder/'complete.json').write_text(json.dumps(dict(training_sha256=hashlib.sha256((folder/'training.json').read_bytes()).hexdigest())))
             rows=load(r,2,71,'training:2026-08-13','unused')
             self.assertEqual([v['listing_id'] for v in rows],[42,42]);self.assertEqual(rows[0]['duration'],5)
             self.assertEqual(sorted_rows(rows,'net_pnl',False)[0]['net_pnl'],-2.)

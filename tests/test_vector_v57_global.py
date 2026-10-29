@@ -6,6 +6,24 @@ import numpy as np
 
 
 class GlobalTests(unittest.TestCase):
+    def test_positions_available_before_generation_seal(self):
+        import tempfile,json
+        from research.vectorized_backtest.v57.position_details import load
+        root=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v57/position-tests');root.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=root) as tmp:
+            root=Path(tmp);folder=root/'global/generation-0001';folder.mkdir(parents=True)
+            token='a'*64
+            (folder/'population.json').write_text(json.dumps(dict(ids=[17],population=[],population_sha256=token),separators=(',',':')))
+            path=root/'replays/validation/generation-0001/2026-09-02/receipt.json';path.parent.mkdir(parents=True)
+            receipt=dict(population_sha256=token,day='2026-09-02',split='validation',full_session=True,validation_opened=True,
+                listing_ids=[42],metrics=dict(episode_profits=[[7.]],episode_listings=[[0]],episode_entry_clocks=[[2]],episode_exit_clocks=[[8]]))
+            path.write_text(json.dumps(receipt))
+            rows=load(root,1,17,'validation:2026-09-02','unused')
+            self.assertEqual(rows[0]['net_pnl'],7.)
+            self.assertEqual(rows[0]['evidence'],'published replay; generation unsealed')
+            receipt['population_sha256']='b'*64;path.write_text(json.dumps(receipt))
+            with self.assertRaisesRegex(ValueError,'identity mismatch'):load(root,1,17,'validation:2026-09-02','unused')
+
     def test_concurrent_validation_progress_uses_explicit_split(self):
         from unittest.mock import patch
         from research.vectorized_backtest.v57.campaign_progress import Model,replay_numbers
