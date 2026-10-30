@@ -24,6 +24,9 @@ def checkpoint_contract(job,train,valid):
     if job.get('continuation'):contract['continuation_sha256']=job['continuation']['context_sha256']
     contract['selection_risk_caps']=False
     contract['execution']=job.get('execution',{})
+    if job.get('execution_restart'):
+        contract['execution_restart']=job['execution_restart']
+        contract['execution_tail']=job['execution_tail']
     contract['ticker_parent_fraction']=job.get('ticker_parent_fraction',.25)
     contract['node_budget']=dict(total=1024,per_action=1024,depth=512)
     contract['founder_reuse']=job.get('founder_reuse')
@@ -125,7 +128,11 @@ class Controller:
                 if validation['successor_sha256_before']!=validation['successor_sha256_after'] or not validation['display_only']:raise ValueError('Validation independence proof changed')
         else:
             options=dict(progress=lambda done,total:self.publish(initialization_progress=dict(completed=done,total=total))) if self.job.get('campaign_stage')=='global' else {}
-            state=global_seed(exports,self.job,probe,**options);state.update(completed=0,seals={},species=species.state)
+            if self.job.get('execution_restart'):
+                from .execution_restart import seed
+                state=seed(self.job)
+            else:
+                state=global_seed(exports,self.job,probe,**options);state.update(completed=0,seals={},species=species.state)
             write_json(root/'initial-pool.json',state);write_checkpoint(cp,contract,state)
         members=[Individual.restore(p) for p in state['population']];ids=np.asarray(state['ids']);pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);rng=np.random.default_rng();rng.bit_generator.state=state['rng']
         if getattr(self,'pipeline_enabled',False):

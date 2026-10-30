@@ -43,6 +43,7 @@ class RoutingPlan:
         eligible=((branch&1)!=0)&self.branch_valid[...,None]
         proposed=eligible.to(torch.int32).argmax(1)
         held=position[0,...,0]>1e-12
+        if 'pending_orders' in self.__dict__:held=held|(self.pending_orders[0,...,0]!=0)
         self.owner.copy_(torch.where(held,self.owner,proposed))
         selected=self.branch_index.gather(1,self.owner)
         ticker=torch.arange(raw.shape[-1],device=self.device)[None,:]

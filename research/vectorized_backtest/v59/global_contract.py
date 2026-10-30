@@ -26,7 +26,13 @@ def check(job):
     if job.get('founder_restart'):raise ValueError('V59 requires fresh candidates')
     if job['ticker_parent_fraction']!=.25 or job['selection_risk_caps'] is not False:raise ValueError('Parent selection changed')
     original=json.loads(Path(job['source_job']).read_bytes())
-    if job['execution']!=dict(original['execution'],risk_limits_enabled=False):raise ValueError('Execution changed')
+    expected=dict(original['execution'],risk_limits_enabled=False)
+    if job.get('execution_restart'):
+        from .orders import VERSION as ORDER_VERSION
+        expected['order_mode']=ORDER_VERSION
+        from .execution_restart import verify
+        verify(job)
+    if job['execution']!=expected:raise ValueError('Execution changed')
     if any(job.get(k) for k in ('continuation','promotion_exports')):raise ValueError('Fresh campaign cannot inherit external fitness')
     if job.get('resume_transition'):
         from .resume_authority import global_predecessor

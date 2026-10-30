@@ -17,11 +17,14 @@ class Execution:
     minimum_order_dollars:float=0.
     price_mode:str='bid-ask'
     maximum_quote_age_seconds:float=1.
+    order_mode:str='immediate'
     @property
     def admission_distance(self):return self.maximum_stop_distance if self.risk_limits_enabled else 1.
     @property
     def admission_budget(self):return self.maximum_position_risk if self.risk_limits_enabled else float("inf")
     def validate(self):
+        if self.order_mode not in ('immediate','persistent-liquidity-orders-v1'):raise ValueError('Unknown execution order contract')
+        if self.order_mode!='immediate' and self.risk_limits_enabled:raise ValueError('Persistent execution requires the approved risk-admission-caps-off campaign')
         if type(self.risk_limits_enabled) is not bool:raise ValueError("Invalid risk admission switch")
         if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds!=1.:raise ValueError('Strict V59 bid/ask execution required')
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
@@ -216,6 +219,18 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         previous=prices.index_select(0,index.reshape(1)).squeeze(0)
         plan.signals(item,index,p,o,previous,out=signals)
         if owner_actions is not None:signals.bitwise_and_(owner_actions)
+    if execution.order_mode!='immediate':
+        if capture_only:raise ValueError('Persistent execution qualification must time the full replay including terminal drain')
+        from .order_replay import replay as replay_orders
+        capacity=pad(item.tensors['capacity'][:t],(0,u-len(item.listing_ids)),value=0.)[:,None,None]
+        order_result=replay_orders(item=item,plan=plan,position=position,aggregate=aggregate,opened=opened,
+            policy=policy,prices=prices,observed=observed,membership=membership,signals=signals,values=values,
+            ids=ids,columns=columns,limits=limits,ticker_state=ticker_state,bids=bids,asks=asks,quote_valid=quote_valid,
+            capacity=capacity,execution=execution,episodes=episodes,provide=provide,progress=progress,
+            block=replay_block,gate=execution_gate,backend=backend)
+        result=_export_result(position,aggregate,episodes,t,ticker_state)
+        result[0].update(order_result)
+        return result
     if backend=='compile' and device.type=='cuda':
         from .replay_graph import replay
         prepared=replay(position,aggregate,opened,policy,prices,observed,membership,signals,values,ids,columns,limits,lengths,False,

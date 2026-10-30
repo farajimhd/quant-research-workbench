@@ -23,9 +23,23 @@ def quote_arrays(market, source_rows, clocks, maximum_age=1.):
 
 
 class SessionData(BaseSessionData):
-    def __init__(self, *args, maximum_quote_age_seconds=1., **kwargs):
+    def __init__(self, *args, maximum_quote_age_seconds=1., execution_tail=None, **kwargs):
         super().__init__(*args, **kwargs)
         arrays = quote_arrays(self.market, self.bank['source_rows'], self.arrays['clocks'], maximum_quote_age_seconds)
+        if execution_tail is not None:
+            from pathlib import Path
+            import json,hashlib
+            self.execution_tail=Path(execution_tail)
+            proof=(self.execution_tail/'complete.json').read_bytes()
+            identity=json.loads(proof)['identity']
+            if identity['input_receipt_sha256']!=self.identity['input_sha256']:raise ValueError('Execution tail input mismatch')
+            source=np.asarray(self.bank['source_rows']);known=source>=0;safe=source.clip(0)
+            # Capacity belongs only to its completed bar and is never carried forward.
+            clock=np.asarray(self.arrays['clocks'])[:,None]
+            keys=np.asarray(self.arrays['market_keys'])[safe]%(1<<32)
+            arrays['capacity']=np.where(known&(keys==clock),np.asarray(self.market['volume'])[safe],0.).astype(np.float64)
+            if not np.isfinite(arrays['capacity']).all() or (arrays['capacity']<0).any():raise ValueError('Invalid certified execution capacity')
+            self.identity['execution_tail_sha256']=hashlib.sha256(proof).hexdigest()
         added = sum(v.nbytes for v in arrays.values())
         if self.bytes + added > kwargs.get('maximum_gib', 4.) * 2**30:
             self.close(); raise MemoryError('Execution quote tensors exceed price/rank admission')
