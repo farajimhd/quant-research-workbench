@@ -5,7 +5,7 @@ import triton.language as tl
 
 
 @triton.jit
-def kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE,REC,
+def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE,REC,
            U:tl.constexpr,B:tl.constexpr,VS:tl.constexpr,PS:tl.constexpr,RS:tl.constexpr,
            ED:tl.constexpr,AD:tl.constexpr,FEE:tl.constexpr,MINFEE:tl.constexpr,COST:tl.constexpr,MINIMUM:tl.constexpr,BLOCK:tl.constexpr):
     row=tl.program_id(0);i=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=i<U
@@ -108,7 +108,7 @@ def transition(p:torch.Tensor,o:torch.Tensor,signals:torch.Tensor,ratios:torch.T
     policy=policy.expand(s,b,u,9)
     out=torch.empty_like(p);orders=torch.empty_like(o);complete=torch.empty(p.shape[:-1],device=p.device,dtype=torch.bool)
     record=torch.empty((*p.shape[:-1],8),device=p.device,dtype=p.dtype)
-    kernel[(s*b,triton.cdiv(u,128))](p,o,vectors[0],ratios,policy,*vectors[1:],clock,terminal,out,orders,complete,record,
+    order_fill_kernel[(s*b,triton.cdiv(u,128))](p,o,vectors[0],ratios,policy,*vectors[1:],clock,terminal,out,orders,complete,record,
         u,b,tuple(x.stride() for x in vectors),policy.stride(),ratios.stride(),entry,addition,fee,minimum_fee,cost,minimum,
         128,num_warps=4,enable_fp_fusion=False)
     return out,orders,complete,record

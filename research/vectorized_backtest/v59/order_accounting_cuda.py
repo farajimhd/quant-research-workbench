@@ -6,7 +6,7 @@ from .protected_transition import aggregate_kernel
 
 
 @triton.jit
-def kernel(BEFORE,AFTER,OLD,ORD,MARK,RECORD,PART,U:tl.constexpr,TILES:tl.constexpr,B:tl.constexpr,MS:tl.constexpr,BLOCK:tl.constexpr):
+def order_account_kernel(BEFORE,AFTER,OLD,ORD,MARK,RECORD,PART,U:tl.constexpr,TILES:tl.constexpr,B:tl.constexpr,MS:tl.constexpr,BLOCK:tl.constexpr):
     row=tl.program_id(0);tile=tl.program_id(1);j=tile*BLOCK+tl.arange(0,BLOCK);live=j<U;at=row*U+j
     p=AFTER+at*9;oldp=BEFORE+at*9;o=ORD+at*16;old=OLD+at*16
     q=tl.load(p,live,0.);avg=tl.load(p+1,live,0.);stop=tl.load(p+2,live,0.)
@@ -38,7 +38,7 @@ def account(before:torch.Tensor,after:torch.Tensor,old_orders:torch.Tensor,order
     s,b,u,_=after.shape;tiles=triton.cdiv(u,128)
     mark=mark.expand(s,b,u);partial=torch.empty((s*b,tiles,15),device=after.device,dtype=after.dtype)
     out=torch.empty_like(aggregate)
-    kernel[(s*b,tiles)](before,after,old_orders,orders,mark,record,partial,u,tiles,b,mark.stride(),128,num_warps=4,enable_fp_fusion=False)
+    order_account_kernel[(s*b,tiles)](before,after,old_orders,orders,mark,record,partial,u,tiles,b,mark.stride(),128,num_warps=4,enable_fp_fusion=False)
     aggregate_kernel[(s*b,)](partial,aggregate,out,tiles,b,aggregate.stride(),triton.next_power_of_2(tiles),num_warps=4,enable_fp_fusion=False)
     return out
 

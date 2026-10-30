@@ -4,7 +4,7 @@ import triton.language as tl
 
 
 @triton.jit
-def kernel(COMPLETE,RECORD,COUNTS,OUT,U:tl.constexpr,CAP:tl.constexpr,
+def order_append_kernel(COMPLETE,RECORD,COUNTS,OUT,U:tl.constexpr,CAP:tl.constexpr,
            CS:tl.constexpr,RS:tl.constexpr,OS:tl.constexpr,BLOCK:tl.constexpr):
     row=tl.program_id(0);j=tl.arange(0,BLOCK)
     yes=tl.load(COMPLETE+row*CS[1]+j*CS[2],j<U,False)
@@ -20,6 +20,6 @@ def kernel(COMPLETE,RECORD,COUNTS,OUT,U:tl.constexpr,CAP:tl.constexpr,
 
 
 def append(ledger,complete,record):
-    kernel[(len(ledger.counts),)](complete,record,ledger.counts,ledger.data,
+    order_append_kernel[(len(ledger.counts),)](complete,record,ledger.counts,ledger.data,
         ledger.u,ledger.capacity,complete.stride(),record.stride(),ledger.data.stride(),
         triton.next_power_of_2(ledger.u),num_warps=4)

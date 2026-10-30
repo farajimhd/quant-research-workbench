@@ -96,6 +96,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     device=position.device;u=position.shape[-2];b=position.shape[1]
     orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
     book=torch.zeros((*position.shape[:-1],3),dtype=position.dtype,device=device)
+    episodes.streaming=True
     journal=None
     if hasattr(item,'execution_order_root'):
         from .order_journal import Journal
@@ -157,13 +158,28 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                     if use_cuda:graph.replay()
                     else:tick()
                 if device.type=='cuda':torch.cuda.current_stream(device).synchronize()
-            if records.drain():return
+            if episodes.fits() and records.drain():
+                if not episodes.drain():raise RuntimeError('Position page changed after readiness check')
+                return
             for target,value in zip(mutable,checkpoint):target.copy_(value)
             if count==1:raise RuntimeError('One graph exceeded its proven order-journal event bound')
             first=count//2;execute(first);execute(count-first)
+        profiled=False
         for begin in range(0,total,chunk):
             count=len(range(begin,min(total,begin+chunk),block if use_cuda else 1))
-            execute(count)
+            if use_cuda and not tail_mode and hasattr(item,'execution_diagnostic_root') and not profiled and begin>=total//2:
+                from research.vectorized_backtest.v42.publication import write_json
+                sampled=time.perf_counter()
+                with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,torch.profiler.ProfilerActivity.CUDA]) as trace:
+                    execute(count)
+                kernels={}
+                for event in trace.events():
+                    if 'CUDA' not in str(event.device_type):continue
+                    row=kernels.setdefault(event.name,dict(calls=0,microseconds=0.))
+                    row['calls']+=1;row['microseconds']+=event.device_time_total
+                write_json(item.execution_diagnostic_root/'gpu-kernels.json',dict(begin_clock=begin,clocks=count*block,kernels=kernels))
+                profile['instrumented_chunk_wall_seconds']=time.perf_counter()-sampled;profiled=True
+            else:execute(count)
             done=min(total,begin+chunk)
             if progress:progress(done,total)
             if tail_mode and not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
@@ -193,6 +209,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             ratios=ratios.index_select(1,rows);signals=signals.index_select(1,rows)
             episodes=Episodes(1,len(rows),full[5].capacity,device,max_listings=u,trace=full[5].trace)
             episodes.owner=full[5].owner.index_select(1,rows)
+            episodes.streaming=True;episodes.mapping=rows.cpu().numpy()
             records=OrderRecords(len(rows),u,device,capacity=journal_capacity,sink=journal)
             records.mapping=rows.cpu().numpy()
         profile['tail_active_candidates']=len(active)
@@ -231,21 +248,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             full_book.index_copy_(1,rows,book)
             for original,current in zip(full[:5],(position,orders,aggregate,opened,ticker_state)):
                 original.index_copy_(1,rows,current)
-            def merge(old,new,names):
-                old_counts=old.counts.reshape(-1);counts=new.counts.reshape(-1)
-                starts=old_counts.index_select(0,rows)
-                if bool((starts+counts>old.capacity).any()):raise MemoryError('Execution receipt capacity exceeded; no truncated result published')
-                width=int(counts.max());j=torch.arange(width,device=device)[None]
-                mask=j<counts[:,None];dest_rows=rows[:,None].expand_as(mask)[mask]
-                dest_cols=(starts[:,None]+j).expand_as(mask)[mask]
-                for name in names:
-                    target=getattr(old,name);source=getattr(new,name)
-                    if name=='data':target[dest_rows,dest_cols]=source[:,:width][mask]
-                    else:target[0,dest_rows,dest_cols]=source[0,:,:width][mask]
-                old_counts.index_add_(0,rows,counts)
-            names=['profits','listings','branches']
-            if episodes.trace:names+=['entry_clocks','exit_clocks']
-            merge(full[5],episodes,names);full[6].absorb(records)
+            full[5].absorb(episodes);full[6].absorb(records)
             position,orders,aggregate,opened,ticker_state,episodes,records=full
         result=records.export()
         profile.update(chronological_replay_seconds=time.perf_counter()-started,

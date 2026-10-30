@@ -183,6 +183,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     from torch.nn.functional import pad
     from .episodes import Episodes
     from research.vectorized_backtest.v42.swing_projection import entry_swings
+    if execution.order_mode!='immediate':episode_capacity=max(replay_block*u,min(episode_capacity,8192))
     episodes=Episodes(1,b,episode_capacity,device,max_listings=u,trace=trace)
     # Include the live one-clock neuron values and provenance, in addition to
     # the unchanged financial buffers. Capacity is never reduced for admission.

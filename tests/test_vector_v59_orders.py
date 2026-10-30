@@ -113,7 +113,7 @@ class ReplayPath(unittest.TestCase):
             torch.testing.assert_close(aggregate,ag.cpu(),rtol=1.e-12,atol=1.e-8)
             p,o=expected[:2];pg,og=actual[:2]
 
-    def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False,fast_orders=False,record_capacity=None):
+    def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False,fast_orders=False,record_capacity=None,episode_capacity=32):
         from types import SimpleNamespace
         from unittest.mock import patch
         import numpy as np
@@ -137,7 +137,7 @@ class ReplayPath(unittest.TestCase):
                 return dict(mark=np.full((4,2),9.),bid=np.full((4,2),9.),ask=np.full((4,2),9.),
                     quote_valid=np.ones((4,2),bool),bid_size=np.full((4,2),100.),ask_size=np.full((4,2),100.),
                     quote_us=np.repeat((np.array([1,1,6,6]) if repeated_quote else np.arange(4,8))[:,None]*1.e6,2,axis=1),clocks=np.arange(4,8))
-        episodes=Episodes(1,candidates,32,device,max_listings=2,trace=True)
+        episodes=Episodes(1,candidates,episode_capacity,device,max_listings=2,trace=True)
         def provide(index,p,o):
             signals.fill_(0 if active_only else 1)
             if active_only:signals[:,0].fill_(1)
@@ -184,6 +184,13 @@ class ReplayPath(unittest.TestCase):
         self.assertEqual(full[2:],small[2:])
         self.assertEqual(len(small[2]['execution_orders'][0]),36)
 
+    def test_position_pages_preserve_all_trades_during_chunk_retry(self):
+        full=self.run_path('cpu','eager',fast_orders=True)
+        small=self.run_path('cpu','eager',fast_orders=True,episode_capacity=4)
+        torch.testing.assert_close(full[1],small[1],rtol=0,atol=0)
+        self.assertEqual(full[2:],small[2:])
+        self.assertEqual(len(small[3][0]['episode_profits'][0]),18)
+
     @unittest.skipUnless(__import__('os').environ.get('V59_TEST_CUDA')=='1','opt-in GPU qualification')
     def test_captured_path_matches_eager_and_repeats_exactly(self):
         eager=self.run_path('cpu','eager');first=self.run_path('cuda','compile');second=self.run_path('cuda','compile')
@@ -193,6 +200,10 @@ class ReplayPath(unittest.TestCase):
             self.assertEqual(expected[2:],actual[2:])
         cpu=self.run_path('cpu','eager',64,True);gpu=self.run_path('cuda','compile',64,True)
         torch.testing.assert_close(cpu[0],gpu[0],rtol=0,atol=1.e-12)
+        torch.testing.assert_close(cpu[1],gpu[1],rtol=0,atol=1.e-12)
+        self.assertEqual(cpu[2:],gpu[2:])
+        cpu=self.run_path('cpu','eager',fast_orders=True,episode_capacity=4)
+        gpu=self.run_path('cuda','compile',fast_orders=True,episode_capacity=4)
         torch.testing.assert_close(cpu[1],gpu[1],rtol=0,atol=1.e-12)
         self.assertEqual(cpu[2:],gpu[2:])
         cpu=self.run_path('cpu','eager',fast_orders=True,record_capacity=4)

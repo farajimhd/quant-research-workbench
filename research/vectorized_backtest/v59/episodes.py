@@ -7,6 +7,7 @@ class Episodes:
         if not 1 <= capacity <= 1048576:
             raise ValueError('Explicit bounded episode capacity required')
         self.capacity = capacity;self.max_listings=max_listings
+        self.sessions=sessions;self.candidates=candidates;self.streaming=False;self.chunks=[];self.mapping=None
         shape = (sessions, candidates, capacity+max_listings)
         self.profits = torch.zeros(shape, dtype=torch.float64, device=device)
         self.listings = torch.zeros(shape, dtype=torch.int64, device=device)
@@ -19,6 +20,7 @@ class Episodes:
             self.exit_clocks=torch.zeros(shape,dtype=torch.int64,device=device)
 
     def reset(self):
+        self.chunks.clear()
         self.branches.zero_();self.profits.zero_(); self.listings.zero_(); self.counts.zero_()
         if self.trace:self.entry_clocks.zero_();self.exit_clocks.zero_()
 
@@ -49,7 +51,47 @@ class Episodes:
             self.exit_clocks.scatter_(-1,indices,torch.where(retained,exit_clock.to(torch.int64).expand_as(offsets),0))
         self.counts.add_(prefix[...,-1])
 
+    def fits(self):
+        self.drain_counts=self.counts.cpu().numpy().copy()
+        return not (self.drain_counts>self.capacity).any()
+
+    def drain(self):
+        if not self.fits():return False
+        import numpy as np
+        counts=self.drain_counts.reshape(-1);width=int(counts.max(initial=0))
+        if width:
+            fields=[self.profits,self.listings,self.branches]
+            if self.trace:fields.extend([self.entry_clocks,self.exit_clocks])
+            mask=torch.arange(width,device=self.counts.device)<self.counts[...,None]
+            data=torch.stack([f[...,:width].to(torch.float64) for f in fields],-1)[mask].cpu().numpy()
+            ids=np.arange(len(counts)) if self.mapping is None else self.mapping
+            self.chunks.append((ids,counts,data))
+        self.counts.zero_();return True
+
+    def absorb(self,other):
+        if not other.drain():raise RuntimeError('Undrained overflowing position page')
+        self.chunks.extend(other.chunks);other.chunks=[]
+
     def export(self):
+        if self.streaming:
+            import numpy as np
+            if not self.drain():raise RuntimeError('Undrained overflowing position page')
+            rows=[[] for _ in range(self.sessions*self.candidates)]
+            for ids,counts,data in self.chunks:
+                offset=0
+                for index,count in zip(ids,counts):
+                    end=offset+int(count)
+                    if count:rows[int(index)].append(data[offset:end])
+                    offset=end
+            names=['episode_profits','episode_listings','episode_branch']
+            if self.trace:names+=['episode_entry_clocks','episode_exit_clocks']
+            out=[{name:[] for name in names} for _ in range(self.sessions)]
+            for index,parts in enumerate(rows):
+                data=np.concatenate(parts) if parts else np.empty((0,len(names)))
+                for field,name in enumerate(names):
+                    values=data[:,field] if field==0 else data[:,field].astype(np.int64)
+                    out[index//self.candidates][name].append(values.tolist())
+            self.chunks.clear();return out
         counts = self.counts.cpu().numpy()
         if (counts>self.capacity).any():
             raise MemoryError('Completed-position buffer overflow; no truncated score published')
