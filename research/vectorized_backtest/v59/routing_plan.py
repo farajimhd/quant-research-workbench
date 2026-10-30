@@ -22,6 +22,10 @@ class RoutingPlan:
         self.ages=torch.tensor([[m.minimum_age.get(k,0) for k in STAGES] for m in flat],device=device,dtype=torch.float64)
         self.workspace_shape=None
     def __getattr__(self,name):return getattr(self.base,name)
+    @property
+    def cuda_block(self):return self.base.cuda_block
+    @cuda_block.setter
+    def cuda_block(self,value):self.base.cuda_block=value
     def prepare(self,b,u):
         if self.workspace_shape==(b,u):return
         self.base.prepare(len(self.leaves),u)

@@ -67,6 +67,14 @@ class PersistentOrders(unittest.TestCase):
 
 
 class ReplayPath(unittest.TestCase):
+    def test_routed_plan_applies_configured_neural_tile_to_execution(self):
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v59.routing_plan import RoutingPlan
+        plan=RoutingPlan.__new__(RoutingPlan);plan.base=SimpleNamespace(cuda_block=128)
+        plan.cuda_block=64
+        self.assertEqual(plan.base.cuda_block,64)
+        self.assertEqual(plan.cuda_block,64)
+
     def test_asynchronous_journal_preserves_rows_and_candidate_hashes(self):
         import json,tempfile
         import numpy as np
