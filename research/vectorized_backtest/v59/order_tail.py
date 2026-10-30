@@ -11,7 +11,7 @@ class Tail:
         self.root=Path(root);self.item=item
         self.receipt=json.loads((self.root/'complete.json').read_bytes())
         identity=self.receipt['identity']
-        if identity['version']!=VERSION or identity['input_receipt_sha256']!=item.identity['input_sha256'] or identity['listing_ids']!=item.listing_ids.tolist():
+        if identity['version']!=VERSION or identity['input_receipt_sha256']!=item.identity['input_sha256'] or identity['history_receipt_sha256']!=item.identity['history_sha256'] or identity['listing_ids']!=item.listing_ids.tolist():
             raise ValueError('Execution tail does not match this session/listing order')
         if identity['cutoff_us']!=int(item.arrays['clocks'][-1])*1000000:raise ValueError('Execution cutoff changed')
         self.tickers=identity['tickers'];self.mapping={t:i for i,t in enumerate(self.tickers)}

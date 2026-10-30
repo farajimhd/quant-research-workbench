@@ -27,14 +27,22 @@ def financial_tick(index,total,position,orders,aggregate,opened,policy,prices,
         swing=values[take(ids,clock)[:,None,:],columns[None] if columns.ndim==2 else columns[None,:,None]]
         terminal=clock==total;member=take(membership,clock-1)
     elapsed=(clock+offset).to(torch.float64)
-    p,o,complete,record=transition(position,orders,signals=selected,ratios=ratios,policy=policy,
-        mark=take(prices,clock),previous=take(prices,(clock-1).clamp_min(0)),membership=member,
-        observed=take(observed,clock),swing=swing,bid=take(bids,clock),ask=take(asks,clock),
-        quote_valid=take(valid,clock),capacity=take(capacity,clock),clock=elapsed,terminal=terminal,
-        entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
-        fee_per_share=execution.fee_per_share,minimum_order_fee=execution.minimum_order_fee,
-        cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars)
+    if position.device.type=='cuda':
+        from .order_transition import transition as cuda_transition
+        p,o,complete,record=cuda_transition(position,orders,selected,ratios,policy,take(prices,(clock-1).clamp_min(0)),
+            member,swing,take(bids,clock),take(asks,clock),take(valid,clock),take(capacity,clock),elapsed,terminal,
+            execution.entry_dollars,execution.add_dollars,execution.fee_per_share,execution.minimum_order_fee,
+            execution.cost_bps/10000.,execution.minimum_order_dollars)
+    else:
+        p,o,complete,record=transition(position,orders,signals=selected,ratios=ratios,policy=policy,
+            mark=take(prices,clock),previous=take(prices,(clock-1).clamp_min(0)),membership=member,
+            observed=take(observed,clock),swing=swing,bid=take(bids,clock),ask=take(asks,clock),
+            quote_valid=take(valid,clock),capacity=take(capacity,clock),clock=elapsed,terminal=terminal,
+            entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
+            fee_per_share=execution.fee_per_share,minimum_order_fee=execution.minimum_order_fee,
+            cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars)
     a=account(position,p,orders,o,aggregate,take(prices,clock),complete,record)
+    if tail:a[...,7]=aggregate[...,7]  # Inactivity describes only the decision window.
     update_equity(ticker_state,p,take(prices,clock),active)
     closed=held&(p[...,0]<=1.e-12)&active
     profits=p[...,7]-position[...,8];entries=opened.clone()
@@ -87,6 +95,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         nonlocal profile
         p,ob,mem,bb,aa,vv,cap=arrays;total=len(p)-1
         index=torch.ones((),device=device,dtype=torch.int64)
+        offset=torch.tensor(offset,device=device,dtype=torch.int64)
         args=(index,total,position,orders,aggregate,opened,policy,p,ob,mem,signals,
               values,ids,columns,limits,plan.ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset)
         fn=program(args) if use_cuda else financial_tick
@@ -115,7 +124,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 restore()
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
             torch.cuda.current_stream(device).wait_stream(stream)
-        chunk=max(block,(512//block)*block)
+        chunk=block if tail_mode else max(block,(512//block)*block)
         for begin in range(0,total,chunk):
             with gate.turn() if gate is not None else nullcontext():
                 for _ in range(begin,min(total,begin+chunk),block if use_cuda else 1):

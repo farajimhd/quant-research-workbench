@@ -125,5 +125,12 @@ def require_complete(position, orders):
     """A missing execution tail blocks the replay, never candidate selection."""
     pending = orders[...,0] != 0
     held = position[...,0] > 1.e-12
+    if not bool(torch.isfinite(position).all() & torch.isfinite(orders).all()):
+        raise RuntimeError('Nonfinite execution state; no fitness published')
     if bool((pending | held).any()):
-        raise RuntimeError('Execution coverage exhausted with outstanding orders or positions; no fitness published')
+        indexes=(pending|held).nonzero().cpu().tolist()
+        examples=[]
+        for index in indexes[:8]:
+            key=tuple(index)
+            examples.append(dict(index=index,held=float(position[key][0]),kind=int(orders[key][0]),remaining=float(orders[key][1])))
+        raise RuntimeError(f'Execution coverage exhausted with {len(indexes)} outstanding candidate/listing lanes; no fitness published; examples={examples}')
