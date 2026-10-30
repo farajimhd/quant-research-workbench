@@ -115,7 +115,8 @@ def replay(position, aggregate, opened, policy, prices, observed, membership,
         reset()
         graph=torch.cuda.CUDAGraph()
         capture_started=time.perf_counter()
-        with torch.cuda.graph(graph,stream=stream):
+        from .capture_lifecycle import defer_cyclic_collection
+        with defer_cyclic_collection(),torch.cuda.graph(graph,stream=stream):
             for _ in range(block):compiled()
         capture_seconds=time.perf_counter()-capture_started
         reset()

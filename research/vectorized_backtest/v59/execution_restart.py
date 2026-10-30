@@ -18,7 +18,13 @@ def verify(job):
         raise ValueError('Execution restart predecessor changed')
     old=json.loads(old_path.read_bytes())
     if Path(job['campaign'])==Path(old['campaign']):raise ValueError('Execution restart must preserve the old campaign')
-    if job.get('result_cache_transition') or job.get('resume_transition'):raise ValueError('Old financial caches cannot cross execution contracts')
+    if job.get('result_cache_transition') or job.get('resume_transition'):
+        # An implementation-only repair can reuse receipts already produced by
+        # this execution contract, never the original execution's financials.
+        from .resume_authority import global_predecessor
+        prior=global_predecessor(job)
+        if prior.get('execution_restart')!=proof or prior['execution']!=job['execution']:
+            raise ValueError('Old financial caches cannot cross execution contracts')
     allowed={'source_sha256','code','commit','campaign','transport','execution','execution_restart','execution_tail','resume_transition','result_cache_transition'}
     def semantics(value):
         value=json.loads(json.dumps({k:v for k,v in value.items() if k not in allowed}))

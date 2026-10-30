@@ -315,7 +315,7 @@ class Worker:
             self.emit(day,stage='Session complete',completed_local_batches=len(timings),completed_seconds=item.clocks-1)
             return dict(day=day,timings=timings,wall_seconds=perf_counter()-started,pid=os.getpid(),clocks=item.clocks-1)
         except BaseException as error:
-            self.emit(day,stage='Failed',error=str(error));raise
+            self.emit(day,stage='Failed',status='failed',finished_epoch=time(),error=str(error));raise
         finally:
             if not self.config.get('retain_session_residency'):
                 if hasattr(item,'resident_features'):item.resident_features.deactivate()

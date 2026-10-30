@@ -119,6 +119,7 @@ class Evolution(Controller):
                 self.global_run(exports,self.job['training_days'],self.job['validation_days']);self.status='complete';self.stage='Complete'
             except BaseException:
                 self.status='interrupted' if any((Path(p)/'STOP').exists() for p in self.stop_roots) else 'failed'
+                self.publish()
                 write_json(self.root/'failure.json',dict(traceback=traceback.format_exc(),epoch=time.time()));raise
             finally:
                 self.halt.set();thread.join(5)

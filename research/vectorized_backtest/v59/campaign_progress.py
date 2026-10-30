@@ -300,7 +300,7 @@ class Model:
                 key=split+':'+day;sample=self.replay_samples.get(key,{})
                 complete=(root/'replays'/split/f'generation-{generation:04d}'/day/'receipt.json').exists()
                 active=role==split and day in state.get('active_sessions',[])
-                status='complete' if complete else state.get('status','running') if active else 'queued'
+                status='complete' if complete else 'failed' if sample.get('status')=='failed' else state.get('status','running') if active else 'queued'
                 if active and status=='running' and not sample:sample=dict(stage='Active / awaiting update')
                 rows[key]=dict(generation=generation,status=status,progress=sample,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None)
         return rows

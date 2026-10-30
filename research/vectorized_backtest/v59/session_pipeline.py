@@ -38,6 +38,11 @@ class SessionProgress:
                 completed_local_batches=len(result['timings']),completed_seconds=result['clocks'],total_seconds=result['clocks'],
                 worker_seconds=result['wall_seconds'],session_seconds=time()-self.rows[day]['session_started_epoch'],finished_epoch=time());self.publish()
 
+    def fail(self,day,error):
+        with self.lock:
+            self.rows[day].update(status='failed',stage='Failed',error=str(error),finished_epoch=time(),
+                session_seconds=time()-self.rows[day]['session_started_epoch']);self.publish()
+
 
 def independent_sessions(days,workers,submit,progress):
     """Each lane advances immediately, preserving its day order and bounded work."""
@@ -51,7 +56,8 @@ def independent_sessions(days,workers,submit,progress):
                 result=submit(lane,index,day,assigned[index+1] if index+1<len(assigned) else None).result()
                 progress.finish(day,result);results.append(result)
             return results
-        except BaseException:abort.set();raise
+        except BaseException as error:
+            abort.set();progress.fail(day,error);raise
     with ThreadPoolExecutor(max_workers=workers) as dispatch:
         futures=[dispatch.submit(lane_run,lane) for lane in range(workers)]
         results=[result for future in futures for result in future.result()]

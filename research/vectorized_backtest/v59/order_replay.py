@@ -141,7 +141,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 clock=time.perf_counter();tick();tick();stream.synchronize()
                 profile['compiler_warmup_seconds']=profile.get('compiler_warmup_seconds',0.)+time.perf_counter()-clock
                 restore();graph=torch.cuda.CUDAGraph();clock=time.perf_counter()
-                with torch.cuda.graph(graph,stream=stream):
+                from .capture_lifecycle import defer_cyclic_collection
+                with defer_cyclic_collection(),torch.cuda.graph(graph,stream=stream):
                     for _ in range(block):tick()
                 restore()
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
