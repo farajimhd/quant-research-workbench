@@ -42,7 +42,7 @@ def sql(build,day,attempts,origin,begin,end):
       AND bucket_index<{(end-origin)//100000} GROUP BY ticker,time_us ORDER BY time_us,ticker FORMAT ArrowStream'''
 
 
-def prepare_day(client,job,role,day,output):
+def prepare_day(client,job,role,day,output,source_runtime=None):
     assets=job['assets'][role][day]
     inputs=Path(next(a['path'] for a in assets if Path(a['path']).name=='clocks.npy')).parent
     history=Path(next(a['path'] for a in assets if Path(a['path']).name=='source_rows.npy')).parent
@@ -50,10 +50,13 @@ def prepare_day(client,job,role,day,output):
     cert=json.loads((history/'complete.json').read_bytes());ids=cert['listing_ids']
     tickers=[receipt['listings'][i]['ticker'] for i in ids]
     if len(set(tickers))!=len(tickers):raise ValueError('Ambiguous listing/ticker execution identity')
-    source_path=Path(session['source_manifest']);source=json.loads(source_path.read_bytes())
+    def source_file(value):
+        path=Path(value)
+        return Path(source_runtime)/path.relative_to(Path('D:/TradingML/runtimes')) if source_runtime else path
+    source_path=source_file(session['source_manifest']);source=json.loads(source_path.read_bytes())
     if source['status']!='core_complete':raise ValueError('Incomplete source build')
-    build=source['build_id'];ledger=Path(session['source_ledger'])
-    with sqlite3.connect(ledger.as_uri()+'?mode=ro',uri=True) as db:
+    build=source['build_id'];ledger=source_file(session['source_ledger'])
+    with sqlite3.connect('file:'+str(ledger)+'?mode=ro',uri=True) as db:
         rows=db.execute('SELECT ticker,attempt_id,status,output_rows,output_hash FROM units WHERE build_id=? AND session_date=? AND stage=?',(build,day,'broker_100ms')).fetchall()
     units={r[0]:r[1:] for r in rows}
     if any(t not in units or units[t][1]!='complete' for t in tickers):raise ValueError('Missing certified broker unit')
@@ -80,7 +83,7 @@ def prepare_day(client,job,role,day,output):
         else:
             batches=list(client.iter_arrow_record_batches(query))
             import pyarrow as pa
-            frame=pl.from_arrow(pa.Table.from_batches(batches))
+            frame=pl.from_arrow(pa.Table.from_batches(batches)) if batches else pl.DataFrame(schema=dict(ticker=pl.String,time_us=pl.Int64,capacity=pl.Float64,mark=pl.Float64,bid=pl.Float64,ask=pl.Float64,quote_us=pl.Int64))
             if frame.height and (frame.select(pl.struct('ticker','time_us').is_duplicated().any()).item() or
                 frame.filter((pl.col('time_us')<=begin)|(pl.col('time_us')>stop)|(pl.col('capacity')<0)|~pl.col('capacity').is_finite()).height):
                 raise ValueError('Invalid execution page clock/capacity')
@@ -94,6 +97,7 @@ def prepare_day(client,job,role,day,output):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--job',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--days',nargs='*')
+    parser.add_argument('--source-runtime',type=Path,help='Explicit mapped location of the same pinned source runtime files')
     args=parser.parse_args()
     from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
     output=require_runtime(args.output);job=json.loads(args.job.read_bytes())
@@ -107,7 +111,7 @@ def main():
         for role in ('training','validation'):
             for day in job[role+'_days']:
                 if args.days and day not in args.days:continue
-                value=prepare_day(client,job,role,day,output);print(json.dumps(dict(role=role,day=day,pages=len(value['pages']),rows=sum(p['rows'] for p in value['pages']))),flush=True)
+                value=prepare_day(client,job,role,day,output,args.source_runtime);print(json.dumps(dict(role=role,day=day,pages=len(value['pages']),rows=sum(p['rows'] for p in value['pages']))),flush=True)
     finally:client.close()
 
 

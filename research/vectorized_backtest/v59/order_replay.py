@@ -127,11 +127,13 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             if tail_mode and not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
 
     try:
+        item.execution_phase='Replay positions'
         run_page((prices,observed,membership,bids,asks,quote_valid,capacity))
         main_seconds=time.perf_counter()-started
         for page in range(len(tail.receipt['pages'])):
             if not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
             host=future.result()
+            item.execution_phase='Complete outstanding orders and liquidation'
             future=pool.submit(tail.load,page+1) if page+1<len(tail.receipt['pages']) else None
             def tensor(name,fill=0.):
                 value=torch.from_numpy(host[name]).to(device)

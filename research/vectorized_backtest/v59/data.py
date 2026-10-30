@@ -36,6 +36,7 @@ class SessionData(BaseSessionData):
             source=np.asarray(self.bank['source_rows']);known=source>=0;safe=source.clip(0)
             # Capacity belongs only to its completed bar and is never carried forward.
             clock=np.asarray(self.arrays['clocks'])[:,None]
+            if not (np.diff(clock[:,0])==1).all():raise ValueError('Persistent execution requires the certified one-second clock')
             keys=np.asarray(self.arrays['market_keys'])[safe]%(1<<32)
             arrays['capacity']=np.where(known&(keys==clock),np.asarray(self.market['volume'])[safe],0.).astype(np.float64)
             if not np.isfinite(arrays['capacity']).all() or (arrays['capacity']<0).any():raise ValueError('Invalid certified execution capacity')

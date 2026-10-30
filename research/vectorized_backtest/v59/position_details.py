@@ -49,12 +49,16 @@ def load(root,generation,serial,session,share,job=None):
         from research.vectorized_backtest.v42.distributed_assets import sha
         if sha(inputs/'clocks.npy')!=cert['files']['clocks.npy']:raise ValueError('Position timeline changed')
         clocks=np.load(inputs/'clocks.npy',mmap_mode='r',allow_pickle=False)
+        def timestamp(index):
+            if index<len(clocks):return int(clocks[index])
+            if receipt['execution'].get('order_mode')!='persistent-liquidity-orders-v1':raise ValueError('Position clock exceeds replay')
+            return int(clocks[0])+int(index)
         for row in rows:
             listing=cert['listings'][row['listing_id']]
             row.update(ticker=listing['ticker'],listing_identity=listing['listing_id'])
             for prefix in ('entry','exit'):
                 index=row.get(prefix+'_clocks')
-                if index is not None:row[prefix+'_utc']=datetime.fromtimestamp(int(clocks[index]),timezone.utc).isoformat()
+                if index is not None:row[prefix+'_utc']=datetime.fromtimestamp(timestamp(index),timezone.utc).isoformat()
             if row.get('entry_clocks') is not None and row.get('exit_clocks') is not None:
-                row['duration_seconds']=int(clocks[row['exit_clocks']]-clocks[row['entry_clocks']])
+                row['duration_seconds']=timestamp(row['exit_clocks'])-timestamp(row['entry_clocks'])
     return rows
