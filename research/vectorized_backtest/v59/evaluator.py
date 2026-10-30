@@ -182,14 +182,16 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     if u<len(item.listing_ids):raise ValueError('Cannot truncate listings')
     from torch.nn.functional import pad
     from .episodes import Episodes
-    from research.vectorized_backtest.v42.swing_projection import entry_swings
+    from .swing_projection import entry_swings
     if execution.order_mode!='immediate':episode_capacity=max(replay_block*u,min(episode_capacity,8192))
-    episodes=Episodes(1,b,episode_capacity,device,max_listings=u,trace=trace)
     # Include the live one-clock neuron values and provenance, in addition to
     # the unchanged financial buffers. Capacity is never reduced for admission.
-    required=episodes.profits.numel()*(32 if trace else 16)+b*u*1024+plan.total_nodes*u*5+b*u*len(STATES)*4+item.clocks*u*32
+    required=s*b*(episode_capacity+u)*(40 if trace else 24)+b*u*1024+plan.total_nodes*u*5+b*u*len(STATES)*4+item.clocks*u*32
+    if device.type=='cuda':
+        available=torch.cuda.mem_get_info(device)[0]+torch.cuda.memory_reserved(device)-torch.cuda.memory_allocated(device)
+        if required>available*.8:raise MemoryError('Neural replay exceeds physical GPU headroom')
+    episodes=Episodes(1,b,episode_capacity,device,max_listings=u,trace=trace)
     plan.prepare(b,u);plan.reset()
-    if device.type=='cuda' and required>torch.cuda.mem_get_info(device)[0]*.8:raise MemoryError('Neural replay exceeds physical GPU headroom')
     position=torch.zeros((1,b,u,9),dtype=torch.float64,device=device)
     aggregate=torch.zeros((1,b,16),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
     policy=torch.tensor([[getattr(m.policy,k) for k in ('stop_fraction','target_fraction','reduce_fraction','trail_fraction','add_minimum_profit','reduce_minimum_profit','maximum_adds','cooldown','swing_left')] for m in members],dtype=torch.float64,device=device)[None,:,None]

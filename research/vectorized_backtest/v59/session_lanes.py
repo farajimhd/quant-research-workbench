@@ -330,7 +330,7 @@ class Worker:
         try:
             return replay_cohort(*args,**kwargs)
         except MemoryError as error:
-            if str(error)!='Packed V7 cohort exceeds GPU headroom' or args[0][0].device.type!='cuda':raise
+            if str(error) not in ('Packed V7 cohort exceeds GPU headroom','Neural replay exceeds physical GPU headroom') or args[0][0].device.type!='cuda':raise
             device=args[0][0].device
             before=dict(free=torch.cuda.mem_get_info(device)[0],reserved=torch.cuda.memory_reserved(device))
         # Release the exception traceback before clearing graph-owned pools.

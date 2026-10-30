@@ -184,6 +184,9 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             done=min(total,begin+chunk)
             if progress:progress(done,total)
             if tail_mode and not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
+        # Recursive execute owns a cell referencing itself and the CUDA graph.
+        # Break that cycle at the page boundary rather than waiting for GC.
+        del execute
 
     try:
         item.execution_phase='Replay positions'

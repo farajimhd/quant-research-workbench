@@ -54,3 +54,11 @@ class SessionData(BaseSessionData):
             terminal_valid_quotes=int(valid[-1].sum()), listings=int(valid.shape[1]),
             additional_host_bytes=added, missing_quote_fill='pending; displayed size consumed once per snapshot' if execution_tail else 'reject; never close-price fallback')
         self.identity['execution_quotes'] = dict(version=version, maximum_age_seconds=maximum_quote_age_seconds)
+        from .swing_projection import prepare,VERSION
+        swings=prepare(self)
+        if self.bytes+sum(v.nbytes for v in swings.values())>kwargs.get('maximum_gib',4.)*2**30:
+            self.close();raise MemoryError('Entry history tensors exceed data admission')
+        self.host_tensors.update({k:torch.from_numpy(v) for k,v in swings.items()})
+        self.tensors.update({k:v.to(self.device) for k,v in self.host_tensors.items() if k in swings})
+        self.bytes+=sum(v.nbytes for v in swings.values())
+        self.identity['entry_history']=VERSION
