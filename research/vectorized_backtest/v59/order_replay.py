@@ -83,7 +83,7 @@ def program(arguments):
 
 def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membership,
            signals,values,ids,columns,limits,ticker_state,bids,asks,quote_valid,
-           capacity,execution,episodes,provide,progress,block,gate,backend):
+           capacity,execution,episodes,provide,progress,block,gate,backend,record_capacity=None):
     """Replay decisions once, then drain orders using execution-only liquidity.
 
     The next bounded host page is prefetched while GPU clocks execute. No tail
@@ -96,7 +96,14 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     device=position.device;u=position.shape[-2];b=position.shape[1]
     orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
     book=torch.zeros((*position.shape[:-1],3),dtype=position.dtype,device=device)
-    records=OrderRecords(b,u,device)
+    journal=None
+    if hasattr(item,'execution_order_root'):
+        from .order_journal import Journal
+        from dataclasses import asdict
+        journal=Journal(item.execution_order_root,b,dict(data=item.identity,execution=asdict(execution)))
+    journal_capacity=max(8192,block*u) if record_capacity is None else record_capacity
+    if journal_capacity<block*u:raise ValueError('Journal must hold at least one graph of completed orders')
+    records=OrderRecords(b,u,device,capacity=journal_capacity,sink=journal)
     ratios=plan.ratios
     if hasattr(plan,'branch_index'):plan.pending_orders=orders
     tail=Tail(item.execution_tail,item)
@@ -139,12 +146,24 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
             torch.cuda.current_stream(device).wait_stream(stream)
         chunk=block if tail_mode else max(block,(512//block)*block)
-        for begin in range(0,total,chunk):
+        def execute(count):
+            # Checkpoint only live state/counters, not the large append-only
+            # ledgers. If a journal page fills, replay smaller chunks exactly.
+            mutable=[position,orders,book,aggregate,opened,ticker_state,index,episodes.counts,records.counts]
+            if not tail_mode and hasattr(plan,'branch_index'):mutable.extend([plan.owner,policy,limits,columns])
             with gate.turn() if gate is not None else nullcontext():
-                for _ in range(begin,min(total,begin+chunk),block if use_cuda else 1):
+                checkpoint=[x.clone() for x in mutable]
+                for _ in range(count):
                     if use_cuda:graph.replay()
                     else:tick()
                 if device.type=='cuda':torch.cuda.current_stream(device).synchronize()
+            if records.drain():return
+            for target,value in zip(mutable,checkpoint):target.copy_(value)
+            if count==1:raise RuntimeError('One graph exceeded its proven order-journal event bound')
+            first=count//2;execute(first);execute(count-first)
+        for begin in range(0,total,chunk):
+            count=len(range(begin,min(total,begin+chunk),block if use_cuda else 1))
+            execute(count)
             done=min(total,begin+chunk)
             if progress:progress(done,total)
             if tail_mode and not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
@@ -174,7 +193,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             ratios=ratios.index_select(1,rows);signals=signals.index_select(1,rows)
             episodes=Episodes(1,len(rows),full[5].capacity,device,max_listings=u,trace=full[5].trace)
             episodes.owner=full[5].owner.index_select(1,rows)
-            records=OrderRecords(len(rows),u,device)
+            records=OrderRecords(len(rows),u,device,capacity=journal_capacity,sink=journal)
+            records.mapping=rows.cpu().numpy()
         profile['tail_active_candidates']=len(active)
         profile['tail_replay_candidates']=len(rows)
         def diagnostic(label):
@@ -225,11 +245,12 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 old_counts.index_add_(0,rows,counts)
             names=['profits','listings','branches']
             if episodes.trace:names+=['entry_clocks','exit_clocks']
-            merge(full[5],episodes,names);merge(full[6],records,['data'])
+            merge(full[5],episodes,names);full[6].absorb(records)
             position,orders,aggregate,opened,ticker_state,episodes,records=full
         result=records.export()
         profile.update(chronological_replay_seconds=time.perf_counter()-started,
                        decision_window_seconds=main_seconds,execution_tail_seconds=time.perf_counter()-started-main_seconds)
+        if journal is not None:profile['order_publication_backpressure_seconds']=journal.wait_seconds
         plan.last_replay_profile=profile
         # Each metric remains indexed by candidate, matching result-cache slicing.
         # Row schema: listing,kind,requested qty,filled qty,notional,fees,
@@ -237,4 +258,5 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         return dict(execution_orders=result)
     finally:
         pool.shutdown(wait=True,cancel_futures=True)
+        if journal is not None:journal.close()
         if hasattr(plan,'branch_index'):del plan.pending_orders

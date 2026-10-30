@@ -3,13 +3,16 @@ import torch
 
 
 class OrderRecords:
-    def __init__(self,b,u,device,capacity=8192):
+    def __init__(self,b,u,device,capacity=8192,sink=None):
         self.capacity=capacity;self.u=u
+        self.population=b;self.chunks=[];self.mapping=None
+        self.sink=sink
         self.counts=torch.zeros(b,dtype=torch.int64,device=device)
         self.data=torch.zeros((b,capacity+u,9),dtype=torch.float64,device=device)
 
     def reset(self):
         self.counts.zero_()
+        self.chunks.clear()
 
     def append(self,complete,record):
         if self.data.device.type=='cuda':
@@ -25,14 +28,34 @@ class OrderRecords:
         self.data[rows,indices]=torch.cat((listings[...,None],record),-1)
         self.counts.add_(prefix[:,-1])
 
-    def export(self):
-        counts=self.counts.cpu().tolist()
-        if max(counts,default=0)>self.capacity:
-            raise MemoryError('Order receipt buffer overflow; no incomplete execution receipt published')
-        width=max(counts,default=0)
+    def drain(self):
+        """Transfer only completed rows; caller retries an overflowing GPU chunk."""
+        import numpy as np
+        counts=self.counts.cpu().numpy().copy()
+        if counts.max(initial=0)>self.capacity:return False
+        width=int(counts.max(initial=0))
         mask=torch.arange(width,device=self.counts.device)[None]<self.counts[:,None]
-        data=self.data[:,:width][mask].cpu().tolist()
-        result=[];offset=0
-        for count in counts:
-            result.append(data[offset:offset+count]);offset+=count
-        return result
+        if width:
+            data=self.data[:,:width][mask].cpu().numpy()
+            ids=np.arange(len(counts)) if self.mapping is None else self.mapping
+            if self.sink is not None:self.sink.submit(ids,counts,data)
+            else:self.chunks.append((ids,counts,data))
+        self.counts.zero_();return True
+
+    def absorb(self,other):
+        if not other.drain():raise RuntimeError('Undrained overflowing order journal')
+        self.chunks.extend(other.chunks);other.chunks=[]
+
+    def export(self):
+        import numpy as np
+        if not self.drain():raise RuntimeError('Undrained overflowing order journal')
+        if self.sink is not None:return self.sink.finish()
+        result=[[] for _ in range(self.population)]
+        for ids,counts,data in self.chunks:
+            offset=0
+            for index,count in zip(ids,counts):
+                end=offset+int(count)
+                if count:result[int(index)].append(data[offset:end])
+                offset=end
+        result=[np.concatenate(parts).tolist() if parts else [] for parts in result]
+        self.chunks.clear();return result

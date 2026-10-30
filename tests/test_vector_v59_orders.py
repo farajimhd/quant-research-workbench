@@ -67,6 +67,27 @@ class PersistentOrders(unittest.TestCase):
 
 
 class ReplayPath(unittest.TestCase):
+    def test_asynchronous_journal_preserves_rows_and_candidate_hashes(self):
+        import json,tempfile
+        import numpy as np
+        import polars as pl
+        from pathlib import Path
+        from hashlib import sha256
+        from research.vectorized_backtest.v59.order_journal import Journal
+        runtime=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v59/checks')
+        runtime.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=runtime,prefix='order-journal-') as folder:
+            journal=Journal(folder,2,{'fixture':True})
+            data=np.arange(27,dtype=np.float64).reshape(3,9)
+            journal.submit(np.array([0,1]),np.array([2,1]),data)
+            journal.submit(np.array([0,1]),np.array([2,1]),data.copy())
+            refs=journal.finish();receipt=json.loads(Path(refs[0]['receipt']).read_bytes())
+            rows=pl.read_parquet([journal.root/p['file'] for p in receipt['pages']])
+            self.assertEqual(rows.height,6);self.assertEqual(refs[0]['orders'],4)
+            self.assertEqual(refs[0]['sha256'],sha256(data[:2].tobytes()*2).hexdigest())
+            for page in receipt['pages']:
+                self.assertEqual(sha256((journal.root/page['file']).read_bytes()).hexdigest(),page['sha256'])
+
     @unittest.skipUnless(__import__('os').environ.get('V59_TEST_CUDA')=='1','opt-in GPU qualification')
     def test_fused_orders_match_randomized_cpu_oracle_each_clock(self):
         from research.vectorized_backtest.v59.order_transition import transition as gpu
@@ -92,7 +113,7 @@ class ReplayPath(unittest.TestCase):
             torch.testing.assert_close(aggregate,ag.cpu(),rtol=1.e-12,atol=1.e-8)
             p,o=expected[:2];pg,og=actual[:2]
 
-    def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False):
+    def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False,fast_orders=False,record_capacity=None):
         from types import SimpleNamespace
         from unittest.mock import patch
         import numpy as np
@@ -104,11 +125,12 @@ class ReplayPath(unittest.TestCase):
         position=zeros(*shape,9);aggregate=zeros(1,candidates,16);aggregate[...,8]=float('inf')
         opened=zeros(*shape);ticker=zeros(*shape,2)
         policy=torch.tensor([.05,.5,.5,.05,0.,0.,2.,0.,0.],dtype=torch.float64,device=device)[None,None,None].expand(1,candidates,1,9)
-        prices=torch.full((4,1,1,2),10.,dtype=torch.float64,device=device)
+        total=20 if fast_orders else 4
+        prices=torch.full((total,1,1,2),10.,dtype=torch.float64,device=device)
         valid=torch.ones_like(prices,dtype=torch.bool)
         signals=torch.zeros(shape,dtype=torch.int16,device=device)
         plan=SimpleNamespace(ratios=torch.ones((*shape,3),dtype=torch.float64,device=device),feedback=zeros(candidates,2,1))
-        item=SimpleNamespace(execution_tail='mock',listing_ids=np.array([0,1]),arrays={'clocks':np.arange(4)})
+        item=SimpleNamespace(execution_tail='mock',listing_ids=np.array([0,1]),arrays={'clocks':np.arange(total)})
         class Tail:
             def __init__(self,*args):self.receipt={'pages':[{}]}
             def load(self,index):
@@ -119,16 +141,18 @@ class ReplayPath(unittest.TestCase):
         def provide(index,p,o):
             signals.fill_(0 if active_only else 1)
             if active_only:signals[:,0].fill_(1)
+            if fast_orders:signals.copy_(torch.where(index%2==0,1,2).to(signals.dtype).expand_as(signals))
         execution=Execution(risk_limits_enabled=False,order_mode='persistent-quote-size-orders-v2',maximum_quote_age_seconds=None,minimum_order_fee=1.)
-        stamps=torch.tensor([0,1,1,1] if repeated_quote else [0,1,2,3],device=device,dtype=torch.float64)[:,None,None,None].expand_as(prices)*1.e6
-        capacity=torch.stack((torch.full_like(prices,30.),torch.full_like(prices,30.),stamps),-1)
+        stamps=torch.tensor([0,1,1,1] if repeated_quote else list(range(total)),device=device,dtype=torch.float64)[:,None,None,None].expand_as(prices)*1.e6
+        size=100. if fast_orders else 30.
+        capacity=torch.stack((torch.full_like(prices,size),torch.full_like(prices,size),stamps),-1)
         with patch('research.vectorized_backtest.v59.order_tail.Tail',Tail):
             result=replay(item=item,plan=plan,position=position,aggregate=aggregate,opened=opened,policy=policy,
                 prices=prices,observed=valid,membership=valid,signals=signals,values=zeros(1,1),
-                ids=torch.zeros((4,1,2),dtype=torch.int64,device=device),columns=torch.zeros(candidates,dtype=torch.int64,device=device),
+                ids=torch.zeros((total,1,2),dtype=torch.int64,device=device),columns=torch.zeros(candidates,dtype=torch.int64,device=device),
                 limits=zeros(1,candidates,1,5),ticker_state=ticker,bids=prices,asks=prices,quote_valid=valid,
                 capacity=capacity,execution=execution,episodes=episodes,provide=provide,
-                progress=None,block=2,gate=None,backend=backend)
+                progress=None,block=2,gate=None,backend=backend,record_capacity=record_capacity)
         return position.cpu(),aggregate.cpu(),result,episodes.export()
 
     def test_complete_path_includes_tail_fills_and_drawdown(self):
@@ -153,6 +177,13 @@ class ReplayPath(unittest.TestCase):
         self.assertEqual(episodes[0]['episode_exit_clocks'],[[7,7],[7,7]])
         self.assertEqual(orders['execution_orders'][0][0][-1],6.)
 
+    def test_order_journal_retries_chunks_without_losing_or_duplicating_fills(self):
+        full=self.run_path('cpu','eager',fast_orders=True)
+        small=self.run_path('cpu','eager',fast_orders=True,record_capacity=4)
+        torch.testing.assert_close(full[0],small[0],rtol=0,atol=0)
+        self.assertEqual(full[2:],small[2:])
+        self.assertEqual(len(small[2]['execution_orders'][0]),36)
+
     @unittest.skipUnless(__import__('os').environ.get('V59_TEST_CUDA')=='1','opt-in GPU qualification')
     def test_captured_path_matches_eager_and_repeats_exactly(self):
         eager=self.run_path('cpu','eager');first=self.run_path('cuda','compile');second=self.run_path('cuda','compile')
@@ -163,6 +194,10 @@ class ReplayPath(unittest.TestCase):
         cpu=self.run_path('cpu','eager',64,True);gpu=self.run_path('cuda','compile',64,True)
         torch.testing.assert_close(cpu[0],gpu[0],rtol=0,atol=1.e-12)
         torch.testing.assert_close(cpu[1],gpu[1],rtol=0,atol=1.e-12)
+        self.assertEqual(cpu[2:],gpu[2:])
+        cpu=self.run_path('cpu','eager',fast_orders=True,record_capacity=4)
+        gpu=self.run_path('cuda','compile',fast_orders=True,record_capacity=4)
+        torch.testing.assert_close(cpu[0],gpu[0],rtol=0,atol=1.e-12)
         self.assertEqual(cpu[2:],gpu[2:])
         cpu=self.run_path('cpu','eager',repeated_quote=True);gpu=self.run_path('cuda','compile',repeated_quote=True)
         torch.testing.assert_close(cpu[0],gpu[0],rtol=0,atol=1.e-12)
