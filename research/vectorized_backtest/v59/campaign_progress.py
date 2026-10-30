@@ -163,6 +163,9 @@ class Model:
         return self.strength_cache[key]
     def global_snapshot(self):
         target=self.global_root();state=self.status();generation=state.get('completed_generations',0)
+        # Execution restarts preserve the generation counter, but predecessor
+        # financial seals stay in their original execution-contract directory.
+        if not (target/'global'/f'generation-{generation:04d}'/'complete.json').exists():return self.global_data
         if generation and (self.global_data is None or self.global_data['generation']!=generation or self.global_data.get('loading')) and not (self.global_thread and self.global_thread.is_alive()) and time.monotonic()-self.global_attempt>10:
             self.global_attempt=time.monotonic();self.global_loading=(generation,0,36);self.global_error=None
             def collect():
@@ -339,7 +342,10 @@ class Model:
                     path=root/'global'/f'generation-{generation:04d}'/'evaluated-pedigree.json'
                     records=json.loads(path.read_bytes()) if path.exists() else None
                     if not self.origin_catalog:
-                        founders=json.loads((root/'global/generation-0001/evaluated-pedigree.json').read_bytes())
+                        founder_path=root/'global/generation-0001/evaluated-pedigree.json'
+                        # An execution restart can begin at any saved generation.
+                        # Optional founder attribution must not block live results.
+                        founders=json.loads(founder_path.read_bytes()) if founder_path.exists() else (records or [])
                         self.origin_catalog={r['founder_index']:r['origins'][0] for r in founders if r.get('operation')=='session-expert' and r.get('origins')}
                     for key in pending:
                         if self.observer_stop.is_set():return
