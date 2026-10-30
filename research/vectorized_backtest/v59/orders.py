@@ -65,7 +65,7 @@ fields are never derived from a later bar than the current execution clock.
     filled = torch.where(new, 0., filled);notional = torch.where(new, 0., notional)
     fees = torch.where(new, 0., fees);submitted = torch.where(new, clock, submitted)
     first = torch.where(new, -1., first)
-    initial = torch.where(entry_new, swing, initial)
+    initial = torch.where(entry_new, torch.where(policy[...,8]>0,swing,0.), initial)
     target_order = torch.where(new, (reduce_new & target_hit).to(position.dtype), target_order)
     submitted_count = submitted_count + new.to(position.dtype)
     buy = (kind == ENTRY) | (kind == ADD)

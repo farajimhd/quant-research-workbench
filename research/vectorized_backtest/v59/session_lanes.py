@@ -263,6 +263,7 @@ class Worker:
                         if c.get('host_prefetch',False):self.prefetch.reconsider(next_day,self.read_ahead)
                         self.emit(day,stage=getattr(item,'execution_phase','Replay positions'),candidate_offset=offset,completed_seconds=done,total_seconds=total)
                     gate_options={'execution_gate':self.execution_gate} if self.execution_gate is not None else {}
+                    if execution.order_mode!='immediate' and c.get('execution_diagnostics'):item.execution_diagnostic_root=root/'execution-diagnostic'/str(offset)
                     gate_wait=self.execution_gate.wait_seconds if self.execution_gate is not None else 0.
                     result=self.replay([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
                         episode_capacity=c.get('episode_capacity',65536),trace=c.get('trace_validation',False) or c.get('split','training')=='training',

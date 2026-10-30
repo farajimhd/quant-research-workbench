@@ -87,6 +87,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     device=position.device;u=position.shape[-2];b=position.shape[1]
     orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
     records=OrderRecords(b,u,device)
+    ratios=plan.ratios
     if hasattr(plan,'branch_index'):plan.pending_orders=orders
     tail=Tail(item.execution_tail,item)
     profile={};started=time.perf_counter()
@@ -100,7 +101,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         index=torch.ones((),device=device,dtype=torch.int64)
         offset=torch.tensor(offset,device=device,dtype=torch.int64)
         args=(index,total,position,orders,aggregate,opened,policy,p,ob,mem,signals,
-              values,ids,columns,limits,plan.ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset)
+              values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset)
         fn=program(args) if use_cuda else financial_tick
         def tick():
             if not tail_mode:provide(index.clamp_max(total)-1,position,opened)
@@ -111,8 +112,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             # Warmup/capture are stateful: snapshot every mutable replay buffer,
             # including route ownership and ledger counts, then restore exactly.
             buffers=[position,orders,aggregate,opened,ticker_state,records.counts,episodes.counts]
-            if hasattr(plan,'branch_index'):buffers.extend([plan.owner,policy,limits,columns])
-            buffers.extend([plan.ratios,plan.feedback])
+            if not tail_mode and hasattr(plan,'branch_index'):buffers.extend([plan.owner,policy,limits,columns])
+            buffers.extend([ratios,plan.feedback])
             saved=[x.clone() for x in buffers]
             def restore():
                 for target,value in zip(buffers,saved):target.copy_(value)
@@ -142,6 +143,40 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         item.execution_phase='Replay positions'
         run_page((prices,observed,membership,bids,asks,quote_valid,capacity))
         main_seconds=time.perf_counter()-started
+        # Closed, idle candidates cannot change during liquidation. Compact the
+        # candidate axis only: listing reductions and chronological prices retain
+        # their exact original order. Use distinct inactive padding rows to keep
+        # compiled layouts bounded to multiples of 32 without duplicate fills.
+        pending=((position[...,0]>1.e-12)|(orders[...,0]!=0)).any(-1)[0]
+        active=pending.nonzero().flatten()
+        width=min(b,((len(active)+31)//32)*32)
+        rows=torch.cat((active,(~pending).nonzero().flatten()[:width-len(active)]))
+        full=(position,orders,aggregate,opened,ticker_state,episodes,records)
+        compacted=0<len(rows)<b
+        if compacted:
+            from .episodes import Episodes
+            position=position.index_select(1,rows);orders=orders.index_select(1,rows)
+            aggregate=aggregate.index_select(1,rows);opened=opened.index_select(1,rows)
+            ticker_state=ticker_state.index_select(1,rows)
+            policy=policy.index_select(1,rows);limits=limits.index_select(1,rows)
+            ratios=ratios.index_select(1,rows);signals=signals.index_select(1,rows)
+            episodes=Episodes(1,len(rows),full[5].capacity,device,max_listings=u,trace=full[5].trace)
+            episodes.owner=full[5].owner.index_select(1,rows)
+            records=OrderRecords(len(rows),u,device)
+        profile['tail_active_candidates']=len(active)
+        profile['tail_replay_candidates']=len(rows)
+        def diagnostic(label):
+            if not hasattr(item,'execution_diagnostic_root'):return
+            from research.vectorized_backtest.v42.publication import write_json
+            mask=(position[...,0]>1.e-12)|(orders[...,0]!=0)
+            write_json(item.execution_diagnostic_root/(label+'.json'),dict(
+                elapsed_seconds=time.perf_counter()-started,
+                candidate_indices=rows.cpu().tolist() if compacted else list(range(b)),
+                pending_indexes=mask.nonzero().cpu().tolist(),
+                positions=position[mask].cpu().tolist(),orders=orders[mask].cpu().tolist(),
+                nonfinite_position_fields=int((~torch.isfinite(position)).sum()),
+                nonfinite_order_fields=int((~torch.isfinite(orders)).sum())))
+        diagnostic('decision-cutoff')
         for page in range(len(tail.receipt['pages'])):
             if not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
             host=future.result()
@@ -156,7 +191,27 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             ob=torch.isfinite(p)&(p>0);mem=torch.zeros_like(vv)
             offset=int(host['clocks'][0])-int(item.arrays['clocks'][0])-1
             run_page((p,ob,mem,bb,aa,vv,cap),True,offset)
+            diagnostic('tail-page-'+str(page))
         require_complete(position,orders)
+        if compacted:
+            for original,current in zip(full[:5],(position,orders,aggregate,opened,ticker_state)):
+                original.index_copy_(1,rows,current)
+            def merge(old,new,names):
+                old_counts=old.counts.reshape(-1);counts=new.counts.reshape(-1)
+                starts=old_counts.index_select(0,rows)
+                if bool((starts+counts>old.capacity).any()):raise MemoryError('Execution receipt capacity exceeded; no truncated result published')
+                width=int(counts.max());j=torch.arange(width,device=device)[None]
+                mask=j<counts[:,None];dest_rows=rows[:,None].expand_as(mask)[mask]
+                dest_cols=(starts[:,None]+j).expand_as(mask)[mask]
+                for name in names:
+                    target=getattr(old,name);source=getattr(new,name)
+                    if name=='data':target[dest_rows,dest_cols]=source[:,:width][mask]
+                    else:target[0,dest_rows,dest_cols]=source[0,:,:width][mask]
+                old_counts.index_add_(0,rows,counts)
+            names=['profits','listings','branches']
+            if episodes.trace:names+=['entry_clocks','exit_clocks']
+            merge(full[5],episodes,names);merge(full[6],records,['data'])
+            position,orders,aggregate,opened,ticker_state,episodes,records=full
         result=records.export()
         profile.update(chronological_replay_seconds=time.perf_counter()-started,
                        decision_window_seconds=main_seconds,execution_tail_seconds=time.perf_counter()-started-main_seconds)

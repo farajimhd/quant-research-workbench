@@ -56,7 +56,7 @@ def kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE,REC,
     requested=tl.where(exit_new,q,tl.where(reduce_new,q*reduction,tl.where(entry_new|add_new,0.,requested)))
     remaining=tl.where(new,requested,remaining);filled=tl.where(new,0.,filled);notional=tl.where(new,0.,notional)
     fees=tl.where(new,0.,fees);submitted=tl.where(new,clock,submitted);first=tl.where(new,-1.,first)
-    initial=tl.where(entry_new,swing,initial);target_order=tl.where(new,(reduce_new&hit).to(tl.float64),target_order)
+    initial=tl.where(entry_new,tl.where(swingmode,swing,0.),initial);target_order=tl.where(new,(reduce_new&hit).to(tl.float64),target_order)
     submitted_count+=new.to(tl.float64);buy=(kind==1)|(kind==2);sell=(kind==3)|(kind==4)
     fresh=valid&(bid>0)&(ask>=bid)&(tl.abs(bid)<float('inf'))&(tl.abs(ask)<float('inf'))
     capfinite=tl.abs(capacity)<float('inf');activate=buy&(requested==0)&fresh&capfinite&(capacity>0)
