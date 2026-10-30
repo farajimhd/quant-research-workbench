@@ -230,6 +230,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     def parent_pool(slot,which,default):
         if parent_plan[2*slot+which]:return local_pools[ticker_names[(2*slot+which+generation)%len(ticker_names)]]
         return default
+    node_counts=np.asarray([node_count(m) for m in population],dtype=np.int64)
     budget_filtered=0
     whole_plan=balanced(cross_budget,[.25,.75],generation)==0
     whole_modes=balanced(int(whole_plan.sum()),[.4,.2,.2,.2],generation)
@@ -256,8 +257,12 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                 # parent indices in NumPy, not repeated Python ancestry lookups.
                 candidates=np.asarray(parent_pool(slot,1,pool),dtype=np.int64)
                 allowed=mates.unrelated(a)[candidates] & ((species_labels[candidates]==species_labels[a])==(route=='within'))
+                if (slot+generation)%10==0:
+                    from .config import MAX_STRATEGY_NODES
+                    feasible=(node_counts[a]+node_counts[candidates])<=MAX_STRATEGY_NODES
+                    budget_filtered+=int((allowed&~feasible).sum());allowed&=feasible
                 options=candidates[allowed].tolist()
-                if whole:
+                if whole and (slot+generation)%10>=3:
                     from .whole_network import fits
                     stages=(STAGES[(slot+generation)%len(STAGES)],)
                     before=len(options)

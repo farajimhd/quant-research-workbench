@@ -30,9 +30,9 @@ class ReplayGate:
         if self.handle:self.api.CloseHandle(self.handle);self.handle=None
 
 def enqueue_turns(graph,total,block,gate,device,progress=None):
-    """At most 256 chronological clocks per turn; numerical order is unchanged."""
+    """At most 512 chronological clocks per turn; numerical order is unchanged."""
     import torch
-    chunk=max(block,(256//block)*block)
+    chunk=max(block,(512//block)*block)
     for begin in range(0,total,chunk):
         with gate.turn():
             for _ in range(begin,min(total,begin+chunk),block):graph.replay()

@@ -49,9 +49,6 @@ class NetworkPlan:
         self.cuda_network_order=torch.as_tensor(np.argsort(-packed['values'][3],kind='stable').astype(np.int32),device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         self.workspace_shape=None
-        from .feature_policy import transform_projected
-        from research.vectorized_backtest.v6.torch_backtest.compile_lifecycle import scoped_compile
-        self.feature_transform=scoped_compile(transform_projected,fullgraph=True,dynamic=False) if self.device.type=='cuda' else transform_projected
 
     def prepare(self,b,u):
         if self.workspace_shape==(b,u):return
@@ -92,7 +89,7 @@ class NetworkPlan:
         cache=getattr(self,'market_block',None)
         values,valid=cache.read(index) if cache is not None else self._project(data,index)
         from .feature_policy import transform_projected
-        return self.feature_transform(values),valid
+        return transform_projected(values),valid
 
     def _project(self,data,index):
         bank=data.resident_features;a=bank.tensors
