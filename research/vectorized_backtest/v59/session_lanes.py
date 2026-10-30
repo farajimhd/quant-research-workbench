@@ -390,6 +390,13 @@ def evaluate_scoped(day,next_day,payload,generation,token,replay_width,output,is
 def release_plans():
     for plan in _worker.plans.values():plan.close()
     _worker.plans.clear()
+    # The inactive split must not retain its market banks on the GPU while
+    # the other split admits two replay lanes. Keep pageable host residency.
+    for item in _worker.host.values():
+        if hasattr(item,'resident_features'):item.resident_features.deactivate()
+        item.deactivate()
+    _worker.staging.close();_worker.staging=TransferStaging()
+    gc.collect()
     if torch.device(_worker.config['device']).type=='cuda':torch.cuda.empty_cache()
 
 
