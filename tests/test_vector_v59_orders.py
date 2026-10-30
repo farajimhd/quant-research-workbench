@@ -65,9 +65,12 @@ class ReplayPath(unittest.TestCase):
     @unittest.skipUnless(__import__('os').environ.get('V59_TEST_CUDA')=='1','opt-in GPU qualification')
     def test_fused_orders_match_randomized_cpu_oracle_each_clock(self):
         from research.vectorized_backtest.v59.order_transition import transition as gpu
+        from research.vectorized_backtest.v59.order_accounting import account
+        from research.vectorized_backtest.v59.order_accounting_cuda import account as gpu_account
         torch.manual_seed(419)
-        shape=(1,5,7);p=torch.zeros((*shape,9),dtype=torch.float64);o=torch.zeros((*shape,ORDER_WIDTH),dtype=torch.float64)
+        shape=(1,5,137);p=torch.zeros((*shape,9),dtype=torch.float64);o=torch.zeros((*shape,ORDER_WIDTH),dtype=torch.float64)
         pg=p.cuda();og=o.cuda()
+        aggregate=torch.zeros((1,5,16),dtype=torch.float64);aggregate[...,8]=float('inf');ag=aggregate.cuda()
         policy=torch.tensor([.05,.03,.4,.03,-.1,-.1,4.,2.,0.],dtype=torch.float64)[None,None,None].expand(1,5,1,9)
         for clock in range(1,65):
             price=10+torch.rand(shape,dtype=torch.float64)
@@ -78,7 +81,10 @@ class ReplayPath(unittest.TestCase):
             expected=transition(p,o,mark=price,observed=torch.ones(shape,dtype=torch.bool),**args)
             names=('signals','ratios','policy','previous','membership','swing','bid','ask','quote_valid','capacity','clock','terminal')
             actual=gpu(pg,og,*(args[n].cuda() for n in names),1000.,200.,.005,1.,.0002,0.)
-            for a,b in zip(expected,actual):torch.testing.assert_close(a,b.cpu(),rtol=0,atol=1.e-10)
+            for x,y in zip(expected,actual):torch.testing.assert_close(x,y.cpu(),rtol=0,atol=1.e-10)
+            aggregate=account(p,expected[0],o,expected[1],aggregate,price,expected[2],expected[3])
+            ag=gpu_account(pg,actual[0],og,actual[1],ag,price.cuda(),actual[3])
+            torch.testing.assert_close(aggregate,ag.cpu(),rtol=1.e-12,atol=1.e-8)
             p,o=expected[:2];pg,og=actual[:2]
 
     def run_path(self,device,backend):

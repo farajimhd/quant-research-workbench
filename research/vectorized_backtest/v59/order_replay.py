@@ -41,7 +41,10 @@ def financial_tick(index,total,position,orders,aggregate,opened,policy,prices,
             entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
             fee_per_share=execution.fee_per_share,minimum_order_fee=execution.minimum_order_fee,
             cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars)
-    a=account(position,p,orders,o,aggregate,take(prices,clock),complete,record)
+    if position.device.type=='cuda':
+        from .order_accounting_cuda import account as cuda_account
+        a=cuda_account(position,p,orders,o,aggregate,take(prices,clock),record)
+    else:a=account(position,p,orders,o,aggregate,take(prices,clock),complete,record)
     if tail:a[...,7]=aggregate[...,7]  # Inactivity describes only the decision window.
     update_equity(ticker_state,p,take(prices,clock),active)
     closed=held&(p[...,0]<=1.e-12)&active
