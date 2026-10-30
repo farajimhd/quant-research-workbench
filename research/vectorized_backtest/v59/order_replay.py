@@ -28,28 +28,28 @@ def financial_tick(index,total,position,orders,book,aggregate,opened,policy,pric
         terminal=clock==total;member=take(membership,clock-1)
     elapsed=(clock+offset).to(torch.float64)
     snapshot=take(capacity,clock)
+    if position.device.type=='cuda':
+        from .order_step import step
+        a,closed,profits,entries,complete,record=step(position,orders,book,opened,ticker_state,aggregate,
+            selected,ratios,policy,take(prices,(clock-1).clamp_min(0)),take(prices,clock),member,swing,
+            take(bids,clock),take(asks,clock),take(valid,clock),snapshot,elapsed,terminal,active,
+            execution.entry_dollars,execution.add_dollars,execution.fee_per_share,execution.minimum_order_fee,
+            execution.cost_bps/10000.,execution.minimum_order_dollars)
+        if tail:a[...,7]=aggregate[...,7]
+        aggregate.copy_(torch.where(active,a,aggregate));index.add_(1)
+        return closed,profits,entries,elapsed,complete,record
     newer=snapshot[...,2]>book[...,0]
     ask_remaining=torch.where(newer,snapshot[...,0],book[...,1]).clamp_min(0)
     bid_remaining=torch.where(newer,snapshot[...,1],book[...,2]).clamp_min(0)
     available=torch.stack((ask_remaining,bid_remaining),-1)
-    if position.device.type=='cuda':
-        from .order_transition import transition as cuda_transition
-        p,o,complete,record=cuda_transition(position,orders,selected,ratios,policy,take(prices,(clock-1).clamp_min(0)),
-            member,swing,take(bids,clock),take(asks,clock),take(valid,clock),available,elapsed,terminal,
-            execution.entry_dollars,execution.add_dollars,execution.fee_per_share,execution.minimum_order_fee,
-            execution.cost_bps/10000.,execution.minimum_order_dollars)
-    else:
-        p,o,complete,record=transition(position,orders,signals=selected,ratios=ratios,policy=policy,
-            mark=take(prices,clock),previous=take(prices,(clock-1).clamp_min(0)),membership=member,
-            observed=take(observed,clock),swing=swing,bid=take(bids,clock),ask=take(asks,clock),
-            quote_valid=take(valid,clock),capacity=available,clock=elapsed,terminal=terminal,
-            entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
-            fee_per_share=execution.fee_per_share,minimum_order_fee=execution.minimum_order_fee,
-            cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars)
-    if position.device.type=='cuda':
-        from .order_accounting_cuda import account as cuda_account
-        a=cuda_account(position,p,orders,o,aggregate,take(prices,clock),record)
-    else:a=account(position,p,orders,o,aggregate,take(prices,clock),complete,record)
+    p,o,complete,record=transition(position,orders,signals=selected,ratios=ratios,policy=policy,
+        mark=take(prices,clock),previous=take(prices,(clock-1).clamp_min(0)),membership=member,
+        observed=take(observed,clock),swing=swing,bid=take(bids,clock),ask=take(asks,clock),
+        quote_valid=take(valid,clock),capacity=available,clock=elapsed,terminal=terminal,
+        entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
+        fee_per_share=execution.fee_per_share,minimum_order_fee=execution.minimum_order_fee,
+        cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars)
+    a=account(position,p,orders,o,aggregate,take(prices,clock),complete,record)
     if tail:a[...,7]=aggregate[...,7]  # Inactivity describes only the decision window.
     update_equity(ticker_state,p,take(prices,clock),active)
     closed=held&(p[...,0]<=1.e-12)&active

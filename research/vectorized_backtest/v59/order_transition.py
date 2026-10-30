@@ -7,12 +7,15 @@ import triton.language as tl
 @triton.jit
 def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE,REC,
            U:tl.constexpr,B:tl.constexpr,VS:tl.constexpr,PS:tl.constexpr,RS:tl.constexpr,
-           ED:tl.constexpr,AD:tl.constexpr,FEE:tl.constexpr,MINFEE:tl.constexpr,COST:tl.constexpr,MINIMUM:tl.constexpr,BLOCK:tl.constexpr):
+           ED:tl.constexpr,AD:tl.constexpr,FEE:tl.constexpr,MINFEE:tl.constexpr,COST:tl.constexpr,MINIMUM:tl.constexpr,BLOCK:tl.constexpr,
+           FUSED:tl.constexpr=False,BOOK=None,MARK=None,OPENED=None,TICKER=None,ACTIVE=None,
+           CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0):
     row=tl.program_id(0);i=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=i<U
     at=row*U+i;pp=P+at*9;op=O+at*16
     q=tl.load(pp,live,0.);avg=tl.load(pp+1,live,0.);stop=tl.load(pp+2,live,0.)
     target=tl.load(pp+3,live,0.);water=tl.load(pp+4,live,0.);adds=tl.load(pp+5,live,0.)
     last=tl.load(pp+6,live,0.);realized=tl.load(pp+7,live,0.);episode=tl.load(pp+8,live,0.)
+    old_episode=episode
     kind=tl.load(op,live,0.);remaining=tl.load(op+1,live,0.);dollars=tl.load(op+2,live,0.)
     requested=tl.load(op+3,live,0.);filled=tl.load(op+4,live,0.);notional=tl.load(op+5,live,0.)
     fees=tl.load(op+6,live,0.);submitted=tl.load(op+7,live,0.);first=tl.load(op+8,live,0.)
@@ -29,6 +32,11 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     valid=tl.load(V+session*VS[6][0]+candidate*VS[6][1]+i*VS[6][2],live,False)
     cp=CAP+session*VS[7][0]+candidate*VS[7][1]+i*VS[7][2]
     buy_capacity=tl.load(cp,live,0.);sell_capacity=tl.load(cp+VS[7][3],live,0.)
+    if FUSED:
+        stamp=tl.load(cp+2*VS[7][3],live,0.);old_stamp=tl.load(BOOK+at*3,live,0.)
+        newer=stamp>old_stamp
+        buy_capacity=tl.maximum(tl.where(newer,buy_capacity,tl.load(BOOK+at*3+1,live,0.)),0.)
+        sell_capacity=tl.maximum(tl.where(newer,sell_capacity,tl.load(BOOK+at*3+2,live,0.)),0.)
     terminal=tl.load(TERM);clock=tl.load(CLOCK)
     pol=POL+session*PS[0]+candidate*PS[1]+i*PS[2]
     sf=tl.load(pol,live,0.);tf=tl.load(pol+PS[3],live,0.);rf=tl.load(pol+2*PS[3],live,0.)
@@ -81,9 +89,46 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     adds=tl.where(entry_fill,0.,adds+add_fill.to(tl.float64));last=tl.where(executed,clock,last)
     remaining=tl.maximum(remaining-quantity,0.);complete=(kind!=0)&(requested>0)&(remaining<=1.e-12)
     target=tl.where(complete&(target_order>0),target+avg*tf,target)
+    if FUSED:
+        active=tl.load(ACTIVE);closed=(q>1.e-12)&(new_q<=1.e-12)&live
+        profit=realized-old_episode
+        mark=tl.load(MARK+session*MS[0]+candidate*MS[1]+i*MS[2],live,0.)
+        mark=tl.where(tl.abs(mark)<float('inf'),mark,0.)
+        equity=realized+new_q*(mark-new_avg)
+        risk=new_q*tl.maximum(new_avg-stop,0.);distance=tl.full((BLOCK,),0.,tl.float64)
+        if tl.sum((new_q>0).to(tl.int32),0)>0:distance=tl.where(new_q>0,tl.maximum(new_avg-stop,0.)/tl.maximum(new_avg,1.e-12),0.)
+        # Match the separate accounting oracle's subtraction and reduction order.
+        old_filled=tl.load(op+4,live,0.);old_notional=tl.load(op+5,live,0.)
+        delta_qty=tl.where(new,new_filled,new_filled-old_filled)
+        delta_value=tl.where(new,new_notional,new_notional-old_notional)
+        first_actual=executed&(new_filled==delta_qty)
+        part=PART+(row*TILES+tl.program_id(1))*15
+        tl.store(part,tl.sum(tl.where(live,equity,0.),0))
+        tl.store(part+1,tl.sum(tl.where(live,new_q*mark,0.),0));tl.store(part+2,tl.sum(risk,0))
+        tl.store(part+3,tl.sum((first_actual&(kind==1)).to(tl.float64),0))
+        tl.store(part+4,tl.sum((first_actual&(kind==2)).to(tl.float64),0))
+        tl.store(part+5,tl.sum((first_actual&(kind==3)).to(tl.float64),0))
+        tl.store(part+6,tl.sum((new_q>1.e-12).to(tl.float64),0))
+        tl.store(part+7,tl.min(tl.where(closed,profit,float('inf')),0))
+        tl.store(part+8,tl.sum(closed.to(tl.float64),0));tl.store(part+9,tl.sum((closed&(profit>0)).to(tl.float64),0))
+        tl.store(part+10,tl.sum(tl.where(executed,delta_value,0.),0))
+        tl.store(part+11,tl.max(risk,0));tl.store(part+12,tl.max(distance,0));tl.store(part+13,0.);tl.store(part+14,0.)
+        entry_clock=tl.load(OPENED+at,live,0.)
+        tl.store(ENTRIES+at,entry_clock,live);tl.store(CLOSED+at,closed&active,live);tl.store(PROFIT+at,profit,live)
+        tl.store(OPENED+at,tl.where((q<=1.e-12)&(new_q>1.e-12),clock,entry_clock),live&active)
+        peak=tl.maximum(tl.load(TICKER+at*2,live,0.),equity)
+        dd=tl.maximum(tl.load(TICKER+at*2+1,live,0.),peak-equity)
+        tl.store(TICKER+at*2,peak,live&active);tl.store(TICKER+at*2+1,dd,live&active)
+        delta=new_q-q
+        tl.store(BOOK+at*3,tl.where(newer,stamp,old_stamp),live&active)
+        tl.store(BOOK+at*3+1,tl.maximum(buy_capacity-tl.maximum(delta,0.),0.),live&active)
+        tl.store(BOOK+at*3+2,tl.maximum(sell_capacity-tl.maximum(-delta,0.),0.),live&active)
     tl.store(REC+at*8,kind,live);tl.store(REC+at*8+1,requested,live);tl.store(REC+at*8+2,new_filled,live)
     tl.store(REC+at*8+3,new_notional,live);tl.store(REC+at*8+4,new_fees,live);tl.store(REC+at*8+5,submitted,live)
     tl.store(REC+at*8+6,first,live);tl.store(REC+at*8+7,clock,live);tl.store(DONE+at,complete,live)
+    if FUSED:
+        tl.store(DONE+at,complete&active,live)
+        live=live&active
     completed_count+=complete.to(tl.float64);fill_count+=executed.to(tl.float64)
     last_completed=tl.where(complete,clock,last_completed);kind=tl.where(complete,0.,kind)
     flatten=tl.where((new_q<=1.e-12)&(kind==0),False,flatten)
