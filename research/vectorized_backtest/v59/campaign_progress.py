@@ -166,7 +166,7 @@ class Model:
         # Execution restarts preserve the generation counter, but predecessor
         # financial seals stay in their original execution-contract directory.
         if not (target/'global'/f'generation-{generation:04d}'/'complete.json').exists():return self.global_data
-        if generation and (self.global_data is None or self.global_data['generation']!=generation or self.global_data.get('loading')) and not (self.global_thread and self.global_thread.is_alive()) and time.monotonic()-self.global_attempt>10:
+        if (self.global_data is None or self.global_data['generation']!=generation or self.global_data.get('loading')) and not (self.global_thread and self.global_thread.is_alive()) and time.monotonic()-self.global_attempt>10:
             self.global_attempt=time.monotonic();self.global_loading=(generation,0,36);self.global_error=None
             def collect():
                 from .progress_sessions import load_global
@@ -298,7 +298,7 @@ class Model:
         for split in ('training','validation'):
             for day in self.job[split+'_days']:
                 key=split+':'+day;sample=self.replay_samples.get(key,{})
-                complete=bool(generation) and (root/'replays'/split/f'generation-{generation:04d}'/day/'receipt.json').exists()
+                complete=(root/'replays'/split/f'generation-{generation:04d}'/day/'receipt.json').exists()
                 active=role==split and day in state.get('active_sessions',[])
                 status='complete' if complete else state.get('status','running') if active else 'queued'
                 if active and status=='running' and not sample:sample=dict(stage='Active / awaiting update')
@@ -327,7 +327,7 @@ class Model:
 
     def live_snapshot(self,live):
         generation=max((r['generation'] for r in live.values()),default=0)
-        if not generation:return None
+        if not live or not (self.global_root()/'global'/f'generation-{generation:04d}'/'population.json').exists():return None
         if self.live_data is None or self.live_data['generation']!=generation:
             if self.live_thread and self.live_thread.is_alive():return None
             self.live_data=dict(generation=generation,panels={},summaries={},reports={});self.live_error=None

@@ -9,13 +9,15 @@ class InitialData:
     def __init__(self,job,root,stop):
         self.job=job;self.root=Path(root);self.stop=stop;self.data=None;self.error=None
         self.thread=None;self.session_thread=None;self.request=None;self.sessions=[]
+        from .execution_restart import initial_replay
+        self.generation=0 if initial_replay(job) else 1
 
     def path(self,path):
         from research.vectorized_backtest.v42.distributed_assets import remote
         return remote(path,self.job['workstation_share']) if str(self.root).startswith('\\\\') and not str(path).startswith('\\\\') else Path(path)
 
     def report(self):
-        if self.data is None and self.thread is None and (self.job.get('founder_restart') or (self.root/'phase-2/global/generation-0001/training.json').exists()):
+        if self.data is None and self.thread is None and (self.job.get('founder_restart') or (self.root/'phase-2/global'/f'generation-{self.generation:04d}'/'training.json').exists()):
             self.thread=threading.Thread(target=self.load,daemon=True);self.thread.start()
         return self.data or dict(generation=0,candidates=[],groups=[],coverage=0,total=24,partial=True,scope='initial-founders',error=self.error)
 
@@ -23,11 +25,11 @@ class InitialData:
         try:
             from .evolution_report import summarize
             if not self.job.get('founder_restart'):
-                source=self.root/'phase-2/global/generation-0001'
+                source=self.root/'phase-2/global'/f'generation-{self.generation:04d}'
                 evidence=read_verified(source/'training.json')
                 records=read_verified(source/'evaluated-pedigree.json')
                 panel={k:np.asarray(v) for k,v in evidence['panel'].items()}
-                report=summarize(evidence['ids'],panel,records,generation=1)
+                report=summarize(evidence['ids'],panel,records,generation=self.generation)
                 for row in report['candidates']:row.update(initial_founder=True,original_founder=True)
                 report.update(coverage=len(evidence['receipts']),total=len(self.job['training_days']),partial=False,scope='initial-founders')
                 self.evidence=evidence;self.source_root=self.root/'phase-2';self.data=report

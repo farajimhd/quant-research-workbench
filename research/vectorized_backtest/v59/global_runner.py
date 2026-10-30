@@ -81,7 +81,7 @@ class Global(Evolution):
         lanes=self.get_lanes(role)
         if role=='training' and self.job['validation_days']:
             self.get_lanes('validation').preload(self.job['validation_days'],snapshot)
-        self.stage='Global training' if role=='training' else 'Validation replay + training-only reproduction'
+        self.stage=('Initial 6x replay' if generation==0 else 'Global training') if role=='training' else 'Validation replay + training-only reproduction'
         self.publish(phase=2,generation=generation,total_sessions=len(days),replay_role=role,evaluated_population=len(members))
         pair=dict(main_token=snapshot.token,extra=[m.payload() for m in mutants]) if mutants else None
         results=lanes.generation(days,population,generation,token,prepared_population=pair)

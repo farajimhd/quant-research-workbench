@@ -5,11 +5,16 @@ from .identity import digest
 from .orders import VERSION
 from research.vectorized_backtest.v42.distributed_assets import sha
 
+def initial_replay(job):
+    return job.get('execution_restart',{}).get('mode')=='initial-founders'
+
 
 def verify(job):
     proof=job['execution_restart']
-    old_path=Path(proof['job']);checkpoint=Path(proof['checkpoint'])
-    if sha(old_path)!=proof['job_sha256'] or sha(checkpoint)!=proof['checkpoint_sha256']:
+    old_path=Path(proof['job'])
+    field='initial_pool' if initial_replay(job) else 'checkpoint'
+    checkpoint=Path(proof[field])
+    if sha(old_path)!=proof['job_sha256'] or sha(checkpoint)!=proof[field+'_sha256']:
         raise ValueError('Execution restart predecessor changed')
     old=json.loads(old_path.read_bytes())
     if Path(job['campaign'])==Path(old['campaign']):raise ValueError('Execution restart must preserve the old campaign')
@@ -22,9 +27,17 @@ def verify(job):
     if semantics(old)!=semantics(job):raise ValueError('Execution repair changed unrelated campaign settings')
     if job['execution']!=dict(old['execution'],order_mode=VERSION,maximum_quote_age_seconds=None):raise ValueError('Execution repair changed sizing or costs')
     saved=json.loads(checkpoint.read_bytes())
-    if digest(saved['state'])!=saved['state_sha256'] or saved['state_sha256']!=proof['state_sha256']:
-        raise ValueError('Saved execution restart state changed')
-    if saved['contract']['execution']!=old['execution']:raise ValueError('Predecessor checkpoint execution differs')
+    if initial_replay(job):
+        expected=Path(old['campaign'])/'phase-2/global/initial-pool.json'
+        if checkpoint!=expected or len(saved['population'])!=6144 or len(saved['ids'])!=6144 or len(set(saved['ids']))!=6144:
+            raise ValueError('The complete original 6144-founder pool is required')
+        if saved.get('completed')!=0 or saved.get('seals'):
+            raise ValueError('Initial replay cannot use an evolved population')
+        saved={'state':saved}
+    else:
+        if digest(saved['state'])!=saved['state_sha256'] or saved['state_sha256']!=proof['state_sha256']:
+            raise ValueError('Saved execution restart state changed')
+        if saved['contract']['execution']!=old['execution']:raise ValueError('Predecessor checkpoint execution differs')
     # All 36 sidecars must be complete before launching optimization.
     for role in ('training','validation'):
         for day in job[role+'_days']:
@@ -41,5 +54,10 @@ def seed(job):
     # Strategy identity, pedigree and RNG remain exact. Old fitness, behavioral
     # species descriptors and generation seals remain solely in the old run.
     state['species']=Species().state;state['seals']={}
+    if initial_replay(job):
+        # Evaluate every unevolved founder at generation zero, then create the
+        # first 1024-candidate generation without importing old financial scores.
+        state['completed']=-1
+        state['pedigree']=[dict(r,generation=0) for r in state['pedigree']]
     state['execution_predecessor']=job['execution_restart']
     return state

@@ -53,6 +53,11 @@ class Controller:
         started=time.perf_counter()
         emit=getattr(self,'artifact_write',write_json)
         session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
+        from .execution_restart import initial_replay
+        if generation==0 and initial_replay(self.job):
+            if len(members)!=6144 or len(set(map(int,source_ids)))!=6144 or not panel['eligible'].all():
+                raise ValueError('Initial replay must score all 6144 founders without execution exclusions')
+            emit(folder/'initial-admission.json',dict(replayed=6144,eligible=6144,execution_excluded=0))
         from .offspring_audit import summarize
         audit=summarize(birth_records,panel,generation)
         self.publish(reproduction_stage='Score training population')
@@ -110,7 +115,7 @@ class Controller:
             accept_checkpoint(self.job,cp,saved,contract)
             if digest(saved['state'])!=saved['state_sha256']:raise ValueError('Global resume state changed')
             state=saved['state'];completed=state['completed'];seals=state['seals'];species=Species(state['species'])
-            self.publish(generation=completed,completed_generations=completed)
+            self.publish(generation=max(0,completed),completed_generations=max(0,completed))
             for g,h in seals.items():
                 f=root/f'generation-{int(g):04d}'
                 if sha(f/'complete.json')!=h:raise ValueError('Global checkpoint seal link changed')
@@ -134,6 +139,7 @@ class Controller:
             else:
                 state=global_seed(exports,self.job,probe,**options);state.update(completed=0,seals={},species=species.state)
             write_json(root/'initial-pool.json',state);write_checkpoint(cp,contract,state)
+            completed=state['completed']
         members=[Individual.restore(p) for p in state['population']];ids=np.asarray(state['ids']);pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);rng=np.random.default_rng();rng.bit_generator.state=state['rng']
         if getattr(self,'pipeline_enabled',False):
             from .generation_flow import evolve

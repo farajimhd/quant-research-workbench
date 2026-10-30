@@ -14,13 +14,13 @@ from research.vectorized_backtest.v42.distributed_assets import sha
 def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,probe,objective):
     if valid and c.job.get('version')!='v59-global-v1':raise ValueError('The direct pilot cannot open validation sessions')
     lane=Lane();c.publication_lane=lane;c.worker.defer_publication=True
-    snapshot=Snapshot(members);last=None;completed=state['completed'];c.sealed_generation=completed
+    snapshot=Snapshot(members);last=None;completed=state['completed'];c.sealed_generation=max(0,completed)
     try:
         for generation in range(completed+1,c.job['phase2_generations']+1):
             started=time.perf_counter();lane.check()
             if last is not None and last.done():c.sealed_generation=last.result()['generation']
             folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True)
-            c.stage='Global training';c.cohort_snapshot=snapshot;snapshot.verify(members)
+            c.stage='Initial 6x replay' if generation==0 else 'Global training';c.cohort_snapshot=snapshot;snapshot.verify(members)
             c.publish(generation_started_epoch=time.time(),completed_generations=c.sealed_generation)
             ids=ids.copy();token=snapshot.token
             for serial,member in zip(ids,members):pedigree.records[int(serial)]['node_count']=node_count(member)
