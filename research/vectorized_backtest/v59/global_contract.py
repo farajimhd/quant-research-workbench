@@ -30,6 +30,7 @@ def check(job):
     if job.get('execution_restart'):
         from .orders import VERSION as ORDER_VERSION
         expected['order_mode']=ORDER_VERSION
+        expected['maximum_quote_age_seconds']=None
         from .execution_restart import verify
         verify(job)
     if job['execution']!=expected:raise ValueError('Execution changed')

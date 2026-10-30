@@ -51,7 +51,7 @@ def load(root,generation,serial,session,share,job=None):
         clocks=np.load(inputs/'clocks.npy',mmap_mode='r',allow_pickle=False)
         def timestamp(index):
             if index<len(clocks):return int(clocks[index])
-            if receipt['execution'].get('order_mode')!='persistent-liquidity-orders-v1':raise ValueError('Position clock exceeds replay')
+            if receipt['execution'].get('order_mode')!='persistent-quote-size-orders-v2':raise ValueError('Position clock exceeds replay')
             return int(clocks[0])+int(index)
         for row in rows:
             listing=cert['listings'][row['listing_id']]

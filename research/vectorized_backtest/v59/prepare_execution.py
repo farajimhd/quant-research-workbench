@@ -14,7 +14,7 @@ from research.mlops.env import discover_env_files,load_env_files
 from research.mlops.clickhouse import ClickHouseHttpClient,default_clickhouse_url,default_clickhouse_user,default_clickhouse_password
 from research.vectorized_backtest.v42.publication import write_json
 
-VERSION='v59-certified-execution-tail-v1'
+VERSION='v59-certified-quote-size-execution-v2'
 
 
 def sha(path):
@@ -30,12 +30,15 @@ def literal(value):return "'"+str(value).replace('\\','\\\\').replace("'","\\'")
 def sql(build,day,attempts,origin,begin,end):
     pairs=','.join(f'({literal(t)},toUUID({literal(a)}))' for t,a in sorted(attempts.items()))
     close=f'{origin}+(toInt64(bucket_index)+1)*100000'
-    valid=f'quote_valid=1 AND bid_int>0 AND ask_int>=bid_int AND quote_timestamp_us>0 AND quote_timestamp_us<=last_event_us AND last_event_us<{close}'
+    valid=f'quote_timestamp_us>0 AND quote_timestamp_us<=last_event_us AND last_event_us<{close}'
     return f'''SELECT ticker,intDiv(toInt64(bucket_index),10)*1000000+1000000+{origin} AS time_us,
       sum(execution_volume) AS capacity,
       argMaxIf(close_int,bucket_index,price_valid=1)/10000. AS mark,
       argMaxIf(bid_int,bucket_index,{valid})/10000. AS bid,
       argMaxIf(ask_int,bucket_index,{valid})/10000. AS ask,
+      argMaxIf(bid_size,bucket_index,{valid}) AS bid_size,
+      argMaxIf(ask_size,bucket_index,{valid}) AS ask_size,
+      argMaxIf(quote_valid,bucket_index,{valid}) AS book_valid,
       argMaxIf(quote_timestamp_us,bucket_index,{valid}) AS quote_us
       FROM arte.liquidity_100ms_v1 WHERE build_id={literal(build)} AND session_date=toDate({literal(day)})
       AND (ticker,attempt_id) IN ({pairs}) AND bucket_index>={(begin-origin)//100000}
@@ -63,10 +66,11 @@ def prepare_day(client,job,role,day,output,source_runtime=None):
     attempts={t:units[t][0] for t in tickers}
     ny=ZoneInfo('America/New_York');origin=int(datetime.combine(datetime.fromisoformat(day).date(),time(),ny).timestamp()*1e6)
     cutoff=int(datetime.fromisoformat(session['end']).timestamp()*1e6)
+    start=int(datetime.fromisoformat(session['start']).timestamp()*1e6)
     end=int(datetime.combine(datetime.fromisoformat(day).date(),time(20),ny).timestamp()*1e6)
     folder=output/role/day;folder.mkdir(parents=True,exist_ok=True)
     identity=dict(version=VERSION,build_id=build,input_receipt_sha256=sha(inputs/'complete.json'),history_receipt_sha256=sha(history/'complete.json'),
-        source_manifest_sha256=sha(source_path),attempts=attempts,listing_ids=ids,tickers=tickers,cutoff_us=cutoff,end_us=end,validation_opened=role=='validation')
+        source_manifest_sha256=sha(source_path),attempts=attempts,listing_ids=ids,tickers=tickers,start_us=start,cutoff_us=cutoff,end_us=end,validation_opened=role=='validation',capacity='displayed quote size consumed once per quote timestamp and side',quote_age_limit=None)
     complete=folder/'complete.json'
     if complete.exists():
         prior=json.loads(complete.read_bytes())
@@ -74,8 +78,9 @@ def prepare_day(client,job,role,day,output,source_runtime=None):
         return prior
     files={};pages=[]
     # Hour pages bound both the query result and subsequent host/GPU staging.
-    for begin in range(cutoff,end,3600_000_000):
-        stop=min(end,begin+3600_000_000);name=f'{begin}.parquet';path=folder/name;seal=folder/(name+'.json')
+    spans=[(phase,begin,min(bound,begin+3600_000_000)) for phase,lower,bound in (('decision',start,cutoff),('tail',cutoff,end)) for begin in range(lower,bound,3600_000_000)]
+    for phase,begin,stop in spans:
+        name=f'{begin}.parquet';path=folder/name;seal=folder/(name+'.json')
         query=sql(build,day,attempts,origin,begin,stop);query_hash=hashlib.sha256(query.encode()).hexdigest()
         if seal.exists():
             proof=json.loads(seal.read_bytes())
@@ -83,14 +88,14 @@ def prepare_day(client,job,role,day,output,source_runtime=None):
         else:
             batches=list(client.iter_arrow_record_batches(query))
             import pyarrow as pa
-            frame=pl.from_arrow(pa.Table.from_batches(batches)) if batches else pl.DataFrame(schema=dict(ticker=pl.String,time_us=pl.Int64,capacity=pl.Float64,mark=pl.Float64,bid=pl.Float64,ask=pl.Float64,quote_us=pl.Int64))
+            frame=pl.from_arrow(pa.Table.from_batches(batches)) if batches else pl.DataFrame(schema=dict(ticker=pl.String,time_us=pl.Int64,capacity=pl.Float64,mark=pl.Float64,bid=pl.Float64,ask=pl.Float64,bid_size=pl.Float64,ask_size=pl.Float64,book_valid=pl.UInt8,quote_us=pl.Int64))
             if frame.height and (frame.select(pl.struct('ticker','time_us').is_duplicated().any()).item() or
                 frame.filter((pl.col('time_us')<=begin)|(pl.col('time_us')>stop)|(pl.col('capacity')<0)|~pl.col('capacity').is_finite()).height):
                 raise ValueError('Invalid execution page clock/capacity')
             temp=path.with_suffix('.partial');frame.write_parquet(temp);temp.replace(path)
             proof=dict(query_sha256=query_hash,sha256=sha(path),rows=frame.height,begin_us=begin,end_us=stop)
             write_json(seal,proof)
-        files[name]=proof['sha256'];pages.append(dict(file=name,**proof))
+        files[name]=proof['sha256'];pages.append(dict(file=name,phase=phase,**proof))
     record=dict(identity=identity,files=files,pages=pages,status='complete')
     write_json(complete,record);return record
 

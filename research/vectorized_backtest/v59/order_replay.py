@@ -10,7 +10,7 @@ from .evaluator import state_signals
 from .ticker_selection import update_equity
 
 
-def financial_tick(index,total,position,orders,aggregate,opened,policy,prices,
+def financial_tick(index,total,position,orders,book,aggregate,opened,policy,prices,
                    observed,membership,signals,values,ids,columns,limits,ratios,
                    ticker_state,bids,asks,valid,capacity,execution,tail=False,offset=0):
     """One causal clock; graph padding cannot submit orders or change accounts."""
@@ -27,17 +27,22 @@ def financial_tick(index,total,position,orders,aggregate,opened,policy,prices,
         swing=values[take(ids,clock)[:,None,:],columns[None] if columns.ndim==2 else columns[None,:,None]]
         terminal=clock==total;member=take(membership,clock-1)
     elapsed=(clock+offset).to(torch.float64)
+    snapshot=take(capacity,clock)
+    newer=snapshot[...,2]>book[...,0]
+    ask_remaining=torch.where(newer,snapshot[...,0],book[...,1]).clamp_min(0)
+    bid_remaining=torch.where(newer,snapshot[...,1],book[...,2]).clamp_min(0)
+    available=torch.stack((ask_remaining,bid_remaining),-1)
     if position.device.type=='cuda':
         from .order_transition import transition as cuda_transition
         p,o,complete,record=cuda_transition(position,orders,selected,ratios,policy,take(prices,(clock-1).clamp_min(0)),
-            member,swing,take(bids,clock),take(asks,clock),take(valid,clock),take(capacity,clock),elapsed,terminal,
+            member,swing,take(bids,clock),take(asks,clock),take(valid,clock),available,elapsed,terminal,
             execution.entry_dollars,execution.add_dollars,execution.fee_per_share,execution.minimum_order_fee,
             execution.cost_bps/10000.,execution.minimum_order_dollars)
     else:
         p,o,complete,record=transition(position,orders,signals=selected,ratios=ratios,policy=policy,
             mark=take(prices,clock),previous=take(prices,(clock-1).clamp_min(0)),membership=member,
             observed=take(observed,clock),swing=swing,bid=take(bids,clock),ask=take(asks,clock),
-            quote_valid=take(valid,clock),capacity=take(capacity,clock),clock=elapsed,terminal=terminal,
+            quote_valid=take(valid,clock),capacity=available,clock=elapsed,terminal=terminal,
             entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
             fee_per_share=execution.fee_per_share,minimum_order_fee=execution.minimum_order_fee,
             cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars)
@@ -50,6 +55,10 @@ def financial_tick(index,total,position,orders,aggregate,opened,policy,prices,
     closed=held&(p[...,0]<=1.e-12)&active
     profits=p[...,7]-position[...,8];entries=opened.clone()
     opened.copy_(torch.where(active&~held&(p[...,0]>1.e-12),elapsed,opened))
+    delta=p[...,0]-position[...,0]
+    next_book=torch.stack((torch.where(newer,snapshot[...,2],book[...,0]),
+        (ask_remaining-delta.clamp_min(0)).clamp_min(0),(bid_remaining-(-delta).clamp_min(0)).clamp_min(0)),-1)
+    book.copy_(torch.where(active,next_book,book))
     position.copy_(torch.where(active,p,position))
     orders.copy_(torch.where(active,o,orders))
     aggregate.copy_(torch.where(active,a,aggregate))
@@ -86,6 +95,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     from torch.nn.functional import pad
     device=position.device;u=position.shape[-2];b=position.shape[1]
     orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
+    book=torch.zeros((*position.shape[:-1],3),dtype=position.dtype,device=device)
     records=OrderRecords(b,u,device)
     ratios=plan.ratios
     if hasattr(plan,'branch_index'):plan.pending_orders=orders
@@ -100,7 +110,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         p,ob,mem,bb,aa,vv,cap=arrays;total=len(p)-1
         index=torch.ones((),device=device,dtype=torch.int64)
         offset=torch.tensor(offset,device=device,dtype=torch.int64)
-        args=(index,total,position,orders,aggregate,opened,policy,p,ob,mem,signals,
+        args=(index,total,position,orders,book,aggregate,opened,policy,p,ob,mem,signals,
               values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset)
         fn=program(args) if use_cuda else financial_tick
         def tick():
@@ -111,7 +121,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         if use_cuda:
             # Warmup/capture are stateful: snapshot every mutable replay buffer,
             # including route ownership and ledger counts, then restore exactly.
-            buffers=[position,orders,aggregate,opened,ticker_state,records.counts,episodes.counts]
+            buffers=[position,orders,book,aggregate,opened,ticker_state,records.counts,episodes.counts]
             if not tail_mode and hasattr(plan,'branch_index'):buffers.extend([plan.owner,policy,limits,columns])
             buffers.extend([ratios,plan.feedback])
             saved=[x.clone() for x in buffers]
@@ -152,10 +162,12 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         width=min(b,((len(active)+31)//32)*32)
         rows=torch.cat((active,(~pending).nonzero().flatten()[:width-len(active)]))
         full=(position,orders,aggregate,opened,ticker_state,episodes,records)
+        full_book=book
         compacted=0<len(rows)<b
         if compacted:
             from .episodes import Episodes
             position=position.index_select(1,rows);orders=orders.index_select(1,rows)
+            book=book.index_select(1,rows)
             aggregate=aggregate.index_select(1,rows);opened=opened.index_select(1,rows)
             ticker_state=ticker_state.index_select(1,rows)
             policy=policy.index_select(1,rows);limits=limits.index_select(1,rows)
@@ -174,6 +186,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 candidate_indices=rows.cpu().tolist() if compacted else list(range(b)),
                 pending_indexes=mask.nonzero().cpu().tolist(),
                 positions=position[mask].cpu().tolist(),orders=orders[mask].cpu().tolist(),
+                quote_books=book[mask].cpu().tolist(),
                 nonfinite_position_fields=int((~torch.isfinite(position)).sum()),
                 nonfinite_order_fields=int((~torch.isfinite(orders)).sum())))
         diagnostic('decision-cutoff')
@@ -187,13 +200,15 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 value=pad(value,(0,u-len(item.listing_ids)),value=fill)
                 return torch.cat((value[:1],value),0)[:,None,None]
             p=tensor('mark',float('nan'));bb=tensor('bid');aa=tensor('ask')
-            vv=tensor('quote_valid',False);cap=tensor('capacity')
+            vv=tensor('quote_valid',False)
+            cap=torch.stack((tensor('ask_size'),tensor('bid_size'),tensor('quote_us')),-1)
             ob=torch.isfinite(p)&(p>0);mem=torch.zeros_like(vv)
             offset=int(host['clocks'][0])-int(item.arrays['clocks'][0])-1
             run_page((p,ob,mem,bb,aa,vv,cap),True,offset)
             diagnostic('tail-page-'+str(page))
         require_complete(position,orders)
         if compacted:
+            full_book.index_copy_(1,rows,book)
             for original,current in zip(full[:5],(position,orders,aggregate,opened,ticker_state)):
                 original.index_copy_(1,rows,current)
             def merge(old,new,names):

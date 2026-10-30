@@ -16,17 +16,17 @@ class Execution:
     maximum_position_risk:float=300.
     minimum_order_dollars:float=0.
     price_mode:str='bid-ask'
-    maximum_quote_age_seconds:float=1.
+    maximum_quote_age_seconds:float|None=1.
     order_mode:str='immediate'
     @property
     def admission_distance(self):return self.maximum_stop_distance if self.risk_limits_enabled else 1.
     @property
     def admission_budget(self):return self.maximum_position_risk if self.risk_limits_enabled else float("inf")
     def validate(self):
-        if self.order_mode not in ('immediate','persistent-liquidity-orders-v1'):raise ValueError('Unknown execution order contract')
+        if self.order_mode not in ('immediate','persistent-quote-size-orders-v2'):raise ValueError('Unknown execution order contract')
         if self.order_mode!='immediate' and self.risk_limits_enabled:raise ValueError('Persistent execution requires the approved risk-admission-caps-off campaign')
         if type(self.risk_limits_enabled) is not bool:raise ValueError("Invalid risk admission switch")
-        if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds!=1.:raise ValueError('Strict V59 bid/ask execution required')
+        if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds!=(1. if self.order_mode=='immediate' else None):raise ValueError('Quote age policy differs from the execution contract')
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
             raise ValueError('Invalid assumed-fill sizing/cost')
         if self.entry_dollars>1000 or self.add_dollars>200:raise ValueError('Entry/add caps are $1000/$200')
@@ -222,7 +222,7 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     if execution.order_mode!='immediate':
         if capture_only:raise ValueError('Persistent execution qualification must time the full replay including terminal drain')
         from .order_replay import replay as replay_orders
-        capacity=pad(item.tensors['capacity'][:t],(0,u-len(item.listing_ids)),value=0.)[:,None,None]
+        capacity=torch.stack([pad(item.tensors[k][:t],(0,u-len(item.listing_ids)),value=0.)[:,None,None] for k in ('ask_size','bid_size','quote_us')],-1)
         order_result=replay_orders(item=item,plan=plan,position=position,aggregate=aggregate,opened=opened,
             policy=policy,prices=prices,observed=observed,membership=membership,signals=signals,values=values,
             ids=ids,columns=columns,limits=limits,ticker_state=ticker_state,bids=bids,asks=asks,quote_valid=quote_valid,

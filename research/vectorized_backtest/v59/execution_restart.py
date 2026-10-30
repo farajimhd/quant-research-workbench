@@ -20,7 +20,7 @@ def verify(job):
         value['machines']['workstation']['code']=None
         return value
     if semantics(old)!=semantics(job):raise ValueError('Execution repair changed unrelated campaign settings')
-    if job['execution']!=dict(old['execution'],order_mode=VERSION):raise ValueError('Execution repair changed sizing, quotes or costs')
+    if job['execution']!=dict(old['execution'],order_mode=VERSION,maximum_quote_age_seconds=None):raise ValueError('Execution repair changed sizing or costs')
     saved=json.loads(checkpoint.read_bytes())
     if digest(saved['state'])!=saved['state_sha256'] or saved['state_sha256']!=proof['state_sha256']:
         raise ValueError('Saved execution restart state changed')

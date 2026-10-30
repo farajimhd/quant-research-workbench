@@ -16,7 +16,7 @@ class PersistentOrders(unittest.TestCase):
             policy=self.policy,mark=torch.full(shape,price),previous=torch.full(shape,price),
             membership=torch.ones(shape,dtype=torch.bool),observed=torch.ones(shape,dtype=torch.bool),
             swing=torch.full(shape,swing),bid=torch.full(shape,price,dtype=torch.float64),ask=torch.full(shape,price,dtype=torch.float64),
-            quote_valid=torch.full(shape,fresh),capacity=torch.full(shape,capacity,dtype=torch.float64),clock=torch.tensor(float(self.clock)),
+            quote_valid=torch.full(shape,fresh),capacity=torch.full((*shape,2),capacity,dtype=torch.float64),clock=torch.tensor(float(self.clock)),
             terminal=torch.full(shape,terminal),entry_dollars=1000.,add_dollars=200.,fee_per_share=.005,minimum_order_fee=1.,cost=0.,minimum_order_dollars=0.)
         self.p,self.o,complete,record=transition(self.p,self.o,**values)
         return complete,record
@@ -81,7 +81,7 @@ class ReplayPath(unittest.TestCase):
             price=10+torch.rand(shape,dtype=torch.float64)
             args=dict(signals=torch.randint(0,32,shape,dtype=torch.int16),ratios=torch.rand((*shape,3),dtype=torch.float64),policy=policy,
                 previous=price,membership=torch.rand(shape)>.1,swing=torch.full_like(price,float('nan')),bid=price,ask=price+.02,
-                quote_valid=torch.rand(shape)>.3,capacity=torch.randint(0,30,shape).double(),clock=torch.tensor(float(clock),dtype=torch.float64),
+                quote_valid=torch.rand(shape)>.3,capacity=torch.randint(0,30,(*shape,2)).double(),clock=torch.tensor(float(clock),dtype=torch.float64),
                 terminal=torch.tensor(clock>40),entry_dollars=1000.,add_dollars=200.,fee_per_share=.005,minimum_order_fee=1.,cost=.0002,minimum_order_dollars=0.)
             expected=transition(p,o,mark=price,observed=torch.ones(shape,dtype=torch.bool),**args)
             names=('signals','ratios','policy','previous','membership','swing','bid','ask','quote_valid','capacity','clock','terminal')
@@ -92,7 +92,7 @@ class ReplayPath(unittest.TestCase):
             torch.testing.assert_close(aggregate,ag.cpu(),rtol=1.e-12,atol=1.e-8)
             p,o=expected[:2];pg,og=actual[:2]
 
-    def run_path(self,device,backend,candidates=2,active_only=False):
+    def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False):
         from types import SimpleNamespace
         from unittest.mock import patch
         import numpy as np
@@ -113,18 +113,21 @@ class ReplayPath(unittest.TestCase):
             def __init__(self,*args):self.receipt={'pages':[{}]}
             def load(self,index):
                 return dict(mark=np.full((4,2),9.),bid=np.full((4,2),9.),ask=np.full((4,2),9.),
-                    quote_valid=np.ones((4,2),bool),capacity=np.full((4,2),100.),clocks=np.arange(4,8))
+                    quote_valid=np.ones((4,2),bool),bid_size=np.full((4,2),100.),ask_size=np.full((4,2),100.),
+                    quote_us=np.repeat((np.array([1,1,6,6]) if repeated_quote else np.arange(4,8))[:,None]*1.e6,2,axis=1),clocks=np.arange(4,8))
         episodes=Episodes(1,candidates,32,device,max_listings=2,trace=True)
         def provide(index,p,o):
             signals.fill_(0 if active_only else 1)
             if active_only:signals[:,0].fill_(1)
-        execution=Execution(risk_limits_enabled=False,order_mode='persistent-liquidity-orders-v1',minimum_order_fee=1.)
+        execution=Execution(risk_limits_enabled=False,order_mode='persistent-quote-size-orders-v2',maximum_quote_age_seconds=None,minimum_order_fee=1.)
+        stamps=torch.tensor([0,1,1,1] if repeated_quote else [0,1,2,3],device=device,dtype=torch.float64)[:,None,None,None].expand_as(prices)*1.e6
+        capacity=torch.stack((torch.full_like(prices,30.),torch.full_like(prices,30.),stamps),-1)
         with patch('research.vectorized_backtest.v59.order_tail.Tail',Tail):
             result=replay(item=item,plan=plan,position=position,aggregate=aggregate,opened=opened,policy=policy,
                 prices=prices,observed=valid,membership=valid,signals=signals,values=zeros(1,1),
                 ids=torch.zeros((4,1,2),dtype=torch.int64,device=device),columns=torch.zeros(candidates,dtype=torch.int64,device=device),
                 limits=zeros(1,candidates,1,5),ticker_state=ticker,bids=prices,asks=prices,quote_valid=valid,
-                capacity=torch.full_like(prices,30.),execution=execution,episodes=episodes,provide=provide,
+                capacity=capacity,execution=execution,episodes=episodes,provide=provide,
                 progress=None,block=2,gate=None,backend=backend)
         return position.cpu(),aggregate.cpu(),result,episodes.export()
 
@@ -144,6 +147,12 @@ class ReplayPath(unittest.TestCase):
         self.assertTrue((p[:,1:]==0).all())
         self.assertEqual(episodes[0]['episode_exit_clocks'][0],[5,5])
 
+    def test_repeated_quote_does_not_replenish_consumed_size(self):
+        p,a,orders,episodes=self.run_path('cpu','eager',repeated_quote=True)
+        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-32.))
+        self.assertEqual(episodes[0]['episode_exit_clocks'],[[7,7],[7,7]])
+        self.assertEqual(orders['execution_orders'][0][0][-1],6.)
+
     @unittest.skipUnless(__import__('os').environ.get('V59_TEST_CUDA')=='1','opt-in GPU qualification')
     def test_captured_path_matches_eager_and_repeats_exactly(self):
         eager=self.run_path('cpu','eager');first=self.run_path('cuda','compile');second=self.run_path('cuda','compile')
@@ -154,6 +163,9 @@ class ReplayPath(unittest.TestCase):
         cpu=self.run_path('cpu','eager',64,True);gpu=self.run_path('cuda','compile',64,True)
         torch.testing.assert_close(cpu[0],gpu[0],rtol=0,atol=1.e-12)
         torch.testing.assert_close(cpu[1],gpu[1],rtol=0,atol=1.e-12)
+        self.assertEqual(cpu[2:],gpu[2:])
+        cpu=self.run_path('cpu','eager',repeated_quote=True);gpu=self.run_path('cuda','compile',repeated_quote=True)
+        torch.testing.assert_close(cpu[0],gpu[0],rtol=0,atol=1.e-12)
         self.assertEqual(cpu[2:],gpu[2:])
 
 

@@ -6,7 +6,7 @@ All operations are tensor expressions so the same oracle can be CUDA compiled.
 """
 import torch
 
-VERSION = 'persistent-liquidity-orders-v1'
+VERSION = 'persistent-quote-size-orders-v2'
 # kind, remaining, requested dollars, requested qty, filled qty, notional, fee,
 # submitted clock, first fill, initial stop, flatten requested, target reduction,
 # submitted order count, completed order count, fill count, last completion clock
@@ -70,12 +70,15 @@ fields are never derived from a later bar than the current execution clock.
     submitted_count = submitted_count + new.to(position.dtype)
     buy = (kind == ENTRY) | (kind == ADD)
     sell = (kind == REDUCE) | (kind == EXIT)
+    # quote_valid is structural/causal validity in v2, never an age threshold.
     fresh = (quote_valid & torch.isfinite(bid) & torch.isfinite(ask) &
              (bid > 0) & (ask >= bid))
     # Dollar intents become fixed-quantity orders at their first executable quote.
-    activate = buy & (requested == 0) & fresh & torch.isfinite(capacity) & (capacity>0)
+    buy_capacity=capacity[...,0];sell_capacity=capacity[...,1]
+    activate = buy & (requested == 0) & fresh & torch.isfinite(buy_capacity) & (buy_capacity>0)
     requested = torch.where(activate, dollars / ask.clamp_min(1.e-12), requested)
     remaining = torch.where(activate, requested, remaining)
+    capacity=torch.where(buy,buy_capacity,sell_capacity)
     available = torch.where(fresh & torch.isfinite(capacity), capacity.clamp_min(0), 0.)
     quantity = torch.minimum(remaining.clamp_min(0), available)
     quantity = torch.where(sell, torch.minimum(quantity, q), quantity)

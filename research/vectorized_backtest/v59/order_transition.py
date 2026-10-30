@@ -27,7 +27,8 @@ def kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE,REC,
     bid=tl.load(BID+session*VS[4][0]+candidate*VS[4][1]+i*VS[4][2],live,0.)
     ask=tl.load(ASK+session*VS[5][0]+candidate*VS[5][1]+i*VS[5][2],live,0.)
     valid=tl.load(V+session*VS[6][0]+candidate*VS[6][1]+i*VS[6][2],live,False)
-    capacity=tl.load(CAP+session*VS[7][0]+candidate*VS[7][1]+i*VS[7][2],live,0.)
+    cp=CAP+session*VS[7][0]+candidate*VS[7][1]+i*VS[7][2]
+    buy_capacity=tl.load(cp,live,0.);sell_capacity=tl.load(cp+VS[7][3],live,0.)
     terminal=tl.load(TERM);clock=tl.load(CLOCK)
     pol=POL+session*PS[0]+candidate*PS[1]+i*PS[2]
     sf=tl.load(pol,live,0.);tf=tl.load(pol+PS[3],live,0.);rf=tl.load(pol+2*PS[3],live,0.)
@@ -59,6 +60,7 @@ def kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE,REC,
     initial=tl.where(entry_new,tl.where(swingmode,swing,0.),initial);target_order=tl.where(new,(reduce_new&hit).to(tl.float64),target_order)
     submitted_count+=new.to(tl.float64);buy=(kind==1)|(kind==2);sell=(kind==3)|(kind==4)
     fresh=valid&(bid>0)&(ask>=bid)&(tl.abs(bid)<float('inf'))&(tl.abs(ask)<float('inf'))
+    capacity=tl.where(buy,buy_capacity,sell_capacity)
     capfinite=tl.abs(capacity)<float('inf');activate=buy&(requested==0)&fresh&capfinite&(capacity>0)
     if tl.sum(activate.to(tl.int32),0)>0:requested=tl.where(activate,dollars/tl.maximum(ask,1.e-12),requested)
     remaining=tl.where(activate,requested,remaining)
@@ -102,7 +104,7 @@ def transition(p:torch.Tensor,o:torch.Tensor,signals:torch.Tensor,ratios:torch.T
                entry:float,addition:float,fee:float,minimum_fee:float,cost:float,minimum:float)->tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]:
     s,b,u,_=p.shape
     if not p.is_contiguous() or not o.is_contiguous():raise ValueError('Contiguous persistent execution buffers required')
-    vectors=[x.expand(s,b,u) for x in (signals,previous,membership,swing,bid,ask,valid,capacity)]
+    vectors=[x.expand(s,b,u) for x in (signals,previous,membership,swing,bid,ask,valid)]+[capacity.expand(s,b,u,2)]
     policy=policy.expand(s,b,u,9)
     out=torch.empty_like(p);orders=torch.empty_like(o);complete=torch.empty(p.shape[:-1],device=p.device,dtype=torch.bool)
     record=torch.empty((*p.shape[:-1],8),device=p.device,dtype=p.dtype)
