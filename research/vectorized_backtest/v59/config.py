@@ -1,6 +1,6 @@
 """Persisted search and compute envelope; independent of symbolic crossover."""
 
-VERSION='v57-feedforward-trimmed-v1'
+VERSION='v59-feedforward-log-target-routing-v1'
 
 MAX_NODES=1024
 
@@ -26,7 +26,7 @@ PARAMETER_RATE=.7
 
 def contract():
 
-    return dict(mask_crossover=dict(modes=ACTION_RATES,numerical_inherit=.5,numerical_blend=.5,alignment='persistent action-local node slots; input identity',replay='unchanged sparse engine'),crossover_management=CROSSOVER,version=VERSION,max_nodes_per_action=MAX_NODES,max_depth=MAX_DEPTH,fan_in=FAN_IN,
+    return dict(strategy_crossover=dict(entry_routing=.1,reciprocal_veto=.1,entry_management_exchange=.1,existing=.7,arbitration='A-first sticky per position',branch_budget='included in 1024 total'),feature_policy='identity-reduced-v1',mask_crossover=dict(modes=ACTION_RATES,numerical_inherit=.5,numerical_blend=.5,alignment='persistent action-local node slots; input identity',replay='unchanged sparse engine'),crossover_management=CROSSOVER,version=VERSION,max_nodes_per_action=MAX_NODES,max_depth=MAX_DEPTH,fan_in=FAN_IN,
 
                 max_strategy_connections=MAX_STRATEGY_NODES*FAN_IN,weight_bound=WEIGHT_BOUND,
 

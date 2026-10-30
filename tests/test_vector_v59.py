@@ -22,6 +22,8 @@ class V59Tests(unittest.TestCase):
     def test_ticker_aggregation_precedes_cap(self):
         keys,v=score.ticker_costs([800,-300,400],[1,1,2])
         np.testing.assert_equal(keys,[1,2]);np.testing.assert_equal(v,[500,400])
+        self.assertEqual(score.TICKER_TARGET,2000.)
+        self.assertEqual(score.SESSION_TARGET,5000.)
     def test_objective_retains_all_drawdown_and_open_losses(self):
         from research.vectorized_backtest.v59.full_common import aggregate
         m=dict(net_pnl=[99.],drawdown=[20.],closed_positions=[1],winning_positions=[1],maximum_position_risk=[0.],maximum_stop_distance=[0.],terminal_valid=[False],episode_profits=[[100.]],episode_listings=[[0]],episode_exit_clocks=[[1]],open_episode_realized=[[-1.]],open_episode_listings=[[1]])

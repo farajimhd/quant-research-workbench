@@ -2,8 +2,8 @@
 import numpy as np
 VERSION='log-profit-target-v1'
 COEFFICIENT=.1
-TICKER_TARGET=500.
-SESSION_TARGET=1000.
+TICKER_TARGET=2000.
+SESSION_TARGET=5000.
 
 def reward(profit,target,coefficient=COEFFICIENT):
     p=np.asarray(profit,dtype=np.float64)

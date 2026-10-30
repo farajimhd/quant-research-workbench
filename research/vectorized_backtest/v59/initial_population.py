@@ -22,4 +22,4 @@ def initialize(rng,size,*,probe=None):
     templates,families=sample_templates()
     members=[Individual.restore(m.payload()) for m in templates+randoms]
     if len(members)!=6144 or len({program_key(m) for m in members})!=6144:raise ValueError('Fresh cohort must be complete and unique')
-    return members,dict(report,experiment='v57',random_count=3072,seed_count=3072,initial_families=families+['random']*3072,past_results_loaded=False,initialization='fresh random plus templates; no archives or pool-file environment route')
+    return members,dict(report,experiment='v59',random_count=3072,seed_count=3072,initial_families=families+['random']*3072,past_results_loaded=False,initialization='fresh random plus templates; no archives or pool-file environment route')

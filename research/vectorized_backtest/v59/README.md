@@ -6,7 +6,7 @@ replay lanes. No V58 genomes or financial receipts are reused.
 
 Score = 0.5 * sum(ticker-date reward) + 0.5 * sum(session reward) - sum(session account DD).
 Reward(p,C) = p below C; C + 0.1*C*log(1+(p-C)/C) above C.
-Targets: ticker-date $500, session $1000. All losses and drawdowns remain counted.
+Targets: ticker-date $2000, session $5000. All losses and drawdowns remain counted.
 Targets never stop execution. Ticker specialists use the same ticker reward.
 
 Ten percent each of crossover slots use ordered sticky entry routing, reciprocal

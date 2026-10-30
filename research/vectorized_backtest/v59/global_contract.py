@@ -20,7 +20,7 @@ def check(job):
     if len(set(train))!=24 or len(set(valid))!=12 or max(train)>=min(valid):raise ValueError('Certified chronological 24/12 split required')
     if job['training_days']!=train or job['validation_days']!=valid:raise ValueError('Session split changed')
     if job['machines']['workstation']['days']!=dict(training=train,validation=valid):raise ValueError('Session ownership changed')
-    if (job.get('ticker_target'),job.get('session_target'))!=(500.,1000.):raise ValueError('Profit targets changed')
+    if (job.get('ticker_target'),job.get('session_target'))!=(2000.,5000.):raise ValueError('Profit targets changed')
     from .robust_score import VERSION as SCORE_VERSION,COEFFICIENT
     if job['objective']!=dict(drawdown_weight=1.,loss_weight=0.) or job['score_version']!=SCORE_VERSION or job['concentration_coefficient']!=COEFFICIENT:raise ValueError('Concentration cost changed')
     if job.get('founder_restart'):raise ValueError('V59 requires fresh candidates')
@@ -45,7 +45,7 @@ def prepare(source,root,code):
     train=json.loads(Path(original['training']).read_bytes())['days'];valid=json.loads(Path(original['validation']).read_bytes())['days']
     probe=Path(original['initialization_probe'])
     job={k:original[k] for k in ('training','training_sha256','validation','validation_sha256','assets','asset_sha256','workstation_share')}
-    job.update(version=VERSION,campaign_stage='fresh-global',score_version='log-profit-target-v1',concentration_coefficient=.1,ticker_target=500.,session_target=1000.,source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
+    job.update(version=VERSION,campaign_stage='fresh-global',score_version='log-profit-target-v1',concentration_coefficient=.1,ticker_target=2000.,session_target=5000.,source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
         code=str(code),commit=json.loads((code/'deployment.json').read_bytes())['commit'],campaign=str(root),transport=str(root/'asset-bus'),
         training_days=train,validation_days=valid,initialization_probe=str(probe),initialization_probe_sha256=sha(probe),population=1024,initial_multiplier=6,seed=2021,
         phase2_generations=200,mutation_probe_size=32,global_session_workers=2,global_node='workstation',batch_size=512,
