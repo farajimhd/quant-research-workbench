@@ -22,7 +22,7 @@ class CompactPedigree:
             crosses=(primary['crossovers'] if primary else 0)+int('crossover' in op)
             origin=primary['origin_generation'] if primary else generation;key=program_key(member)
             self.records[int(serial)]=dict(serial=int(serial),generation=generation,origin_generation=origin,parents=list(map(int,pair)),operation=op,
-                mutations=mutations,crossovers=crosses,ancestors=sorted(ancestors.items()),program_sha256=key,case_owner=member.case_owner,complexity=count(member),node_count=node_count(member),
+                mutations=mutations,crossovers=crosses,ancestors=sorted(ancestors.items()),program_sha256=key,case_owner=member.case_owner,branch_count=len(member.routing) if member.routing else 1,complexity=count(member),node_count=node_count(member),
                 label=f'G{origin:03d}-{serial:06d}-M{mutations:03d}-X{crosses:03d}-{key[:4]}')
         from research.vectorized_backtest.v42.family_stats import annotate
         for serial,pair in zip(ids,parents):

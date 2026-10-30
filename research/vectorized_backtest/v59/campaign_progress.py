@@ -691,6 +691,7 @@ def render(model,width,height):
         if not model.day and detail_data and detail_data['generation']==generation:
             panels=detail_data['panels'];first=next(iter(panels.values()),None)
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
+        lines.append(f"Branches: {r.get('branch_count',1)} | A-first arbitration; selected branch persists while held")
         lines.append(f"Rewards: ticker {number(r.get('ticker_component'))} | session {number(r.get('session_component'))} | profitable sessions {number(r.get('profitable_sessions'))} | targets met {number(r.get('session_targets_met'))} | net excluding best day {number(r.get('net_excluding_best_session'))}")
         if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if 'validation' in r['metric_scope'] else '')
         if model.day:lines=[line for line in lines if not line.startswith(('Original founder:','Sessions:','Mutations:'))]
