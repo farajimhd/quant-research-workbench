@@ -25,7 +25,10 @@ class SessionProgress:
         with self.lock:
             row=self.rows.get(event['day'])
             if row is None or row['status']!='running':return
-            row.update(event);self.publish()
+            # Dispatch begins the operator's clock; worker cache/load events must
+            # not reset it and hide time spent preparing the session.
+            started=row['session_started_epoch']
+            row.update(event);row['session_started_epoch']=started;self.publish()
 
     def finish(self,day,result):
         callback=getattr(self.panel,'session_result',None)
@@ -33,7 +36,7 @@ class SessionProgress:
         with self.lock:
             self.rows[day].update(status='complete',stage='Session complete',completed_candidates=self.population,
                 completed_local_batches=len(result['timings']),completed_seconds=result['clocks'],total_seconds=result['clocks'],
-                session_seconds=result['wall_seconds'],finished_epoch=time());self.publish()
+                worker_seconds=result['wall_seconds'],session_seconds=time()-self.rows[day]['session_started_epoch'],finished_epoch=time());self.publish()
 
 
 def independent_sessions(days,workers,submit,progress):

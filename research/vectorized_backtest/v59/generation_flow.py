@@ -21,6 +21,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
             if last is not None and last.done():c.sealed_generation=last.result()['generation']
             folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True)
             c.stage='Global training';c.cohort_snapshot=snapshot;snapshot.verify(members)
+            c.publish(generation_started_epoch=time.time(),completed_generations=c.sealed_generation)
             ids=ids.copy();token=snapshot.token
             for serial,member in zip(ids,members):pedigree.records[int(serial)]['node_count']=node_count(member)
             records=copy.deepcopy([pedigree.records[int(i)] for i in ids])

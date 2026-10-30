@@ -204,7 +204,8 @@ class Model:
         elapsed=None
         if running and done<target:
             try:
-                started=(root/f'generation-{done+1:04d}'/'population.json').stat().st_mtime
+                started=state.get('generation_started_epoch')
+                if started is None:started=(root/f'generation-{state.get("generation",done+1):04d}'/'population.json').stat().st_mtime
                 if started>=state.get('owner',{}).get('creation_time',float('inf')):elapsed=max(0.,time.time()-started)
             except OSError:pass
         recent=[r['seconds'] for r in rows if r['current_source'] and not r['cached_replay'] and r['generation']>1][-3:]

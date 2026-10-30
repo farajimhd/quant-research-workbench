@@ -20,6 +20,44 @@ class V59Tests(unittest.TestCase):
         self.assertEqual(contract['profit_targets'],dict(ticker_target=2000.,session_target=5000.))
         self.assertNotIn('founder_restart',contract)
 
+    def test_session_elapsed_keeps_dispatch_start(self):
+        from research.vectorized_backtest.v59.session_pipeline import SessionProgress
+        panel=SimpleNamespace(publish=lambda **kw:None)
+        p=SessionProgress(panel,['day'],1024,2,'training')
+        with patch('research.vectorized_backtest.v59.session_pipeline.time',return_value=100.):p.begin('day')
+        p.event(dict(day='day',session_started_epoch=110.,stage='Replay'))
+        self.assertEqual(p.rows['day']['session_started_epoch'],100.)
+        with patch('research.vectorized_backtest.v59.session_pipeline.time',return_value=160.):
+            p.finish('day',dict(timings=[{}],clocks=10,wall_seconds=40.))
+        self.assertEqual(p.rows['day']['session_seconds'],60.)
+        self.assertEqual(p.rows['day']['worker_seconds'],40.)
+
+    @unittest.skipUnless(os.environ.get('V59_TEST_CUDA')=='1','CUDA qualification opt-in')
+    def test_fused_routing_exact_gathers(self):
+        from research.vectorized_backtest.v59.routing_kernel import route
+        torch.manual_seed(17)
+        b,u,w,n=7,19,3,21
+        branch=torch.arange(n,device='cuda').reshape(b,w)
+        valid=torch.rand((b,w),device='cuda')>.3;valid[:,0]=True
+        raw=torch.randint(0,32,(n,u),device='cuda',dtype=torch.int16)
+        position=torch.zeros((1,b,u,9),device='cuda',dtype=torch.float64)
+        position[...,0]=torch.rand((1,b,u),device='cuda')>.5
+        owner=torch.randint(0,w,(b,u),device='cuda')
+        policies=torch.randn((n,9),device='cuda',dtype=torch.float64)
+        ages=torch.randn((n,5),device='cuda',dtype=torch.float64)
+        ratios=torch.randn((1,n,u,3),device='cuda',dtype=torch.float64)
+        columns=torch.arange(n,device='cuda')
+        p=SimpleNamespace(workspace_shape=(b,u),branch_index=branch,branch_valid=valid,owner=owner.clone(),
+            base=SimpleNamespace(ratios=ratios),policies=policies,ages=ages,leaf_columns=columns,
+            ratios=torch.empty((1,b,u,3),device='cuda',dtype=torch.float64),selected_policy=torch.empty((1,b,u,9),device='cuda',dtype=torch.float64),
+            selected_limits=torch.empty((1,b,u,5),device='cuda',dtype=torch.float64),selected_columns=torch.empty((b,u),device='cuda',dtype=torch.int64))
+        chosen=torch.where(position[0,...,0]>1e-12,owner,(((raw[branch]&1)!=0)&valid[...,None]).int().argmax(1))
+        leaf=branch.gather(1,chosen);ticker=torch.arange(u,device='cuda')[None,:]
+        out=route(p,raw,position,torch.empty((1,b,u),device='cuda',dtype=torch.int16))
+        for actual,expected in ((p.owner,chosen),(out,raw[leaf,ticker][None]),(p.ratios,ratios[0,leaf,ticker][None]),
+            (p.selected_policy,policies[leaf][None]),(p.selected_limits,ages[leaf][None]),(p.selected_columns,columns[leaf])):
+            torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+
     def test_reward_monotonic_loss_and_targets(self):
         p=np.array([-1e6,-500,0,499.999,500,500.001,1000,5000,1e6])
         v=score.reward(p,500)

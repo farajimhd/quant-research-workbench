@@ -39,6 +39,10 @@ class RoutingPlan:
         expanded=position.index_select(1,self.parent_index)
         clocks=opened.index_select(1,self.parent_index)
         raw=self.base.signals(data,index,expanded,clocks,previous)[0]
+        if self.device.type=='cuda':
+            from .routing_kernel import route
+            if out is None:out=torch.empty((1,*self.workspace_shape),device=self.device,dtype=raw.dtype)
+            return route(self,raw,position,out)
         branch=raw[self.branch_index]
         eligible=((branch&1)!=0)&self.branch_valid[...,None]
         proposed=eligible.to(torch.int32).argmax(1)

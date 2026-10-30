@@ -40,6 +40,11 @@ class Evolution(Controller):
     def publish(self,**values):
         with self.lock:
             self.view.update(values)
+            future=getattr(self,'publication_future',None)
+            if future is not None and future.done() and future.exception() is None:
+                self.sealed_generation=max(getattr(self,'sealed_generation',0),future.result()['generation'])
+                self.view['completed_generations']=self.sealed_generation
+                if (self.view.get('publication_pending_generation') or 0)<=self.sealed_generation:self.view['publication_pending_generation']=None
             for attempt in range(6):
                 try:
                     write_json(self.root/'full-status.json',dict(status=self.status,stage=self.stage,node=self.node,owner=self.owner,updated_epoch=time.time(),total_generations=self.job['phase2_generations'],**self.view));break
