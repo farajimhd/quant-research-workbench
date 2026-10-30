@@ -12,6 +12,14 @@ from research.vectorized_backtest.v59.strategy_mix import cross,node_count
 from research.vectorized_backtest.v59.lineage import program_key
 
 class V59Tests(unittest.TestCase):
+    def test_fresh_global_checkpoint_contract(self):
+        from research.vectorized_backtest.v59.full_controller import checkpoint_contract
+        job=dict(seed=2021,source_sha256='source',objective=dict(loss_weight=0.,drawdown_weight=1.),training_sha256='train',validation_sha256='val',phase2_generations=200,population=1024,initial_multiplier=6,concentration_coefficient=.1,ticker_target=2000.,session_target=5000.)
+        contract=checkpoint_contract(job,['day'],['later'])
+        self.assertTrue(contract['fresh_founders'])
+        self.assertEqual(contract['profit_targets'],dict(ticker_target=2000.,session_target=5000.))
+        self.assertNotIn('founder_restart',contract)
+
     def test_reward_monotonic_loss_and_targets(self):
         p=np.array([-1e6,-500,0,499.999,500,500.001,1000,5000,1e6])
         v=score.reward(p,500)

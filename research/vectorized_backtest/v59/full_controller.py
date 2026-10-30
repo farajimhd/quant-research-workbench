@@ -20,7 +20,7 @@ from research.vectorized_backtest.v6.torch_backtest.materialize import owned_run
 
 def checkpoint_contract(job,train,valid):
     from .entry_sharing import VERSION as entry_sharing_version
-    contract=dict(comparison=job.get('comparison'),experiment=dict(mutation_probe_size=job.get('mutation_probe_size',0),crossover_policy='action-composition-or-and-xor-xnor-v1'),seed=job['seed'],source_sha256=job['source_sha256'],objective=job['objective'],training_sha256=job['training_sha256'],validation_sha256=job['validation_sha256'],generations=job['phase2_generations'],population=job['population'],initial_multiplier=job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
+    contract=dict(comparison=job.get('comparison'),experiment=dict(mutation_probe_size=job.get('mutation_probe_size',0),crossover_policy='v59-strategy-routing-veto-block-and-existing-v1'),seed=job['seed'],source_sha256=job['source_sha256'],objective=job['objective'],training_sha256=job['training_sha256'],validation_sha256=job['validation_sha256'],generations=job['phase2_generations'],population=job['population'],initial_multiplier=job['initial_multiplier'],training_days=train,validation_days=valid,validation='display-only; successor and RNG frozen before opening')
     if job.get('continuation'):contract['continuation_sha256']=job['continuation']['context_sha256']
     contract['selection_risk_caps']=False
     contract['execution']=job.get('execution',{})
@@ -35,7 +35,8 @@ def checkpoint_contract(job,train,valid):
     if job.get('selection',{}).get('profit_fresh_fraction'):contract['profit_fresh_fraction']=job['selection']['profit_fresh_fraction']
     if job.get('score_version'):contract['score_version']=job['score_version']
     contract['concentration_coefficient']=job['concentration_coefficient']
-    contract['founder_restart']=job['founder_restart']
+    contract['fresh_founders']=True
+    contract['profit_targets']={k:job[k] for k in ('ticker_target','session_target')}
     if job.get('validation_schedule')=='concurrent-training-only-v1':contract['validation']='display-only; isolated training-only reproduction concurrent with replay'
     return contract
 
