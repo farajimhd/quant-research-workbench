@@ -45,10 +45,10 @@ def main():
         state=global_seed({},job,load_probe(job['initialization_probe'],job['training']))
         write_json(seedpath,state)
     state=json.loads(seedpath.read_bytes());members=[Individual.restore(p) for p in state['population']]
-    if len(members)!=6144:raise ValueError('Complete V60 diagnostic founder cohort required')
+    if len(members) not in (1024,6144):raise ValueError('Pinned 1024-member evolved population or 6144 founders required')
     if args.offset<0 or args.count<1 or args.offset+args.count>len(members):raise ValueError('Invalid profile subset')
     if args.mixed:
-        if args.offset or args.count%2 or args.count>6144:raise ValueError('Even mixed cohort and zero offset required')
+        if len(members)!=6144 or args.offset or args.count%2 or args.count>6144:raise ValueError('Complete founders, even mixed cohort and zero offset required')
         indices=list(range(args.count//2))+list(range(3072,3072+args.count//2))
         members=[members[i] for i in indices]
     else:indices=list(range(args.offset,args.offset+args.count));members=members[args.offset:args.offset+args.count]

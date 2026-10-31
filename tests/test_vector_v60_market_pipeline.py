@@ -135,7 +135,8 @@ def test_routed_batch_ignores_execution_and_matches_current_market_arbitration()
 
 
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
-def test_double_buffer_packets_equal_independent_inference():
+@pytest.mark.parametrize('independent',[False,True])
+def test_double_buffer_packets_equal_independent_inference(independent):
     from research.vectorized_backtest.v60.genome import sample
     from research.vectorized_backtest.v60.network import NetworkPlan
     from research.vectorized_backtest.v60.inference_pipeline import Pipeline
@@ -143,6 +144,7 @@ def test_double_buffer_packets_equal_independent_inference():
     plan=NetworkPlan(members,'cuda');plan.prepare(3,7)
     signals=torch.empty((1,3,7),device='cuda',dtype=torch.int16)
     pipe=Pipeline(plan,item,16,4,signals,None,None,{})
+    if independent:pipe.start()
     p=torch.zeros((1,3,7,9),device='cuda',dtype=torch.float64);opened=p[...,0].clone()
     try:
         for begin in range(0,17,4):
@@ -154,6 +156,8 @@ def test_double_buffer_packets_equal_independent_inference():
                 torch.testing.assert_close(observed,expected,rtol=0,atol=0)
                 torch.testing.assert_close(ratios,plan.ratios,rtol=0,atol=0)
     finally:pipe.close();plan.close()
+    assert pipe.producer is None
+    if independent:assert pipe.profile['inference_independent_producer'] is True
 
 
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')

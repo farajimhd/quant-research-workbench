@@ -162,6 +162,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 restore()
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
             torch.cuda.current_stream(device).wait_stream(stream)
+        if pipeline is not None:pipeline.start()
         chunk=block if tail_mode else max(block,(512//block)*block)
         def execute(count,start_clock):
             # Checkpoint only live state/counters, not the large append-only
@@ -177,8 +178,6 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                     if pipeline is not None:
                         begin=start_clock+step_index*block
                         pipeline.stage(begin)
-                        pipeline.submit(begin+block)
-                        pipeline.submit(begin+2*block)
                     if use_cuda:graph.replay()
                     else:tick()
                 if device.type=='cuda':torch.cuda.current_stream(device).synchronize()

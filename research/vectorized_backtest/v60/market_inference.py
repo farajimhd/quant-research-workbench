@@ -80,12 +80,10 @@ class Inference:
         # reduce candidates, nodes or listings to fit a time batch.
         budget=256*2**20
         if data.device.type=='cuda':
-            # Two resident session lanes share the GPU. Reserve at most one
-            # eighth of currently free memory per producer, capped at 1 GiB.
-            # The old fixed 256 MiB allowance reduced real 1024-member batches
-            # to one clock even when the workstation had ample free memory.
-            budget=min(2**30,torch.cuda.mem_get_info(data.device)[0]//8)
-        self.width=max(1,min(8,budget//max(1,base.total_nodes*u*5)))
+            # Bound each of two independent producers to 1/8 of free memory.
+            # The former 1 GiB cap limited the 96 GiB workstation to 3 clocks.
+            budget=min(8*2**30,torch.cuda.mem_get_info(data.device)[0]//8)
+        self.width=max(1,min(32,budget//max(1,base.total_nodes*u*5)))
         self.work=torch.empty((self.width,base.total_nodes,u),device=data.device)
         self.known=torch.empty_like(self.work,dtype=torch.bool)
         if base.uses_cross:
