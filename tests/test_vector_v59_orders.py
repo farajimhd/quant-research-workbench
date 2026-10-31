@@ -149,6 +149,18 @@ class ReplayPath(unittest.TestCase):
         self.assertEqual(plan.base.cuda_block,64)
         self.assertEqual(plan.cuda_block,64)
 
+    def test_order_receipt_publication_handles_long_windows_temporary_path(self):
+        import tempfile,json
+        from pathlib import Path
+        from research.vectorized_backtest.v59.order_journal import write_json
+        runtime=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v59/checks')
+        runtime.mkdir(parents=True,exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=runtime,prefix='long-journal-') as folder:
+            root=Path(folder)/('x'*(235-len(folder)-1));path=root/'complete.json'
+            self.assertGreater(len(str(path))+37,260)
+            write_json(path,{'complete':True})
+            self.assertEqual(json.loads(path.read_bytes()),{'complete':True})
+
     def test_asynchronous_journal_preserves_rows_and_candidate_hashes(self):
         import json,tempfile
         import numpy as np

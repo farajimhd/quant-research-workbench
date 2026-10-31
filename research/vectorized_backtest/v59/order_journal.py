@@ -3,10 +3,27 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from hashlib import sha256
-import time,uuid
+import time,uuid,json,os
 import numpy as np
 import polars as pl
-from research.vectorized_backtest.v42.publication import write_json
+from research.vectorized_backtest.v6.torch_backtest.runtime import require_runtime
+
+
+def write_json(path,value):
+    # Validate the ordinary path first; use extended paths only at the Windows
+    # filesystem boundary. Receipts retain their portable ordinary paths.
+    path=Path(path);require_runtime(path.parent)
+    raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
+    target=Path('\\\\?\\'+str(path.resolve())) if os.name=='nt' else path
+    temporary=target.with_name(uuid.uuid4().hex+'.tmp')
+    try:
+        temporary.write_text(raw,encoding='utf8')
+        for attempt in range(12):
+            try:temporary.replace(target);break
+            except PermissionError as error:
+                if getattr(error,'winerror',None) not in (5,32) or attempt==11:raise
+                time.sleep(min(.02*2**attempt,.2))
+    finally:temporary.unlink(missing_ok=True)
 
 COLUMNS=('listing','kind','requested_quantity','filled_quantity','filled_notional',
          'fees','submitted_clock','first_fill_clock','completed_clock')
