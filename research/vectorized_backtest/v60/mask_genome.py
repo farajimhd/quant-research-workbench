@@ -128,4 +128,5 @@ def cross(rng,a,b):
     # Swing windows form one coupled gene.
     swing=base.policy if rng.random()<.5 else donor.policy
     genes.update(swing_left=swing.swing_left,swing_right=swing.swing_right)
-    return Individual(nets,Policy(**genes),ages,base.case_owner).validate(),dict(actions=events,base_parent=0 if base is a else 1,policy_field='typed-mask')
+    from .authority import feasible_policy
+    return Individual(nets,feasible_policy(Policy(**genes)),ages,base.case_owner).validate(),dict(actions=events,base_parent=0 if base is a else 1,policy_field='typed-mask')

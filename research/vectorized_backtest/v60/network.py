@@ -24,6 +24,11 @@ class NetworkPlan:
         self.lookup={s:i for i,s in enumerate(self.columns)};c=len(self.columns)
         from .network_pack import pack_networks
         packed=pack_networks(members) if packed is None else packed
+        from .entry_sharing import representatives,action_representatives
+        action_reps=np.asarray(action_representatives(members),dtype=np.int32)
+        if os.environ.get('V60_UNSHARED_SCRATCH')!='1':
+            from .network_pack import shared_storage
+            packed=shared_storage(packed,action_reps)
         self.total_nodes=packed['total_nodes'];self.offsets_cpu=packed['offsets_cpu'];self.kernel_nodes=packed['kernel_nodes']
         values=list(packed['values']);values[0]=remap_sources(values[0],packed['edge_counts'])
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in values]
@@ -32,14 +37,14 @@ class NetworkPlan:
         # Market-only graph equivalence includes action and sizing outputs.
         from .entry_sharing import representatives,action_representatives
         entry=representatives(members)
-        action_reps=np.asarray(action_representatives(members),dtype=np.int32)
         self.action_representatives=torch.as_tensor(action_reps,device=device)
         self.entry_representatives=torch.tensor(entry,device=device,dtype=torch.int32)
         from .genome import MARKET_INPUTS,INPUTS
         # Only representative action graphs need a CUDA program. pack() reads
         # their results for duplicates; genotype offsets and output order stay intact.
         representatives_mask=(action_reps==np.arange(len(members))[:,None]).reshape(-1)
-        edge_cost=np.add.reduceat(packed['edge_counts'],packed['offsets_cpu'])
+        cumulative=np.r_[0,np.cumsum(packed['edge_counts'])]
+        edge_cost=cumulative[packed['offsets_cpu']+packed['values'][3]]-cumulative[packed['offsets_cpu']]
         order=np.lexsort((np.arange(len(edge_cost)),-edge_cost)).astype(np.int32)
         self.cuda_network_order=torch.as_tensor(order[representatives_mask[order]],device=device)
         unique_order=order[representatives_mask[order]]

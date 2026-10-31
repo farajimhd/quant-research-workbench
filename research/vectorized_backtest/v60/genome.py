@@ -314,6 +314,8 @@ class Individual:
 
 def sample(rng,count,*,stratified=False,structural=False):
 
+    from .authority import feasible_policy
+
     out=[]
 
     sizes={s:rng.permutation(np_sizes(count)) for s in STAGES} if stratified else None
@@ -324,6 +326,7 @@ def sample(rng,count,*,stratified=False,structural=False):
 
             swing_left=int(rng.choice(SWING_WINDOWS)) if swing else 0,swing_right=int(rng.choice(SWING_WINDOWS)) if swing else 0)
 
+        policy=feasible_policy(policy)
         out.append(Individual({s:random_network(rng,s,None if sizes is None else sizes[s][j],
 
             (j%3,(j//3)%2,(j//6)%3) if structural else None) for s in STAGES},policy,{}).validate())

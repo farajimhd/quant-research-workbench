@@ -4,6 +4,25 @@ from itertools import chain
 from .genome import STAGES,OPS
 from .config import FAN_IN
 
+
+def shared_storage(packed,representatives):
+    """Allocate scratch/packed rows once per numerically identical action graph.
+
+    Genomes and net-indexed thresholds/sizing remain unchanged. Only the single
+    representative CUDA program writes these rows; duplicates read its outputs.
+    """
+    rep=np.asarray(representatives,dtype=np.int32)
+    owner=(rep*len(STAGES)+np.arange(len(STAGES))[None,:]).reshape(-1)
+    unique=np.flatnonzero(owner==np.arange(len(owner)))
+    values=list(packed['values']);counts=values[3]
+    starts=np.cumsum(np.r_[0,counts[unique][:-1]]).astype(np.int32)
+    mapped=np.zeros(len(owner),np.int32);mapped[unique]=starts;mapped=mapped[owner]
+    rows=np.repeat(values[4][unique]-starts,counts[unique])+np.arange(int(counts[unique].sum()))
+    for i in (0,1,2):values[i]=values[i][rows]
+    values[4]=mapped
+    return dict(packed,values=tuple(values),operations=packed['operations'][rows],
+        edge_counts=packed['edge_counts'][rows],total_nodes=len(rows),offsets_cpu=mapped)
+
 def pack_networks(members):
     nets=[m.networks[s] for m in members for s in STAGES]
     counts=np.array([len(n.nodes) for n in nets],np.int32);offsets=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)

@@ -22,6 +22,21 @@ MAX_FAN_IN = 16
 SWING_WINDOWS = (1, 2, 3, 4, 5, 10, 15, 20, 30, 45, 60)
 
 
+def feasible_policy(policy):
+    """Project construction onto joint constraints; never repair restored evidence.
+
+    Fixed stop = ask*(1-stop_fraction), buy limit = ask*(1+offset).
+    Keep the stop strictly below both, with float32-safe relative separation.
+    Swing prices remain causal observations and must be checked per candle.
+    """
+    from dataclasses import replace
+    if policy.swing_left == 0:
+        lower = -policy.stop_fraction + 1e-6
+        if policy.buy_limit_offset < lower:
+            policy = replace(policy, buy_limit_offset=lower)
+    return policy
+
+
 @dataclass(frozen=True)
 class FeatureHandle:
     id: int

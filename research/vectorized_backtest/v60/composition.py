@@ -200,7 +200,8 @@ def mutation(rng,parent,count,crossover_child=False):
 
                 if key in used or any(e['stage']==stage and e['field'].startswith('structure') for e in edits):continue
 
-                candidate=Individual(dict(child.networks,**{stage:newnet}),policy,ages,child.case_owner).validate()
+                from .authority import feasible_policy
+                candidate=Individual(dict(child.networks,**{stage:newnet}),feasible_policy(policy),ages,child.case_owner).validate()
 
                 if candidate==child:continue
 

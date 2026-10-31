@@ -16,8 +16,9 @@ def initialize_random(rng,size,*,probe=None):
         if key in keys:rejected+=1;continue
         members.append(member);keys.add(key)
         if len(members)==size:
-            from .calibration import policy_families,calibrate
-            members,families=policy_families(rng,members)
+            from .calibration import calibrate
+            from .initial_design import policies
+            members=policies(rng,members);families=['joint-stratified']*len(members)
             members,calibration=calibrate(rng,members,probe)
             final_keys={program_key(m) for m in members}
             if len(final_keys)!=size:raise ValueError('Calibrated population lost uniqueness')

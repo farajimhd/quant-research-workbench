@@ -23,6 +23,8 @@ class Policy:
             if not math.isfinite(value) or not 0<=value<=1:raise ValueError('Invalid position fraction')
         if self.stop_fraction>=1:raise ValueError('Initial stop must be below entry and positive')
         if min(self.stop_fraction,self.target_fraction,self.reduce_fraction,self.trail_fraction)<=0:raise ValueError('Positive position fractions required')
+        if self.swing_left==0 and self.stop_fraction+self.buy_limit_offset<1e-6-1e-12:
+            raise ValueError('Fixed stop and buy limit violate joint construction authority')
         if type(self.maximum_adds) is not int or not 0<=self.maximum_adds<=20 or type(self.cooldown) is not int or not 1<=self.cooldown<=300:
             raise ValueError('Invalid bounded adds/cooldown')
         if (self.swing_left,self.swing_right)!=(0,0) and (self.swing_left not in SWING_WINDOWS or self.swing_right not in SWING_WINDOWS):
