@@ -8,6 +8,34 @@ from research.vectorized_backtest.v60.orders import transition, ORDER_WIDTH
 
 
 class ConstructionContract(unittest.TestCase):
+    def test_swing_lookup_uses_current_membership(self):
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v60.swing_projection import prepare
+        data=SimpleNamespace(host_tensors={'membership':torch.tensor([[False],[True],[False]])},
+            bank={'ids':np.arange(3,dtype=np.int32).reshape(3,1),'values':np.tile(np.arange(3)[:,None]+10.,(1,332))})
+        result=prepare(data)
+        self.assertEqual(result['v60_entry_swing_ids'][:,0].tolist(),[0,1,0])
+        self.assertEqual(result['v60_entry_swing_values'][1,0],11.)
+
+    def test_routing_selects_feasible_later_parent(self):
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v60.routing_plan import RoutingPlan
+        plan=RoutingPlan.__new__(RoutingPlan)
+        plan.base=SimpleNamespace(signals=lambda *a:torch.tensor([[[1],[1]]],dtype=torch.int16),
+                                  ratios=torch.ones((1,2,1,3),dtype=torch.float64))
+        plan.parent_index=torch.tensor([0,0]);plan.branch_index=torch.tensor([[0,1]])
+        plan.branch_valid=torch.tensor([[True,True]]);plan.owner=torch.zeros((1,1),dtype=torch.int64)
+        plan.device=torch.device('cpu');plan.leaf_columns=torch.tensor([0,1])
+        plan.policies=torch.tensor([[.03,.05,.25,.03,0,0,2,1,2,0,0]]*2,dtype=torch.float64)
+        plan.ages=torch.zeros((2,5));plan.ratios=torch.empty((1,1,1,3),dtype=torch.float64)
+        plan.bind(torch.empty((1,1,1,11),dtype=torch.float64),torch.empty((1,1,1,5)),torch.empty((1,1),dtype=torch.int64))
+        data=SimpleNamespace(tensors={'ask':torch.tensor([[8.]]),'quote_valid':torch.tensor([[True]]),
+            'membership':torch.tensor([[True]]),'v60_entry_swing_values':torch.tensor([[float('nan')]*2,[9.,7.]]),
+            'v60_entry_swing_ids':torch.tensor([[1]])})
+        signal=plan.signals(data,torch.tensor(0),torch.zeros((1,1,1,9)),torch.zeros((1,1,1)),torch.tensor([[[8.]]]))
+        self.assertEqual(plan.owner.item(),1)
+        self.assertEqual(signal.item(),1)
+
     def test_base_quote_catalog_offsets_are_not_shifted_by_new_indicators(self):
         from research.vectorized_backtest.v60.base_resident_features import ResidentFeatures
         from research.vectorized_backtest.v60.features import ORIGINAL
