@@ -44,7 +44,7 @@ def cross(a,b,mode,branch_a=0,branch_b=0):
             child=Individual(nets,a.policy,{**a.minimum_age,'entry':0},a.case_owner).validate()
         else:raise ValueError('Unknown strategy combination')
     return child,dict(actions=[dict(stage='strategy',mode=mode)],branch_a=branch_a,branch_b=branch_b,
-        arbitration='first true entry branch; sticky while held',branch_count=len(leaves(child)))
+        arbitration='first feasible current-market entry branch; independent of execution',branch_count=len(leaves(child)))
 
 def count(member):
     return sum(len(n.nodes)+sum(len(x.sources) for x in n.nodes) for m in leaves(member) for n in m.networks.values())

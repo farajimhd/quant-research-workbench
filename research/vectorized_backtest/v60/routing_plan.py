@@ -1,4 +1,4 @@
-"""GPU-batched branch evaluation with sticky, per-position strategy ownership."""
+"""GPU-batched current-market branch evaluation; no execution feedback."""
 import torch
 from .strategy_mix import leaves
 from .network import NetworkPlan
@@ -41,8 +41,6 @@ class RoutingPlan:
     def signals(self,data,index,position,opened,previous,out=None):
         if hasattr(self,'market_block'):self.base.market_block=self.market_block
         expanded=position.index_select(1,self.parent_index)
-        if 'pending_orders' in self.__dict__:
-            self.base.pending_orders=self.pending_orders.index_select(1,self.parent_index)
         clocks=opened.index_select(1,self.parent_index)
         raw=self.base.signals(data,index,expanded,clocks,previous)[0]
         branch=raw[self.branch_index]
@@ -67,9 +65,7 @@ class RoutingPlan:
         admissible=admissible&(self.base.ratios[0,...,0]>0)
         eligible=((branch&1)!=0)&admissible[self.branch_index]&self.branch_valid[...,None]
         proposed=eligible.to(torch.int32).argmax(1)
-        held=position[0,...,0]>1e-12
-        if 'pending_orders' in self.__dict__:held=held|(self.pending_orders[0,...,0]!=0)
-        self.owner.copy_(torch.where(held,self.owner,proposed))
+        self.owner.copy_(proposed)  # Current-market arbitration, independent of fills
         selected=self.branch_index.gather(1,self.owner)
         ticker=torch.arange(raw.shape[-1],device=self.device)[None,:]
         result=raw[selected,ticker][None]

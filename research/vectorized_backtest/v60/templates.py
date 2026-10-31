@@ -146,8 +146,9 @@ def build(family,index):
     reduce=(.25,.5,.75,1.)[(index//3+management)%4]
     # Sparse families need additional distinct seeds. These are explicit bounded
     # holding-time variations, not random unused genes or numerical hash salts.
-    age=x.node([MARKET_INPUTS+STATES.index('age_hours')],bias=-tanh(hold/3600))
-    exit=x.any(exit,age)
+    # Replace position-age exits with an explicit market-return threshold.
+    # The management grid controls a meaningful causal exit condition.
+    exit=x.any(exit,x.compare('enriched.return.60s',-.001*(1+hold/60),positive=False))
     networks={'entry':e.finish(entry,fraction),'exit':x.finish(exit)}
     # Initially disabled management graphs still read a real market feature and
     # can mutate/cross like any graph. Bracket management remains native.
@@ -160,10 +161,10 @@ def build(family,index):
     maximum_adds=0
     if management%8>=6:
         maximum_adds=1+management%2;g=Graph()
-        profit=g.node([MARKET_INPUTS+STATES.index('profit_fraction')],bias=-tanh(.01))
+        profit=g.compare('enriched.return.60s',.01)
         n=g.all(profit,g.compare('enriched.return.5s'));networks['add']=g.finish(n,fraction)
     if management%4==3:
-        g=Graph();profit=g.node([MARKET_INPUTS+STATES.index('profit_fraction')],bias=-tanh(.02))
+        g=Graph();profit=g.compare('enriched.return.60s',.02)
         n=g.all(profit,g.compare('enriched.return.5s'));networks['trail']=g.finish(n)
     policy=Policy(stop_fraction=stop,target_fraction=target,reduce_fraction=reduce,maximum_adds=maximum_adds,
         swing_left=swing[0],swing_right=swing[1],trail_fraction=(.005,.01,.02,.04)[management%4])

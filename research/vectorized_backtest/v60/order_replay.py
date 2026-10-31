@@ -115,6 +115,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='execution-tail')
     future=pool.submit(tail.load,0) if tail.receipt['pages'] else None
     use_cuda=backend=='compile' and device.type=='cuda'
+    pipelines=[]
 
     def run_page(arrays,tail_mode=False,offset=0):
         nonlocal profile
@@ -127,8 +128,14 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         args=(index,total,position,orders,book,aggregate,opened,policy,p,ob,mem,signals,
               values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset,counters)
         fn=program(args) if use_cuda else financial_tick
+        pipeline=None
+        if use_cuda and not tail_mode and hasattr(plan,'members') and __import__('os').environ.get('V60_INFERENCE_PIPELINE','1')=='1':
+            from .inference_pipeline import Pipeline
+            pipeline=Pipeline(plan,item,total,block,signals,policy,columns,profile)
+            pipelines.append(pipeline)
         def tick():
-            if not tail_mode:provide(index.clamp_max(total),position,opened)
+            if pipeline is not None:pipeline.provide(index.clamp_max(total))
+            elif not tail_mode:provide(index.clamp_max(total),position,opened)
             closed,profits,entries,clock,complete,record=fn(*args)
             episodes.append_events(closed,profits,entries,clock)
             records.append(complete,record)
@@ -155,7 +162,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 restore()
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
             torch.cuda.current_stream(device).wait_stream(stream)
-        chunk=block if tail_mode else max(block,(512//block)*block)
+        chunk=block if tail_mode or pipeline is not None else max(block,(512//block)*block)
         def execute(count):
             # Checkpoint only live state/counters, not the large append-only
             # ledgers. If a journal page fills, replay smaller chunks exactly.
@@ -178,6 +185,10 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             first=count//2;execute(first);execute(count-first)
         profiled=False
         for begin in range(0,ticks,chunk):
+            if pipeline is not None:
+                pipeline.stage(begin)
+                pipeline.submit(begin+block)
+                pipeline.submit(begin+2*block)
             count=len(range(begin,min(ticks,begin+chunk),block if use_cuda else 1))
             if use_cuda and not tail_mode and hasattr(item,'execution_diagnostic_root') and not profiled and begin>=total//2:
                 from research.vectorized_backtest.v60.publication import write_json
@@ -198,6 +209,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         # Recursive execute owns a cell referencing itself and the CUDA graph.
         # Break that cycle at the page boundary rather than waiting for GC.
         del execute
+        if pipeline is not None:pipeline.close()
 
     try:
         item.execution_phase='Replay positions'
@@ -276,6 +288,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         from .admission import export as admission_export
         return dict(execution_orders=result,cancelled_orders=orders[...,15].sum(-1)[0].cpu().tolist(),**admission_export(admission))
     finally:
+        for pipeline in pipelines:pipeline.close()
         pool.shutdown(wait=True,cancel_futures=True)
         if journal is not None:journal.close()
         del plan.pending_orders

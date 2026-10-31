@@ -14,7 +14,7 @@ import numpy as np
 
 _SOURCE = Path(__file__).with_name('feature_registry.json').read_bytes()
 _DOCUMENT = json.loads(_SOURCE)
-VERSION = _DOCUMENT['version']
+VERSION = _DOCUMENT['version']+'-market-only-v4'
 REGISTRY_SHA256 = hashlib.sha256(_SOURCE).hexdigest()
 MAX_NODES = 1024
 MAX_TOTAL_NODES = 1024
@@ -98,7 +98,7 @@ def legal_sources(node_index, *, entry=False):
     from .config import STATES
     count = len(FEATURES)
     # Slots 7..10 are reserved for layout compatibility, never model inputs.
-    state = () if entry else tuple(3 * count + i for i in range(7))
+    state = ()  # No position inputs in any action head
     sources = np.asarray(tuple(i + channel * count for channel in range(3)
                                for i in ALLOWED) + state +
                          tuple(range(3 * count + len(STATES),
@@ -123,7 +123,7 @@ def dependency_certificate(member):
             if any(i in BLOCKED for i in used):
                 raise ValueError('Source outside V60 construction authority')
             states=sources[(sources>=MARKET_INPUTS)&(sources<INPUTS)]-MARKET_INPUTS
-            if (states>=7).any() or (stage=='entry' and len(states)):
+            if len(states):
                 raise ValueError('Order feedback/time or flat-entry state input is forbidden')
         if (leaf.policy.swing_left, leaf.policy.swing_right) != (0, 0):
             if any(x not in SWING_WINDOWS for x in (leaf.policy.swing_left, leaf.policy.swing_right)):

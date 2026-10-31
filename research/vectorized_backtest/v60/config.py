@@ -1,6 +1,6 @@
 """Persisted search and compute envelope; independent of symbolic crossover."""
 
-VERSION='v60-feedforward-log-target-routing-orders-v3'
+VERSION='v60-market-only-pipelined-v4'
 
 MAX_NODES=1024
 
@@ -14,9 +14,7 @@ INITIAL_SIZES=(1,2,4,8,12,16,24,32,48,64,80,96)
 
 WEIGHT_BOUND=8.
 
-STATES=('held','profit_fraction','age_hours','capital_entries','stop_distance','adds_fraction','management_age',
-
-        'reserved_0','reserved_1','reserved_2','reserved_3')
+STATES=tuple('reserved_'+str(i) for i in range(11))  # ABI padding; no model state inputs
 
 ACTION_RATES={'uniform':.25,'union':.25,'intersection':.25,'xor':.25}
 
@@ -26,15 +24,15 @@ PARAMETER_RATE=.7
 
 def contract():
 
-    return dict(strategy_crossover=dict(entry_routing=.1,reciprocal_veto=.1,entry_management_exchange=.1,existing=.7,arbitration='A-first sticky per position',branch_budget='included in 1024 total'),feature_policy='v60-market-contract-v1',mask_crossover=dict(modes=ACTION_RATES,numerical_inherit=.5,numerical_blend=.5,alignment='persistent action-local node slots; input identity',replay='unchanged sparse engine'),crossover_management=CROSSOVER,version=VERSION,max_nodes_per_action=MAX_NODES,max_depth=MAX_DEPTH,fan_in=FAN_IN,
+    return dict(strategy_crossover=dict(entry_routing=.1,reciprocal_veto=.1,entry_management_exchange=.1,existing=.7,arbitration='A-first current market entry; no position ownership',branch_budget='included in 1024 total'),feature_policy='v60-market-contract-v1',mask_crossover=dict(modes=ACTION_RATES,numerical_inherit=.5,numerical_blend=.5,alignment='persistent action-local node slots; input identity',replay='unchanged sparse engine'),crossover_management=CROSSOVER,version=VERSION,max_nodes_per_action=MAX_NODES,max_depth=MAX_DEPTH,fan_in=FAN_IN,
 
                 max_strategy_connections=MAX_STRATEGY_NODES*FAN_IN,weight_bound=WEIGHT_BOUND,
 
-                states=list(STATES),action_rates=ACTION_RATES,composition_whole_probability=.5,
+                states=[],action_rates=ACTION_RATES,composition_whole_probability=.5,
 
                 parameter_mutation_probability=PARAMETER_RATE,activation='bounded-typed-v2',operators=['tanh','max','min','mean','product','gate','attention','identity','conv','cross'],
 
-                temporal_clock='same-candle requests; causal market crossing events; actual position state; no recurrent edges',
+                temporal_clock='same-candle requests; causal market crossing events; market-only signals; no position feedback or recurrent edges',
 
                 attention='scalar query plus key/value pairs; stable softmax; weighted terms',
 
@@ -47,7 +45,7 @@ def contract():
                 input_channels=['absolute','cross_sectional','validity'],projection_layout='full certified catalog; independent of candidate cohort',
 
                 input_validity='optional zero-filled inputs plus explicit validity channels; observed current market-value ancestor required',recurrent=False,
-                action_scope='entry while flat; exit/add/reduce/stop management only while held; no flat exit veto',
+                action_scope='all heads market-only; execution interprets requests against positions',
 
                 strategy_node_budget=MAX_STRATEGY_NODES,capacity_buckets=[8,16,32,64,128,256,512,1024],
 

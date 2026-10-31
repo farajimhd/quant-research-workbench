@@ -6,6 +6,16 @@ Design revision: 2026-10-31, following the user's clarification after the audit.
 
 ## V60 implementation register — 2026-10-31
 
+**Subsequent market-only revision in progress:** the user explicitly removed all
+position feedback. This supersedes retained-position-input, held-head gating,
+age-gate and sticky-routing decisions below. V4 constructors forbid all position
+inputs and age gates; routing uses current market signals only. Quote-size fills,
+partial fills and execution accounting remain deterministic and affect only
+fitness at reproduction, never neural inference. The cost function is unchanged.
+Time-batched inference and chronological execution use bounded separate CUDA
+streams. The recorded v3 benchmarks below remain the comparison baseline;
+they are not evidence of v4 performance acceptance.
+
 The original V59 audit below is retained as historical evidence. Implementation
 is now in `research/vectorized_backtest/v60`; V59 has been stopped with receipts
 preserved. V60 is self-contained and is undergoing workstation qualification;

@@ -25,8 +25,8 @@ def load_probe(path,training):
     original['inputs']=np.pad(original['inputs'],[(0,0)]*(original['inputs'].ndim-1)+[(0,3)])
     original['held_states']=np.pad(original['held_states'],[(0,0)]*(original['held_states'].ndim-1)+[(0,3)])
     # Synthetic current order state, not previous-action feedback or fitness.
-    original['held_states'][...,7:]=0.
-    original['inputs'][...,MARKET_INPUTS+7:]=0.
+    original['held_states'][...]=0.
+    original['inputs'][...,MARKET_INPUTS:]=0.
     return original
 
 def observe(net,probe,stage='entry',*,reference=False):
@@ -125,6 +125,6 @@ def policy_families(rng,members):
             trail_fraction=float(np.exp(rng.uniform(np.log(s0),np.log(t1)))),
             add_minimum_profit=float(rng.uniform(a0,a1)),reduce_minimum_profit=float(rng.uniform(a0,a1)),
             cooldown=int(rng.integers(c0,c1+1)))
-        ages={s:0 if rng.random()<.5 else int(rng.integers(c0,c1+1)) for s in STAGES if s!='entry'}
+        ages={}
         out.append(replace(m,policy=policy,minimum_age=ages).validate());families.append(('short','medium','long')[family])
     return out,families

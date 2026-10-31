@@ -1,5 +1,25 @@
 # V60: market-driven feed-forward evolution
 
+## Market-only revision (v4)
+
+The latest user instruction supersedes the position-input design below. Every
+action head now consumes causal market data only. All position/age inputs and
+age gates are forbidden by construction. Current-market routing replaces
+sticky position ownership. Identical market-only action graphs can share
+inference, including management heads; genealogy does not affect computation.
+
+Inference produces bounded time-batched signal packets on a separate CUDA
+stream. Execution consumes packets chronologically, still using quote sizes,
+candidate limits, partial fills, costs and position accounting. Execution never
+feeds results back into inference; replay results reach evolutionary selection
+through the unchanged objective. Two signal buffers bound memory/backpressure.
+GPU/CPU execution choice and the <45-second target require the new workstation
+profile. Earlier timings below describe the position-aware v3 baseline.
+
+Old V60 genomes have a different version and cannot be silently resumed as v4.
+The sequential market-only diagnostic path is selectable with
+`V60_INFERENCE_PIPELINE=0` for controlled parity/performance comparisons.
+
 Implementation in progress. This package is **not yet qualified for a campaign**.
 The governing specification is `docs/trading/v59-strategy-execution-audit.md`.
 V59 was gracefully stopped before implementation; existing receipts are retained.

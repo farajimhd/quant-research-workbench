@@ -89,7 +89,7 @@ class Network:
 
             from .feature_policy import BLOCKED
             if any(0<=source<MARKET_INPUTS and source%len(CATALOG) in BLOCKED for source in n.sources):raise ValueError('Forbidden market input')
-            if any(MARKET_INPUTS+7<=source<INPUTS for source in n.sources):raise ValueError('Forbidden clock/order feedback input')
+            if any(MARKET_INPUTS<=source<INPUTS for source in n.sources):raise ValueError('Forbidden clock/order feedback input')
             if n.op not in OPS:raise ValueError('Unknown neural operator')
 
             if n.op=='cross' and (len(n.sources)>2 or any(not 0<=s<len(CATALOG) for s in n.sources)):
@@ -97,7 +97,7 @@ class Network:
             if n.op in OPS[9:17]:
                 expected={'decision':1,'whole_or':2,'whole_and':2,'whole_xor':2,'linear':1,'whole_size':4,'whole_xnor':2,'whole_xnor_size':4}[n.op]
                 if len(n.sources)!=expected or any(x<INPUTS for x in n.sources):raise ValueError('Invalid whole-network bridge')
-                if n.op=='decision' and (not -1<n.weights[0]<1 or not 0<=n.bias<=1):raise ValueError('Invalid parental threshold/age')
+                if n.op=='decision' and (not -1<n.weights[0]<1 or n.bias!=0):raise ValueError('Invalid parental threshold/age')
 
             if n.op=='attention' and (len(n.sources)<3 or len(n.sources)%2!=1):raise ValueError('Attention requires query plus key/value pairs')
 
@@ -179,7 +179,7 @@ def random_input(rng,stage):
 
     # Flat-only entry has no meaningful held-position state.
 
-    if stage!='entry' and rng.random()<.15:return MARKET_INPUTS+int(rng.choice((0,1,2,3,4,5,6)))
+    # Every head samples only causal market features.
 
     # Equivalent to choice's normalized cumulative probabilities and side='right'.
 
@@ -292,12 +292,12 @@ class Individual:
             validate(self)
         self.policy.validate()
 
-        if any(k not in STAGES or type(v) is not int or not 0<=v<=3600 for k,v in self.minimum_age.items()):raise ValueError('Invalid age gate')
+        if any(v!=0 for v in self.minimum_age.values()):raise ValueError('Position age gates are forbidden')
 
         return self
 
     def payload(self):
-        value=dict(version='v60-feedforward-routing-orders-v3',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
+        value=dict(version='v60-market-only-routing-v4',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
         if self.routing:value['routing']=[m.payload() for m in self.routing]
         if self.case_owner is not None:value['case_owner']=self.case_owner
         return value
@@ -306,7 +306,7 @@ class Individual:
 
     def restore(cls,p):
 
-        if p.get('version')!='v60-feedforward-routing-orders-v3':raise ValueError('Fresh V60 crossing/order-state genomes required; old state layouts cannot be reused')
+        if p.get('version')!='v60-market-only-routing-v4':raise ValueError('Fresh V60 crossing/order-state genomes required; old state layouts cannot be reused')
 
         return cls({s:Network._decode(n) for s,n in p['networks'].items()},Policy(**p['policy']),p['minimum_age'],p.get('case_owner'),tuple(cls.restore(v) for v in p['routing']) if p.get('routing') else None).validate()
 
@@ -326,7 +326,7 @@ def sample(rng,count,*,stratified=False,structural=False):
 
         out.append(Individual({s:random_network(rng,s,None if sizes is None else sizes[s][j],
 
-            (j%3,(j//3)%2,(j//6)%3) if structural else None) for s in STAGES},policy,{s:int(rng.integers(301)) for s in STAGES if s!='entry'}).validate())
+            (j%3,(j//3)%2,(j//6)%3) if structural else None) for s in STAGES},policy,{}).validate())
 
     return out
 

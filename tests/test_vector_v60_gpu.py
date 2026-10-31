@@ -37,7 +37,14 @@ class GPUParity(unittest.TestCase):
                 tensors={'membership':torch.ones((2,u),device=device,dtype=torch.bool)})
             results.append(plan.signals(data,torch.tensor(1,device=device),position.to(device),opened.to(device),previous.to(device)).cpu())
         torch.testing.assert_close(results[0],results[1],rtol=0,atol=0)
-        self.assertTrue(((results[0][0,1::2]&30)==0).all())
+        # Positions cannot affect any head in the new market-only contract.
+        for plan in plans:
+            changed=position.clone();changed[...,0]=900.;changed[...,1]=.1;changed[...,7]=-10000.
+            device=plan.device
+            data=SimpleNamespace(resident_features=SimpleNamespace(tensors={'clocks':torch.arange(2,device=device)}),
+                tensors={'membership':torch.ones((2,u),device=device,dtype=torch.bool)})
+            actual=plan.signals(data,torch.tensor(1,device=device),changed.to(device),torch.full_like(opened,-900).to(device),previous.to(device)).cpu()
+            torch.testing.assert_close(actual,results[0],rtol=0,atol=0)
         for plan in plans:plan.close()
 
     def test_paired_order_append_preserves_rows_and_overflow_counts(self):

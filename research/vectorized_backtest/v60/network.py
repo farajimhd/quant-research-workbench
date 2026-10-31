@@ -36,13 +36,14 @@ class NetworkPlan:
         self.operations=torch.as_tensor(packed['operations'],device=device)
         self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
         # Explicit inputs alone do not capture decision bridges' OPENED reads.
-        from .entry_sharing import representatives
+        from .entry_sharing import representatives,action_representatives
         entry=representatives(members)
+        self.action_representatives=torch.tensor(action_representatives(members),device=device,dtype=torch.int32)
         self.entry_representatives=torch.tensor(entry,device=device,dtype=torch.int32)
         from .genome import MARKET_INPUTS,INPUTS
         masks=[]
         for member in members:
-            used={0,8}  # Pending orders also need management decisions before a fill.
+            used=set()  # Reserved ABI slots are never read by V60 inference.
             used.update(s-MARKET_INPUTS for net in member.networks.values() for node in net.nodes for s in node.sources if MARKET_INPUTS<=s<INPUTS)
             masks.append(sum(1<<s for s in used))
         self.state_used=torch.tensor(masks,device=device,dtype=torch.int32)
@@ -141,6 +142,7 @@ class NetworkPlan:
 
     def signals(self,data,index,position,opened,previous,out=None):
         self.prepare(position.shape[1],position.shape[2]);v,valid=self.project(data,index)
+        self.ratios.fill_(1.)  # Inactive lanes have a defined, history-free output.
         market_clock=data.resident_features.tensors['clocks'].index_select(0,index.reshape(1)).reshape(())
         self.feedback.zero_()  # Reserved layout slots are not candidate inputs.
         self.previous_clock.copy_(market_clock)
@@ -157,7 +159,7 @@ class NetworkPlan:
                 self.entry_allowed=torch.nn.functional.pad(self.entry_allowed,(0,position.shape[2]-len(self.entry_allowed)),value=False)
             from .network_cuda import signals
             return signals(self,v,valid,position,opened,previous,index,out)
-        states=state_values(position,previous,opened,index.to(torch.float64),self.feedback)[0];rows=[]
+        states=self.position_states.transpose(1,2);rows=[]
         for b,m in enumerate(self.members):
             actions=[]
             for action,stage in enumerate(STAGES):
@@ -185,8 +187,7 @@ class NetworkPlan:
                         xs=[outputs[source-INPUTS] for source in n.sources]
                         ms=[masks[source-INPUTS] for source in n.sources]
                         if n.op=='decision':
-                            age=(index.to(torch.float64)-opened[0,b])
-                            value=(ms[0]&(xs[0]>float(np.float32(n.weights[0])))&(age>=round(n.bias*3600))).to(torch.float32);ok=ms[0]
+                            value=(ms[0]&(xs[0]>float(np.float32(n.weights[0])))).to(torch.float32);ok=ms[0]
                         elif n.op=='linear':value=xs[0]*float(np.float32(n.weights[0]))+float(np.float32(n.bias));ok=ms[0]
                         elif n.op=='whole_xnor_size':value=torch.maximum(xs[2],xs[3]);ok=ms[0]&ms[1]
                         elif n.op=='whole_size':value=torch.where(xs[0]>.5,torch.where(xs[1]>.5,torch.maximum(xs[2],xs[3]),xs[2]),torch.where(xs[1]>.5,xs[3],0.));ok=ms[0]|ms[1]
@@ -196,13 +197,13 @@ class NetworkPlan:
                     else:value=z.tanh() if n.op in ('tanh','conv') else evaluate(n.op,terms,n.bias,z)
                     outputs.append(value);masks.append(ok)
                     self.workspace[base+i].copy_(outputs[-1]);self.known[base+i].copy_(ok)
-                active=data.tensors['membership'].index_select(0,index.reshape(1)).reshape(-1) if action==0 else position[0,b,:,0]>1.e-12
+                active=data.tensors['membership'].index_select(0,index.reshape(1)).reshape(-1) if action==0 else torch.ones(v.shape[0],device=v.device,dtype=torch.bool)
                 if len(active)<v.shape[0]:active=torch.nn.functional.pad(active,(0,v.shape[0]-len(active)),value=False)
                 actions.append(masks[-1]&(outputs[-1]>float(np.float32(net.threshold)))&active)
                 if action in (0,2,3):
                     head=net.size_source if net.size_source>=0 else len(net.nodes)-1
                     fraction=((outputs[head]*float(np.float32(net.size_weight))+float(np.float32(net.size_bias))).tanh()+1)*.5
-                    self.ratios[0,b,:,(0,2,3).index(action)].copy_(fraction.to(torch.float64))
+                    self.ratios[0,b,:,(0,2,3).index(action)].copy_(torch.where(active,fraction,1.).to(torch.float64))
             rows.append(torch.stack(actions))
         self.memory.copy_(self.workspace);self.memory_known.copy_(self.known)
         value=torch.stack(rows);result=sum(value[:,i].to(torch.int16)*(1<<i) for i in range(5))[None]
