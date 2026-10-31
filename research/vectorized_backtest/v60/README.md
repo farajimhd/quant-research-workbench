@@ -18,7 +18,141 @@ was substantially slower in the bounded execution-only probe. The producer uses
 up to 1 GiB (also bounded by one eighth of currently free GPU memory), enabling
 four-clock batches in the measured workload. Candidate/node limits are unchanged.
 
-### Market-only qualification, 2026-10-31
+### Compact workload design, 2026-10-31
+
+
+
+- The construction authority exposes 834 allowed base features. Runtime projection
+
+  now physically removes the 123 forbidden catalog columns: 2,502 market channels
+
+  instead of 2,871. Saved genomes retain canonical IDs; packing and calibration
+
+  remap them. Crossing nodes receive only their referenced lag features (36 in
+
+  the measured cohort), reusing prior rows within each time batch.
+
+- A temporary reduction scratch preserves the previous floating-point summation
+
+  order. Forbidden source values are never fetched into it, and it is not a model
+
+  input. Removing this scratch requires exact threshold/decision parity, because
+
+  a mathematically equivalent reduction changed some float32 results.
+
+- Entry inference uses the 10 eligible listing slots directly. Management retains
+
+  contiguous, full-listing evaluation. Two causal management-mask experiments
+
+  preserved results but regressed whole-session performance and were removed.
+
+  No holdings or fills are fed back into inference. Normalization retains the
+
+  full market cross-section.
+
+- Replay packing balances estimated edges plus nodes, preserving all identities,
+
+  fixed population sizes and memory bounds. On 6,144 founders, six old batch costs
+
+  ranged from 45,179 to 1,144,879; new costs are 592,864–592,866 each. Planning took
+
+  0.064–0.067 seconds. These are workload proxies, not measured replay speed ratios.
+
+- Whole-network composition shares numerically identical parent branches rather
+
+  than duplicating their nodes. Threshold/sizing bridges remain distinct. A
+
+  64-node identical-branch fixture produces 70 rather than 134 child nodes, with
+
+  exact Boolean/sizing outputs for OR/AND/XOR/XNOR; 100 constructions took about
+
+  0.045 instead of 0.085 seconds. This changes the future genome representation,
+
+  not the current candidate's behavior. Unreachable nodes remain prohibited.
+
+- Node limits, financial cost, execution rules, mutation allocation and population
+
+  sizes are unchanged. Graph scheduling uses edge cost rather than node count.
+
+
+
+The compact projection and shared-branch changes passed exact complete-session
+
+financial parity. A packed management-index experiment also preserved financial
+
+results but regressed replay to about 75 seconds; a contiguous mask took
+
+62.18/60.87 seconds. Both were removed. Retained runtime sources are byte-for-byte
+
+identical to the measured `f928ddd71` deployment.
+
+
+
+Retained whole-session result, same pinned 1,024 candidates and two concurrent
+
+workstation lanes:
+
+
+
+| Measurement | Prior `bc037a06e` | Retained compact design `f928ddd71` |
+
+|---|---:|---:|
+
+| Aug 13 replay | 62.32 s | 59.59 s |
+
+| Aug 18 replay | 61.03 s | 58.35 s |
+
+| Both sessions returned, including loading | 80.19 s | 77.30 s |
+
+| Reproduction, 1,024 successors | 7.37 s | 7.44 s |
+
+| Final publication blocking wait | 0.015 s | 0.016 s |
+
+
+
+Mean replay improved 4.4%; total two-session return improved 3.6%. This is a
+
+single bounded comparison, not a confidence interval. Full financial evidence
+
+(including order-content hashes) matches exactly on both sessions; there were
+
+zero terminal-invalid candidates or re-entry violations. Forty-three retained
+
+focused tests passed. Construction tests demonstrate exact shared-branch outputs;
+
+future evolutionary trajectories are not claimed identical after graph compaction.
+
+The <45-second target remains unmet, and the full campaign remains stopped.
+
+
+
+A separate instrumented 512-clock sample measured graph traversal at 34.7–36.4%
+
+and fills at 26.3–27.3% of summed GPU kernel time. Those overlapping kernel times
+
+are not wall-time percentages. The remaining cost is GPU traversal/fills and
+
+projection/buffer operations; publication is not the blocking bottleneck.
+
+
+
+Workstation evidence under
+
+`D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v60/compact-f928ddd71/`:
+
+`profile/batch-1024-0-1024-mixed/profile.json`, `construction-profile.json`, and
+
+`diagnostic/batch-1024-0-1024-mixed/` (instrumented; not timing acceptance).
+
+Rejected experiments remain under `compact-2d3f2fda8` and `compact-96ef712dc`.
+
+No full 6,144-founder replay, 24/12 campaign, or maximum-size evolved-network
+
+qualification was performed in this bounded comparison.
+
+
+
+### Earlier market-only qualification, 2026-10-31
 
 Same 1,024 graphs (512 templates + 512 random founders), Aug 13 and Aug 18,
 two concurrent workstation sessions; no outcome-based cohort selection:

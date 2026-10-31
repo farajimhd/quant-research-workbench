@@ -20,7 +20,7 @@ def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,CROSS_MAP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0,PROGRAMS:tl.constexpr=0,ENTRY_IDS=None,ENTRY_K:tl.constexpr=0,COMPACT_ENTRY:tl.constexpr=False,MANAGEMENT_ALLOWED=None,CAUSAL_MANAGEMENT:tl.constexpr=False):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,CROSS_MAP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0,PROGRAMS:tl.constexpr=0,ENTRY_IDS=None,ENTRY_K:tl.constexpr=0,COMPACT_ENTRY:tl.constexpr=False):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     time_index=0
     program=tl.program_id(0)
@@ -51,9 +51,7 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
     # No position reads: every management head is market-only.
     entry_allowed=tl.load(ENTRY_ALLOWED+u,live,False)
     representative=tl.load(ENTRY_REP+member*5+action)
-    management_allowed=True
-    if CAUSAL_MANAGEMENT:management_allowed=tl.load(MANAGEMENT_ALLOWED+time_index*U+u,live,False)
-    active=live&(representative==member)&tl.where(action==0,entry_allowed,management_allowed)
+    active=live&(representative==member)&tl.where(action==0,entry_allowed,True)
     tl.store(OUT+(member*5+action)*U+u,False,live)
     if tl.sum(active.to(tl.int32),0)>0:
         # V60 has no delayed edges or action feedback. Only eligible entry
@@ -199,7 +197,7 @@ def pack(A,OUT,PHASE,ENTRY_REP,RATIOS,COUNT:tl.constexpr,U:tl.constexpr,BLOCK:tl
     if MEMBERS==0 and tl.program_id(0)==0:tl.store(PHASE,tl.load(PHASE)+1)
 
 
-def market_batch(plan,values,valid,membership,workspace,known,entry_indices,management_allowed=None):
+def market_batch(plan,values,valid,membership,workspace,known,entry_indices):
     """Independent candle axis; one GPU graph traversal for an entire block."""
     t,u,width=values.shape;b=len(plan.members)
     values=values.transpose(1,2).contiguous();valid=valid.transpose(1,2).contiguous()
@@ -211,7 +209,7 @@ def market_batch(plan,values,valid,membership,workspace,known,entry_indices,mana
         workspace_kernel[(t*order.numel()*tiles,)](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
             plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,membership,plan.action_representatives,plan.cross_map,workspace,known,ratios,
             workspace,known,plan.buffer_phase,actions,plan.buffer_phase,plan.buffer_phase,plan.sources,False,u,u,len(plan.columns),len(STATES),FAN_IN,block,
-            order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],order.numel(),entry_indices,k,compact,management_allowed,not compact and management_allowed is not None,num_warps=1 if compact else 2,enable_fp_fusion=False)
+            order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],order.numel(),entry_indices,k,compact,num_warps=1 if compact else 2,enable_fp_fusion=False)
     out=torch.empty((t,b,u),device=values.device,dtype=torch.int16)
     pack[(tr.cdiv(t*b*u,256),)](actions,out,plan.buffer_phase,plan.action_representatives,ratios,t*b*u,u,256,b)
     return out,ratios

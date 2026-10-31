@@ -16,7 +16,23 @@ Time-batched inference and chronological execution use bounded separate CUDA
 streams. The recorded v3 benchmarks below remain the comparison baseline;
 they are not evidence of v4 performance acceptance.
 
-V4 bounded workstation result (`bc037a06e`): 62.32/61.03 seconds for two
+Latest compact-workload revision (`f928ddd71`, retained after rejecting two slower
+management-mask experiments): allowed model inputs shrink from 957 to 834 base
+features; lag projection is limited to referenced features; entry inference uses
+compact eligible slots; graph/batch scheduling uses estimated edge work; identical
+whole-crossover branches share nodes. Caps and the cost/execution contracts are
+unchanged. The six founder batches have nearly equal estimated work, planned in
+0.066 seconds; this is not a measured six-batch throughput claim.
+
+Two complete concurrent 1,024-candidate replays improved to 59.59/58.35 seconds
+(4.4% mean improvement); total return including loading improved 80.19 to 77.30
+seconds. Exact full financial evidence and order hashes match. Reproduction took
+7.44 seconds; final publication wait was 0.016 seconds. Forty-three retained
+focused tests passed. The 45-second target remains unmet. No full campaign was
+started; see the README's compact-workload section for detailed measurements,
+rejected experiments, artifact paths and remaining qualification boundaries.
+
+Earlier V4 bounded workstation result (`bc037a06e`): 62.32/61.03 seconds for two
 concurrent 1,024-candidate sessions; 80.19 seconds until both sessions return,
 including loading. The identical cohort on the previous sequential engine took
 59.60/58.32 seconds. Both full financial arrays and order-content hashes match.

@@ -75,15 +75,6 @@ class Inference:
             table=np.full((len(mask),k),-1,np.int32);table[rows,ranks]=columns
             data.tensors['v60_entry_indices']=torch.as_tensor(table,device=data.device)
         self.entry_indices=data.tensors['v60_entry_indices']
-        if 'v60_management_allowed' not in data.tensors:
-            import numpy as np
-            host=getattr(data,'host_tensors',{}).get('membership',data.tensors['membership'])
-            possible=np.maximum.accumulate(host.detach().cpu().numpy(),axis=0)
-            data.tensors['v60_management_allowed']=torch.as_tensor(possible,device=data.device)
-        self.management_allowed=data.tensors['v60_management_allowed']
-        if self.management_allowed.shape[1]<u:
-            self.management_allowed=torch.nn.functional.pad(self.management_allowed,(0,u-self.management_allowed.shape[1]),value=False)
-
 
         # This workspace is additional to the existing one-clock plan. Never
         # reduce candidates, nodes or listings to fit a time batch.
@@ -124,7 +115,7 @@ class Inference:
             values=torch.nn.functional.pad(values,(0,0,0,extra))
             valid=torch.nn.functional.pad(valid,(0,0,0,extra),value=False)
             membership=torch.nn.functional.pad(membership,(0,extra),value=False)
-        signals,ratios=market_batch(base,values,valid,membership,self.work,self.known,self.entry_indices.index_select(0,indices),self.management_allowed.index_select(0,indices))
+        signals,ratios=market_batch(base,values,valid,membership,self.work,self.known,self.entry_indices.index_select(0,indices))
         if not hasattr(self.plan,'base'):return signals,ratios,None,None,None
         p=self.plan
         ask=data.tensors['ask'].index_select(0,indices)
