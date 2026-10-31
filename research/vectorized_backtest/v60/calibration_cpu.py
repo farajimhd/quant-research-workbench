@@ -2,7 +2,7 @@
 import numpy as np
 from numba import njit
 
-@njit(cache=False,fastmath=False)
+@njit(cache=False,fastmath=False,nogil=True)
 def scan(inputs,known,held,src,weights,bias,counts,ops,market_inputs,features,entry):
     windows,ticks,width,_=inputs.shape;nodes=len(counts)
     memory=np.zeros((nodes,windows,width),np.float32);valid_memory=np.zeros((nodes,windows,width),np.bool_)

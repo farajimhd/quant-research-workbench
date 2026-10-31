@@ -92,7 +92,10 @@ def signals(family,params):
         a,b=map(ema,params);entry=e.pair(a,b,cross=True);exit=x.pair(a,b,up=False,cross=True)
     elif family=='trend_pullback':
         (f,s),recovery=params
-        entry=e.all(e.pair(ema(f),ema(s)),e.compare(ema(f),positive=True),e.cross(hist(f,s,9)) if recovery else positive(e))
+        # EMA.relative = EMA/close-1. Recovery reclaims the fast EMA;
+        # requiring close below that EMA at the same crossing is contradictory.
+        trigger=e.cross(ema(f),up=False) if recovery else e.all(e.compare(ema(f),positive=True),positive(e))
+        entry=e.all(e.pair(ema(f),ema(s)),trigger)
         exit=x.pair(ema(f),ema(s),up=False)
     elif family=='vwap_reclaim':
         entry=e.all(e.cross('session_vwap_rel',up=False),positive(e))

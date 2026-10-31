@@ -81,17 +81,26 @@ def observe(net,probe,stage='entry',*,reference=False):
 def calibrate(rng,members,probe):
     """Fill every slot; failed proposals never enter the replay population."""
     from .genome import sample
+    from concurrent.futures import ThreadPoolExecutor
     started=perf_counter();out=[];records=[];replacements=[]
-    for slot,member in enumerate(members):
+    seeds=rng.integers(0,2**63-1,size=len(members),dtype=np.int64)
+    def construct(item):
+        slot,member=item;local=np.random.default_rng(int(seeds[slot]));rejected=[]
         for attempt in range(16):
             try:
-                accepted,report=_calibrate(rng,[member],probe)
+                accepted,report=_calibrate(local,[member],probe)
                 break
             except ValueError as exc:
-                replacements.append(dict(slot=slot,attempt=attempt,reason=str(exc)))
-                member=sample(rng,1)[0]
+                rejected.append(dict(slot=slot,attempt=attempt,reason=str(exc)))
+                member=sample(local,1)[0]
         else:raise ValueError(f'Calibration replacement exhausted at slot {slot}')
+        return slot,accepted,report,rejected
+    # Numba scans release the GIL; fixed per-slot seeds preserve scheduling parity.
+    with ThreadPoolExecutor(max_workers=min(4,max(1,len(members))),thread_name_prefix='v60-calibrate') as pool:
+        results=list(pool.map(construct,enumerate(members)))
+    for slot,accepted,report,rejected in results:
         out.extend(accepted)
+        replacements.extend(rejected)
         records.extend(dict(r,candidate=slot) for r in report['records'])
     return out,dict(seconds=perf_counter()-started,probe_sha256=probe['sha256'],records=records,
         replacements=replacements,repaired_networks=sum(r['repair_attempts']>0 for r in records),
