@@ -18,10 +18,8 @@ def load_probe(path,training):
     original['inputs']=original['inputs'][...,indices].copy()
     from .feature_policy import transform_projected
     import torch
-    for w in range(original['inputs'].shape[0]):
-        for tick in range(original['inputs'].shape[1]):
-            v=torch.from_numpy(original['inputs'][w,tick,:,:MARKET_INPUTS])
-            original['inputs'][w,tick,:,:MARKET_INPUTS]=transform_projected(v).numpy()
+    values=torch.from_numpy(original['inputs'][...,:MARKET_INPUTS])
+    original['inputs'][...,:MARKET_INPUTS]=transform_projected(values).numpy()
     original['held_states']=original['held_states'][...,[0,1,2,3,4,5,6,-1]].copy()
     original['inputs']=np.pad(original['inputs'],[(0,0)]*(original['inputs'].ndim-1)+[(0,3)])
     original['held_states']=np.pad(original['held_states'],[(0,0)]*(original['held_states'].ndim-1)+[(0,3)])

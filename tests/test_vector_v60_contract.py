@@ -8,6 +8,14 @@ from research.vectorized_backtest.v60.orders import transition, ORDER_WIDTH
 
 
 class ConstructionContract(unittest.TestCase):
+    def test_vectorized_probe_projection_keeps_each_clock_independent(self):
+        from research.vectorized_backtest.v60.feature_policy import transform_projected
+        from research.vectorized_backtest.v60.features import CATALOG
+        generator=torch.Generator().manual_seed(51)
+        values=torch.rand((2,3,7,3*len(CATALOG)),generator=generator)*1.8-.9
+        expected=torch.stack([torch.stack([transform_projected(clock) for clock in window]) for window in values])
+        torch.testing.assert_close(transform_projected(values),expected,rtol=0,atol=0)
+
     def test_restored_prices_and_forbidden_inputs(self):
         self.assertEqual((len(ALLOWED), len(BLOCKED)), (834, 123))
         for name in ('market.bid', 'market.ask', 'market.spread', 'indicator.ema.14', 'indicator.atr.14'):

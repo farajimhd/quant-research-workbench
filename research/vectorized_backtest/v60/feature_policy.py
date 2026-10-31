@@ -14,10 +14,10 @@ def transform_projected(values):
         bucket=torch.floor(logged/np.log(10.))
         valid=values[...,2*c+i]>0
         absolute=torch.tanh(bucket/10.)
-        count=valid.sum().clamp_min(1)
-        mean=torch.where(valid,bucket,0.).sum()/count
+        count=valid.sum(-1,keepdim=True).clamp_min(1)
+        mean=torch.where(valid,bucket,0.).sum(-1,keepdim=True)/count
         delta=bucket-mean
-        sd=(torch.where(valid,delta.square(),0.).sum()/count).sqrt().clamp_min(1e-6)
+        sd=(torch.where(valid,delta.square(),0.).sum(-1,keepdim=True)/count).sqrt().clamp_min(1e-6)
         out[...,i]=torch.where(valid,absolute,0.)
         out[...,c+i]=torch.where(valid,torch.tanh(delta/(2*sd)),0.)
     return out
