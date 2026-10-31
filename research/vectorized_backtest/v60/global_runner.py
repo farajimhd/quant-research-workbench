@@ -62,7 +62,7 @@ class Global(Evolution):
                 compile_cache_root=str(Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v60/compiler')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
             cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
             cfg['neural_tile']=self.job.get('neural_tile',64)
-            cfg['gpu_execution_gate']=self.job['campaign']
+            cfg['gpu_execution_gate']=self.job['campaign'] if not self.job.get('profile_ungated',False) else None
             cfg['execution_diagnostics']=bool(self.job.get('execution_diagnostics',False))
             self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
         return self.split_lanes[role]

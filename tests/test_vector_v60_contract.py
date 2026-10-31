@@ -8,6 +8,18 @@ from research.vectorized_backtest.v60.orders import transition, ORDER_WIDTH
 
 
 class ConstructionContract(unittest.TestCase):
+    def test_replay_comparison_preserves_order_content_identity(self):
+        from research.vectorized_backtest.v60.profile_global import financial_evidence
+        a={'net_pnl':[1.], 'execution_orders':[{'receipt':'a','sha256':'same','orders':2,'candidate_index':0}]}
+        b={'net_pnl':[1.], 'execution_orders':[{'receipt':'b','sha256':'same','orders':2,'candidate_index':0}]}
+        self.assertEqual(financial_evidence(a),financial_evidence(b))
+        b['execution_orders'][0]['sha256']='changed'
+        self.assertNotEqual(financial_evidence(a),financial_evidence(b))
+
+    def test_structural_schedule_contains_only_feedforward_edits(self):
+        from research.vectorized_backtest.v60.schedule import SETTINGS
+        self.assertEqual(SETTINGS['structural_fields'],['input','connect','disconnect','grow','remove','operator'])
+
     def test_swing_lookup_uses_current_membership(self):
         from types import SimpleNamespace
         from research.vectorized_backtest.v60.swing_projection import prepare

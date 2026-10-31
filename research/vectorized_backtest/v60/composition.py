@@ -75,7 +75,7 @@ def mutation(rng,parent,count,crossover_child=False):
 
             mode='parameter' if root.pick(10,'mutation-kind')<7 else 'structure'
 
-            field=SETTINGS['parameter_fields'][int(balanced(20,SETTINGS['parameter_weights'])[root.pick(20,'parameter-kind')])] if mode=='parameter' else SETTINGS['structural_fields'][root.pick(7,'structural-kind')]
+            field=SETTINGS['parameter_fields'][int(balanced(20,SETTINGS['parameter_weights'])[root.pick(20,'parameter-kind')])] if mode=='parameter' else SETTINGS['structural_fields'][root.pick(len(SETTINGS['structural_fields']),'structural-kind')]
 
             scheduled=dict(stage=root.pick(5,'mutation-stage'),mode=mode,field=field)
 

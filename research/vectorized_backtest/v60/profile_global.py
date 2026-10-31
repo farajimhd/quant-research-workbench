@@ -14,6 +14,13 @@ from .identity import digest
 from research.vectorized_backtest.v60.publication import write_json
 
 
+def financial_evidence(metrics):
+    """Ignore only destination paths; retain order contents hashes and counts."""
+    return {k:([{field:value for field,value in row.items() if field!='receipt'}
+                 for row in values] if k=='execution_orders' else values)
+            for k,values in metrics.items()}
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--job',type=Path,required=True);parser.add_argument('--output',type=Path,required=True)
@@ -24,6 +31,7 @@ def main():
     parser.add_argument('--founders',type=Path);parser.add_argument('--founders-sha256')
     parser.add_argument('--mixed',action='store_true',help='Equal template/random sample; no outcome-based selection')
     parser.add_argument('--diagnostics',action='store_true',help='Bounded GPU trace and CPU reproduction profile; not a timing acceptance run')
+    parser.add_argument('--ungated',action='store_true',help='Diagnostic comparison of independent CUDA contexts without host mutex')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
     seedpath=args.output/'founders.json'
@@ -48,7 +56,7 @@ def main():
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
-    local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics)
+    local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics,profile_ungated=args.ungated)
     c=Global(local);c.publication_lane=Lane();c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
     thread=__import__('threading').Thread(target=c.pump,daemon=True);thread.start()
     started=time.perf_counter()
@@ -90,7 +98,7 @@ def main():
         published=[json.loads((c.root/'replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics'] for day in days]
         report=dict(population=len(members),population_sha256=c.cohort_snapshot.token,maximum_batch=args.maximum_batch,days=days,
                     two_session_return_seconds=returned-started,two_session_published_seconds=time.perf_counter()-started,sessions=rows,
-                    metrics_sha256=digest(published),initial_replay_target_seconds=45)
+                    metrics_sha256=digest([financial_evidence(p) for p in published]),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
         report['publication_final_wait_seconds']=publication_wait_seconds
         report['instrumented']=args.diagnostics
@@ -109,9 +117,11 @@ def main():
             for day in days:
                 original=json.loads((args.compare/'phase-2/replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics']
                 expected.append({k:[v[i] for i in indices] for k,v in original.items()})
-            report['exact_financial_parity']=digest(expected)==digest(published)
+            expected=[financial_evidence(p) for p in expected]
+            actual_evidence=[financial_evidence(p) for p in published]
+            report['exact_financial_parity']=digest(expected)==digest(actual_evidence)
             if not report['exact_financial_parity']:
-                report['differences']={day:[k for k in actual if actual[k]!=prior[k]] for day,actual,prior in zip(days,published,expected)}
+                report['differences']={day:[k for k in actual if actual[k]!=prior[k]] for day,actual,prior in zip(days,actual_evidence,expected)}
         write_json(root/'profile.json',report);print(json.dumps(report),flush=True)
         if report.get('exact_financial_parity') is False:raise ValueError('Financial parity failed')
     finally:

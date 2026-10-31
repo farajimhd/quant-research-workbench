@@ -219,7 +219,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
             metadata.append(dict(route=reason,case=None,case_owner=None,mutation_fields=fields,parent_objectives=[float(values[parent])],
                 structural_mutation=any(f['field'].startswith('structure:') for f in fields)))
             return
-        raise RuntimeError('Distinct parent-mutation offspring attempts exhausted')
+        fresh('parent-mutation-attempts-exhausted:'+reason,case)
     from .ticker_selection import specialist_pools
     local_pools=specialist_pools(ordered,valid,active,ids) if ordered and 'ticker_score' in ordered[0] else {}
     if (valid&active).any() and not local_pools:raise ValueError('Ticker specialist scores required for V60 reproduction')
@@ -337,7 +337,25 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
             except (ValueError,RuntimeError) as exc:last_error=str(exc);continue
             key=program_key(child)
             if key!=oldkey and key not in keys:break
-        else:raise RuntimeError(f'Distinct structural/parameter mutation budget exhausted: slot {j}, edits {edit_plan}, last error {last_error}')
+        else:
+            # Replace this slot, without consuming another scheduled slot or
+            # allowing a duplicate/invalid genome into the replay population.
+            from .initial_population import immigrant
+            from .population_builder import build
+            replacement,report=build(1,
+                lambda stream,slot,attempt:immigrant(stream,probe),
+                lambda stream,slot,attempt:immigrant(stream,probe),
+                seed=int.from_bytes(root_key[:4],'little')+j,generation=generation)
+            child=replacement[0]
+            if program_key(child) in keys:
+                # Final population authority resolves collisions against all
+                # other accepted slots with its addressable fallback streams.
+                child=old
+            keys.add(program_key(child));children[j]=child;parents[j]=(-1,-1)
+            ops[j]='fresh_replacement'
+            metadata[j]=dict(case_owner=child.case_owner,route='mutation-attempts-exhausted',
+                last_error=last_error,requested_edits=edit_plan,construction=report)
+            continue
         structural_delta=node_count(child)-node_count(old);structural_flag=any(e['field'].startswith('structure:') for e in fields);structural+=int(structural_flag)
         keys.add(key);children[j]=child;ops[j]+='_mutation';metadata[j].update(mutation_fields=fields,mutation_node_delta=structural_delta,structural_mutation=structural_flag)
     for child,meta in zip(children,metadata):
