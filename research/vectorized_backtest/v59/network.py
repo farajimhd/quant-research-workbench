@@ -92,7 +92,7 @@ class NetworkPlan:
         from .feature_policy import transform_projected
         return transform_projected(values),valid
 
-    def _project(self,data,index):
+    def _project(self,data,index,absolute_only=False):
         bank=data.resident_features;a=bank.tensors
         rows=a['source'].index_select(0,index.reshape(1)).T;ids=a['ids'].index_select(0,index.reshape(1)).T.to(torch.int64);clock=a['clocks'].index_select(0,index.reshape(1))[None]
         v,m=bank._values(rows,ids,clock,self.columns)
@@ -101,6 +101,15 @@ class NetworkPlan:
         # Absolute channels remain available so normalization cannot erase levels.
         clean=torch.where(valid,v,0.)
         absolute=torch.where(self.logarithmic,clean.sign()*clean.abs().log1p()/4,clean).tanh()
+        if absolute_only:
+            # Crossing nodes consume only absolute market channels; do not
+            # repeat cross-sectional reductions for their preceding candle.
+            from .feature_policy import SHARES
+            absolute=torch.where(valid,absolute,0.)
+            for i in SHARES:
+                logged=torch.expm1(4*torch.atanh(absolute[...,i].clamp(-.999999,.999999)))
+                absolute[...,i]=torch.where(valid[...,i],torch.tanh(torch.floor(logged/np.log(10.))/10.),0.)
+            return absolute,valid
         count=valid.sum(0).clamp_min(1)
         # Shift by the first observed value before summation. This preserves the
         # same causal mean/variance while avoiding cancellation of large levels
@@ -113,6 +122,9 @@ class NetworkPlan:
         scale=variance.sqrt().clamp_min(1e-6)
         relative=(deviation/(2*scale)).tanh()
         return torch.cat((torch.where(valid,absolute,0.),torch.where(valid,relative,0.),valid.to(torch.float32)),1),valid
+    def project_absolute(self,data,index):
+        return self._project(data,index,absolute_only=True)
+
     def signals(self,data,index,position,opened,previous,out=None):
         self.prepare(position.shape[1],position.shape[2]);v,valid=self.project(data,index)
         market_clock=data.resident_features.tensors['clocks'].index_select(0,index.reshape(1)).reshape(())
@@ -125,7 +137,7 @@ class NetworkPlan:
             self.feedback[...,3].copy_(torch.where(kind!=0,order[...,4]/order[...,3].clamp_min(1.e-12),0.))
         self.previous_clock.copy_(market_clock)
         if self.uses_cross:
-            lag,lag_valid=self.project(data,(index-1).clamp_min(0))
+            lag,lag_valid=self.project_absolute(data,(index-1).clamp_min(0))
             v=torch.cat((v,lag[:,:len(CATALOG)]),-1)
             valid=torch.cat((valid,lag_valid&(index>0)),-1)
         if v.shape[0]<position.shape[2]:

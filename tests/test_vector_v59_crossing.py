@@ -23,6 +23,7 @@ class Crossing(unittest.TestCase):
         values[:,:,source]=torch.tensor([-.2,.2,.4,-.2,.2],device=device)[:,None]
         known[3,1,source]=False
         plan.project=lambda data,index:(values.index_select(0,index.reshape(1))[0],known.index_select(0,index.reshape(1))[0])
+        plan.project_absolute=lambda data,index:(plan.project(data,index)[0][:,:c],plan.project(data,index)[1])
         data=SimpleNamespace(resident_features=SimpleNamespace(tensors={'clocks':torch.arange(5,device=device)}),tensors={'membership':torch.ones((5,2),device=device,dtype=torch.bool)})
         p=torch.zeros((1,1,2,9),device=device,dtype=torch.float64);opened=torch.zeros((1,1,2),device=device,dtype=torch.float64)
         plan.pending_orders=torch.zeros((1,1,2,ORDER_WIDTH),device=device,dtype=torch.float64)
@@ -44,6 +45,25 @@ class Crossing(unittest.TestCase):
             if pending:
                 self.assertTrue(gpu[1][0][0][0]&2)
                 self.assertEqual(gf[0,0,3].item(),.5)
+
+    def test_absolute_projection_matches_full_projection_exactly(self):
+        c=len(CATALOG)
+        source=INDEX['enriched.return.5s']
+        n=Network((Neuron((source,),(1.,),0.),)).validate()
+        member=Individual({s:n for s in STAGES},Policy(),{}).validate()
+        devices=['cpu']+(['cuda'] if __import__('os').environ.get('V59_TEST_CUDA')=='1' else [])
+        for device in devices:
+            plan=NetworkPlan([member],device)
+            rng=np.random.default_rng(10)
+            v=torch.tensor(rng.normal(size=(17,1,c)),dtype=torch.float32,device=device)
+            mask=torch.tensor(rng.random((17,1,c))>.1,device=device);v[0,0,0]=float('nan')
+            bank=SimpleNamespace(tensors={'source':torch.zeros((1,17),device=device,dtype=torch.int64),
+                'ids':torch.zeros((1,17),device=device,dtype=torch.int64),'clocks':torch.zeros(1,device=device)})
+            bank._values=lambda *args:(v,mask)
+            data=SimpleNamespace(resident_features=bank);index=torch.tensor(0,device=device)
+            full,fm=plan.project(data,index);absolute,am=plan.project_absolute(data,index)
+            torch.testing.assert_close(full[:,:c],absolute,rtol=0,atol=0)
+            self.assertTrue(torch.equal(fm,am));plan.close()
 
     def test_all_templates_remain_feedforward_and_within_budget(self):
         from research.vectorized_backtest.v59.templates import sample_templates
