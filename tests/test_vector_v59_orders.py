@@ -253,9 +253,9 @@ class ReplayPath(unittest.TestCase):
         p,a,orders,episodes=self.run_path('cpu','eager')
         self.assertTrue((p[...,0]==0).all())
         self.assertEqual(len(orders['execution_orders'][0]),4)
-        # Terminal cancels the unfilled 40. Sell 30 at 10 now, 30 at 9 in tail.
-        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-32.))
-        torch.testing.assert_close(a[...,1],torch.full_like(a[...,1],64.))
+        # Candles 0-2 buy 90. Sell 30 at 10 at terminal, 60 at 9 in tail.
+        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-62.))
+        torch.testing.assert_close(a[...,1],torch.full_like(a[...,1],124.))
         self.assertEqual(episodes[0]['episode_exit_clocks'],[[4,4],[4,4]])
 
     def test_tail_compaction_preserves_original_candidate_indices(self):
@@ -267,8 +267,8 @@ class ReplayPath(unittest.TestCase):
 
     def test_repeated_quote_does_not_replenish_consumed_size(self):
         p,a,orders,episodes=self.run_path('cpu','eager',repeated_quote=True)
-        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-2.))
-        self.assertEqual(episodes[0]['episode_exit_clocks'],[[3,3],[3,3]])
+        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-32.))
+        self.assertEqual(episodes[0]['episode_exit_clocks'],[[6,6],[6,6]])
         self.assertEqual(orders['execution_orders'][0][0][-1],3.)
 
     def test_order_journal_retries_chunks_without_losing_or_duplicating_fills(self):
@@ -277,6 +277,8 @@ class ReplayPath(unittest.TestCase):
         torch.testing.assert_close(full[0],small[0],rtol=0,atol=0)
         self.assertEqual(full[2:],small[2:])
         self.assertEqual(len(small[2]['execution_orders'][0]),20)
+        self.assertEqual(small[2]['execution_orders'][0][0][6],0.)
+        self.assertEqual(small[2]['execution_orders'][0][0][7],0.)
 
     def test_position_pages_preserve_all_trades_during_chunk_retry(self):
         full=self.run_path('cpu','eager',fast_orders=True)

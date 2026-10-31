@@ -96,6 +96,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     device=position.device;u=position.shape[-2];b=position.shape[1]
     orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
     book=torch.zeros((*position.shape[:-1],3),dtype=position.dtype,device=device)
+    book[...,0]=-1.  # The first quote has not consumed any liquidity.
     episodes.streaming=True
     journal=None
     if hasattr(item,'execution_order_root'):
@@ -117,7 +118,9 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     def run_page(arrays,tail_mode=False,offset=0):
         nonlocal profile
         p,ob,mem,bb,aa,vv,cap=arrays;total=len(p)-1
-        index=torch.ones((),device=device,dtype=torch.int64)
+        first_clock=1 if tail_mode else 0
+        ticks=total-first_clock+1
+        index=torch.full((),first_clock,device=device,dtype=torch.int64)
         offset=torch.tensor(offset,device=device,dtype=torch.int64)
         args=(index,total,position,orders,book,aggregate,opened,policy,p,ob,mem,signals,
               values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset)
@@ -136,7 +139,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             saved=[x.clone() for x in buffers]
             def restore():
                 for target,value in zip(buffers,saved):target.copy_(value)
-                index.fill_(1)
+                index.fill_(first_clock)
             stream=torch.cuda.Stream(device=device);stream.wait_stream(torch.cuda.current_stream(device))
             with torch.cuda.stream(stream),torch.inference_mode():
                 clock=time.perf_counter();tick();tick();stream.synchronize()
@@ -167,8 +170,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             if count==1:raise RuntimeError('One graph exceeded its proven order-journal event bound')
             first=count//2;execute(first);execute(count-first)
         profiled=False
-        for begin in range(0,total,chunk):
-            count=len(range(begin,min(total,begin+chunk),block if use_cuda else 1))
+        for begin in range(0,ticks,chunk):
+            count=len(range(begin,min(ticks,begin+chunk),block if use_cuda else 1))
             if use_cuda and not tail_mode and hasattr(item,'execution_diagnostic_root') and not profiled and begin>=total//2:
                 from research.vectorized_backtest.v42.publication import write_json
                 sampled=time.perf_counter()
@@ -182,8 +185,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 write_json(item.execution_diagnostic_root/'gpu-kernels.json',dict(begin_clock=begin,clocks=count*block,kernels=kernels))
                 profile['instrumented_chunk_wall_seconds']=time.perf_counter()-sampled;profiled=True
             else:execute(count)
-            done=min(total,begin+chunk)
-            if progress:progress(done,total)
+            done=min(ticks,begin+chunk)
+            if progress:progress(done,ticks)
             if tail_mode and not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
         # Recursive execute owns a cell referencing itself and the CUDA graph.
         # Break that cycle at the page boundary rather than waiting for GC.
