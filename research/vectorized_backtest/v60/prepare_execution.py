@@ -10,8 +10,6 @@ from datetime import datetime,time
 from zoneinfo import ZoneInfo
 from io import BytesIO
 import polars as pl
-from research.mlops.env import discover_env_files,load_env_files
-from research.mlops.clickhouse import ClickHouseHttpClient,default_clickhouse_url,default_clickhouse_user,default_clickhouse_password
 from research.vectorized_backtest.v60.publication import write_json
 
 VERSION='v59-certified-quote-size-execution-v2'  # Unchanged certified input-page schema.
@@ -101,6 +99,8 @@ def prepare_day(client,job,role,day,output,source_runtime=None):
 
 
 def main():
+    from research.mlops.env import discover_env_files,load_env_files
+    from research.mlops.clickhouse import ClickHouseHttpClient,default_clickhouse_url,default_clickhouse_user,default_clickhouse_password
     parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--job',type=Path,required=True);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--days',nargs='*')
     parser.add_argument('--source-runtime',type=Path,help='Explicit mapped location of the same pinned source runtime files')
     args=parser.parse_args()
