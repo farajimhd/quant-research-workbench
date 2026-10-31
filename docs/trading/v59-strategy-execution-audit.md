@@ -41,11 +41,56 @@ speedup. Instrumented publication final wait was 0.015 seconds. The earlier
 22-second post-replay interval included reproduction and must not be described
 as publication blocking. These measurements predate the held-only action change.
 
-The isolated latest replay exposed an optional-buffer compiler error at terminal
-drain. It failed closed; an empty diagnostic tensor replaces the optional buffer,
-with compiled regression coverage. Latest full replay, final panel rendering,
-representative successor/resume qualification, and performance acceptance remain
-open until their actual results are recorded.
+An isolated replay exposed an optional-buffer compiler error at terminal drain.
+It failed closed; an empty diagnostic tensor replaces the optional buffer, with
+compiled regression coverage. Subsequent full-session replays succeeded.
+
+Latest bounded workstation evidence (not a full campaign):
+
+- `qualification-2f920f844/profile/batch-1024-0-1024-mixed/profile.json`:
+  Aug13/Aug18, 1,024 unchanged diagnostic V60 genomes, **63.91/64.42 seconds**
+  per concurrent session; both returned in **82.53 seconds**. Against the same
+  held-only/admission baseline `qualification-67722fdc7`, 67.17/66.82 seconds
+  and 88.24 seconds total: 6.5% lower two-session return time. All financial
+  arrays and candidate order-content hashes match exactly. This is one bounded
+  pair, not a statistical performance guarantee. The <45-second target failed.
+- Reproduction 7.02 seconds; final publication wait 0.016 seconds. The original
+  16-clock/21-listing calibration work budget is retained. An accidental larger
+  qualification probe was corrected, not presented as an algorithmic speedup.
+- `qualification-d1171ce4f/profile/pipeline-profile.json`: real controller,
+  two training sessions plus one validation session, 1,024 main candidates and
+  32 isolated paired mutation diagnostics. Reproduction 6.95 seconds completed
+  inside validation; validation load was prefetched (0.14 seconds). Full bounded
+  generation including checkpoint/publication: 139.07 seconds. Actual saved-state
+  resume passed, stopping before generation 2 dispatch. This is not a 36-session
+  generation timing.
+- Full replays reported zero incomplete terminal positions and zero re-entry
+  violations. Admission counts reconciled. CPU/GPU, capture/padding, journal
+  overflow/retry and financial/event parity checks passed.
+- Fresh initialization under the current V60 training probe produced all 6,144
+  unique founders in 104.38 seconds, with validation unopened and no financial
+  replay/result reuse (`qualification-c31af8d73/sampling-profile.json`). This is
+  startup construction time, not a replay timing. The final focused suite has
+  25 passing tests.
+- The copied panel loads both rankings, full three-session candidate details,
+  crossover groups and sortable position records from the qualification. The
+  position reader's old mode whitelist rejected V60 terminal clocks; this is
+  fixed with a regression test. Ten panel paths were rendered; session and
+  position screens were visually inspected. Observer I/O remains isolated.
+
+Artifacts above are under the workstation runtime root
+`D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v60/`.
+GPU traces identify the execution/accounting and ragged network kernels as the
+remaining large costs. Two replay lanes also wait on their GPU turn lock;
+removing it did not improve total throughput materially. This is distinct from
+publication or reproduction blocking. Unreachable-node analysis found no dead
+nodes in the sampled 1,024 graphs, so no pruning change was made. Thread-layout
+tuning that changed floating-point totals was rejected. No budgets, candidate
+counts or financial work were dropped to achieve these timings.
+
+Full 24/12 replay coverage, broader construction-bound coverage and the
+<45-second performance acceptance remain open. No full V60 optimization was
+launched; V59 remains stopped.
 
 ## Outcome and scope
 

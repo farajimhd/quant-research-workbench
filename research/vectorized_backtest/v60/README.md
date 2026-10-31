@@ -56,11 +56,21 @@ candidate from fitness. An incomplete terminal ledger is an explicit data failur
   calibration boundaries, score, observer input and full-result retention tests
   are implemented. Captured replay and forced journal overflow match eager replay.
 - The audit's V60 implementation register distinguishes fixes from preserved
-  policy decisions. Latest complete replay, successor/resume and final rendered
-  panel checks remain required.
+  policy decisions. Two full training replays, one validation replay, an actual
+  successor/checkpoint/resume boundary and rendered panel drill-downs passed.
+  Full 24/12-session replay coverage remains unqualified.
 - Profile real 1,024-candidate batches, two concurrent sessions, reproduction,
   publication, loading and full generations on workstation. Target <45 seconds
   per batch without changed network budgets or omitted work.
+
+Latest workstation comparison: concurrent Aug13/Aug18 replay 67.17/66.82 ->
+63.91/64.42 seconds, two-session return 88.24 -> 82.53 seconds, with exact
+financial arrays and order-content hashes. Reproduction is about 7 seconds and
+overlaps validation; final publication wait is 0.016 seconds. **The 45-second
+target is not met.** The two-training/one-validation qualification generation
+took 139.07 seconds including publication and checkpoint, not a full campaign
+generation. See the audit implementation register for artifact identities and
+remaining gates. No full V60 optimization has been launched.
 
 No V60 campaign or timing claim is authorized by this README alone.
 

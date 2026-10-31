@@ -563,7 +563,7 @@ def render(model,width,height):
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V60 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     if model.job.get('version')=='v60-pilot-v2':title=f"V60 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
-    if model.job.get('version')=='v60-global-v1':title=f"V60 WORKSTATION | GLOBAL ONLY | {model.job['phase2_generations']} generations | 24 train / 12 validation"
+    if model.job.get('version')=='v60-global-v1':title=f"V60 WORKSTATION | GLOBAL ONLY | {model.job['phase2_generations']} generations | {len(model.job['training_days'])} train / {len(model.job['validation_days'])} validation"
     note='Score: 0.5 ticker($2000) + 0.5 session($5000), log excess 0.1, minus full DD | risk caps OFF | validation display-only'
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
@@ -643,7 +643,7 @@ def render(model,width,height):
     elif model.view=='global_splits':
         for h in ('Path','Sessions ready','Candidates','Purpose'):table.add_column(h)
         for i,r in enumerate(model.rows()):
-            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Latest completed generation; all 36 sessions' if r['role']=='full results' else 'Rescored saved founders' if r['role']=='initial' else 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
+            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Latest completed generation; all configured sessions' if r['role']=='full results' else 'Fresh founder replay results' if r['role']=='initial' else 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
         caption='1 Training | 2 Validation | 3 Initial | 4 Full results | Enter: open selected path'
     elif model.view in ('operators','families','methods','origins','immigration'):
         report=model.report();rows=model.rows()
@@ -780,7 +780,7 @@ def render(model,width,height):
         elif model.view=='detail':header.append(f'\nSession details: {len(model.initial.sessions)}/24 loaded in background')
     if getattr(model,'full_mode',False):
         report=model.full_report();generation=report.get('generation',0)
-        header=Text(f'V60 FULL RESULTS | Completed generation {generation or "loading"} | 24 training + 12 validation sessions\nRanked by training score; validation display-only | Snapshot stays fixed while browsing | A: choose path',style='bright_cyan')
+        header=Text(f'V60 FULL RESULTS | Completed generation {generation or "loading"} | {len(model.job["training_days"])} training + {len(model.job["validation_days"])} validation sessions\nRanked by training score; validation display-only | Snapshot stays fixed while browsing | A: choose path',style='bright_cyan')
         if not model.full_data:header.append('\nLoading complete saved results in background; live partial results are excluded.',style='bright_yellow')
         if model.global_error:header.append('\n'+model.global_error,style='bright_red')
     layout['head'].update(header)
