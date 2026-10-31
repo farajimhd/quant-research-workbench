@@ -59,10 +59,11 @@ class Global(Evolution):
             cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
                 # Inductor/Triton keys bind graphs and kernels. UI/publication
                 # source changes must not discard those content-addressed caches.
-                compile_cache_root=str(Path('D:/TradingML/runtimes/v57c/global')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
+                compile_cache_root=str(Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v60/compiler')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
             cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
             cfg['neural_tile']=self.job.get('neural_tile',64)
             cfg['gpu_execution_gate']=self.job['campaign']
+            cfg['execution_diagnostics']=bool(self.job.get('execution_diagnostics',False))
             self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
         return self.split_lanes[role]
 

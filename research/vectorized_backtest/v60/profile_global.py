@@ -23,6 +23,7 @@ def main():
     parser.add_argument('--compare',type=Path);parser.add_argument('--reproduce',action='store_true')
     parser.add_argument('--founders',type=Path);parser.add_argument('--founders-sha256')
     parser.add_argument('--mixed',action='store_true',help='Equal template/random sample; no outcome-based selection')
+    parser.add_argument('--diagnostics',action='store_true',help='Bounded GPU trace and CPU reproduction profile; not a timing acceptance run')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
     seedpath=args.output/'founders.json'
@@ -47,7 +48,7 @@ def main():
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
-    local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile)
+    local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics)
     c=Global(local);c.publication_lane=Lane();c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
     thread=__import__('threading').Thread(target=c.pump,daemon=True);thread.start()
     started=time.perf_counter()
@@ -67,11 +68,19 @@ def main():
             records=[pedigree.records[int(i)] for i in ids]
             c.fresh_prefetch=FreshPrefetch(rng,2,budgets(1024)['fresh'],probe)
             c.artifact_write=Buffer().write
+            import cProfile
+            profiler=cProfile.Profile() if args.diagnostics else None
             try:
+                if profiler:profiler.enable()
                 result=c.reproduce(c.root/'global',c.root/'global/generation-0001',members,ids,records,c.cohort_snapshot.token,panels,refs,days,Objective(**job['objective']),1,rng,pedigree,Species(),probe)
                 reproduction_seconds=result[-1]
-            finally:c.fresh_prefetch.close();c.fresh_prefetch=None
+            finally:
+                if profiler:
+                    profiler.disable();profiler.dump_stats(str(root/'reproduction.prof'))
+                c.fresh_prefetch.close();c.fresh_prefetch=None
+        publication_wait_started=time.perf_counter()
         c.publication_lane.close()
+        publication_wait_seconds=time.perf_counter()-publication_wait_started
         rows=[]
         for day in days:
             timing=json.loads((c.root/'replays/training/generation-0001'/day/'timings.json').read_bytes())
@@ -83,6 +92,8 @@ def main():
                     two_session_return_seconds=returned-started,two_session_published_seconds=time.perf_counter()-started,sessions=rows,
                     metrics_sha256=digest(published),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
+        report['publication_final_wait_seconds']=publication_wait_seconds
+        report['instrumented']=args.diagnostics
         import numpy as np
         report['quality']=[]
         for day,metrics in zip(days,published):
