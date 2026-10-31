@@ -64,7 +64,7 @@ class RoutingPlan:
         stop=torch.where(policy[:,8,None]>0,swing,ask[None,:]*(1-policy[:,0,None]))
         limit=ask[None,:]*(1+policy[:,9,None])
         admissible=valid&member&torch.isfinite(stop)&(stop>0)&(stop<ask)&(stop<limit)
-        admissible=admissible&((raw&2)==0)&(self.base.ratios[0,...,0]>0)
+        admissible=admissible&(self.base.ratios[0,...,0]>0)
         eligible=((branch&1)!=0)&admissible[self.branch_index]&self.branch_valid[...,None]
         proposed=eligible.to(torch.int32).argmax(1)
         held=position[0,...,0]>1e-12

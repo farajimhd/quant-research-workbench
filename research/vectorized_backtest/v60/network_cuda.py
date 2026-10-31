@@ -62,7 +62,7 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
     held=(tl.load(POSITION_STATES+(member*STATES)*U+u,live,0)>0)|(tl.load(POSITION_STATES+(member*STATES+8)*U+u,live,0)>0)
     entry_allowed=tl.load(ENTRY_ALLOWED+u,live,False)
     representative=tl.load(ENTRY_REP+member)
-    active=live&tl.where(action==0,entry_allowed&(representative==member),held|((action==1)&entry_allowed))
+    active=live&tl.where(action==0,entry_allowed&(representative==member),held)
     tl.store(OUT+(member*5+action)*U+u,False,live)
     if tl.sum(active.to(tl.int32),0)>0:
         # V60 has no delayed edges or action feedback. Only eligible entry

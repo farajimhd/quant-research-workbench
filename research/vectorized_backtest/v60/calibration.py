@@ -19,7 +19,8 @@ def load_probe(path,training):
     from .feature_policy import transform_projected
     import torch
     values=torch.from_numpy(original['inputs'][...,:MARKET_INPUTS])
-    original['inputs'][...,:MARKET_INPUTS]=transform_projected(values).numpy()
+    if not original['metadata'].get('projected_policy'):
+        original['inputs'][...,:MARKET_INPUTS]=transform_projected(values).numpy()
     original['held_states']=original['held_states'][...,[0,1,2,3,4,5,6,-1]].copy()
     original['inputs']=np.pad(original['inputs'],[(0,0)]*(original['inputs'].ndim-1)+[(0,3)])
     original['held_states']=np.pad(original['held_states'],[(0,0)]*(original['held_states'].ndim-1)+[(0,3)])
@@ -67,13 +68,14 @@ def calibrate(rng,members,probe):
     started=perf_counter();records=[];out=[]
     for i,member in enumerate(members):
         nets={}
+        boundary=entry_boundary(member,probe)
         for stage,net in member.networks.items():
             route=int(rng.choice(4,p=RATE_WEIGHTS));attempts=0;failed=False;target=None
-            if route!=3:
+            if route!=3 and (stage!='entry' or boundary.any()):
                 target=float(np.exp(rng.uniform(np.log(.001),np.log(.05)))) if route==0 else float(rng.uniform(*((.05,.30) if route==1 else (.30,.95))))
                 for attempt in range(3):
                     values,valid,_,_=observe(net,probe,stage)
-                    mask=valid & (probe['eligible'] if stage=='entry' else True)
+                    mask=valid & (boundary if stage=='entry' else True)
                     observed=values[mask]
                     if len(observed) and np.ptp(observed)>1e-4:break
                     if attempt==2:failed=True;break
@@ -84,11 +86,26 @@ def calibrate(rng,members,probe):
                     net=replace(net,threshold=threshold)
             nets[stage]=net
             records.append(dict(candidate=i,stage=stage,route=route,target_rate=target,
-                repair_attempts=attempts,unresolved_constant=failed))
+                repair_attempts=attempts,unresolved_constant=failed,
+                boundary_opportunities=int(boundary.sum()) if stage=='entry' else None,
+                joint_boundary_probe='ask' in probe))
         out.append(replace(member,networks=nets).validate())
     return out,dict(seconds=perf_counter()-started,probe_sha256=probe['sha256'],records=records,
         repaired_networks=sum(r['repair_attempts']>0 for r in records),
         unresolved_constant=sum(r['unresolved_constant'] for r in records),validation_feedback=False)
+
+
+def entry_boundary(member,probe):
+    """The flat-entry stop/book boundary; no financial-result filtering."""
+    if 'ask' not in probe:return probe['eligible']
+    from .authority import SWING_WINDOWS
+    p=member.policy;ask=probe['ask'];bid=probe['bid']
+    if p.swing_left:
+        column=SWING_WINDOWS.index(p.swing_left)*len(SWING_WINDOWS)+SWING_WINDOWS.index(p.swing_right)
+        stop=probe['swings'][...,column]
+    else:stop=ask*(1-p.stop_fraction)
+    return (probe['eligible']&probe['quote_valid']&np.isfinite(ask)&np.isfinite(bid)&(bid>0)&(ask>=bid)&
+            np.isfinite(stop)&(stop>0)&(stop<ask)&(stop<ask*(1+p.buy_limit_offset)))
 
 def policy_families(rng,members):
     """Overlapping initial priors only; mutation and execution bounds unchanged."""

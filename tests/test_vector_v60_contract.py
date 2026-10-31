@@ -8,6 +8,16 @@ from research.vectorized_backtest.v60.orders import transition, ORDER_WIDTH
 
 
 class ConstructionContract(unittest.TestCase):
+    def test_joint_entry_probe_uses_stop_and_limit_boundaries(self):
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v60.calibration import entry_boundary
+        member=SimpleNamespace(policy=SimpleNamespace(swing_left=0,stop_fraction=.03,buy_limit_offset=0.))
+        probe=dict(eligible=np.ones(4,bool),quote_valid=np.array([True,False,True,True]),
+                   ask=np.array([10.,10.,10.,0.]),bid=np.array([9.9,9.9,10.1,0.]))
+        self.assertEqual(entry_boundary(member,probe).tolist(),[True,False,False,False])
+        member.policy.buy_limit_offset=-.05
+        self.assertFalse(entry_boundary(member,probe).any())
+
     def test_replay_comparison_preserves_order_content_identity(self):
         from research.vectorized_backtest.v60.profile_global import financial_evidence
         a={'net_pnl':[1.], 'execution_orders':[{'receipt':'a','sha256':'same','orders':2,'candidate_index':0}]}
@@ -109,6 +119,16 @@ class MinimalExecution(unittest.TestCase):
             clock=torch.tensor(float(self.clock)),terminal=torch.tensor(terminal),entry_dollars=1000.,add_dollars=200.,
             fee_per_share=.005,minimum_order_fee=1.,cost=0.,minimum_order_dollars=0.)
         return done,record
+
+    def test_flat_exit_head_does_not_veto_entry_or_cancel_unfilled_entry(self):
+        self.tick(signal=3,capacity=0.)
+        self.assertEqual(self.o[...,0].item(),1.)
+        self.tick(signal=2,capacity=10.)
+        self.assertEqual(self.p[...,0].item(),10.)
+        self.assertEqual(self.o[...,15].item(),0.)
+        self.tick(signal=2,capacity=100.)
+        self.assertEqual(self.p[...,0].item(),0.)
+        self.assertEqual(self.o[...,15].item(),1.)
 
     def test_candidate_limit_waits_then_fills_at_available_ask(self):
         self.policy[...,9]=-.01

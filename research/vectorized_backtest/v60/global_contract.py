@@ -47,6 +47,7 @@ def check(job):
     elif job.get('result_cache_transition'):raise ValueError('Cache transition requires a pinned predecessor')
     from .calibration import load_probe
     metadata=load_probe(job['initialization_probe'],job['training'])['metadata']
+    if metadata['version']!='v60-training-boundary-probe-v1':raise ValueError('V60 requires its own execution-aligned calibration probe')
     if metadata['validation_opened'] or not set(metadata['days']).issubset(train) or len(metadata['days'])<2:raise ValueError('Training-only multi-session calibration required')
 
 
@@ -68,5 +69,8 @@ def prepare(source,root,code):
     from .orders import VERSION as ORDER_VERSION
     job.update(fresh_initial_replay='v60-fresh-founders-v1',execution_tail=original['execution_tail'])
     job['execution'].update(order_mode=ORDER_VERSION,maximum_quote_age_seconds=None)
+    from .calibration_probe import prepare as prepare_probe
+    probe=prepare_probe(job)
+    job.update(initialization_probe=str(probe),initialization_probe_sha256=sha(probe))
     check(job);write_json(root/'global-job.json',job)
     return job

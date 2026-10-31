@@ -16,6 +16,9 @@ class OrderRecords:
 
     def append(self,complete,record):
         if record.shape[-1]==17:
+            if self.data.device.type=='cuda':
+                from .order_scatter import append_pair
+                append_pair(self,complete,record);return
             self.append(record[...,16]>0,record[...,8:16])
             self.append(complete,record[...,:8])
             return

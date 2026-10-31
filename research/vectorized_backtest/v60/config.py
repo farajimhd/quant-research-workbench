@@ -46,7 +46,8 @@ def contract():
 
                 input_channels=['absolute','cross_sectional','validity'],projection_layout='full certified catalog; independent of candidate cohort',
 
-                input_validity='observed current market-value ancestor required',recurrent=False,
+                input_validity='optional zero-filled inputs plus explicit validity channels; observed current market-value ancestor required',recurrent=False,
+                action_scope='entry while flat; exit/add/reduce/stop management only while held; no flat exit veto',
 
                 strategy_node_budget=MAX_STRATEGY_NODES,capacity_buckets=[8,16,32,64,128,256,512,1024],
 

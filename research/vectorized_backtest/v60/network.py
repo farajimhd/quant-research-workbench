@@ -196,7 +196,9 @@ class NetworkPlan:
                     else:value=z.tanh() if n.op in ('tanh','conv') else evaluate(n.op,terms,n.bias,z)
                     outputs.append(value);masks.append(ok)
                     self.workspace[base+i].copy_(outputs[-1]);self.known[base+i].copy_(ok)
-                actions.append(masks[-1]&(outputs[-1]>float(np.float32(net.threshold))))
+                active=data.tensors['membership'].index_select(0,index.reshape(1)).reshape(-1) if action==0 else position[0,b,:,0]>1.e-12
+                if len(active)<v.shape[0]:active=torch.nn.functional.pad(active,(0,v.shape[0]-len(active)),value=False)
+                actions.append(masks[-1]&(outputs[-1]>float(np.float32(net.threshold)))&active)
                 if action in (0,2,3):
                     head=net.size_source if net.size_source>=0 else len(net.nodes)-1
                     fraction=((outputs[head]*float(np.float32(net.size_weight))+float(np.float32(net.size_bias))).tanh()+1)*.5

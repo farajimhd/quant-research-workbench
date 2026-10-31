@@ -58,6 +58,16 @@ def main():
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
     local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics,profile_ungated=args.ungated)
     c=Global(local);c.publication_lane=Lane();c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
+    probe_preparation_seconds=0.
+    if args.reproduce:
+        import numpy as np
+        from .reproduction_prefetch import FreshPrefetch
+        from .allocation import budgets
+        before_probe=time.perf_counter()
+        rng=np.random.default_rng();rng.bit_generator.state=state['rng']
+        probe=load_probe(job['initialization_probe'],job['training'])
+        probe_preparation_seconds=time.perf_counter()-before_probe
+        c.fresh_prefetch=FreshPrefetch(rng,2,budgets(1024)['fresh'],probe)
     thread=__import__('threading').Thread(target=c.pump,daemon=True);thread.start()
     started=time.perf_counter()
     try:
@@ -71,10 +81,8 @@ def main():
             from .publication_lane import Buffer
             from .reproduction_prefetch import FreshPrefetch
             from .allocation import budgets
-            rng=np.random.default_rng();rng.bit_generator.state=state['rng'];probe=load_probe(job['initialization_probe'],job['training'])
             pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);ids=np.asarray(state['ids'])[indices]
             records=[pedigree.records[int(i)] for i in ids]
-            c.fresh_prefetch=FreshPrefetch(rng,2,budgets(1024)['fresh'],probe)
             c.artifact_write=Buffer().write
             import cProfile
             profiler=cProfile.Profile() if args.diagnostics else None
@@ -101,6 +109,7 @@ def main():
                     metrics_sha256=digest([financial_evidence(p) for p in published]),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
         report['publication_final_wait_seconds']=publication_wait_seconds
+        report['probe_preparation_seconds']=probe_preparation_seconds
         report['instrumented']=args.diagnostics
         import numpy as np
         report['quality']=[]
@@ -116,7 +125,11 @@ def main():
             expected=[]
             for day in days:
                 original=json.loads((args.compare/'phase-2/replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics']
-                expected.append({k:[v[i] for i in indices] for k,v in original.items()})
+                baseline=json.loads((args.compare/'profile.json').read_bytes()) if (args.compare/'profile.json').exists() else None
+                if baseline and baseline['population_sha256']==c.cohort_snapshot.token:
+                    expected.append(original)
+                else:
+                    expected.append({k:[v[i] for i in indices] for k,v in original.items()})
             expected=[financial_evidence(p) for p in expected]
             actual_evidence=[financial_evidence(p) for p in published]
             report['exact_financial_parity']=digest(expected)==digest(actual_evidence)
@@ -125,6 +138,7 @@ def main():
         write_json(root/'profile.json',report);print(json.dumps(report),flush=True)
         if report.get('exact_financial_parity') is False:raise ValueError('Financial parity failed')
     finally:
+        if getattr(c,'fresh_prefetch',None):c.fresh_prefetch.close();c.fresh_prefetch=None
         c.halt.set();thread.join(5)
         try:c.close_lanes()
         finally:c.publication_lane.close()

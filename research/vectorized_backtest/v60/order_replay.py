@@ -12,7 +12,7 @@ from .ticker_selection import update_equity
 
 def financial_tick(index,total,position,orders,book,aggregate,opened,policy,prices,
                    observed,membership,signals,values,ids,columns,limits,ratios,
-                   ticker_state,bids,asks,valid,capacity,execution,tail=False,offset=0):
+                   ticker_state,bids,asks,valid,capacity,execution,tail=False,offset=0,diagnostic=None):
     """One causal clock; graph padding cannot submit orders or change accounts."""
     clock=index.clamp_max(total)
     take=lambda x,i:torch.index_select(x,0,i.reshape(1)).squeeze(0)
@@ -34,7 +34,7 @@ def financial_tick(index,total,position,orders,book,aggregate,opened,policy,pric
             selected,ratios,policy,take(prices,clock),take(prices,clock),member,swing,
             take(bids,clock),take(asks,clock),take(valid,clock),snapshot,elapsed,terminal,active,
             execution.entry_dollars,execution.add_dollars,execution.fee_per_share,execution.minimum_order_fee,
-            execution.cost_bps/10000.,execution.minimum_order_dollars)
+            execution.cost_bps/10000.,execution.minimum_order_dollars,diagnostic)
         if tail:a[...,7]=aggregate[...,7]
         aggregate.copy_(torch.where(active,a,aggregate));index.add_(1)
         return closed,profits,entries,elapsed,complete,record
@@ -48,7 +48,7 @@ def financial_tick(index,total,position,orders,book,aggregate,opened,policy,pric
         quote_valid=take(valid,clock),capacity=available,clock=elapsed,terminal=terminal,
         entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
         fee_per_share=execution.fee_per_share,minimum_order_fee=execution.minimum_order_fee,
-        cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars)
+        cost=execution.cost_bps/10000.,minimum_order_dollars=execution.minimum_order_dollars,diagnostic=diagnostic,active=active)
     a=account(position,p,orders,o,aggregate,take(prices,clock),complete,record)
     if tail:a[...,7]=aggregate[...,7]  # Inactivity describes only the decision window.
     update_equity(ticker_state,p,take(prices,clock),active)
@@ -108,6 +108,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     if journal_capacity<2*block*u:raise ValueError('Journal must hold cancellations and fills from one graph')
     records=OrderRecords(b,u,device,capacity=journal_capacity,sink=journal)
     ratios=plan.ratios
+    admission=torch.zeros((b,(u+127)//128,16),device=device,dtype=torch.int64)
     plan.pending_orders=orders
     tail=Tail(item.execution_tail,item)
     profile={};started=time.perf_counter()
@@ -123,7 +124,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         index=torch.full((),first_clock,device=device,dtype=torch.int64)
         offset=torch.tensor(offset,device=device,dtype=torch.int64)
         args=(index,total,position,orders,book,aggregate,opened,policy,p,ob,mem,signals,
-              values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset)
+              values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset,None if tail_mode else admission)
         fn=program(args) if use_cuda else financial_tick
         def tick():
             if not tail_mode:provide(index.clamp_max(total),position,opened)
@@ -134,6 +135,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             # Warmup/capture are stateful: snapshot every mutable replay buffer,
             # including route ownership and ledger counts, then restore exactly.
             buffers=[position,orders,book,aggregate,opened,ticker_state,records.counts,episodes.counts]
+            if not tail_mode:buffers.append(admission)
             if not tail_mode and hasattr(plan,'branch_index'):buffers.extend([plan.owner,policy,limits,columns])
             buffers.extend([ratios,plan.feedback,plan.previous_clock,plan.buffer_phase])
             if hasattr(plan,'base'):buffers.extend([plan.base.feedback,plan.base.ratios])
@@ -157,6 +159,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             # Checkpoint only live state/counters, not the large append-only
             # ledgers. If a journal page fills, replay smaller chunks exactly.
             mutable=[position,orders,book,aggregate,opened,ticker_state,index,episodes.counts,records.counts]
+            if not tail_mode:mutable.append(admission)
             mutable.extend([ratios,plan.feedback,plan.previous_clock,plan.buffer_phase])
             if hasattr(plan,'base'):mutable.extend([plan.base.feedback,plan.base.ratios])
             if not tail_mode and hasattr(plan,'branch_index'):mutable.extend([plan.owner,policy,limits,columns])
@@ -269,7 +272,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         # Each metric remains indexed by candidate, matching result-cache slicing.
         # Row schema: listing,kind,requested qty,filled qty,notional,fees,
         # submitted clock,first fill clock,completion clock.
-        return dict(execution_orders=result,cancelled_orders=orders[...,15].sum(-1)[0].cpu().tolist())
+        from .admission import export as admission_export
+        return dict(execution_orders=result,cancelled_orders=orders[...,15].sum(-1)[0].cpu().tolist(),**admission_export(admission))
     finally:
         pool.shutdown(wait=True,cancel_futures=True)
         if journal is not None:journal.close()

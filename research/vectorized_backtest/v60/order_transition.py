@@ -10,7 +10,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
            U:tl.constexpr,B:tl.constexpr,VS:tl.constexpr,PS:tl.constexpr,RS:tl.constexpr,
            ED:tl.constexpr,AD:tl.constexpr,FEE:tl.constexpr,MINFEE:tl.constexpr,COST:tl.constexpr,MINIMUM:tl.constexpr,BLOCK:tl.constexpr,
            FUSED:tl.constexpr=False,BOOK=None,MARK=None,OPENED=None,TICKER=None,ACTIVE=None,
-           CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0):
+           CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0,DIAG=None):
     row=tl.program_id(0);i=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=i<U
     at=row*U+i;pp=P+at*9;op=O+at*17
     q=tl.load(pp,live,0.);avg=tl.load(pp+1,live,0.);stop=tl.load(pp+2,live,0.)
@@ -26,6 +26,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     order_limit=tl.load(op+16,live,0.)
     session=row//B;candidate=row%B
     sig=tl.load(S+session*VS[0][0]+candidate*VS[0][1]+i*VS[0][2],live,0)
+    sig=tl.where(q>1.e-12,sig,sig&1)
     prev=tl.load(PRE+session*VS[1][0]+candidate*VS[1][1]+i*VS[1][2],live,0.)
     member=tl.load(MEM+session*VS[2][0]+candidate*VS[2][1]+i*VS[2][2],live,False)
     swing=tl.load(SW+session*VS[3][0]+candidate*VS[3][1]+i*VS[3][2],live,0.)
@@ -98,6 +99,21 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     value=quantity*price;fee_delta=new_fees-fees
     first_fill=executed&(filled==0);first=tl.where(first_fill,clock,first)
     entry_fill=first_fill&(kind==1);add_fill=first_fill&(kind==2);episode=tl.where(entry_fill,realized,episode)
+    if DIAG is not None:
+        raw=(sig&1)!=0;remaining_reason=raw&~entry_new
+        reasons=(held,busy,terminal,cancelled,~member,~fresh,~feasible,
+                 ~((last<=0)|((clock-last)>=3)),~((ea>0)&(ea>=MINIMUM)))
+        primary=()
+        for reason in tl.static_range(9):
+            primary+=(remaining_reason&reasons[reason],)
+            remaining_reason=remaining_reason&~reasons[reason]
+        marketable=tl.where(buy,ask<=order_limit,bid>=order_limit)
+        fields=(raw,entry_new)+primary+(remaining_reason,(kind!=0)&fresh&~marketable,
+            (kind!=0)&fresh&marketable&~executed,entry_fill,cancelled)
+        counter_active=live&tl.load(ACTIVE)
+        for field in tl.static_range(16):
+            dest=DIAG+(row*TILES+tl.program_id(1))*16+field
+            tl.store(dest,tl.load(dest)+tl.sum((fields[field]&counter_active).to(tl.int64),0))
     sold=tl.where(sell,quantity,0.);bought=tl.where(buy,quantity,0.);new_q=q-sold+bought
     new_avg=avg
     if tl.sum((bought>0).to(tl.int32),0)>0:new_avg=tl.where(bought>0,(q*avg+value)/tl.maximum(new_q,1.e-12),avg)

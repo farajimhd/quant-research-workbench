@@ -18,7 +18,7 @@ ENTRY, ADD, REDUCE, EXIT = 1, 2, 3, 4
 def transition(position, orders, *, signals, ratios, policy, mark, previous,
                membership, observed, swing, bid, ask, quote_valid, capacity,
                clock, terminal, entry_dollars, add_dollars, fee_per_share,
-               minimum_order_fee, cost, minimum_order_dollars):
+               minimum_order_fee, cost, minimum_order_dollars,diagnostic=None,active=True):
     """Strategy requests then independent fills at the same candle boundary.
 
 Returns position, order state, and completed-order records. Price/quantity
@@ -32,6 +32,7 @@ fields are never derived from a later bar than the current execution clock.
     # requested quantity, quote/size, fees and already-owned inventory.
     ratios=torch.where(torch.isfinite(ratios)&(ratios>=0)&(ratios<=1),ratios,0.)
     held=q>1.e-12
+    signals=torch.where(held,signals,signals&1)
     finite=torch.isfinite(previous)&(previous>0)
     stopped=held&finite&(previous<=stop)
     fresh=quote_valid&torch.isfinite(bid)&torch.isfinite(ask)&(bid>0)&(ask>=bid)
@@ -106,6 +107,13 @@ fields are never derived from a later bar than the current execution clock.
     first_fill = executed & (filled == 0)
     first = torch.where(first_fill, clock, first)
     entry_fill = first_fill & (kind == ENTRY)
+    if diagnostic is not None:
+        from .admission import accumulate
+        accumulate(diagnostic,(signals&1)!=0,entry_new,
+            (held,busy,terminal,cancelled,~membership,~fresh,~feasible,
+             ~((last<=0)|((clock-last)>=3)),~((entry_amount>0)&(entry_amount>=minimum_order_dollars))),
+            (kind!=0)&fresh&~marketable,(kind!=0)&fresh&marketable&~executed,
+            entry_fill,cancelled,active)
     add_fill = first_fill & (kind == ADD)
     episode = torch.where(entry_fill, realized, episode)
     sold = torch.where(sell, quantity, 0.);bought = torch.where(buy, quantity, 0.)
