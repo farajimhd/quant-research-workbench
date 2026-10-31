@@ -21,7 +21,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     fees=tl.load(op+6,live,0.);submitted=tl.load(op+7,live,0.);first=tl.load(op+8,live,0.)
     initial=tl.load(op+9,live,0.);flatten=tl.load(op+10,live,0.)>0;target_order=tl.load(op+11,live,0.)
     submitted_count=tl.load(op+12,live,0.);completed_count=tl.load(op+13,live,0.)
-    fill_count=tl.load(op+14,live,0.);last_completed=tl.load(op+15,live,0.)
+    fill_count=tl.load(op+14,live,0.);cancelled_stops=tl.load(op+15,live,0.)
     session=row//B;candidate=row%B
     sig=tl.load(S+session*VS[0][0]+candidate*VS[0][1]+i*VS[0][2],live,0)
     prev=tl.load(PRE+session*VS[1][0]+candidate*VS[1][1]+i*VS[1][2],live,0.)
@@ -30,6 +30,10 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     bid=tl.load(BID+session*VS[4][0]+candidate*VS[4][1]+i*VS[4][2],live,0.)
     ask=tl.load(ASK+session*VS[5][0]+candidate*VS[5][1]+i*VS[5][2],live,0.)
     valid=tl.load(V+session*VS[6][0]+candidate*VS[6][1]+i*VS[6][2],live,False)
+    cancelled=(kind==1)&(filled==0)&(initial>0)&valid&(ask>0)&(tl.abs(ask)<float('inf'))&(initial>=ask)
+    cancelled_stops+=cancelled.to(tl.float64)
+    kind=tl.where(cancelled,0.,kind);remaining=tl.where(cancelled,0.,remaining)
+    requested=tl.where(cancelled,0.,requested);dollars=tl.where(cancelled,0.,dollars)
     cp=CAP+session*VS[7][0]+candidate*VS[7][1]+i*VS[7][2]
     buy_capacity=tl.load(cp,live,0.);sell_capacity=tl.load(cp+VS[7][3],live,0.)
     if FUSED:
@@ -131,7 +135,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
         tl.store(DONE+at,complete&active,live)
         live=live&active
     completed_count+=complete.to(tl.float64);fill_count+=executed.to(tl.float64)
-    last_completed=tl.where(complete,clock,last_completed);kind=tl.where(complete,0.,kind)
+    kind=tl.where(complete,0.,kind)
     flatten=tl.where((new_q<=1.e-12)&(kind==0),False,flatten)
     output=PO+at*9
     tl.store(output,new_q,live);tl.store(output+1,new_avg,live);tl.store(output+2,stop,live);tl.store(output+3,target,live)
@@ -140,7 +144,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     tl.store(out,kind,live);tl.store(out+1,remaining,live);tl.store(out+2,dollars,live);tl.store(out+3,requested,live)
     tl.store(out+4,new_filled,live);tl.store(out+5,new_notional,live);tl.store(out+6,new_fees,live);tl.store(out+7,submitted,live)
     tl.store(out+8,first,live);tl.store(out+9,initial,live);tl.store(out+10,flatten.to(tl.float64),live);tl.store(out+11,target_order,live)
-    tl.store(out+12,submitted_count,live);tl.store(out+13,completed_count,live);tl.store(out+14,fill_count,live);tl.store(out+15,last_completed,live)
+    tl.store(out+12,submitted_count,live);tl.store(out+13,completed_count,live);tl.store(out+14,fill_count,live);tl.store(out+15,cancelled_stops,live)
 
 
 @torch.library.custom_op('vector_v59::persistent_orders',mutates_args=())

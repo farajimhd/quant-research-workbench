@@ -262,7 +262,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         # Each metric remains indexed by candidate, matching result-cache slicing.
         # Row schema: listing,kind,requested qty,filled qty,notional,fees,
         # submitted clock,first fill clock,completion clock.
-        return dict(execution_orders=result)
+        return dict(execution_orders=result,cancelled_initial_stop_orders=orders[...,15].sum(-1)[0].cpu().tolist())
     finally:
         pool.shutdown(wait=True,cancel_futures=True)
         if journal is not None:journal.close()

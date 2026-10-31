@@ -1,7 +1,8 @@
 """Persistent quantity orders and actual-fill accounting, independent of fitness.
 
 One outstanding order per candidate/listing prevents duplicate liquidity use.
-Flatten requests are latched behind outstanding orders; none are cancelled.
+Flatten requests are latched behind outstanding orders. The strategy controller
+cancels an unfilled entry if its original stop is breached before acceptance.
 All operations are tensor expressions so the same oracle can be CUDA compiled.
 """
 import torch
@@ -9,7 +10,7 @@ import torch
 VERSION = 'persistent-quote-size-orders-v2'
 # kind, remaining, requested dollars, requested qty, filled qty, notional, fee,
 # submitted clock, first fill, initial stop, flatten requested, target reduction,
-# submitted order count, completed order count, fill count, last completion clock
+# submitted order count, completed order count, fill count, invalid-stop cancellations
 ORDER_WIDTH = 16
 ENTRY, ADD, REDUCE, EXIT = 1, 2, 3, 4
 
@@ -26,7 +27,15 @@ fields are never derived from a later bar than the current execution clock.
     q, avg, stop, target, water, adds, last, realized, episode = position.unbind(-1)
     (kind, remaining, dollars, requested, filled, notional, fees, submitted,
      first, initial, flatten, target_order, submitted_count, completed_count,
-     fill_count, last_completed) = orders.unbind(-1)
+     fill_count, cancelled_stops) = orders.unbind(-1)
+    # Strategy-side order validation, before the policy-independent fill stage.
+    # Never rewrite a stop or cancel an already partially filled order.
+    cancelled=(kind==ENTRY)&(filled==0)&(initial>0)&quote_valid&torch.isfinite(ask)&(ask>0)&(initial>=ask)
+    cancelled_stops=cancelled_stops+cancelled.to(position.dtype)
+    kind=torch.where(cancelled,0.,kind)
+    remaining=torch.where(cancelled,0.,remaining)
+    requested=torch.where(cancelled,0.,requested)
+    dollars=torch.where(cancelled,0.,dollars)
     held = q > 1.e-12
     busy = kind != 0
     finite = torch.isfinite(previous) & (previous > 0)
@@ -54,8 +63,7 @@ fields are never derived from a later bar than the current execution clock.
     add_amount = add_dollars * ratios[...,1].clamp(0,1)
     entry_new = entry_new & (entry_amount > 0) & (entry_amount >= minimum_order_dollars)
     add_new = add_new & (add_amount > 0) & (add_amount >= minimum_order_dollars)
-    # A missing swing stop cannot define an entry request. Later quote changes
-    # never silently discard an already accepted order.
+    # An invalid initial stop cannot define an accepted entry request.
     entry_new = entry_new & ((policy[...,8] <= 0) | (torch.isfinite(swing) & (swing > 0) &
         quote_valid & torch.isfinite(ask) & (swing < ask)))
     new_kind = torch.where(exit_new, EXIT, torch.where(reduce_new, REDUCE,
@@ -118,12 +126,11 @@ fields are never derived from a later bar than the current execution clock.
                           new_fees, submitted, first, clock.expand_as(q)), -1)
     completed_count = completed_count+complete.to(position.dtype)
     fill_count = fill_count+executed.to(position.dtype)
-    last_completed = torch.where(complete, clock, last_completed)
     kind = torch.where(complete, 0., kind)
     flatten = torch.where((new_q <= 1.e-12) & (kind == 0), False, flatten)
     out_orders = torch.stack((kind, remaining, dollars, requested, new_filled,
         new_notional, new_fees, submitted, first, initial, flatten.to(position.dtype),
-        target_order, submitted_count, completed_count, fill_count, last_completed), -1)
+        target_order, submitted_count, completed_count, fill_count, cancelled_stops), -1)
     out_position = torch.stack((new_q,new_avg,stop,target,water,adds,last,realized,episode),-1)
     return out_position, out_orders, complete, record
 

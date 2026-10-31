@@ -4,6 +4,16 @@ from research.vectorized_backtest.v59.orders import transition, require_complete
 
 
 class PersistentOrders(unittest.TestCase):
+    def test_controller_cancels_unfilled_entry_without_replacing_stop(self):
+        self.policy[...,8]=2
+        self.tick(price=10.,swing=9.,capacity=0.)
+        self.assertEqual(self.o[...,0].item(),1.)
+        self.tick(signal=0,price=8.,swing=9.,capacity=1000.)
+        self.assertEqual(self.o[...,0].item(),0.)
+        self.assertEqual(self.o[...,15].item(),1.)
+        self.assertEqual(self.p[...,0].item(),0.)
+        self.assertEqual(self.p[...,7].item(),0.)
+
     def test_swing_stop_must_be_below_entry_quote(self):
         self.policy[...,8]=2
         for stop in (10.,10.1):
@@ -126,11 +136,12 @@ class ReplayPath(unittest.TestCase):
         shape=(1,5,137);p=torch.zeros((*shape,9),dtype=torch.float64);o=torch.zeros((*shape,ORDER_WIDTH),dtype=torch.float64)
         pg=p.cuda();og=o.cuda()
         aggregate=torch.zeros((1,5,16),dtype=torch.float64);aggregate[...,8]=float('inf');ag=aggregate.cuda()
-        policy=torch.tensor([.05,.03,.4,.03,-.1,-.1,4.,2.,0.],dtype=torch.float64)[None,None,None].expand(1,5,1,9)
+        policy=torch.tensor([.05,.03,.4,.03,-.1,-.1,4.,2.,0.],dtype=torch.float64)[None,None,None].expand(1,5,1,9).clone()
+        policy[:,::2,:,8]=2
         for clock in range(1,65):
             price=10+torch.rand(shape,dtype=torch.float64)
             args=dict(signals=torch.randint(0,32,shape,dtype=torch.int16),ratios=torch.rand((*shape,3),dtype=torch.float64),policy=policy,
-                previous=price,membership=torch.rand(shape)>.1,swing=torch.full_like(price,float('nan')),bid=price,ask=price+.02,
+                previous=price,membership=torch.rand(shape)>.1,swing=torch.full_like(price,10.5),bid=price,ask=price+.02,
                 quote_valid=torch.rand(shape)>.3,capacity=torch.randint(0,30,(*shape,2)).double(),clock=torch.tensor(float(clock),dtype=torch.float64),
                 terminal=torch.tensor(clock>40),entry_dollars=1000.,add_dollars=200.,fee_per_share=.005,minimum_order_fee=1.,cost=.0002,minimum_order_dollars=0.)
             expected=transition(p,o,mark=price,observed=torch.ones(shape,dtype=torch.bool),**args)
