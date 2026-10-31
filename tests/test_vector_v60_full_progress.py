@@ -3,6 +3,17 @@ from pathlib import Path
 from research.vectorized_backtest.v60.campaign_progress import Model
 
 
+def test_minimal_execution_terminal_position_timestamps():
+    import pytest
+    from research.vectorized_backtest.v60.position_details import clock_timestamp
+    clocks=[1000,1001,1002]
+    assert clock_timestamp(clocks,1,'minimal-close-limit-v1')==1001
+    assert clock_timestamp(clocks,8,'minimal-close-limit-v1')==1008
+    with pytest.raises(ValueError):clock_timestamp(clocks,-1,'minimal-close-limit-v1')
+    with pytest.raises(ValueError):clock_timestamp(clocks,1.5,'minimal-close-limit-v1')
+    with pytest.raises(ValueError):clock_timestamp(clocks,8,'immediate')
+
+
 def test_full_results_wait_for_both_splits_and_pin_complete_snapshot():
     model=object.__new__(Model);model.full_data=None
     model.job=dict(training_days=['t'],validation_days=['v'])

@@ -4,6 +4,16 @@ from pathlib import Path
 from .progress_sessions import read_verified
 
 
+def clock_timestamp(clocks,index,order_mode):
+    """Decision indices and terminal elapsed-second indices share one origin."""
+    if int(index)!=index or index<0:raise ValueError('Invalid position clock')
+    index=int(index)
+    if index<len(clocks):return int(clocks[index])
+    if order_mode not in ('minimal-close-limit-v1','persistent-quote-size-orders-v2','strategy-managed-quote-orders-v3'):
+        raise ValueError('Position clock exceeds replay')
+    return int(clocks[0])+index
+
+
 def load(root,generation,serial,session,share,job=None):
     from research.vectorized_backtest.v60.distributed_assets import remote
     role,day=session.split(':',1)
@@ -52,9 +62,7 @@ def load(root,generation,serial,session,share,job=None):
         if sha(inputs/'clocks.npy')!=cert['files']['clocks.npy']:raise ValueError('Position timeline changed')
         clocks=np.load(inputs/'clocks.npy',mmap_mode='r',allow_pickle=False)
         def timestamp(index):
-            if index<len(clocks):return int(clocks[index])
-            if receipt['execution'].get('order_mode') not in ('persistent-quote-size-orders-v2','strategy-managed-quote-orders-v3'):raise ValueError('Position clock exceeds replay')
-            return int(clocks[0])+int(index)
+            return clock_timestamp(clocks,index,receipt['execution'].get('order_mode'))
         for row in rows:
             listing=cert['listings'][row['listing_id']]
             row.update(ticker=listing['ticker'],listing_identity=listing['listing_id'])
