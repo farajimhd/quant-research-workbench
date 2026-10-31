@@ -24,6 +24,8 @@ def summarize(ids,panel,records,retained=None,generation=0):
             mix=r.get('blind_mix'),eligible=bool(panel['eligible'][i]),retained=None if retained is None else int(serial) in retained,
             **{k:float(panel[k][i]) for k in FIELDS})
         row.update({k:float(panel[k][i]) for k in ('ticker_component','session_component','uncapped_score','profitable_sessions','session_targets_met','best_session_net','net_excluding_best_session') if k in panel})
+        row.update({k:int(panel[k][i]) for k in panel if k.startswith('admission_')})
+        if 'parent_eligible' in panel:row['parent_eligible']=bool(panel['parent_eligible'][i])
         comparisons=r.get('parent_objectives',[])
         if r.get('blind_mix'):
             parents=r['blind_mix']['parent_serials'];comparisons=[panel['score'][current[p]] for p in parents if p in current]

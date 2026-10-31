@@ -44,5 +44,9 @@ def combine(panels):
     out['best_session_net']=nets.max(axis=0)
     out['net_excluding_best_session']=out['net_pnl']-out['best_session_net']
     out['eligible']=np.logical_and.reduce([p['eligible'] for p in panels])
+    out['parent_eligible']=out['eligible']&(out['closed_positions']>0)
+    admission_keys={k for p in panels for k in p if k.startswith('admission_')}
+    if any(not admission_keys.issubset(p) for p in panels):raise ValueError('Incomplete admission evidence across sessions')
+    out.update({k:np.sum([p[k] for p in panels],axis=0) for k in sorted(admission_keys)})
     out['maximum_position_risk']=np.maximum.reduce([p['maximum_position_risk'] for p in panels])
     return out

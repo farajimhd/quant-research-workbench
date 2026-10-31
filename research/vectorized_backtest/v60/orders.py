@@ -107,7 +107,7 @@ fields are never derived from a later bar than the current execution clock.
     first_fill = executed & (filled == 0)
     first = torch.where(first_fill, clock, first)
     entry_fill = first_fill & (kind == ENTRY)
-    if diagnostic is not None:
+    if diagnostic is not None and diagnostic.numel():
         from .admission import accumulate
         accumulate(diagnostic,(signals&1)!=0,entry_new,
             (held,busy,terminal,cancelled,~membership,~fresh,~feasible,

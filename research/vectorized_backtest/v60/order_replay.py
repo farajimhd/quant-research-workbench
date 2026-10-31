@@ -123,8 +123,9 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         ticks=total-first_clock+1
         index=torch.full((),first_clock,device=device,dtype=torch.int64)
         offset=torch.tensor(offset,device=device,dtype=torch.int64)
+        counters=admission if not tail_mode else torch.empty(0,device=device,dtype=torch.int64)
         args=(index,total,position,orders,book,aggregate,opened,policy,p,ob,mem,signals,
-              values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset,None if tail_mode else admission)
+              values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset,counters)
         fn=program(args) if use_cuda else financial_tick
         def tick():
             if not tail_mode:provide(index.clamp_max(total),position,opened)

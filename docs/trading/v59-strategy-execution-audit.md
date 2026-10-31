@@ -4,6 +4,49 @@ Audit date: 2026-10-31. Source baseline: `99fb181db501dbd3ed8c871be7f85ccb2f465b
 
 Design revision: 2026-10-31, following the user's clarification after the audit. The minimal close-time execution design below supersedes the earlier proposal to make candidates manage pending orders. Existing-code findings remain pinned to the source baseline; proposed interfaces are not deployed.
 
+## V60 implementation register — 2026-10-31
+
+The original V59 audit below is retained as historical evidence. Implementation
+is now in `research/vectorized_backtest/v60`; V59 has been stopped with receipts
+preserved. V60 is self-contained and is undergoing workstation qualification;
+**it is not yet accepted for a full campaign or the 45-second target**.
+
+| Finding | V60 disposition and remaining qualification |
+|---|---|
+| F01 | Entry swings use current membership. Boundary fixture passed. |
+| F02 | Routed entry chooses a stop/book-feasible branch before applying sticky ownership. Later-parent feasibility fixture passed. |
+| F03 | Candidate buy/sell limit parameters, initial stop and target; same-close matching against the current displayed book. CPU/GPU limit and fill fixtures passed. |
+| F04 | Construction authority owns permitted inputs, bounds, history and dependencies. Strategy-side admission precedes a separate liquidity fill primitive; no age/risk admission caps. Admission reasons are published. |
+| F05 | Explicitly retain certified consecutive-second history semantics and readiness masks; do not fill gaps or reinterpret them as observed-bar counts. Unsupported history parameters cannot be constructed. Missing current history abstains, rather than inventing a stop. |
+| F06 | Deterministic controller retains standing size, ignores repeated buy requests, and lets held-position exit/protective events supersede buys. No candidate keep/amend/cancel protocol or previous-action inputs. |
+| F07 | Model bid/ask/spread use the same causal book as execution. V60 builds its own training probe; old age-gated activation probes cannot initialize a campaign. |
+| F08 | Terminal liquidation remains deterministic and size-limited. Incomplete coverage is a replay failure, never a candidate-level fitness exclusion. |
+| F09 | Fused device counters reconcile entry signals = accepted requests + disjoint abstentions, with separate limit/liquidity waits and first fills. Counters survive capture/overflow rollback and reach candidate details. Full-session reconciliation is an acceptance check. |
+| F10 | Stop fraction 1 is invalid. Entry calibration masks use the sampled stop/limit policy and current book. A valid strategy with no opportunities in the bounded probe is reported, not discarded based on profitability. Sizing activity remains observable through replay counters; calibration is not a full financial replay. |
+| F11 | Exit/add/reduce/stop heads now operate only while held; flat exit veto removed. Ordinary inputs remain explicitly optional/zero-filled with validity channels; a current known market ancestor is required. Crossing/decision/composition operators retain their separately defined masks. No blanket AND-mask change. |
+| F12 | Forbidden delay edits removed; legal six-way structural schedule is explicit. Exhausted parent/post-construction mutations receive fresh replacements. Full unique-population authority checks every output. Post-construction mutation remains on fresh proposals; parent-mutation fallbacks are separate. Intended and realized routes remain reported. |
+| F13 | Preserve zero fitness for no trades, but require a closed position somewhere in training for parenting. Expose parent eligibility separately from score rank; no positive-score gate. |
+| F14 | Preserve the 25% ticker-specialist / 75% global pathway and its explicit specialist reward-only objective. Account DD remains in global score; no silent substitution of summed ticker DD. |
+| F15 | Pin DD weight 1, extra-loss weight 0, ticker target 2000, session target 5000, alpha .1. Score/ledger fixtures cover losing and zero-trade days. Validation remains display-only. |
+| F16 | Profile real two-session replay, reproduction and publication separately. Retain GPU turn lock after ungated comparison failed to improve throughput materially. Paired journal append is fused. Target qualification still open. |
+| F17 | Capture/overflow checkpoints include ratios, clock, feedback, branch state and admission counters. Eager/captured/padded/forced-overflow GPU replay fixture matches exact financial and event outputs. |
+| F18 | CPU/GPU fill/accounting oracle, limits, partial fills, terminal orders and re-entry fixtures passed. Representative full-session qualification is required after the latest changes. This is displayed-liquidity simulation, not queue/impact modelling. |
+| F19 | Pinned 834 allowed / 123 forbidden features; prices, EMA/ATR and quotes restored. Construction thresholds are clamped; raw observations are never clipped. Training-only probe publishes per-feature bounds coverage. Engineering caps are not claims about physical maxima. |
+
+Initial workstation baseline (1,024 fixed diagnostic genomes, Aug13/Aug18):
+68.45/69.73 seconds per concurrent replay; two-session return 89.44 seconds.
+An ungated comparison produced 67.23/68.77 seconds with exact financial and
+order-content parity, but had less compiler warmup, so this is **not** an accepted
+speedup. Instrumented publication final wait was 0.015 seconds. The earlier
+22-second post-replay interval included reproduction and must not be described
+as publication blocking. These measurements predate the held-only action change.
+
+The isolated latest replay exposed an optional-buffer compiler error at terminal
+drain. It failed closed; an empty diagnostic tensor replaces the optional buffer,
+with compiled regression coverage. Latest full replay, final panel rendering,
+representative successor/resume qualification, and performance acceptance remain
+open until their actual results are recorded.
+
 ## Outcome and scope
 
 The current implementation does not yet satisfy the agreed strategy/execution contract. The principal problems are incomplete strategy visibility of admission conditions, a stale membership clock in swing projection, branch routing before feasibility, and the absence of limit orders. These are different from legitimate insufficient-liquidity waits. Moving existing checks without reviewing their semantics would preserve the problem.

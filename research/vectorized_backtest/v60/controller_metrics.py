@@ -25,4 +25,9 @@ def compact(metrics):
             values.flags.writeable=False;rows.append(values)
         result[key]=rows
     if 'ticker_score' in metrics:result['ticker_score']=metrics['ticker_score']
+    for key in metrics:
+        if key.startswith('admission_'):
+            values=np.asarray(metrics[key],dtype=np.int64)
+            if values.shape!=(n,) or (values<0).any():raise ValueError('Admission counter alignment changed')
+            values.flags.writeable=False;result[key]=values
     return result

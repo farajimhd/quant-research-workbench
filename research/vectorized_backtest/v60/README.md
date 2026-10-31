@@ -49,16 +49,22 @@ candidate from fitness. An incomplete terminal ledger is an explicit data failur
 
 ## Acceptance gates still required
 
-- Remove all runtime dependencies on prior research versions, including dynamic
-  source references; exercise the isolated deployment.
-- Wire the construction authority and full unique-population builder into every
-  production path and verify deterministic resume.
-- Implement and parity-test the CPU and GPU minimal execution contracts.
-- Reconcile every F01–F19 finding with executable tests and diagnostic evidence.
-- Preserve and test the copied V59 terminal features, including validation,
-  candidate/session/positions navigation and responsive background reads.
+- Source is self-contained and isolated workstation replay has been exercised.
+  No prior-version runtime imports are allowed. Certified market artifacts retain
+  their immutable data-producer identities.
+- CPU/GPU execution, current membership, feasible routing, construction,
+  calibration boundaries, score, observer input and full-result retention tests
+  are implemented. Captured replay and forced journal overflow match eager replay.
+- The audit's V60 implementation register distinguishes fixes from preserved
+  policy decisions. Latest complete replay, successor/resume and final rendered
+  panel checks remain required.
 - Profile real 1,024-candidate batches, two concurrent sessions, reproduction,
   publication, loading and full generations on workstation. Target <45 seconds
   per batch without changed network budgets or omitted work.
 
 No V60 campaign or timing claim is authorized by this README alone.
+
+Flat exit veto is removed: management heads apply only to held positions. Entry
+calibration uses a V60-owned training probe of current stop/book feasibility.
+Admission counters are part of the receipt and must reconcile before publication.
+The panel retains the V59 paths and adds these counters to candidate details.

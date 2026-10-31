@@ -8,6 +8,21 @@ from research.vectorized_backtest.v60.orders import transition, ORDER_WIDTH
 
 
 class ConstructionContract(unittest.TestCase):
+    def test_score_keeps_full_drawdown_and_admission_counts(self):
+        from research.vectorized_backtest.v60.full_common import aggregate
+        from research.vectorized_backtest.v60.robust_score import reward
+        panels=[]
+        for profit,dd in ((6000.,80.),(-200.,20.),(0.,0.)):
+            panels.append(dict(net_pnl=[profit],drawdown=[dd],closed_positions=[int(profit!=0)],winning_positions=[int(profit>0)],
+                maximum_position_risk=[0.],maximum_stop_distance=[0.],terminal_valid=[True],
+                episode_profits=[[profit]] if profit else [[]],episode_exit_clocks=[[1]] if profit else [[]],
+                episode_listings=[[0]] if profit else [[]],admission_entry_signals=[3],admission_entry_requests=[1]))
+        result=aggregate(panels)
+        expected=sum(.5*reward(p,2000.)+.5*reward(p,5000.)-d for p,d in ((6000.,80.),(-200.,20.),(0.,0.)))
+        self.assertEqual(result['score'][0],expected)
+        self.assertEqual(result['admission_entry_signals'][0],9)
+        self.assertTrue(result['parent_eligible'][0])
+
     def test_joint_entry_probe_uses_stop_and_limit_boundaries(self):
         from types import SimpleNamespace
         from research.vectorized_backtest.v60.calibration import entry_boundary

@@ -10,28 +10,27 @@ class Execution:
     cost_bps:float=0.
     fee_per_share:float=0.
     minimum_order_fee:float=0.
-    risk_limits_enabled:bool=True
-    risk_protection:bool=True
+    risk_limits_enabled:bool=False
+    risk_protection:bool=False
     maximum_stop_distance:float=.20
     maximum_position_risk:float=300.
     minimum_order_dollars:float=0.
     price_mode:str='bid-ask'
-    maximum_quote_age_seconds:float|None=1.
-    order_mode:str='immediate'
+    maximum_quote_age_seconds:float|None=None
+    order_mode:str='minimal-close-limit-v1'
     @property
     def admission_distance(self):return self.maximum_stop_distance if self.risk_limits_enabled else 1.
     @property
     def admission_budget(self):return self.maximum_position_risk if self.risk_limits_enabled else float("inf")
     def validate(self):
-        if self.order_mode not in ('immediate','minimal-close-limit-v1'):raise ValueError('Unknown execution order contract')
-        if self.order_mode!='immediate' and self.risk_limits_enabled:raise ValueError('Persistent execution requires the approved risk-admission-caps-off campaign')
+        if self.order_mode!='minimal-close-limit-v1':raise ValueError('V60 supports only minimal close/limit execution')
+        if self.risk_limits_enabled:raise ValueError('V60 has no risk-admission caps')
         if type(self.risk_limits_enabled) is not bool:raise ValueError("Invalid risk admission switch")
-        if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds!=(1. if self.order_mode=='immediate' else None):raise ValueError('Quote age policy differs from the execution contract')
+        if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds is not None:raise ValueError('Quote age policy differs from the execution contract')
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
             raise ValueError('Invalid assumed-fill sizing/cost')
         if self.entry_dollars>1000 or self.add_dollars>200:raise ValueError('Entry/add caps are $1000/$200')
-        if type(self.risk_protection) is not bool or not 0<self.maximum_stop_distance<=.20 or not math.isfinite(self.maximum_position_risk) or not 0<self.maximum_position_risk<=300:
-            raise ValueError('V18 risk envelope: stop <=20%, position risk <=$300')
+        if type(self.risk_protection) is not bool:raise ValueError('Invalid legacy diagnostic flag')
         return self
 
 

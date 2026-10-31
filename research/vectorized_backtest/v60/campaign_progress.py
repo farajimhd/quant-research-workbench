@@ -715,10 +715,16 @@ def render(model,width,height):
             panels=detail_data['panels'];first=next(iter(panels.values()),None)
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
         lines.append(f"Branches: {r.get('branch_count',1)} | A-first arbitration; selected branch persists while held")
+        parent_eligible=r.get('parent_eligible')
+        lines.append('Parent eligibility: '+('unavailable' if parent_eligible is None else 'eligible' if parent_eligible else 'ineligible: no closed position or invalid replay'))
+        if 'admission_entry_signals' in r:
+            lines.append('Entry signals '+number(r['admission_entry_signals'])+' | requests '+number(r['admission_entry_requests'])+' | first fills '+number(r['admission_entry_first_fills']))
+            reasons=[(k.removeprefix('admission_abstain_'),v) for k,v in r.items() if k.startswith('admission_abstain_') and v]
+            lines.append('Abstentions: '+', '.join(k+' '+number(v) for k,v in sorted(reasons,key=lambda x:-x[1])) if reasons else 'Abstentions: none')
         lines.append(f"Rewards: ticker {number(r.get('ticker_component'))} | session {number(r.get('session_component'))} | profitable sessions {number(r.get('profitable_sessions'))} | targets met {number(r.get('session_targets_met'))} | net excluding best day {number(r.get('net_excluding_best_session'))}")
         if r.get('metric_scope'):lines[0]+=' | '+r['metric_scope']+(' display-only' if 'validation' in r['metric_scope'] else '')
         if model.day:lines=[line for line in lines if not line.startswith(('Original founder:','Sessions:','Mutations:'))]
-        sessions=model.candidate_sessions();page_size=max(1,height-24);offset=(model.selection//page_size)*page_size
+        sessions=model.candidate_sessions();page_size=max(1,height-28);offset=(model.selection//page_size)*page_size
         for i,row in enumerate(sessions[offset:offset+page_size],offset):
             table.add_row(row['session'],*(number(row[k]) for k in ('score','net_pnl','gross_losses','drawdown')),style=SELECTED if i==model.selection else None)
         if not sessions:table.add_row('Per-session detail unavailable','-','-','-','-')

@@ -66,6 +66,7 @@ def aggregate(ordered,objective=Objective(),session_sink=None):
     for metrics in ordered:
         panel=_original_aggregate([metrics],objective)
         panel['ticker_component']=ticker_component(metrics)
+        panel.update({k:np.asarray(v) for k,v in metrics.items() if k.startswith('admission_')})
         panel=combine([panel]);panels.append(panel)
     if session_sink is not None:session_sink.extend(panels)
     return combine(panels)
