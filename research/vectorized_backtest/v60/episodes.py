@@ -55,15 +55,19 @@ class Episodes:
         self.drain_counts=self.counts.cpu().numpy().copy()
         return not (self.drain_counts>self.capacity).any()
 
-    def drain(self):
-        if not self.fits():return False
+    def drain(self,checked=False):
+        if not checked and not self.fits():return False
         import numpy as np
         counts=self.drain_counts.reshape(-1);width=int(counts.max(initial=0))
         if width:
             fields=[self.profits,self.listings,self.branches]
             if self.trace:fields.extend([self.entry_clocks,self.exit_clocks])
-            mask=torch.arange(width,device=self.counts.device)<self.counts[...,None]
-            data=torch.stack([f[...,:width].to(torch.float64) for f in fields],-1)[mask].cpu().numpy()
+            if self.counts.device.type=='cuda':
+                from .ledger_pack import pack
+                data=pack(fields,self.counts,counts).cpu().numpy()
+            else:
+                mask=torch.arange(width,device=self.counts.device)<self.counts[...,None]
+                data=torch.stack([f[...,:width].to(torch.float64) for f in fields],-1)[mask].cpu().numpy()
             ids=np.arange(len(counts)) if self.mapping is None else self.mapping
             self.chunks.append((ids,counts,data))
         self.counts.zero_();return True

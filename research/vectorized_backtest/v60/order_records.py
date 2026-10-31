@@ -41,9 +41,13 @@ class OrderRecords:
         counts=self.counts.cpu().numpy().copy()
         if counts.max(initial=0)>self.capacity:return False
         width=int(counts.max(initial=0))
-        mask=torch.arange(width,device=self.counts.device)[None]<self.counts[:,None]
         if width:
-            data=self.data[:,:width][mask].cpu().numpy()
+            if self.data.device.type=='cuda':
+                from .ledger_pack import pack
+                data=pack([self.data[...,i] for i in range(9)],self.counts,counts).cpu().numpy()
+            else:
+                mask=torch.arange(width,device=self.counts.device)[None]<self.counts[:,None]
+                data=self.data[:,:width][mask].cpu().numpy()
             ids=np.arange(len(counts)) if self.mapping is None else self.mapping
             if self.sink is not None:self.sink.submit(ids,counts,data)
             else:self.chunks.append((ids,counts,data))

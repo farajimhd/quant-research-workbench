@@ -4,6 +4,17 @@ from research.vectorized_backtest.v60.orders import transition,ORDER_WIDTH
 
 @unittest.skipUnless(os.environ.get("V60_TEST_CUDA")=="1", "opt-in GPU qualification")
 class GPUParity(unittest.TestCase):
+    def test_ledger_pack_is_exact_for_strided_and_integer_columns(self):
+        from research.vectorized_backtest.v60.ledger_pack import pack
+        counts=torch.tensor([0,73,1,34,12],device='cuda',dtype=torch.int64)
+        raw=torch.arange(5*73*9,device='cuda',dtype=torch.float64).reshape(5,73,9)/3
+        fields=[raw[...,i] for i in range(9)]
+        fields[2]=fields[2].long()
+        mask=torch.arange(73,device='cuda')[None]<counts[:,None]
+        expected=torch.stack([f.double() for f in fields],-1)[mask]
+        actual=pack(fields,counts,counts.cpu().numpy())
+        torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+
     def test_feedforward_action_scope_matches_cpu(self):
         import numpy as np
         from types import SimpleNamespace

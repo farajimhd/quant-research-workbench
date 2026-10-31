@@ -141,7 +141,7 @@ def aggregate_kernel(PART,A,OUT,TILES:tl.constexpr,B:tl.constexpr,AS:tl.constexp
         tl.store(out+field,tl.load(old+field*AS[2])+value)
 
 
-@torch.library.custom_op('vector_v57::protected_transition',mutates_args=())
+@torch.library.custom_op('vector_v60::protected_transition',mutates_args=())
 def transition(p:torch.Tensor,a:torch.Tensor,price:torch.Tensor,previous:torch.Tensor,observed:torch.Tensor,
                membership:torch.Tensor,signals:torch.Tensor,swing:torch.Tensor,policy:torch.Tensor,
                clock:torch.Tensor,terminal:torch.Tensor,entry_dollars:float,add_dollars:float,cost:float,

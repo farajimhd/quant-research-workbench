@@ -79,7 +79,7 @@ class Evolution(Controller):
                 self.publish(replay_generation=generation,replay_role=role,replay_population=len(members),completed_sessions=len(days),active_sessions=[],replay_receipts_reused=len(days))
                 return restored
         for day in days:ensure_day(self.job,self.node,role,day)
-        cache=Path('D:/TradingML/runtimes/v57c')/self.job['source_sha256'][:12]/self.node
+        cache=Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v60/compiler')/self.job['source_sha256'][:12]/self.node
         base_out=self.root/'replays'/role
         diagnostic=out!=base_out
         cfg=config(self.job,self.node,role);cfg.update(output=str(base_out),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),compile_cache_root=str(cache))

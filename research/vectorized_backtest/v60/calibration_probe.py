@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 VERSION='v60-training-boundary-probe-v1'
+STEPS=16
+LISTINGS=21  # Preserve the prior 8 x 16 x 21 bounded calibration work budget.
 
 
 def prepare(job):
@@ -46,8 +48,8 @@ def prepare(job):
             if item.receipt.get('validation_opened'):raise ValueError('Validation cannot calibrate candidates')
             plan=NetworkPlan(sample(np.random.default_rng(0),1),'cpu')
             member=item.tensors['membership'].numpy();ready=member&item.tensors['quote_valid'].numpy()
-            start=min(max(0,int(ready.sum(1).argmax())-32),max(0,len(member)-65))
-            ticks=list(range(start,start+64));n=min(128,member.shape[1]);c=len(CATALOG)
+            start=min(max(0,int(ready.sum(1).argmax())-STEPS//2),max(0,len(member)-STEPS-1))
+            ticks=list(range(start,start+STEPS));n=min(LISTINGS,member.shape[1]);c=len(CATALOG)
             # Select listings by availability, never by profit or model outcome.
             listings=np.argsort(-ready[ticks].sum(0),kind='stable')[:n]
             values=[];masks=[];caps=[]
@@ -57,10 +59,10 @@ def prepare(job):
                 bank=item.resident_features;a=bank.tensors
                 raw,valid=bank._values(a['source'][tick:tick+1].T,a['ids'][tick:tick+1].T.long(),a['clocks'][tick:tick+1][None],plan.columns)
                 caps.append(coverage(raw[:,0].numpy(),valid[:,0].numpy()))
-            x=np.zeros((64,n,3*c+18),np.float32);x[...,:3*c]=np.stack(values)
-            held=np.zeros((64,n,18),np.float32);held[...,0]=np.tanh(1.)
-            held[...,1]=np.tanh(np.linspace(-.15,.15,64)[:,None]);held[...,2]=np.tanh(np.arange(64)[:,None]/3600.)
-            held[...,3]=np.tanh(1.);held[...,4]=np.tanh(.03);held[...,6]=np.tanh(np.arange(64)[:,None]/300.)
+            x=np.zeros((STEPS,n,3*c+18),np.float32);x[...,:3*c]=np.stack(values)
+            held=np.zeros((STEPS,n,18),np.float32);held[...,0]=np.tanh(1.)
+            held[...,1]=np.tanh(np.linspace(-.15,.15,STEPS)[:,None]);held[...,2]=np.tanh(np.arange(STEPS)[:,None]/3600.)
+            held[...,3]=np.tanh(1.);held[...,4]=np.tanh(.03);held[...,6]=np.tanh(np.arange(STEPS)[:,None]/300.)
             pick=lambda name:item.tensors[name].numpy()[np.ix_(ticks,listings)]
             swing_ids=pick('v60_entry_swing_ids');swings=item.tensors['v60_entry_swing_values'].numpy()[swing_ids]
             arrays=dict(inputs=x,known=np.stack(masks),eligible=member[np.ix_(ticks,listings)],held_states=held,

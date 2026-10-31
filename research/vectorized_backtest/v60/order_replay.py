@@ -171,7 +171,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                     else:tick()
                 if device.type=='cuda':torch.cuda.current_stream(device).synchronize()
             if episodes.fits() and records.drain():
-                if not episodes.drain():raise RuntimeError('Position page changed after readiness check')
+                if not episodes.drain(checked=True):raise RuntimeError('Position page changed after readiness check')
                 return
             for target,value in zip(mutable,checkpoint):target.copy_(value)
             if count==1:raise RuntimeError('One graph exceeded its proven order-journal event bound')
