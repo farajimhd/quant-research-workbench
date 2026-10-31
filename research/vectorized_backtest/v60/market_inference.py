@@ -27,33 +27,30 @@ def project(plan,data,indices,absolute_only=False):
         quotes=quotes.index_select(-1,plan.quote_selection);qm=qm.index_select(-1,plan.quote_selection)
     v=v.index_copy(2,plan.quote_columns,torch.where(qm,quotes,0.))
     valid=valid.index_copy(2,plan.quote_columns,qm)
-    results=[]
-    for tick in range(len(indices)):
-        value=v[:,tick].contiguous();mask=valid[:,tick].contiguous()
-        clean=torch.where(mask,value,0.)
-        absolute=torch.where(plan.logarithmic,clean.sign()*clean.abs().log1p()/4,clean).tanh()
-        if absolute_only:
-            from .feature_policy import SHARES
-            absolute=torch.where(mask,absolute,0.)
-            for canonical in SHARES:
-                if canonical not in plan.lookup:continue
-                column=plan.lookup[canonical]
-                logged=torch.expm1(4*torch.atanh(absolute[...,column].clamp(-.999999,.999999)))
-                absolute[...,column]=torch.where(mask[...,column],torch.tanh(torch.floor(logged/math.log(10.))/10.),0.)
-            results.append(absolute)
-            continue
-        count=mask.sum(0).clamp_min(1)
-        first=mask.int().argmax(0,keepdim=True)
-        anchor=clean.gather(0,first).squeeze(0)
-        shifted=torch.where(mask,clean-anchor,0.)
-        from .feature_layout import column_sum
-        deviation=shifted-column_sum(shifted,plan.reduction_columns)/count
-        scale=(column_sum(torch.where(mask,deviation.square(),0.),plan.reduction_columns)/count).sqrt().clamp_min(1e-6)
-        relative=(deviation/(2*scale)).tanh()
-        values=torch.cat((torch.where(mask,absolute,0.),torch.where(mask,relative,0.),mask.float()),-1)
-        values=transform_projected(values,plan.columns)
-        results.append(values[...,:len(plan.columns)] if absolute_only else values)
-    return torch.stack(results),valid.transpose(0,1)
+    # Independent candle axis. Preserve the listing-axis reduction layout;
+    # there is no reduction across time and no per-candle Python dispatch.
+    value=v.transpose(0,1).contiguous();mask=valid.transpose(0,1).contiguous()
+    clean=torch.where(mask,value,0.)
+    absolute=torch.where(plan.logarithmic,clean.sign()*clean.abs().log1p()/4,clean).tanh()
+    if absolute_only:
+        from .feature_policy import SHARES
+        absolute=torch.where(mask,absolute,0.)
+        for canonical in SHARES:
+            if canonical not in plan.lookup:continue
+            column=plan.lookup[canonical]
+            logged=torch.expm1(4*torch.atanh(absolute[...,column].clamp(-.999999,.999999)))
+            absolute[...,column]=torch.where(mask[...,column],torch.tanh(torch.floor(logged/math.log(10.))/10.),0.)
+        return absolute,mask
+    count=mask.sum(1).clamp_min(1)
+    first=mask.int().argmax(1,keepdim=True)
+    anchor=clean.gather(1,first)
+    shifted=torch.where(mask,clean-anchor,0.)
+    from .feature_layout import column_sum
+    deviation=shifted-(column_sum(shifted,plan.reduction_columns)/count)[:,None]
+    scale=(column_sum(torch.where(mask,deviation.square(),0.),plan.reduction_columns)/count).sqrt().clamp_min(1e-6)
+    relative=(deviation/(2*scale[:,None])).tanh()
+    values=torch.cat((torch.where(mask,absolute,0.),torch.where(mask,relative,0.),mask.float()),-1)
+    return transform_projected(values,plan.columns),mask
 
 
 

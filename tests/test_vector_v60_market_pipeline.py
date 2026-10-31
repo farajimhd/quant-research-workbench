@@ -25,13 +25,14 @@ def market_fixture(device='cpu',ticks=17,listings=7):
 
 
 @pytest.mark.parametrize('device',['cpu','cuda'])
-def test_batched_market_projection_does_not_mix_candles(device):
+@pytest.mark.parametrize('listings',[7,137,513])
+def test_batched_market_projection_does_not_mix_candles(device,listings):
     if device=='cuda' and os.environ.get('V60_TEST_CUDA')!='1':pytest.skip('opt-in GPU')
     from research.vectorized_backtest.v60.genome import sample
     from research.vectorized_backtest.v60.network import NetworkPlan
     from research.vectorized_backtest.v60.market_inference import project
-    plan=NetworkPlan(sample(np.random.default_rng(19),1),device);item=market_fixture(device,listings=137)
-    indices=torch.tensor([0,2,4,8],device=device)
+    plan=NetworkPlan(sample(np.random.default_rng(19),1),device);item=market_fixture(device,ticks=33,listings=listings)
+    indices=torch.arange(32,device=device)
     expected=[plan.project(item,i) for i in indices]
     values,valid=project(plan,item,indices)
     torch.testing.assert_close(valid,torch.stack([r[1] for r in expected]),rtol=0,atol=0)

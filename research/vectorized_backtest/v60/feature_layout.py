@@ -16,9 +16,9 @@ def column_sum(values,columns):
     this scratch only after proving the same reduction tree and rounding.
     """
     import torch
-    if values.shape[1]==len(CATALOG):return values.sum(0)
-    scratch=torch.zeros((values.shape[0],len(CATALOG)),device=values.device,dtype=values.dtype)
-    return scratch.index_copy(1,columns,values).sum(0).index_select(0,columns)
+    if values.shape[-1]==len(CATALOG):return values.sum(-2)
+    scratch=torch.zeros((*values.shape[:-1],len(CATALOG)),device=values.device,dtype=values.dtype)
+    return scratch.index_copy(-1,columns,values).sum(-2).index_select(-1,columns)
 
 def remap_sources(sources,edge_counts):
     from .genome import INPUTS,MARKET_INPUTS
