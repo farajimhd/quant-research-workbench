@@ -63,7 +63,8 @@ class V59Tests(unittest.TestCase):
             self.assertEqual(program_key(child),program_key(Individual.restore(child.payload())))
             self.assertLessEqual(node_count(child),1024)
         routed,_=cross(a,b,'entry_routing')
-        with self.assertRaisesRegex(ValueError,'budget'):cross(routed,routed,'entry_routing') if node_count(routed)>512 else cross(cross(routed,routed,'entry_routing')[0],routed,'entry_routing')
+        while node_count(routed)<=512:routed,_=cross(routed,routed,'entry_routing')
+        with self.assertRaisesRegex(ValueError,'budget'):cross(routed,routed,'entry_routing')
     def test_split_fallback_does_not_hide_validation(self):
         from research.vectorized_backtest.v59.campaign_progress import Model
         live=dict(generation=3,aggregates=dict(training=dict(coverage=2,candidates=[3])))
