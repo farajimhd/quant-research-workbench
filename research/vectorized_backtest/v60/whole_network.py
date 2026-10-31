@@ -6,18 +6,27 @@ POLICY = dict(total_crossover_fraction=.25, phase0_same_owner_only=True, phase1_
               modes=dict(union=.4, intersection=.2, xor=.2, xnor=.2),
               sizing='sole firing branch, maximum if both; XNOR agreement uses maximum; never sum',
               financial_policy='base parent', max_strategy_nodes=1024,
-              recurrent_state='disjoint branch nodes', oversize='explicit fresh fallback')
+              recurrent_state='none; identical feed-forward branches share nodes', oversize='explicit fresh fallback')
+
+
+def shared_branch_nodes(a,b):
+    # Runtime identity excludes genealogy, but preserves every numerical input
+    # and operation. Threshold/sizing transforms remain separate below.
+    return len(a.nodes)==len(b.nodes) and all(
+        (x.sources,x.weights,x.bias,x.op)==(y.sources,y.weights,y.bias,y.op)
+        for x,y in zip(a.nodes,b.nodes))
 
 
 def network(a, b, mode, age_a=0, age_b=0, *, validate=True):
     if mode not in POLICY['modes']: raise ValueError('Unknown whole-network mode')
-    nodes=[]; roots=[]; sizes=[]
+    nodes=[]; roots=[]; sizes=[];shared=shared_branch_nodes(a,b)
     for side, (net, age) in enumerate(((a, age_a), (b, age_b))):
-        offset=len(nodes)
+        offset=0 if side==1 and shared else len(nodes)
         def remap(s):
             return -(offset-s-1)-1 if s<0 else s if s<INPUTS else s+offset
-        nodes.extend(replace(n, sources=tuple(remap(s) for s in n.sources),
-                             slot=4*n.slot+side+1) for n in net.nodes)
+        if not (side==1 and shared):
+            nodes.extend(replace(n, sources=tuple(remap(s) for s in n.sources),
+                                 slot=4*n.slot+side+1) for n in net.nodes)
         root=offset+len(net.nodes)-1
         head=offset+(net.size_source if net.size_source>=0 else len(net.nodes)-1)
         slot=8*side+3
@@ -34,13 +43,13 @@ def network(a, b, mode, age_a=0, age_b=0, *, validate=True):
 
 def node_cost(a,b,stages):
     """Exact total allocation before graph construction; no budget increase."""
-    return sum(len(n.nodes) for n in a.networks.values())+sum(len(b.networks[s].nodes)+6 for s in stages)
+    return sum(len(n.nodes) for n in a.networks.values())+sum((0 if shared_branch_nodes(a.networks[s],b.networks[s]) else len(b.networks[s].nodes))+6 for s in stages)
 
 
 def fits(a,b,stages):
     from .config import MAX_STRATEGY_NODES,MAX_NODES
     return (node_cost(a,b,stages)<=MAX_STRATEGY_NODES
-        and all(len(a.networks[s].nodes)+len(b.networks[s].nodes)+6<=MAX_NODES for s in stages))
+        and all(len(a.networks[s].nodes)+(0 if shared_branch_nodes(a.networks[s],b.networks[s]) else len(b.networks[s].nodes))+6<=MAX_NODES for s in stages))
 
 
 def cross(a,b,mode,stages=None):

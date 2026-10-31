@@ -18,12 +18,15 @@ class NetworkPlan:
         self.cuda_block=int(os.environ.get('V42_NEURAL_BLOCK','128'))
         if self.cuda_block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
         # Fixed catalog layout makes normalization independent of cohort membership.
-        self.columns=list(range(len(CATALOG)))
+        from .feature_layout import COLUMNS,remap_sources
+        self.columns=list(COLUMNS)
+        self.reduction_columns=torch.tensor(self.columns,device=device,dtype=torch.long)
         self.lookup={s:i for i,s in enumerate(self.columns)};c=len(self.columns)
         from .network_pack import pack_networks
         packed=pack_networks(members) if packed is None else packed
         self.total_nodes=packed['total_nodes'];self.offsets_cpu=packed['offsets_cpu'];self.kernel_nodes=packed['kernel_nodes']
-        self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in packed['values']]
+        values=list(packed['values']);values[0]=remap_sources(values[0],packed['edge_counts'])
+        self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in values]
         self.operations=torch.as_tensor(packed['operations'],device=device)
         self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
         # Market-only graph equivalence includes action and sizing outputs.
@@ -36,12 +39,22 @@ class NetworkPlan:
         # Only representative action graphs need a CUDA program. pack() reads
         # their results for duplicates; genotype offsets and output order stay intact.
         representatives_mask=(action_reps==np.arange(len(members))[:,None]).reshape(-1)
-        order=np.argsort(-packed['values'][3],kind='stable').astype(np.int32)
+        edge_cost=np.add.reduceat(packed['edge_counts'],packed['offsets_cpu'])
+        order=np.lexsort((np.arange(len(edge_cost)),-edge_cost)).astype(np.int32)
         self.cuda_network_order=torch.as_tensor(order[representatives_mask[order]],device=device)
+        unique_order=order[representatives_mask[order]]
+        self.cuda_entry_order=torch.as_tensor(unique_order[unique_order%5==0],device=device)
+        self.cuda_management_order=torch.as_tensor(unique_order[unique_order%5!=0],device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         names={f.name:i for i,f in enumerate(CATALOG)}
-        self.quote_columns=torch.tensor([names[n] for n in ('market.bid_relative','market.ask_relative',
+        self.quote_columns=torch.tensor([self.lookup[names[n]] for n in ('market.bid_relative','market.ask_relative',
             'market.spread_fraction','market.bid','market.ask','market.spread')],device=device)
+        self.cross_columns=sorted({source for m in members for net in m.networks.values() for n in net.nodes if n.op=='cross' for source in n.sources})
+        self.cross_lookup={source:i for i,source in enumerate(self.cross_columns)}
+        self.cross_indices=torch.tensor([self.lookup[s] for s in self.cross_columns],device=device,dtype=torch.long)
+        cross_map=np.full(len(self.columns),-1,np.int32)
+        for source,i in self.cross_lookup.items():cross_map[self.lookup[source]]=i
+        self.cross_map=torch.as_tensor(cross_map,device=device)
         self.workspace_shape=None
 
     def prepare(self,b,u):
@@ -83,7 +96,7 @@ class NetworkPlan:
         cache=getattr(self,'market_block',None)
         values,valid=cache.read(index) if cache is not None else self._project(data,index)
         from .feature_policy import transform_projected
-        return transform_projected(values),valid
+        return transform_projected(values,self.columns),valid
 
     def _project(self,data,index,absolute_only=False):
         bank=data.resident_features;a=bank.tensors
@@ -110,7 +123,9 @@ class NetworkPlan:
             # repeat cross-sectional reductions for their preceding candle.
             from .feature_policy import SHARES
             absolute=torch.where(valid,absolute,0.)
-            for i in SHARES:
+            for canonical in SHARES:
+                if canonical not in self.lookup:continue
+                i=self.lookup[canonical]
                 logged=torch.expm1(4*torch.atanh(absolute[...,i].clamp(-.999999,.999999)))
                 absolute[...,i]=torch.where(valid[...,i],torch.tanh(torch.floor(logged/np.log(10.))/10.),0.)
             return absolute,valid
@@ -121,8 +136,9 @@ class NetworkPlan:
         first=valid.to(torch.int32).argmax(0,keepdim=True)
         anchor=clean.gather(0,first).squeeze(0)
         shifted=torch.where(valid,clean-anchor,0.)
-        deviation=shifted-shifted.sum(0)/count
-        variance=torch.where(valid,deviation.square(),0.).sum(0)/count
+        from .feature_layout import column_sum
+        deviation=shifted-column_sum(shifted,self.reduction_columns)/count
+        variance=column_sum(torch.where(valid,deviation.square(),0.),self.reduction_columns)/count
         scale=variance.sqrt().clamp_min(1e-6)
         relative=(deviation/(2*scale)).tanh()
         return torch.cat((torch.where(valid,absolute,0.),torch.where(valid,relative,0.),valid.to(torch.float32)),1),valid
@@ -137,7 +153,8 @@ class NetworkPlan:
         self.previous_clock.copy_(market_clock)
         if self.uses_cross:
             lag,lag_valid=self.project_absolute(data,(index-1).clamp_min(0))
-            v=torch.cat((v,lag[:,:len(CATALOG)]),-1)
+            lag=lag.index_select(-1,self.cross_indices);lag_valid=lag_valid.index_select(-1,self.cross_indices)
+            v=torch.cat((v,lag),-1)
             valid=torch.cat((valid,lag_valid&(index>0)),-1)
         if v.shape[0]<position.shape[2]:
             from torch.nn.functional import pad
@@ -169,8 +186,9 @@ class NetworkPlan:
                     if n.op=='cross':
                         before=torch.full_like(z,float(np.float32(n.bias)));known=torch.ones_like(ok)
                         for source,w in zip(n.sources,n.weights):
-                            before=before+v[:,3*len(CATALOG)+source]*float(np.float32(w))
-                            known=known&valid[:,source]&valid[:,len(CATALOG)+source]
+                            column=self.lookup[source]
+                            before=before+v[:,3*len(self.columns)+self.cross_lookup[source]]*float(np.float32(w))
+                            known=known&valid[:,column]&valid[:,len(self.columns)+self.cross_lookup[source]]
                         value=torch.minimum(z,-before).clamp(-1,1);ok=known
                     elif n.op in OPS[9:17]:
                         xs=[outputs[source-INPUTS] for source in n.sources]

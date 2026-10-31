@@ -21,7 +21,8 @@ class GPUParity(unittest.TestCase):
         from research.vectorized_backtest.v60.genome import sample
         from research.vectorized_backtest.v60.features import CATALOG
         from research.vectorized_backtest.v60.network import NetworkPlan
-        members=sample(np.random.default_rng(188),5);u=37;c=len(CATALOG)
+        from research.vectorized_backtest.v60.feature_layout import WIDTH
+        members=sample(np.random.default_rng(188),5);u=37;c=WIDTH
         torch.manual_seed(93)
         v=torch.rand((u,3*c))*.8-.4;known=torch.rand((u,c))>.15
         v[:,2*c:]=known.float()

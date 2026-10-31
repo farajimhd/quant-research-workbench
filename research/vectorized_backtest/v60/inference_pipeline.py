@@ -38,6 +38,9 @@ class Pipeline:
                 self.graphs.append(graph)
         profile['inference_setup_seconds']=time.perf_counter()-started
         profile['inference_time_batch']=self.engine.width
+        profile['entry_listing_slots']=self.engine.entry_indices.shape[1]
+        profile['model_base_features']=len(self.engine.base.columns)
+        profile['lag_features']=len(self.engine.base.cross_columns)
         profile['inference_workspace_bytes']=self.engine.work.numel()*5
         profile['inference_packet_clocks']=block
         profile['inference_execution_overlap']=True

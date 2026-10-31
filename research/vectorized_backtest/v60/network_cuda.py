@@ -20,7 +20,7 @@ def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0,PROGRAMS:tl.constexpr=0):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,CROSS_MAP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0,PROGRAMS:tl.constexpr=0,ENTRY_IDS=None,ENTRY_K:tl.constexpr=0,COMPACT_ENTRY:tl.constexpr=False):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     time_index=0
     program=tl.program_id(0)
@@ -38,7 +38,9 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
         j=(program%TILES)*BLOCK+tl.arange(0,BLOCK)
     else:
         member=tl.program_id(0);action=tl.program_id(1);j=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK)
-    if OWNED:
+    if COMPACT_ENTRY:
+        u=tl.load(ENTRY_IDS+time_index*ENTRY_K+j,j<ENTRY_K,-1);live=(j<ENTRY_K)&(u>=0)&(u<U)
+    elif OWNED:
         u=tl.load(OWNER_IDS+member*OWNED_K+j,j<OWNED_K,-1);live=(j<OWNED_K)&(u>=0)&(u<U)
     else:
         u=j;live=u<U
@@ -113,8 +115,9 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
                 for edge in range(tl.load(EDGE_COUNTS+base+i)):
                     source=tl.load(SOURCES+(base+i)*FAN+edge);weight=tl.load(WEIGHTS+(base+i)*FAN+edge)
                     now=libdevice.add_rn(now,libdevice.mul_rn(tl.load(V+source*U+u,live,0),weight))
-                    before=libdevice.add_rn(before,libdevice.mul_rn(tl.load(V+(3*C+source)*U+u,live,0),weight))
-                    ok=ok&tl.load(VALID+source*U+u,live,False)&tl.load(VALID+(C+source)*U+u,live,False)
+                    lag_source=tl.load(CROSS_MAP+source)
+                    before=libdevice.add_rn(before,libdevice.mul_rn(tl.load(V+(3*C+lag_source)*U+u,live,0),weight))
+                    ok=ok&tl.load(VALID+source*U+u,live,False)&tl.load(VALID+(C+lag_source)*U+u,live,False)
                 h=tl.minimum(1.,tl.maximum(-1.,tl.minimum(now,-before)))
             elif op>=9:
                 source=tl.load(SOURCES+(base+i)*FAN)-3*C-STATES
@@ -165,7 +168,7 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     tiles=tr.cdiv(owned_k,block)
     grid=(plan.cuda_network_order.numel()*tiles,) if scheduled else (b,5,tiles)
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
-        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.entry_allowed,plan.action_representatives,plan.memory,plan.memory_known,plan.ratios,
+        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.entry_allowed,plan.action_representatives,plan.cross_map,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
         plan.cuda_network_order,tiles,scheduled,num_warps=(1 if block==32 else 2) if scheduled else 4,enable_fp_fusion=False)
     result=out if out is not None else torch.empty((1,b,u),device=position.device,dtype=torch.int16)
@@ -194,17 +197,19 @@ def pack(A,OUT,PHASE,ENTRY_REP,RATIOS,COUNT:tl.constexpr,U:tl.constexpr,BLOCK:tl
     if MEMBERS==0 and tl.program_id(0)==0:tl.store(PHASE,tl.load(PHASE)+1)
 
 
-def market_batch(plan,values,valid,membership,workspace,known):
+def market_batch(plan,values,valid,membership,workspace,known,entry_indices):
     """Independent candle axis; one GPU graph traversal for an entire block."""
     t,u,width=values.shape;b=len(plan.members)
     values=values.transpose(1,2).contiguous();valid=valid.transpose(1,2).contiguous()
     actions=torch.empty((t,b,5,u),device=values.device,dtype=torch.bool)
     ratios=torch.ones((t,b,u,3),device=values.device,dtype=torch.float64)
-    block=64;tiles=tr.cdiv(u,block)
-    workspace_kernel[(t*plan.cuda_network_order.numel()*tiles,)](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
-        plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,membership,plan.action_representatives,workspace,known,ratios,
-        workspace,known,plan.buffer_phase,actions,plan.buffer_phase,plan.buffer_phase,plan.sources,False,u,u,len(plan.columns),len(STATES),FAN_IN,block,
-        plan.cuda_network_order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],plan.cuda_network_order.numel(),num_warps=2,enable_fp_fusion=False)
+    actions[:,:,0].zero_()  # Unlisted entries are explicitly false.
+    for order,compact,block in ((plan.cuda_entry_order,True,32),(plan.cuda_management_order,False,64)):
+        k=entry_indices.shape[1] if compact else u;tiles=tr.cdiv(k,block)
+        workspace_kernel[(t*order.numel()*tiles,)](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
+            plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,membership,plan.action_representatives,plan.cross_map,workspace,known,ratios,
+            workspace,known,plan.buffer_phase,actions,plan.buffer_phase,plan.buffer_phase,plan.sources,False,u,u,len(plan.columns),len(STATES),FAN_IN,block,
+            order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],order.numel(),entry_indices,k,compact,num_warps=1 if compact else 2,enable_fp_fusion=False)
     out=torch.empty((t,b,u),device=values.device,dtype=torch.int16)
     pack[(tr.cdiv(t*b*u,256),)](actions,out,plan.buffer_phase,plan.action_representatives,ratios,t*b*u,u,256,b)
     return out,ratios

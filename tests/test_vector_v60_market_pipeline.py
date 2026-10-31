@@ -10,8 +10,13 @@ def market_fixture(device='cpu',ticks=17,listings=7):
     torch.manual_seed(37);c=len(CATALOG)
     raw=torch.rand((ticks,listings,c),device=device);known=torch.rand_like(raw)>.1
     source=torch.arange(ticks,device=device)[:,None].expand(-1,listings)
-    bank=SimpleNamespace(tensors={'source':source,'ids':source,'clocks':torch.arange(ticks,device=device)},
-        _values=lambda rows,ids,clock,columns:(raw.index_select(0,clock[0]).transpose(0,1),known.index_select(0,clock[0]).transpose(0,1)))
+    selections={}
+    def fetch(rows,ids,clock,columns):
+        key=tuple(columns)
+        if key not in selections:selections[key]=torch.tensor(columns,device=device,dtype=torch.long)
+        select=selections[key]
+        return raw.index_select(0,clock[0]).index_select(-1,select).transpose(0,1),known.index_select(0,clock[0]).index_select(-1,select).transpose(0,1)
+    bank=SimpleNamespace(tensors={'source':source,'ids':source,'clocks':torch.arange(ticks,device=device)},_values=fetch)
     mark=torch.full((ticks,listings),10.,device=device,dtype=torch.float64)
     item=SimpleNamespace(device=torch.device(device),resident_features=bank,
         tensors={'mark':mark,'bid':mark-.01,'ask':mark+.01,'quote_valid':torch.ones_like(mark,dtype=torch.bool),
@@ -78,12 +83,15 @@ def test_time_batch_matches_sequential_gpu_all_heads_and_sizes():
     from research.vectorized_backtest.v60.network import NetworkPlan
     from research.vectorized_backtest.v60.network_cuda import market_batch
     members=sample(np.random.default_rng(93),5);members+=members[:2]
-    b=len(members);t,u,c=4,37,len(CATALOG)
+    from research.vectorized_backtest.v60.feature_layout import WIDTH
+    b=len(members);t,u,c=4,137,WIDTH
     plan=NetworkPlan(members,'cuda');plan.prepare(b,u)
     torch.manual_seed(117)
     values=torch.rand((t,u,3*c),device='cuda')*.8-.4
     valid=torch.rand((t,u,c),device='cuda')>.15;values[...,2*c:]=valid.float()
-    membership=torch.rand((t,u),device='cuda')>.1
+    entry_indices=torch.tensor([[1,65,136],[0,64,130],[2,66,129],[3,67,128]],device='cuda',dtype=torch.int32)
+    membership=torch.zeros((t,u),device='cuda',dtype=torch.bool)
+    membership.scatter_(1,entry_indices.long(),True)
     data=SimpleNamespace(resident_features=SimpleNamespace(tensors={'clocks':torch.arange(t,device='cuda')}),tensors={'membership':membership})
     p=torch.zeros((1,b,u,9),device='cuda',dtype=torch.float64);opened=p[...,0].clone()
     plan.project=lambda data,index:(values.index_select(0,index.reshape(1))[0],valid.index_select(0,index.reshape(1))[0])
@@ -92,7 +100,7 @@ def test_time_batch_matches_sequential_gpu_all_heads_and_sizes():
         expected.append(plan.signals(data,torch.tensor(i,device='cuda'),p,opened,p[:,:1,:,0]).clone()[0])
         sizes.append(plan.ratios.clone()[0])
     work=torch.empty((t,plan.total_nodes,u),device='cuda');known=torch.empty_like(work,dtype=torch.bool)
-    actual,ratios=market_batch(plan,values,valid,membership,work,known)
+    actual,ratios=market_batch(plan,values,valid,membership,work,known,entry_indices)
     torch.testing.assert_close(actual,torch.stack(expected),rtol=0,atol=0)
     torch.testing.assert_close(ratios,torch.stack(sizes),rtol=0,atol=0)
     plan.close()
