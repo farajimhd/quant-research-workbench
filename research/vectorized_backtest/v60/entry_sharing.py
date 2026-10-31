@@ -1,4 +1,4 @@
-"""Sound entry-sharing eligibility, including implicit operator state reads."""
+"""Exact sharing of market-only action and sizing graphs."""
 import json
 from .genome import MARKET_INPUTS,INPUTS,OPS
 
@@ -6,9 +6,8 @@ VERSION='market-only-all-heads-v4'
 
 
 def independent(network):
-    # Decision bridges read OPENED directly in both CPU and CUDA evaluators.
-    # Even a zero-age bridge is conservatively kept individual. Scan all nodes:
-    # validated graphs include the sizing head as well as the action head.
+    # Scan sizing and action nodes. Nonzero age bridges and reserved state
+    # sources cannot enter the market-only engine.
     for node in network.nodes:
         if node.op not in OPS or (node.op=='decision' and node.bias!=0):return False
         if any(s<0 or MARKET_INPUTS<=s<INPUTS for s in node.sources):return False

@@ -149,7 +149,8 @@ def test_double_buffer_packets_equal_independent_inference():
 
 
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
-def test_pipelined_financial_replay_matches_sequential_signals(monkeypatch):
+@pytest.mark.parametrize('journal_capacity',[None,112])
+def test_pipelined_financial_replay_matches_sequential_signals(monkeypatch,journal_capacity):
     from unittest.mock import patch
     from research.vectorized_backtest.v60.genome import Individual,Network,Neuron,STAGES
     from research.vectorized_backtest.v60.policy import Policy
@@ -158,7 +159,7 @@ def test_pipelined_financial_replay_matches_sequential_signals(monkeypatch):
     from research.vectorized_backtest.v60.order_replay import replay
     from research.vectorized_backtest.v60.episodes import Episodes
     from research.vectorized_backtest.v60.evaluator import Execution
-    members=[Individual({s:Network((Neuron((ALLOWED[0],),(1.,),.5 if s=='entry' else -2.),)) for s in STAGES},
+    members=[Individual({s:Network((Neuron((ALLOWED[0],),(1.,),.5 if s in ('entry','exit') else -2.),)) for s in STAGES},
         Policy(stop_fraction=.2,target_fraction=.5,swing_left=0,swing_right=0),{}).validate()]*2
     def run(pipeline):
         monkeypatch.setenv('V60_INFERENCE_PIPELINE',str(pipeline))
@@ -180,7 +181,7 @@ def test_pipelined_financial_replay_matches_sequential_signals(monkeypatch):
                     ids=torch.zeros((t,1,u),device='cuda',dtype=torch.long),columns=torch.zeros(b,device='cuda',dtype=torch.long),
                     limits=torch.zeros((1,b,1,5),device='cuda'),ticker_state=ticker,bids=item.tensors['bid'][:,None,None],
                     asks=item.tensors['ask'][:,None,None],quote_valid=valid,capacity=cap,execution=Execution(),episodes=ep,
-                    provide=provide,progress=None,block=8,gate=None,backend='compile')
+                    provide=provide,progress=None,block=8,gate=None,backend='compile',record_capacity=journal_capacity)
             return p.cpu(),a.cpu(),result,ep.export()
         finally:plan.close()
     before=run(0);after=run(1)

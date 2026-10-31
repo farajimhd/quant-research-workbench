@@ -6,15 +6,6 @@ from .genome import INPUTS,MARKET_INPUTS,STAGES,OPS
 from research.vectorized_backtest.v60.features import CATALOG
 from .config import MAX_NODES,FAN_IN,STATES
 
-def state_values(position,previous,opened,clock,feedback):
-    q,avg,stop,_,_,adds,last,_,_=position.unbind(-1);held=q>1e-12
-    known_price=torch.isfinite(previous)&(previous>0)
-    values=(held.to(torch.float64),torch.where(held&known_price,previous/avg.clamp_min(1e-12)-1,0.),
-        torch.where(held,(clock-opened)/3600,0.),torch.where(held&known_price,q*previous/1000,0.),
-        torch.where(held,(avg-stop)/avg.clamp_min(1e-12),0.),adds/20,
-        torch.where(held,(clock-last)/300,0.))
-    return torch.cat((torch.stack(values,-1).to(torch.float32),feedback[None]),-1).tanh()
-
 def outcome_values(before,after,price,signals,ratios,feedback):
     return feedback  # V60 exposes no previous-action inputs.
 
@@ -35,20 +26,18 @@ class NetworkPlan:
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in packed['values']]
         self.operations=torch.as_tensor(packed['operations'],device=device)
         self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
-        # Explicit inputs alone do not capture decision bridges' OPENED reads.
+        # Market-only graph equivalence includes action and sizing outputs.
         from .entry_sharing import representatives,action_representatives
         entry=representatives(members)
-        self.action_representatives=torch.tensor(action_representatives(members),device=device,dtype=torch.int32)
+        action_reps=np.asarray(action_representatives(members),dtype=np.int32)
+        self.action_representatives=torch.as_tensor(action_reps,device=device)
         self.entry_representatives=torch.tensor(entry,device=device,dtype=torch.int32)
         from .genome import MARKET_INPUTS,INPUTS
-        masks=[]
-        for member in members:
-            used=set()  # Reserved ABI slots are never read by V60 inference.
-            used.update(s-MARKET_INPUTS for net in member.networks.values() for node in net.nodes for s in node.sources if MARKET_INPUTS<=s<INPUTS)
-            masks.append(sum(1<<s for s in used))
-        self.state_used=torch.tensor(masks,device=device,dtype=torch.int32)
-        # Execute long action graphs first; genotype and output order stay intact.
-        self.cuda_network_order=torch.as_tensor(np.argsort(-packed['values'][3],kind='stable').astype(np.int32),device=device)
+        # Only representative action graphs need a CUDA program. pack() reads
+        # their results for duplicates; genotype offsets and output order stay intact.
+        representatives_mask=(action_reps==np.arange(len(members))[:,None]).reshape(-1)
+        order=np.argsort(-packed['values'][3],kind='stable').astype(np.int32)
+        self.cuda_network_order=torch.as_tensor(order[representatives_mask[order]],device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         names={f.name:i for i,f in enumerate(CATALOG)}
         self.quote_columns=torch.tensor([names[n] for n in ('market.bid_relative','market.ask_relative',
@@ -159,7 +148,7 @@ class NetworkPlan:
                 self.entry_allowed=torch.nn.functional.pad(self.entry_allowed,(0,position.shape[2]-len(self.entry_allowed)),value=False)
             from .network_cuda import signals
             return signals(self,v,valid,position,opened,previous,index,out)
-        states=self.position_states.transpose(1,2);rows=[]
+        rows=[]
         for b,m in enumerate(self.members):
             actions=[]
             for action,stage in enumerate(STAGES):
@@ -169,11 +158,11 @@ class NetworkPlan:
                     terms=[]
                     for source,w in zip(n.sources,n.weights):
                         if w==0 and n.op in ('tanh','conv','identity'):continue
-                        if source<0:x=self.memory[base-source-1];mask=self.memory_known[base-source-1]
+                        if source<0:raise ValueError("Delayed sources are forbidden")
                         elif source<MARKET_INPUTS:
                             channel=source//len(CATALOG);column=self.lookup[source%len(CATALOG)]
                             x=v[:,channel*len(self.columns)+column];mask=valid[:,column] if channel<2 else torch.zeros_like(ok)
-                        elif source<INPUTS:x=states[b,:,source-MARKET_INPUTS];mask=torch.zeros_like(ok)
+                        elif source<INPUTS:raise ValueError("Position inputs are forbidden")
                         else:x=outputs[source-INPUTS];mask=masks[source-INPUTS]
                         term=x*float(np.float32(w));terms.append(term);z=z+term;ok=ok|(mask if w!=0 else False)
                     from .operators import evaluate

@@ -1,4 +1,4 @@
-"""Ragged recurrent graphs: memory and current-clock scratch stay separate."""
+"""Market-only feed-forward graphs with exact ordered edge arithmetic."""
 import torch
 import triton as tr
 import triton.language as tl
@@ -6,50 +6,27 @@ import triton.language.extra.cuda.libdevice as libdevice
 from .config import FAN_IN,STATES
 
 @tr.jit
-def state_kernel(P,OPENED,PREVIOUS,CLOCK,FEEDBACK,USED,OUT,U:tl.constexpr,STATES:tl.constexpr,BLOCK:tl.constexpr):
-    # Share position loads/calculations across channels for each listing tile.
-    member=tl.program_id(0);u=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=u<U
-    clock=tl.load(CLOCK).to(tl.float64)
-    q=tl.load(P+(member*U+u)*9,live,0);held=q>1e-12
-    avg=tl.load(P+(member*U+u)*9+1,live,1);stop=tl.load(P+(member*U+u)*9+2,live,0)
-    adds=tl.load(P+(member*U+u)*9+5,live,0);last=tl.load(P+(member*U+u)*9+6,live,0)
-    opened=tl.load(OPENED+member*U+u,live,0);price=tl.load(PREVIOUS+u,live,0)
-    known_price=(price==price)&(tl.abs(price)<float('inf'))&(price>0)
-    for state in tl.static_range(STATES):
-        if (tl.load(USED+member)&(1<<state))!=0:
-            if state==0:x64=held.to(tl.float64)
-            elif state==1:x64=tl.where(held&known_price,price/tl.maximum(avg,1e-12)-1.,0.)
-            elif state==2:x64=tl.where(held,(clock-opened)/3600.,0.)
-            elif state==3:x64=tl.where(held&known_price,q*price/1000.,0.)
-            elif state==4:x64=tl.where(held,(avg-stop)/tl.maximum(avg,1e-12),0.)
-            elif state==5:x64=adds/20.
-            elif state==6:x64=tl.where(held,(clock-last)/300.,0.)
-            else:x64=tl.load(FEEDBACK+(member*U+u)*(STATES-7)+state-7,live,0).to(tl.float64)
-            x=2./(1.+tl.exp(2.*-x64.to(tl.float32)))-1.
-            tl.store(OUT+(member*STATES+state)*U+u,x,live)
-
-
-@tr.jit
 def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base,member,source,enabled,u,live,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr):
-    delayed=source<0;market=(source>=0)&(source<3*C)
-    state=(source>=3*C)&(source<3*C+STATES)
-    offset=tl.where(market,source,tl.where(state,member*STATES+source-3*C,base+source-3*C-STATES))
-    pointer=tl.where(market,V,tl.where(state,POSITION_STATES,CURRENT))
+    # Construction forbids reserved state slots and delayed sources. Only
+    # current market channels and preceding nodes can reach this kernel.
+    market=source<3*C
+    offset=tl.where(market,source,base+source-3*C-STATES)
+    pointer=tl.where(market,V,CURRENT)
     value=tl.load(pointer+offset*U+u,enabled&live,0)
     known_pointer=tl.where(market,VALID,CURRENT_KNOWN)
     known_offset=tl.where(market,source%C,offset)
-    known=tl.load(known_pointer+known_offset*U+u,enabled&~state&live,False)&(~market|(source<2*C))
+    known=tl.load(known_pointer+known_offset*U+u,enabled&live,False)&(~market|(source<2*C))
     return value,known
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0,PROGRAMS:tl.constexpr=0):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     time_index=0
     program=tl.program_id(0)
     if TIME_COUNT>1:
-        time_index=program//(MEMBERS*5*TILES)
-        program=program%(MEMBERS*5*TILES)
+        time_index=program//(PROGRAMS*TILES)
+        program=program%(PROGRAMS*TILES)
         V+=time_index*VALUE_WIDTH*U;VALID+=time_index*KNOWN_WIDTH*U
         WORK+=time_index*NODES*U;KNOWN+=time_index*NODES*U
         MEMORY=WORK;MEMORY_KNOWN=KNOWN
@@ -76,7 +53,7 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
     tl.store(OUT+(member*5+action)*U+u,False,live)
     if tl.sum(active.to(tl.int32),0)>0:
         # V60 has no delayed edges or action feedback. Only eligible entry
-        # listings and held management listings can affect this transition.
+        # listings and all market-only management heads are evaluated.
         # Keep arithmetic/order identical on active lanes; avoid scratch/feature
         # traffic for the other listings in an otherwise active CUDA tile.
         live=active
@@ -186,7 +163,7 @@ def signals(plan,values,valid,position,opened,previous,index,out=None):
     # No state projection kernel: model input is exclusively market data.
     scheduled=not owned and block in (32,64,128)
     tiles=tr.cdiv(owned_k,block)
-    grid=(b*5*tiles,) if scheduled else (b,5,tiles)
+    grid=(plan.cuda_network_order.numel()*tiles,) if scheduled else (b,5,tiles)
     workspace_kernel[grid](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,plan.entry_allowed,plan.action_representatives,plan.memory,plan.memory_known,plan.ratios,
         plan.workspace,plan.known,plan.buffer_phase,actions,opened,index,owners if owned else plan.sources,owned,owned_k,u,len(plan.columns),len(STATES),FAN_IN,block,
@@ -224,10 +201,10 @@ def market_batch(plan,values,valid,membership,workspace,known):
     actions=torch.empty((t,b,5,u),device=values.device,dtype=torch.bool)
     ratios=torch.ones((t,b,u,3),device=values.device,dtype=torch.float64)
     block=64;tiles=tr.cdiv(u,block)
-    workspace_kernel[(t*b*5*tiles,)](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
+    workspace_kernel[(t*plan.cuda_network_order.numel()*tiles,)](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
         plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,membership,plan.action_representatives,workspace,known,ratios,
         workspace,known,plan.buffer_phase,actions,plan.buffer_phase,plan.buffer_phase,plan.sources,False,u,u,len(plan.columns),len(STATES),FAN_IN,block,
-        plan.cuda_network_order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],num_warps=2,enable_fp_fusion=False)
+        plan.cuda_network_order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],plan.cuda_network_order.numel(),num_warps=2,enable_fp_fusion=False)
     out=torch.empty((t,b,u),device=values.device,dtype=torch.int16)
     pack[(tr.cdiv(t*b*u,256),)](actions,out,plan.buffer_phase,plan.action_representatives,ratios,t*b*u,u,256,b)
     return out,ratios

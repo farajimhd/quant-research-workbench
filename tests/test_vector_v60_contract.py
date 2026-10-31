@@ -164,6 +164,16 @@ class MinimalExecution(unittest.TestCase):
         self.assertEqual(self.p[...,0].item(),100.)
         self.assertEqual(self.p[...,7].item(),-1.)
 
+    def test_sell_after_partial_buy_is_bounded_by_holdings_and_quote_size(self):
+        self.tick(capacity=30.)
+        self.assertEqual(self.p[...,0].item(),30.)
+        self.tick(signal=2,capacity=12.)
+        self.assertEqual(self.p[...,0].item(),18.)
+        self.tick(signal=2,capacity=100.)
+        self.assertEqual(self.p[...,0].item(),0.)
+        self.tick(signal=2,capacity=100.)
+        self.assertEqual(self.p[...,0].item(),0.)
+
     def test_entry_stop_rule_does_not_add_a_spread_risk_gate(self):
         self.tick(bid=9.,ask=10.)
         self.assertEqual(self.p[...,0].item(),100.)
