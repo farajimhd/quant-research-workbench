@@ -12,7 +12,7 @@ def ticker_totals(metrics,item):
             raise ValueError('Position cashflow attribution changed')
         totals=np.bincount(listings,weights=profits,minlength=width)
         if not np.isclose(totals.sum(),metrics['net_pnl'][i],rtol=1e-10,atol=1e-7):
-            raise ValueError('Completed plus open realized cashflows do not reconcile')
+            raise ValueError(f'Completed plus open realized cashflows do not reconcile: candidate_index={i}, net_pnl={metrics["net_pnl"][i]:.17g}, position_cashflows={totals.sum():.17g}, difference={totals.sum()-metrics["net_pnl"][i]:.17g}')
         used=np.unique(listings)
         results.append({item.receipt['listings'][int(item.listing_ids[j])]['listing_id']:float(totals[j]) for j in used})
     return results

@@ -4,6 +4,27 @@ from research.vectorized_backtest.v59.orders import transition, require_complete
 
 
 class PersistentOrders(unittest.TestCase):
+    def test_quote_liquidity_dust_cannot_create_an_untracked_fee(self):
+        done,record=self.tick(capacity=5.684341886080802e-14)
+        self.assertFalse(done.item())
+        self.assertEqual(self.p[...,0].item(),0.)
+        self.assertEqual(self.p[...,7].item(),0.)
+        self.assertEqual(self.o[...,3].item(),0.)
+        self.assertEqual(self.o[...,14].item(),0.)
+        self.tick(signal=0,capacity=30.)
+        self.assertEqual(self.p[...,0].item(),30.)
+        self.assertEqual(self.p[...,7].item(),-1.)
+        self.tick(signal=2,capacity=100.)
+        self.assertEqual(self.p[...,7].item(),-2.)
+
+    def test_real_fractional_partial_fills_are_not_rounded_away(self):
+        self.tick(capacity=1.e-9)
+        self.assertEqual(self.p[...,0].item(),1.e-9)
+        self.assertEqual(self.p[...,7].item(),-1.)
+        self.tick(signal=2,capacity=1.)
+        self.assertEqual(self.p[...,0].item(),0.)
+        self.assertEqual(self.p[...,7].item(),-2.)
+
     def test_reduce_cancels_only_unfilled_remainder_and_preserves_fees(self):
         self.tick(capacity=30.)
         done,record=self.tick(signal=8,capacity=100.)
@@ -200,6 +221,7 @@ class ReplayPath(unittest.TestCase):
                 previous=price,membership=torch.rand(shape)>.1,swing=torch.full_like(price,10.5),bid=price,ask=price+.02,
                 quote_valid=torch.rand(shape)>.3,capacity=torch.randint(0,30,(*shape,2)).double(),clock=torch.tensor(float(clock),dtype=torch.float64),
                 terminal=torch.tensor(clock>40),entry_dollars=1000.,add_dollars=200.,fee_per_share=.005,minimum_order_fee=1.,cost=.0002,minimum_order_dollars=0.)
+            args['capacity'][...,::3,:]=5.684341886080802e-14
             expected=transition(p,o,mark=price,observed=torch.ones(shape,dtype=torch.bool),**args)
             names=('signals','ratios','policy','previous','membership','swing','bid','ask','quote_valid','capacity','clock','terminal')
             actual=gpu(pg,og,*(args[n].cuda() for n in names),1000.,200.,.005,1.,.0002,0.)
