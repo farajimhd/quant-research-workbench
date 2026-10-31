@@ -26,6 +26,70 @@ The TASK-0223/V50 handoff is historical and is not authority for the active V59 
 6. Initial stops must be positive and below the intended entry. Trailing stops may subsequently exceed entry. Re-entry waits three seconds after final liquidation. The $300 risk and 20% distance selection/execution caps remain disabled.
 7. Malformed/nonfinite orders are explicit contract errors. Missing valid quotes and exhausted liquidity are pending states, not fabricated fills or fitness exclusions. Terminal incompleteness is a data/execution-completion issue, not silent candidate removal.
 8. Causal data and order-event ordering must be documented. Same-candle execution must not use information from after the decision boundary or reuse earlier consumed liquidity.
+9. V60 must have one construction authority used by every creation path. Constructors request permitted feature/period/output handles from that authority, never propose arbitrary catalog IDs and rely on repeated downstream rejection. Repair numerical proposals within their declared semantics before validation; expose every repair. Validation remains mandatory for external, restored or corrupt inputs.
+10. Rejected or duplicate construction proposals never reduce the requested population: replace each before replay. A population is either complete and validated or is not submitted. Full means6,144 accepted unique founders and1,024 accepted unique successors under the current campaign dimensions, not6,144 proposals with some removed. Never fill slots with duplicate real candidates, silently smaller networks, copied financial results or counted GPU padding.
+
+## V60 final implementation plan — self-contained refactor
+
+Status: agreed implementation plan only. This documentation update does not authorize or perform a run restart or source refactor. The V59 findings above/below remain evidence about the pinned baseline. V60 will implement the agreed revisions without making its runtime depend on old strategy versions.
+
+### 1. Establish a self-contained package and versioned contracts
+
+Create `research/vectorized_backtest/v60/` with local feature schema/authority, causal feature/history preparation, genome and typed construction, reproduction/selection, network projection/CPU/GPU evaluators, strategy intent, minimal execution/position accounting, objective, replay scheduling/cache/checkpoint, launcher and progress UI modules. Copy only necessary reviewed code from previous versions; record source commit/path, changed semantics and accompanying tests. Copying is a starting point, not evidence of correctness. Remove dead compatibility branches and stale historical launch assumptions.
+
+No runtime imports, dynamic imports, subprocess module calls or path-based source loading from `research.vectorized_backtest.v1..v59`, or experimental `research.rl_trading.v*`. Move required mathematical/catalog/feature functionality into V60 with its own version and tests. Standard dependencies and stable shared infrastructure (for example `research.mlops` environment/runtime utilities and canonical data services) may remain explicit dependencies; list them. Do not duplicate or bypass the repository's canonical historical-data authority. Input manifests/data may be reused only when exact semantics/provenance match; a V18-named artifact path alone does not make the V60 executable depend on V18 code.
+
+Require a clean deployment smoke test in which past research-version directories are unavailable. Static import checks alone do not prove independence; exercise launcher, preparation, reproduction, CPU replay and progress reads in that environment. Generated artifacts remain under the applicable TradingML runtime root.
+
+### 2. Implement the single construction authority
+
+Make one immutable, versioned registry authoritative for allowed feature IDs and channels, raw units, construction caps and their basis, transforms, valid periods/windows, history prerequisites, missing-data rules, state visibility, output-price constraints and structural budgets. Integrate rather than duplicate rules in templates/sampling/mutation/crossover/restoration/packing. Use precomputed permitted pools and compatible substitutions; avoid retry-until-allowed feature sampling.
+
+Enforce the524 allowed /433 forbidden pinned-feature proposal, removing V7 and explicit market-time channels. Keep current position state without recurrence. Replace V7 support-bounce templates with causal swings. Preserve causal pivot confirmation; do not silently change the unresolved swing missing-bar definition. Freeze a training-only coverage review of engineering caps/history availability before using them to generate the population. Any added swing-high family gets new IDs and verified preparation, not a relabeled old field.
+
+Compile each candidate's dependency certificate and reject unsupported period/history requests before replay allocation. Prefer direct in-range generation for founders and fresh immigrants; clamp/repair permitted numerical mutation/crossover proposals. An invalid structural operation selects another compatible operation. Forbidden feature references are not valid proposal handles. Do not change a candidate during financial evaluation when history is absent; abstain with a recorded reason.
+
+### 3. Guarantee complete accepted populations
+
+Use a shared slot-filling builder for founders, fresh immigrants, crossover children, mutations and any compatibility migration explicitly approved later:
+
+`allocate slot -> construct from permitted choices -> bounded semantic repair -> validate dependency/graph/output contracts -> canonical deduplication -> accept`, repeating replacement until the slot has an accepted candidate.
+
+Rejection reasons include invalid external input, unrepaired constraints, duplicate genotype and proven dead construction. A valid rare or losing strategy is not automatically invalid. Proposal filtering is not retrospective replacement based on bad replay profit. Data failures or incomplete financial replays trigger recovery/failure diagnostics, not replacement of inconvenient candidates.
+
+Replacement hierarchy: repair the proposal; try a new legal proposal through the intended operator; if the bounded operator attempt budget is exhausted, fill the slot from a valid fresh generator and explicitly report the operator-to-fresh substitution. Preserve total population and node limits. Record requested versus realized operator quotas so fallback is not hidden. Each slot/attempt receives its own deterministic RNG key; concurrency cannot change candidates or IDs. Allocate accepted serial IDs only after acceptance, while retaining separate proposal IDs for telemetry.
+
+Before scheduling replay, assert exact accepted count, unique canonical identities, valid schemas and complete slot ownership. Batch planning must cover every accepted candidate exactly once (or reuse a specifically valid identical receipt), with no missing or duplicate indices. Physical GPU padding is masked and never a candidate or selection result. An unrecoverable inability to construct a legal unique population must fail explicitly with its saved build state; it must not launch a partial population, hang forever or weaken the bounds to claim success. Resume continues unfilled slots deterministically.
+
+### 4. Implement candidate decisions and minimal close-time execution
+
+Use feed-forward graphs with market/current-position inputs and candidate-defined action, size, limit, stop and target outputs. Express prices causally relative to a specified current reference and convert them to finite positive currency prices. Define compatible initial-stop/entry/target relationships before accepting a request. Keep the1024-node total/per-action envelope; no recurrent network edges.
+
+Separate strategy feasibility/arbitration from execution. Repair the current-membership swing indexing and route among admissible branch requests, with deterministic ownership for pending/held positions. The executor runs at candle-close boundaries: buys at valid ask<=limit and sells at valid bid>=limit, capped by remaining displayed size/inventory, with exact fees and conservation. No hidden old risk caps, intrabar neural decisions or invented fills.
+
+Keep partial fills and outstanding-order policy deterministic. Specify remainder lifetime, replacement precedence, target reduction/full-exit semantics and which candidate-defined sell limit governs protective exits before implementation. Retain the three-second re-entry wait and observable actual position quantity/weighted entry/P&L/age/stop/target. These contracts must be implemented during optimization wherever they affect realized results, rather than added only after evolution.
+
+### 5. Rebuild reproducible evolution and objective wiring
+
+Keep the agreed logarithmic objective (ticker2,000/session5,000,alpha.1;0.5 ticker+0.5 session−summed account DD), training/validation split and25% ticker-specialist /75% global parent-selection policy. Do not silently add a breadth penalty, positive-only filter or restored risk cap. Make active-parent eligibility and the specialist objective visible. Use the one authority on every reproduction route and preserve full populations under fallback.
+
+Implement coherent routing/veto/block and existing approved crossovers with budget-aware parent/operator choices, canonical deduplication and reproducible lineage. Resolve/report scheduled versus realized mutation and sibling/fallback proportions. Keep validation strictly display-only, with no input to construction-cap tuning, reproduction or RNG decisions. Price/input/feature changes require new identities and fresh financial evaluation; no V59 score reuse under changed semantics. Do not assume old genomes can be restored under the new schema.
+
+### 6. Add complete diagnostics and preserve the progress interface
+
+Expose proposal, repaired, rejected, duplicate, replacement, accepted and outstanding-slot counts by operator, generation and reason. For each candidate/session distinguish raw proposals, strategy abstention, accepted intents, liquidity/limit waits, fills and positions. Reconcile totals; unknown/missing metrics are not zero. Group by technique, family and origin as before, with candidate/session/position drill-down and sorting.
+
+Retain separate training/validation rankings, counterpart metrics, current-versus-complete coverage, per-session replay and generation bars, stable column widths, elapsed/average times and ETAs. The observer must use background reads and immutable published snapshots; no training replay or expensive synchronous work on a keypress. Copy/adapt the required progress code into V60 rather than importing its older implementation.
+
+### 7. Verify the actual runnable path and optimize it
+
+Test forbidden inputs across every channel/path; caps/endpoints; supported history; first admission; swing/branch readiness; filled population under forced rejection/duplicate/operator exhaustion; deterministic parallel/resumed construction; canonical identities; output-price constraints; no recurrence; quote/limit/size matching; partials/fees; terminal coverage; score reconciliation; validation isolation; eager/captured/overflow-retry state parity and UI snapshots. Include frozen representative real candidates/session data, not just mocks. Report deliberate financial differences separately from unchanged-case parity.
+
+Use bounded concurrency, host prefetch, resident/precomputed market-only features, asynchronous publication and reproduction during validation. Profile full generation and total two-session throughput, including loading, capture, replay, terminal completion, reproduction, metrics and publication. Target roughly45 seconds per1,024-candidate session replay on workstation; measure initial and representative later/larger networks. No smaller cohort/network/history or altered financial behavior to meet timing, and no long qualification campaign. Report unmet targets honestly.
+
+### 8. Deliver and deploy only after acceptance
+
+Review task-owned diff, validate the isolated V60 package, commit/push on laptop, then deploy a hash-verified immutable workstation copy. Preserve existing run checkpoints/receipts and do not modify the active V59 deployment. A V60 launch must use a new runtime identity and the agreed full dimensions; transition/start is a separate authorized action after implementation and bounded verification. This plan update itself starts no run.
 
 ### Minimal design to implement (not current V59)
 
