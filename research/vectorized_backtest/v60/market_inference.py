@@ -60,7 +60,14 @@ class Inference:
         base=self.base;self.b=len(base.members)
         # This workspace is additional to the existing one-clock plan. Never
         # reduce candidates, nodes or listings to fit a time batch.
-        self.width=max(1,min(8,(256*2**20)//max(1,base.total_nodes*u*5)))
+        budget=256*2**20
+        if data.device.type=='cuda':
+            # Two resident session lanes share the GPU. Reserve at most one
+            # eighth of currently free memory per producer, capped at 1 GiB.
+            # The old fixed 256 MiB allowance reduced real 1024-member batches
+            # to one clock even when the workstation had ample free memory.
+            budget=min(2**30,torch.cuda.mem_get_info(data.device)[0]//8)
+        self.width=max(1,min(8,budget//max(1,base.total_nodes*u*5)))
         self.work=torch.empty((self.width,base.total_nodes,u),device=data.device)
         self.known=torch.empty_like(self.work,dtype=torch.bool)
 
