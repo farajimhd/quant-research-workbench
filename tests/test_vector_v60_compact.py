@@ -120,3 +120,24 @@ def test_compact_probe_reader_and_loader(tmp_path):
     result=load_probe(path,manifest)
     assert result['inputs'].shape[-1]==3*WIDTH+len(STATES) and result['compact_layout']
     assert coverage(np.zeros((2,WIDTH)),np.ones((2,WIDTH),bool),COLUMNS)['observed'].tolist()==[2]*WIDTH
+
+@pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
+def test_management_skips_only_never_eligible_past_listings():
+    from research.vectorized_backtest.v60.genome import sample
+    from research.vectorized_backtest.v60.network import NetworkPlan
+    from research.vectorized_backtest.v60.market_inference import Inference
+    item=market_fixture('cuda',ticks=9,listings=137)
+    membership=item.tensors['membership'];membership.zero_()
+    membership[:3,120]=True;membership[3:6,2]=True;membership[6:,70]=True
+    plan=NetworkPlan(sample(np.random.default_rng(42),2),'cuda');plan.prepare(2,137)
+    engine=Inference(plan,item,137);p=torch.zeros((1,2,137,9),device='cuda',dtype=torch.float64)
+    for start in (0,4):
+        actual,sizes,*_=engine(torch.arange(start,start+4,device='cuda'))
+        for offset in range(4):
+            tick=start+offset;possible=membership[:tick+1].any(0)
+            expected=plan.signals(item,torch.tensor(tick,device='cuda'),p,p[...,0],p[...,0])[0]
+            torch.testing.assert_close(actual[offset,:,possible],expected[:,possible],rtol=0,atol=0)
+            torch.testing.assert_close(sizes[offset,:,possible],plan.ratios[0,:,possible],rtol=0,atol=0)
+            assert not actual[offset,:,~possible].any()
+    assert engine.management_counts.tolist()==[1,1,1,2,2,2,3,3,3]
+    plan.close()

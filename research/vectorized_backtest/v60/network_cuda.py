@@ -20,7 +20,7 @@ def fetch_value(V,VALID,POSITION_STATES,OLD,OLD_KNOWN,CURRENT,CURRENT_KNOWN,base
 
 
 @tr.jit
-def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,CROSS_MAP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0,PROGRAMS:tl.constexpr=0,ENTRY_IDS=None,ENTRY_K:tl.constexpr=0,COMPACT_ENTRY:tl.constexpr=False):
+def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS,THRESHOLD,SIZE_SOURCE,SIZE_WEIGHT,SIZE_BIAS,POSITION_STATES,ENTRY_ALLOWED,ENTRY_REP,CROSS_MAP,MEMORY,MEMORY_KNOWN,RATIOS,WORK,KNOWN,PHASE,OUT,OPENED,CLOCK,OWNER_IDS,OWNED:tl.constexpr,OWNED_K:tl.constexpr,U:tl.constexpr,C:tl.constexpr,STATES:tl.constexpr,FAN:tl.constexpr,BLOCK:tl.constexpr,ORDER,TILES:tl.constexpr,SORTED:tl.constexpr,TIME_COUNT:tl.constexpr=1,MEMBERS:tl.constexpr=0,NODES:tl.constexpr=0,VALUE_WIDTH:tl.constexpr=0,KNOWN_WIDTH:tl.constexpr=0,PROGRAMS:tl.constexpr=0,ENTRY_IDS=None,ENTRY_K:tl.constexpr=0,COMPACT_ENTRY:tl.constexpr=False,MANAGEMENT_IDS=None,MANAGEMENT_COUNTS=None,CAUSAL_MANAGEMENT:tl.constexpr=False):
     """One clock of scratch, directly indexed; no N-way register gathers."""
     time_index=0
     program=tl.program_id(0)
@@ -40,6 +40,9 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
         member=tl.program_id(0);action=tl.program_id(1);j=tl.program_id(2)*BLOCK+tl.arange(0,BLOCK)
     if COMPACT_ENTRY:
         u=tl.load(ENTRY_IDS+time_index*ENTRY_K+j,j<ENTRY_K,-1);live=(j<ENTRY_K)&(u>=0)&(u<U)
+    elif CAUSAL_MANAGEMENT:
+        count=tl.load(MANAGEMENT_COUNTS+time_index)
+        u=tl.load(MANAGEMENT_IDS+j,j<count,-1);live=(j<count)&(u>=0)&(u<U)
     elif OWNED:
         u=tl.load(OWNER_IDS+member*OWNED_K+j,j<OWNED_K,-1);live=(j<OWNED_K)&(u>=0)&(u<U)
     else:
@@ -197,19 +200,20 @@ def pack(A,OUT,PHASE,ENTRY_REP,RATIOS,COUNT:tl.constexpr,U:tl.constexpr,BLOCK:tl
     if MEMBERS==0 and tl.program_id(0)==0:tl.store(PHASE,tl.load(PHASE)+1)
 
 
-def market_batch(plan,values,valid,membership,workspace,known,entry_indices):
+def market_batch(plan,values,valid,membership,workspace,known,entry_indices,management_indices=None,management_counts=None):
     """Independent candle axis; one GPU graph traversal for an entire block."""
     t,u,width=values.shape;b=len(plan.members)
     values=values.transpose(1,2).contiguous();valid=valid.transpose(1,2).contiguous()
     actions=torch.empty((t,b,5,u),device=values.device,dtype=torch.bool)
     ratios=torch.ones((t,b,u,3),device=values.device,dtype=torch.float64)
-    actions[:,:,0].zero_()  # Unlisted entries are explicitly false.
+    actions.zero_()  # No management request before the first eligible entry candle.
     for order,compact,block in ((plan.cuda_entry_order,True,32),(plan.cuda_management_order,False,64)):
-        k=entry_indices.shape[1] if compact else u;tiles=tr.cdiv(k,block)
+        causal=not compact and management_indices is not None
+        k=entry_indices.shape[1] if compact else management_indices.numel() if causal else u;tiles=tr.cdiv(k,block)
         workspace_kernel[(t*order.numel()*tiles,)](values,valid,plan.sources,plan.weights,plan.edge_counts,plan.operations,plan.bias,plan.counts,plan.offsets,plan.threshold,
             plan.size_source,plan.size_weight,plan.size_bias,plan.position_states,membership,plan.action_representatives,plan.cross_map,workspace,known,ratios,
             workspace,known,plan.buffer_phase,actions,plan.buffer_phase,plan.buffer_phase,plan.sources,False,u,u,len(plan.columns),len(STATES),FAN_IN,block,
-            order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],order.numel(),entry_indices,k,compact,num_warps=1 if compact else 2,enable_fp_fusion=False)
+            order,tiles,True,t,b,plan.total_nodes,width,valid.shape[1],order.numel(),entry_indices,k,compact,management_indices,management_counts,causal,num_warps=1 if compact else 2,enable_fp_fusion=False)
     out=torch.empty((t,b,u),device=values.device,dtype=torch.int16)
     pack[(tr.cdiv(t*b*u,256),)](actions,out,plan.buffer_phase,plan.action_representatives,ratios,t*b*u,u,256,b)
     return out,ratios
