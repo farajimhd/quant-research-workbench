@@ -6,7 +6,7 @@ Design revision: 2026-10-31, following the user's clarification after the audit.
 
 ## V60 implementation register — 2026-10-31
 
-**Subsequent market-only revision in progress:** the user explicitly removed all
+**Subsequent market-only revision implemented; performance acceptance open:** the user explicitly removed all
 position feedback. This supersedes retained-position-input, held-head gating,
 age-gate and sticky-routing decisions below. V4 constructors forbid all position
 inputs and age gates; routing uses current market signals only. Quote-size fills,
@@ -16,6 +16,17 @@ Time-batched inference and chronological execution use bounded separate CUDA
 streams. The recorded v3 benchmarks below remain the comparison baseline;
 they are not evidence of v4 performance acceptance.
 
+V4 bounded workstation result (`bc037a06e`): 62.32/61.03 seconds for two
+concurrent 1,024-candidate sessions; 80.19 seconds until both sessions return,
+including loading. The identical cohort on the previous sequential engine took
+59.60/58.32 seconds. Both full financial arrays and order-content hashes match.
+Reproduction completed in 7.37 seconds with 1,024 successors. Thirty-five focused
+tests passed, including forced journal rollback and sell fills limited by actual
+holdings and displayed size. The first pipeline's 70.62/68.59 seconds improved,
+but the 45-second target and comparison against the old engine remain unmet.
+No full campaign was launched; qualification workers exited. See the V60 README
+for benchmark scope, source revision and artifact paths.
+
 The original V59 audit below is retained as historical evidence. Implementation
 is now in `research/vectorized_backtest/v60`; V59 has been stopped with receipts
 preserved. V60 is self-contained and is undergoing workstation qualification;
@@ -24,7 +35,7 @@ preserved. V60 is self-contained and is undergoing workstation qualification;
 | Finding | V60 disposition and remaining qualification |
 |---|---|
 | F01 | Entry swings use current membership. Boundary fixture passed. |
-| F02 | Routed entry chooses a stop/book-feasible branch before applying sticky ownership. Later-parent feasibility fixture passed. |
+| F02 | V4 routes on current market signals and book-feasible entry branches. Sticky position ownership is removed; routing never reads fills or holdings. Routed CPU/GPU and batched/scalar fixtures passed. |
 | F03 | Candidate buy/sell limit parameters, initial stop and target; same-close matching against the current displayed book. CPU/GPU limit and fill fixtures passed. |
 | F04 | Construction authority owns permitted inputs, bounds, history and dependencies. Strategy-side admission precedes a separate liquidity fill primitive; no age/risk admission caps. Admission reasons are published. |
 | F05 | Explicitly retain certified consecutive-second history semantics and readiness masks; do not fill gaps or reinterpret them as observed-bar counts. Unsupported history parameters cannot be constructed. Missing current history abstains, rather than inventing a stop. |
@@ -33,7 +44,7 @@ preserved. V60 is self-contained and is undergoing workstation qualification;
 | F08 | Terminal liquidation remains deterministic and size-limited. Incomplete coverage is a replay failure, never a candidate-level fitness exclusion. |
 | F09 | Fused device counters reconcile entry signals = accepted requests + disjoint abstentions, with separate limit/liquidity waits and first fills. Counters survive capture/overflow rollback and reach candidate details. Full-session reconciliation is an acceptance check. |
 | F10 | Stop fraction 1 is invalid. Entry calibration masks use the sampled stop/limit policy and current book. A valid strategy with no opportunities in the bounded probe is reported, not discarded based on profitability. Sizing activity remains observable through replay counters; calibration is not a full financial replay. |
-| F11 | Exit/add/reduce/stop heads now operate only while held; flat exit veto removed. Ordinary inputs remain explicitly optional/zero-filled with validity channels; a current known market ancestor is required. Crossing/decision/composition operators retain their separately defined masks. No blanket AND-mask change. |
+| F11 | V4 evaluates every management head from market inputs regardless of holdings. Execution alone ignores flat-position management signals; it cannot veto inference. Position inputs, age gates and prior-action feedback are forbidden by construction. Ordinary input validity and crossing/composition masks are preserved. |
 | F12 | Forbidden delay edits removed; legal six-way structural schedule is explicit. Exhausted parent/post-construction mutations receive fresh replacements. Full unique-population authority checks every output. Post-construction mutation remains on fresh proposals; parent-mutation fallbacks are separate. Intended and realized routes remain reported. |
 | F13 | Preserve zero fitness for no trades, but require a closed position somewhere in training for parenting. Expose parent eligibility separately from score rank; no positive-score gate. |
 | F14 | Preserve the 25% ticker-specialist / 75% global pathway and its explicit specialist reward-only objective. Account DD remains in global score; no silent substitution of summed ticker DD. |

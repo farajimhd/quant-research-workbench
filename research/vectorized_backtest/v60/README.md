@@ -13,8 +13,47 @@ stream. Execution consumes packets chronologically, still using quote sizes,
 candidate limits, partial fills, costs and position accounting. Execution never
 feeds results back into inference; replay results reach evolutionary selection
 through the unchanged objective. Two signal buffers bound memory/backpressure.
-GPU/CPU execution choice and the <45-second target require the new workstation
-profile. Earlier timings below describe the position-aware v3 baseline.
+Workstation profiling selected GPU execution: the existing vectorized CPU path
+was substantially slower in the bounded execution-only probe. The producer uses
+up to 1 GiB (also bounded by one eighth of currently free GPU memory), enabling
+four-clock batches in the measured workload. Candidate/node limits are unchanged.
+
+### Market-only qualification, 2026-10-31
+
+Same 1,024 graphs (512 templates + 512 random founders), Aug 13 and Aug 18,
+two concurrent workstation sessions; no outcome-based cohort selection:
+
+| Path | Aug 13 replay | Aug 18 replay | Both sessions returned, including loading |
+|---|---:|---:|---:|
+| Previous sequential engine, same market-only graphs | 59.60 s | 58.32 s | 76.58 s |
+| First market-only pipeline | 70.62 s | 68.59 s | reproduction failed on stale age-mutation weight |
+| Final four-clock pipeline (`bc037a06e`) | 62.32 s | 61.03 s | 80.19 s |
+
+The final pipeline is 11.4% faster than the first pipeline by mean replay time,
+but remains 4.6% slower than the previous sequential engine. **The <45-second
+target is not met. No full V60 campaign was started.** These are bounded
+two-session measurements, not qualification of all 24/12 sessions or evolved
+maximum-size networks. The initial six-times cohort was constructed; only the
+specified 1,024-member subset was replayed for this comparison.
+
+Exact financial arrays and order-content hashes match on both complete sessions.
+Reproduction now produces 1,024 successors in 7.37 s; final publication wait is
+0.015 s. Removing the interprocess GPU gate worsened replay to 76.24–76.73 s,
+so it remains enabled. A bounded trace attributed about 34% of sampled GPU
+kernel time to neural traversal and 23% to fills; projection/buffer work remains
+a material optimization area. Kernel-time sums are not additive wall-time
+percentages when streams overlap.
+
+Validation: 31 construction/execution/GPU tests plus four observer tests passed,
+including reserved-input rejection, history-independent routing, exact scalar/
+batched projection, forced journal retry and sell fills bounded by holdings and
+quote size. The removed age field's stale mutation weight was fixed, and the
+real reproduction path passed. Numerical graph duplicates no longer launch
+redundant CUDA programs; obsolete position-projection kernels were removed.
+
+Evidence on workstation:
+`D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v60/market-only-bc037a06e/profile/batch-1024-0-1024-mixed/profile.json`.
+Earlier timings below describe the preceding v3 qualification.
 
 Old V60 genomes have a different version and cannot be silently resumed as v4.
 The sequential market-only diagnostic path is selectable with
