@@ -2,6 +2,8 @@
 
 Audit date: 2026-10-31. Source baseline: `99fb181db501dbd3ed8c871be7f85ccb2f465b3a`.
 
+Design revision: 2026-10-31, following the user's clarification after the audit. The minimal close-time execution design below supersedes the earlier proposal to make candidates manage pending orders. Existing-code findings remain pinned to the source baseline; proposed interfaces are not deployed.
+
 ## Outcome and scope
 
 The current implementation does not yet satisfy the agreed strategy/execution contract. The principal problems are incomplete strategy visibility of admission conditions, a stale membership clock in swing projection, branch routing before feasibility, and the absence of limit orders. These are different from legitimate insufficient-liquidity waits. Moving existing checks without reviewing their semantics would preserve the problem.
@@ -17,13 +19,28 @@ The TASK-0223/V50 handoff is historical and is not authority for the active V59 
 ## Agreed contract
 
 1. Sampling and reproduction construct supported, structurally coherent strategies. They may not silently shrink networks, change the objective, discard valid founders, or screen on validation results.
-2. A strategy evaluates causal inputs and its actual position/order state at the requested candle boundary. It emits a valid order intent or an explicit abstention with reasons. Missing required history, invalid initial stop, cooldown and conflicting actions are resolved here, before submission.
+2. A feed-forward strategy evaluates completed-candle inputs and current position state at the exact candle-close boundary. It defines entry, exit, add and reduce requests, their sizing and limit prices, and stop-loss and profit-target prices. It emits an admissible request or an explicit abstention. No recurrent network connections are needed for position inputs maintained by the simulator.
 3. Execution receives accepted order intents. It does not independently apply strategy profitability, history, stop-distance, risk-budget or network conditions.
-4. Buy limits execute only at ask <= limit; sell limits only at bid >= limit. Unmarketable limits remain pending. Available displayed liquidity bounds partial fills and cannot be consumed twice by the same simulated account. Future fills cannot be guaranteed.
-5. The strategy receives partial fills, average execution price, outstanding quantity and order status; it can manage owned inventory and keep, amend or cancel the remainder. Cancellation is explicit, not an undocumented execution veto.
+4. Execution is minimal and runs at that same candle-close boundary, using the valid quote and remaining displayed size available by that boundary. Buy limits execute only at ask <= limit, at ask; sell limits only at bid >= limit, at bid. No future quote, arbitrary price substitution, same-snapshot liquidity reuse or extra execution-risk screening. A candle's last-trade close and its closing bid/ask are distinct: the agreed exact close **time** does not guarantee a fill at the last-trade close **price**.
+5. A deterministic controller owns outstanding orders, quantity conversion, partial fills, duplicate suppression, fees, cancellation/replacement and terminal handling. Candidates do not learn keep/cancel/amend protocols or partial-fill handling. Filled quantity and weighted entry cost update their position inputs at the next candle evaluation. The proposed standing remainder is checked at subsequent candle closes, never retroactively; its lifetime and deterministic supersession rules must be fixed and tested before implementation, rather than evolved or silently inferred.
 6. Initial stops must be positive and below the intended entry. Trailing stops may subsequently exceed entry. Re-entry waits three seconds after final liquidation. The $300 risk and 20% distance selection/execution caps remain disabled.
 7. Malformed/nonfinite orders are explicit contract errors. Missing valid quotes and exhausted liquidity are pending states, not fabricated fills or fitness exclusions. Terminal incompleteness is a data/execution-completion issue, not silent candidate removal.
 8. Causal data and order-event ordering must be documented. Same-candle execution must not use information from after the decision boundary or reuse earlier consumed liquidity.
+
+### Minimal design to implement (not current V59)
+
+| Layer | Responsibility | Excluded responsibility |
+|---|---|---|
+| Candidate, feed-forward | Action, requested size, candidate-defined limit, stop and target prices; may update permitted position levels | No order queue, partial-fill management, cancellation/amendment policy or recurrent hidden state |
+| Strategy boundary/controller | Check observable history/price feasibility, arbitrate conflicting actions/branches, enforce explicit cooldown and lifecycle rules, translate outputs into coherent intents | No invisible profitability/fitness filter or replacement stop invented after a fill |
+| Minimal executor | At candle close: side/limit compatibility, positive finite valid quote, available size, inventory conservation and fees; report fills | No intrabar neural replay, hidden $300/20% admission caps, network/history reevaluation or market-impact/queue model |
+| Deterministic position/order ledger | Maintain actual quantity, weighted entry, realized/unrealized P&L, age, stop, target and unfilled remainder | No optimization over order-management protocols |
+
+Price outputs should be represented as causal relative offsets/ratios and converted to positive finite currency prices by the controller. Do not add arbitrary raw-price identifiers to the existing searchable market catalog. For the current long-only strategy, initial stop must be below the intended entry; target is a profit level above its entry basis. Define how the stop is checked against allowed fills when a buy receives price improvement; do not silently move the candidate's stop. Level updates and request/fill ordering require explicit tests. Target distances may legitimately exceed100%; old policy fraction bounds are not automatically the new output bounds.
+
+The controller can deterministically turn a crossed stop/target into an exit/reduction request at a close; the next implementation must specify which candidate-defined sell limit applies. Stops must not be promised guaranteed fills when the available bid is below that limit. Decisions about remainder expiry, target reduction versus full exit and limit choice for protective exits are controller-contract work, not learned order-management actions.
+
+Current position inputs are kept without recurrence. They are simulator observations, just like a current candle, not recurrent graph edges. A candle-only model cannot reconstruct its actual historical fills from the same market sequence alone. Preserve the market/position distinction and expose normalized position quantities clearly.
 
 ## Six-workstream coverage
 
@@ -58,7 +75,7 @@ For catalog index `i`, with `C=957`:
 | `C+i` | Current cross-sectional relative feature | `tanh((x-current_valid_mean)/(2*max(current_valid_std,1e-6)))`; normalization uses available listings in the resident universe, not just the ten active members or the replay candidate batch. No future-session normalization. |
 | `2*C+i` | Validity | 0/1. It is a separate explicit input, but does **not** independently certify an action as market-value-dependent. |
 
-Catalog `lower/upper` values are descriptive/search metadata, **not universal runtime clipping or guaranteed empirical bounds**. Missing is not the same as zero. Generic nodes OR valid nonzero-weight market ancestors; they do not require every referenced input to exist. Thus a partially missing graph can still fire. Templates use explicit validity predicates; arbitrary random/mutated graphs need not do so.
+Catalog `lower/upper` values are legacy sampling-prior metadata, **not runtime clipping or guaranteed empirical/mathematical bounds**. The appendix labels have been corrected accordingly. Missing is not the same as zero. Generic nodes OR valid nonzero-weight market ancestors; they do not require every referenced input to exist. Thus a partially missing graph can still fire. Templates use explicit validity predicates; arbitrary random/mutated graphs need not do so.
 
 Raw/log price units and split-age/event features are blocked. `log_float_shares` and `log_shares_outstanding` are transformed to decade buckets before absolute/relative projection. Other allowed channels can still be proxies for liquidity, regime, time or identity; blocking names is not proof against overfitting.
 
@@ -96,7 +113,7 @@ All state values below are converted to float32 and passed through `tanh`. They 
 
 The state vector does not explicitly expose current bid/ask size, selected initial-stop availability/value, membership eligibility, flat cooldown remaining, exact filled/remaining quantity, order limit, order-specific average fill, order age, terminal countdown or abstention reason. Some quantities can be approximately inferred from transformed position variables, but that is not a complete execution interface.
 
-Required additions should be explicit, causally timestamped and versioned. Separate model-readable normalized values from exact controller/order fields. At minimum: selected-stop validity/distance; can-enter/can-add/can-reduce/can-exit and reason masks; membership; cooldown/age eligibility; quote validity and executable size; exact pending side/status/quantity/limit, filled quantity and average fill; cancellation/amendment availability; end-of-decision-window state. Keep raw execution prices out of arbitrary model features if the identity-reduction policy remains required; normalized distances plus exact controller fields can satisfy both needs.
+Revised required inputs: keep causal market and current position observations, including held quantity, weighted entry basis, unrealized profit, age, current stop and target, plus observable strategy-boundary availability such as selected history/stop validity, action eligibility and cooldown. Separate normalized model observations from exact controller fields. Exact pending side/quantity/limit, per-order partial fills, expiry, cancellation and amendment state belong to the deterministic controller; **they are no longer required learned candidate inputs**. Current V59 pending-state slots in the table above describe existing code, not the requested future interface. Removing or repacking those slots requires a new genome/input version and fresh evaluation.
 
 ### Strategy genes and restrictions
 
@@ -135,7 +152,7 @@ Revision: produce branch-local admissible intents and arbitrate among them. Keep
 
 `orders.ORDER_WIDTH=17`, `order_liquidity.fill` and CUDA counterpart have no limit field/comparison. Buys fill at ask and sells at bid when structural quote/size checks pass. They cannot implement the agreed buy-limit/sell-limit condition.
 
-Revision: version the intent/order schema with side, type, limit, quantity (or explicit dollar-intent conversion), lifetime and amendment identity. Unmarketable limits wait; do not reject them. Missing or malformed limits are schema errors. Test quote improvement, crossing/noncrossing limits, partials across prices and cancellation with accrued fees.
+Revised resolution: candidate defines the limit together with action, size, stop and target. Version the minimal intent schema accordingly. The deterministic executor checks side/limit and quote size at candle close; controller-owned lifetime, replacement and partial-fill bookkeeping are not candidate decisions. Unmarketable limits do not fill. Missing or malformed limits are schema errors. Test price improvement, crossing/noncrossing limits, partial fills across closes and deterministic retirement with accrued fees. This is proposed for the next implementation; current V59 has no limit-price head or field.
 
 ### F04 — Confirmed: admission conditions are not fully visible to the model (high)
 
@@ -153,7 +170,7 @@ Revision: decide and name the intended swing definition (elapsed-time observatio
 
 `orders.transition` maps exit/reduce signals to pending-buy cancellation and add signals to pending-sell cancellation. Add signals can amend a pending buy under cooldown/max-add limits. Partial positions can be managed, and accrued fills/fees are preserved by existing tests. However the strategy has no explicit keep/cancel/amend intent or exact order-specific fill-price state. Minimum ages apply only while held, so a zero-fill pending entry can be cancelled by an exit head that would be age-blocked after its first partial fill.
 
-Revision: define order-management intent and age semantics explicitly; expose required state; test before-first-fill and after-partial-fill transitions. Preserve successful partial-fill accounting. Do not label all current cancellations execution rejections.
+Revised resolution: candidates should not learn order-management intent. Replace these implicit action-to-order mappings with a documented deterministic controller policy and test before-first-fill/after-partial-fill transitions. Keep position inputs, preserve actual fills/fees, and define when action requests supersede existing remainders. Do not label all current cancellations execution rejections.
 
 ### F07 — Confirmed: model and execution quote visibility differ (medium/high)
 
@@ -239,10 +256,10 @@ Revision: verify fill conservation at each snapshot and across chunks/pages, mon
 
 ## Revision order and acceptance gates
 
-1. **Freeze the contract and schemas:** specify input availability, strategy intents, limits, partial-state fields, action arbitration, membership clock, history and terminal semantics. Record which are bug fixes versus deliberate behavior changes. Keep current objective/budgets fixed.
+1. **Freeze the minimal close-time contract and schemas:** candidate action/size/limit/stop/target outputs; causal market and current position inputs without recurrence; deterministic remainder/expiry/replacement/protective-exit rules; same-boundary quote and size authority. Record bug fixes versus deliberate behavior changes. Keep objective, sessions and budgets fixed.
 2. **Fix proven boundary defects:** current membership swing projection, feasibility-aware branch routing, impossible policy endpoint, and named abstention reasons. Preserve history definition until explicitly revised.
-3. **Implement explicit intent/limit/partial-state interfaces:** share CPU/CUDA contracts, retain fills/fees and strategy-controlled management. Version genomes, state packing, execution and replay identities as affected.
-4. **Align initialization and reproduction:** joint admissibility probes without profitability filtering, coherent crossover, operator retry accounting, exact scheduled/realized counts and deterministic RNG. Separate policy choices F12–F14 from necessary correctness repairs.
+3. **Implement price outputs and deterministic execution:** candidate-defined limit/stop/target prices; fixed order/partial-fill bookkeeping; position feedback without learned pending-order management; minimal close-time matching. Share CPU/CUDA semantics and retain actual fills/fees. Version genomes, state packing, execution and replay identities as affected.
+4. **Align initialization and reproduction:** jointly sample/mutate/cross action and price outputs with admissibility probes, without profitability filtering; coherent branch selection, retry accounting, exact scheduled/realized counts and deterministic RNG. Do not adopt legacy feature prior ranges as hard value limits. Separate policy choices F12–F14 from necessary correctness repairs.
 5. **Validate real runnable paths:** causal boundary fixtures; missing-history, invalid-stop, first-admission, routed fallback, exit conflict, cooldown, partial fills, limit waits, cancellation/amendment, cutoff/tail exhaustion, ledger conservation, all-founder inclusion, validation isolation, identity invalidation and deterministic recovery. Include a forced-overflow retry and shared-entry state-dependence check.
 6. **Short performance qualification then explicit recovery:** use frozen representative candidates and two contrasting sessions; compare baseline/fixed wall time and all unchanged-case decisions/ledgers. For intentional behavior changes report changed requests/fills/P&L and reasons instead of claiming financial parity. A history/input/execution change invalidates affected financial receipts; retain genomes/RNG where schema-compatible, but replay affected founders before selection. Do not reuse old scores merely because genomes match.
 
@@ -256,9 +273,48 @@ Every record must carry candidate/program identity, session/split, decision/exec
 
 ## Full pinned market-input catalog
 
-The table below is an exact enumeration from the pinned source catalog. `Allowed` applies to all three channels. The declared range is **not** a runtime clamp. The family definitions and availability rules above apply to every row. Input meanings that require detailed indicator/level mathematics remain source-defined by the listed authority; changing them requires a new contract, not relabeling this table.
+### F19 — Catalog-range review and corrected interpretation
 
-| ID | Name | Unit | Declared lower | Declared upper | Allowed |
+**Confirmed:** the catalog's numerical lower/upper metadata is not the mathematical domain of each feature and is not enforced as a clip in the active V59 neural replay. It would be incorrect to interpret upper=2 as "values above2 are impossible or discarded." The misleading table labels are corrected in this revision; the immutable source catalog numbers remain recorded exactly.
+
+Code traced in this review:
+
+- `v6/torch_backtest/feature_bank.py:catalog,validity`: defines legacy ranges; validity checks finiteness and feature masks, not lower<=value<=upper.
+- `research/rl_trading/v6/features.py:encode`: source of base ratios, log features and V7 normalized distances; the reviewed ratios are calculated, not clipped to catalog bounds.
+- `v42/enriched_math.py:returns,own,market_summary`: enriched returns are `log(current_close/previous_close)`; returns, candle body/range and context are not clamped to the catalog prior.
+- `v42/indicator_math.py:calculate`: current indicator formulas and normalized RSI; no generic catalog-range clipping.
+- `v27/resident_features.py` and `v7/resident_features.py`: gather raw banks and apply validity/relative-price formulas; no generic lower/upper comparison.
+- `v59/network.py:_project` and the shared feature projection path: squash valid values after projection; no prior-range clip. Share-count bucketing is an explicit, separate transform, not return clipping.
+- `v27/search_space.py`: legacy lower/upper values actually govern symbolic numeric threshold sampling and compatible mutation classes. V59 uses its family feature-index sampler, but its neural thresholds/weights and calibration use their own bounds/observed outputs; they do not call that symbolic numeric threshold sampler. Changing shared prior numbers would alter older symbolic searches and is not necessary to fix a nonexistent V59 replay cap.
+
+This is a review of formula families and consumers plus an enumeration of all957 catalog records. It is not an empirical scan of every stored feature value across every session. Do not claim that all upstream source data or all economic interpretations have been independently certified by this review.
+
+| Feature family | Actual value/domain interpretation | Why the legacy prior is not a cap |
+|---|---|---|
+| Simple return `P_new/P_old-1` (example notation, not the enriched formula) | For positive prices, greater than−1, with no finite mathematical upper bound | Tripling price gives2 (+200%); quadrupling gives3 (+300%). A future return is not an input before that candle has completed. |
+| `enriched.return.*`, candle returns, context mean/median returns | Log return `log(P_new/P_old)`; signed, no finite mathematical bound for positive prices | Tripling gives1.098612; a rise by exp(3) gives3. Current enriched prior [−.5,1] excludes neither. |
+| Context relative return | Own log return relative to context baseline | Signed, no universal [−.5,1] domain; verify source definition when changing it. |
+| EMA/VWAP/history positive-price ratios minus1; V7 normalized positive level distance | Greater than−1, potentially far above2 (some formulas admit tighter contextual bounds) | Positive history/reference prices can be much higher than current price. No generic ±2 or ±10 clip. |
+| MACD relative line/signal/histogram | Signed normalized price differences | Not generally restricted to the chosen sampling interval. |
+| ATR relative, average-move fraction, volatility, dispersion, candle range | Nonnegative under valid source geometry; no universal small upper bound | A large move can exceed .5 or1; declaring a sampling interval does not truncate it. |
+| Candle body `(close-open)/close` | Less than1 for positive open/close; unbounded below mathematically | This is not `(close-open)/open`; do not interpret its prior as a conventional simple-return range. |
+| RSI, advancing fraction, coverage, percentile, active fraction, valid close location | [0,1] under valid inputs and source definitions | These have genuine formula-derived bounds. They are not bounded merely because the catalog says so. |
+| Time-of-day sine/cosine | [−1,1] | Legacy generic ratio prior [−2,2] is wider than the real domain. |
+| Boolean validity/role/session flags | {0,1} | Boolean definition, not a numerical clipping choice. |
+| Nonnegative count/activity/share/duration log1p values | >=0; no universal upper30 | Prior30 is a sampling choice. Share features have a separate V59 decade-bucketing transform. |
+| Activity acceleration | `(short_rate)/(long_rate+1)-1`; formula-specific, not generic return | For the implemented nested5s/60s nonnegative sums, lies in [−1,11); legacy prior is not its mathematical domain. |
+| Rank percentile change | Difference of valid percentiles, [−1,1] | Separate from price/log returns. |
+| Execution volatility/fee ratio | Nonnegative when valid; no universal upper100 | Depends on modeled volatility, price, sizing and fee assumptions; missing denominator validity remains separate. |
+
+**Numerical compression already present:** ratio/bool absolute channels use `tanh(raw)`. Thus raw2 ->0.964028 and raw3 ->0.995055, rather than both becoming2. At sufficiently large magnitudes float32 tanh can saturate to1, so distinct extremes can lose resolution. Cross-sectional channels also use tanh. This is a real representation limitation, not a catalog upper-bound rejection. A different tail-preserving scale (for example signed log before squashing) is a proposed versioned feature change requiring calibration/replays, not a silent fix in this documentation task.
+
+**Bounded CPU verification on the current functions:** `enriched_math.returns` produced log(3)=1.0986122886681098 and3.0 for price multiples3 and exp(3). A synthetic raw3 passed through `NetworkPlan._project` in both `enriched.return.5s` (legacy upper1) and `ema_7_rel` (legacy upper2): both remained valid and projected to0.9950547814. The probe checked projection semantics, not that EMA3 occurred in the live dataset. No runtime clipping defect at upper1/2 was found, so no shared feature-generation code or pinned data was changed.
+
+**Current versus next implementation:** the957 catalog, masks,641 allowed features,316 blocked features, normalization and11 current state inputs are already implemented in V59. The corrected documentation interpretation is delivered now. The minimal deterministic controller contract and candidate-defined limit/stop/target output schema, revised candidate input slots and audit fixes remain proposed work for the next implementation. They are not activated by this report. New schema metadata should separate `sampling_prior`, `mathematical_domain`, `missing_policy` and `model_transform` instead of overloading lower/upper; preserve finite prior ranges for any legacy sampler that requires them.
+
+The table below is an exact enumeration from the pinned source catalog. `Allowed` applies to all three channels. **Legacy prior lower/upper are not permitted-value boundaries.** The family definitions and availability rules above apply to every row. Input meanings that require detailed indicator/level mathematics remain source-defined by the listed authority; changing them requires a new contract, not relabeling this table. Actual mathematical domains and the current-runtime review are documented immediately above this catalog.
+
+| ID | Name | Unit | Legacy prior lower (not a cap) | Legacy prior upper (not a cap) | Allowed |
 |---:|---|---|---:|---:|---|
 | 0 | `log_open` | log_price | -5 | 10 | no |
 | 1 | `log_high` | log_price | -5 | 10 | no |
