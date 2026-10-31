@@ -139,5 +139,5 @@ def test_management_skips_only_never_eligible_past_listings():
             torch.testing.assert_close(actual[offset,:,possible],expected[:,possible],rtol=0,atol=0)
             torch.testing.assert_close(sizes[offset,:,possible],plan.ratios[0,:,possible],rtol=0,atol=0)
             assert not actual[offset,:,~possible].any()
-    assert engine.management_counts.tolist()==[1,1,1,2,2,2,3,3,3]
+    assert engine.management_allowed.sum(1).tolist()==[1,1,1,2,2,2,3,3,3]
     plan.close()
