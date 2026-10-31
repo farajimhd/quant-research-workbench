@@ -53,6 +53,24 @@ def test_constructors_forbid_all_position_inputs_and_ages():
     with pytest.raises(ValueError):replace(members[0],minimum_age={'exit':1}).validate()
 
 
+def test_mutation_schedule_only_constructs_market_only_children():
+    from research.vectorized_backtest.v60.schedule import SETTINGS,Proposal,balanced
+    from research.vectorized_backtest.v60.genome import sample
+    from research.vectorized_backtest.v60.composition import mutation
+    from research.vectorized_backtest.v60.authority import dependency_certificate
+    fields=SETTINGS['parameter_fields']
+    assert len(fields)==len(SETTINGS['parameter_weights'])
+    assert 'age' not in fields
+    assert set(balanced(200,SETTINGS['parameter_weights']))==set(range(len(fields)))
+    parent=sample(np.random.default_rng(31),1)[0]
+    # Exercise both the standalone fallback and explicitly scheduled fields.
+    for slot in range(40):
+        plan={} if slot<20 else {'edits':[dict(stage=slot%5,mode='parameter',field=fields[slot%len(fields)])]}
+        child,edits=mutation(Proposal(b'market-only-test',(slot,),plan),parent,1)
+        dependency_certificate(child)
+        assert edits and not any(child.minimum_age.values())
+
+
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
 def test_time_batch_matches_sequential_gpu_all_heads_and_sizes():
     from research.vectorized_backtest.v60.genome import sample

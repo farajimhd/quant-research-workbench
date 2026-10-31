@@ -7,7 +7,9 @@ SETTINGS=dict(mutation_fraction=.525,edit_counts=[1,2,3,4,5],
     mating_weights=[.8,.2],action_modes=['uniform','union','intersection','xor'],
     action_mode_weights=[.25,.25,.25,.25],parameter_fraction=.7,
     parameter_fields=['weight','bias','threshold','policy','size'],
-    parameter_weights=[.3,.15,.15,.15,.05,.2],
+    # Age is no longer a strategy input. balanced() normalizes the remaining
+    # weights, preserving their relative probabilities without a stale slot.
+    parameter_weights=[.3,.15,.15,.15,.2],
     structural_fields=['input','connect','disconnect','grow','remove','operator'],
     rank_bias='deterministic quantiles of size-three rank tournament',
     new_id='persistent SHA256 address; inherited identities unchanged',

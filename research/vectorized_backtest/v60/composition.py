@@ -121,12 +121,6 @@ def mutation(rng,parent,count,crossover_child=False):
 
                         value=rng.pick(len(net.nodes),'size-head') if name=='size_source' else parameter(rng,getattr(net,name));newnet=replace(net,**{name:value})
 
-                    elif field=='age':
-
-                        if stage=='entry':continue
-
-                        key=(stage,field);ages[stage]=int(rng.integers(3601))
-
                     else:
 
                         index=rng.pick(len(nodes),'node');node=nodes[index]
