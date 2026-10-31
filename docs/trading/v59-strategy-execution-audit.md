@@ -45,7 +45,7 @@ Require a clean deployment smoke test in which past research-version directories
 
 Make one immutable, versioned registry authoritative for allowed feature IDs and channels, raw units, construction caps and their basis, transforms, valid periods/windows, history prerequisites, missing-data rules, state visibility, output-price constraints and structural budgets. Integrate rather than duplicate rules in templates/sampling/mutation/crossover/restoration/packing. Use precomputed permitted pools and compatible substitutions; avoid retry-until-allowed feature sampling.
 
-Enforce the524 allowed /433 forbidden pinned-feature proposal, removing V7 and explicit market-time channels. Keep current position state without recurrence. Replace V7 support-bounce templates with causal swings. Preserve causal pivot confirmation; do not silently change the unresolved swing missing-bar definition. Freeze a training-only coverage review of engineering caps/history availability before using them to generate the population. Any added swing-high family gets new IDs and verified preparation, not a relabeled old field.
+Enforce the revised834 allowed /123 forbidden pinned-feature proposal, removing V7 and explicit market-time channels but not excluding an input merely because its unit is price/log_price. Keep current position state without recurrence. Replace V7 support-bounce templates with causal swings. Preserve causal pivot confirmation; do not silently change the unresolved swing missing-bar definition. Freeze a training-only coverage review of engineering caps/history availability before using them to generate the population. Any added swing-high family gets new IDs and verified preparation, not a relabeled old field.
 
 Compile each candidate's dependency certificate and reject unsupported period/history requests before replay allocation. Prefer direct in-range generation for founders and fresh immigrants; clamp/repair permitted numerical mutation/crossover proposals. An invalid structural operation selects another compatible operation. Forbidden feature references are not valid proposal handles. Do not change a candidate during financial evaluation when history is absent; abstain with a recorded reason.
 
@@ -100,7 +100,7 @@ Review task-owned diff, validate the isolated V60 package, commit/push on laptop
 | Minimal executor | At candle close: side/limit compatibility, positive finite valid quote, available size, inventory conservation and fees; report fills | No intrabar neural replay, hidden $300/20% admission caps, network/history reevaluation or market-impact/queue model |
 | Deterministic position/order ledger | Maintain actual quantity, weighted entry, realized/unrealized P&L, age, stop, target and unfilled remainder | No optimization over order-management protocols |
 
-Price outputs should be represented as causal relative offsets/ratios and converted to positive finite currency prices by the controller. Do not add arbitrary raw-price identifiers to the existing searchable market catalog. For the current long-only strategy, initial stop must be below the intended entry; target is a profit level above its entry basis. Define how the stop is checked against allowed fills when a buy receives price improvement; do not silently move the candidate's stop. Level updates and request/fill ordering require explicit tests. Target distances may legitimately exceed100%; old policy fraction bounds are not automatically the new output bounds.
+Price outputs should be represented as causal relative offsets/ratios and converted to positive finite currency prices by the controller. This output encoding does not forbid absolute market-price or price-valued indicator inputs: the revised V60 feature policy permits them. For the current long-only strategy, initial stop must be below the intended entry; target is a profit level above its entry basis. Define how the stop is checked against allowed fills when a buy receives price improvement; do not silently move the candidate's stop. Level updates and request/fill ordering require explicit tests. Target distances may legitimately exceed100%; old policy fraction bounds are not automatically the new output bounds.
 
 The controller can deterministically turn a crossed stop/target into an exit/reduction request at a close; the next implementation must specify which candidate-defined sell limit applies. Stops must not be promised guaranteed fills when the available bid is below that limit. Decisions about remainder expiry, target reduction versus full exit and limit choice for protective exits are controller-contract work, not learned order-management actions.
 
@@ -141,7 +141,7 @@ For catalog index `i`, with `C=957`:
 
 Catalog `lower/upper` values are legacy sampling-prior metadata, **not runtime clipping or guaranteed empirical/mathematical bounds**. The appendix labels have been corrected accordingly. Missing is not the same as zero. Generic nodes OR valid nonzero-weight market ancestors; they do not require every referenced input to exist. Thus a partially missing graph can still fire. Templates use explicit validity predicates; arbitrary random/mutated graphs need not do so.
 
-Raw/log price units and split-age/event features are blocked. `log_float_shares` and `log_shares_outstanding` are transformed to decade buckets before absolute/relative projection. Other allowed channels can still be proxies for liquidity, regime, time or identity; blocking names is not proof against overfitting.
+In current V59, raw/log price units and split-age/event features are blocked. The blanket price-unit exclusion is explicitly removed in the revised V60 proposal; current V59 counts above are not the V60 allowlist. `log_float_shares` and `log_shares_outstanding` are transformed to decade buckets before absolute/relative projection. Other allowed channels can still be proxies for liquidity, regime, time or identity; blocking names is not proof against overfitting.
 
 Source families:
 
@@ -343,7 +343,13 @@ User revision: remove V7 level features and market time-related inputs; use caus
 
 Interpretation: “time-related” means explicit clock/calendar, session-phase and elapsed-market-time signals. Return horizons, candle resolutions and indicator periods remain necessary feature definitions. Position age and cooldown state remain available as agreed position/controller state; the general `elapsed_seconds` model slot should be removed. Exact timestamps remain internal to the deterministic executor and data-validity checks. This does not assert that all remaining market features are free of time-of-day or identity correlations.
 
-The resulting pinned-catalog proposal has **524 allowed /433 forbidden** feature IDs (117 newly forbidden). Forbidden rows have no construction caps or history request. The old caps for newly excluded inputs are superseded, not a loophole allowing their validity channel.
+After removing the inherited blanket price-unit restriction, the pinned-catalog V60 proposal has **834 allowed /123 forbidden** feature IDs. The123 forbidden IDs are110 V7 features, seven explicit market-time features and six split/date-event features. Forbidden rows have no construction caps or history request. No exclusion applies solely because a field has unit `price` or `log_price`.
+
+The full review restores310 previously blocked inputs: four log-OHLC fields;272 price-valued history features (recent highs, lagged closes, average moves and confirmed swing lows); four market fields (bid, ask, spread and close); and30 indicators (15 absolute EMAs and15 absolute ATRs). Relative/normalized variants remain available. All restored rows now have construction bounds and history/readiness definitions, rather than retaining N/A. MACD relative variants and RSI were already allowed and remain so. Enabling inputs does not require every candidate to use them.
+
+New numerical construction envelopes for these restored rows are engineering proposals, not market-data validity rules: positive absolute price/EMA/swing/high/lag thresholds0.0001..10,000 dollars; nonnegative ATR/average-move/spread thresholds0..1,000 dollars; log-OHLC thresholds ln(0.0001)..ln(10,000). Apply the existing training-only coverage gate before freezing these ranges. Values outside these construction envelopes remain observed values, not rejected data. Do not use a declared currency-price cap to prove a live input can never exceed it.
+
+Candidate versus execution availability are distinct: `Next allowed=yes` permits the model input; the exact quote/size remains available to the deterministic controller regardless of model selection or normalization. Quote age/timestamps remain internal validity/accounting data even though the quote-age model feature is excluded. Bid/ask size is not a row in the pinned957-input catalog: adding explicit size inputs requires versioned new IDs and valid source mapping, not a claim that removing the price filter supplied them. The quote feature/executor source mismatch in F07 still requires resolution before V60 activation.
 
 Use normalized confirmed swing-low features already present in `history.swing_low.L.R.relative_to_close`, plus their availability masks. Left/right choices are limited to {1,2,3,4,5,10,15,20,30,45,60}; maximum confirmation window is121 observed one-second slots for60/60. Current history uses prior-clock confirmation and invalidates windows containing unobserved seconds. F05 remains unresolved: do not silently change to observed-bar indexing or fill gaps. A missing pivot makes that strategy branch unavailable; it must not submit an unusable stop request.
 
@@ -432,10 +438,10 @@ The table enumerates the pinned source catalog and adds proposed next-version co
 
 | ID | Name | Unit | Legacy prior lower | Legacy prior upper | V59 allowed | Next allowed | Next construction min | Next construction max | Basis | Supported history/dependency | Readiness requirement |
 |---:|---|---|---:|---:|---|---|---:|---:|---|---|---|
-| 0 | `log_open` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 1 | `log_high` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 2 | `log_low` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 3 | `log_close` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 0 | `log_open` | log_price | -5 | 10 | no | yes | -9.21034 | 9.21034 | E | Current completed candle only | Positive source OHLC; price/extreme mask; natural-log encoding |
+| 1 | `log_high` | log_price | -5 | 10 | no | yes | -9.21034 | 9.21034 | E | Current completed candle only | Positive source OHLC; price/extreme mask; natural-log encoding |
+| 2 | `log_low` | log_price | -5 | 10 | no | yes | -9.21034 | 9.21034 | E | Current completed candle only | Positive source OHLC; price/extreme mask; natural-log encoding |
+| 3 | `log_close` | log_price | -5 | 10 | no | yes | -9.21034 | 9.21034 | E | Current completed candle only | Positive source OHLC; price/extreme mask; natural-log encoding |
 | 4 | `bar_vwap_rel` | ratio | -2 | 2 | yes | yes | -0.99 | 9 | E | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
 | 5 | `session_vwap_rel` | ratio | -2 | 2 | yes | yes | -0.99 | 9 | E | Session-to-date accumulated summary | Causal cumulative volume/notional; valid denominator for value |
 | 6 | `bar_vwap_valid` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
@@ -581,126 +587,126 @@ The table enumerates the pinned source catalog and adds proposed next-version co
 | 146 | `v7.above.5.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
 | 147 | `split_this_session` | bool | 0 | 1 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
 | 148 | `reverse_split_this_session` | bool | 0 | 1 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 149 | `history.recent_high.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 150 | `history.recent_high.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 151 | `history.recent_high.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 152 | `history.recent_high.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 153 | `history.recent_high.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 154 | `history.recent_high.6` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 155 | `history.recent_high.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 156 | `history.recent_high.8` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 157 | `history.recent_high.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 158 | `history.recent_high.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 159 | `history.recent_high.11` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 160 | `history.recent_high.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 161 | `history.recent_high.13` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 162 | `history.recent_high.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 163 | `history.recent_high.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 164 | `history.recent_high.16` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 165 | `history.recent_high.17` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 166 | `history.recent_high.18` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 167 | `history.recent_high.19` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 168 | `history.recent_high.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 169 | `history.recent_high.21` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 170 | `history.recent_high.22` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 171 | `history.recent_high.23` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 172 | `history.recent_high.24` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 173 | `history.recent_high.25` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 174 | `history.recent_high.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 175 | `history.recent_high.27` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 176 | `history.recent_high.28` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 177 | `history.recent_high.29` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 178 | `history.recent_high.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 179 | `history.recent_high.31` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 180 | `history.recent_high.32` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 181 | `history.recent_high.33` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 182 | `history.recent_high.34` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 183 | `history.recent_high.35` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 184 | `history.recent_high.36` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 185 | `history.recent_high.37` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 186 | `history.recent_high.38` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 187 | `history.recent_high.39` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 188 | `history.recent_high.40` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 189 | `history.recent_high.41` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 190 | `history.recent_high.42` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 191 | `history.recent_high.43` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 192 | `history.recent_high.44` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 193 | `history.recent_high.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 194 | `history.recent_high.46` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 195 | `history.recent_high.47` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 196 | `history.recent_high.48` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 197 | `history.recent_high.49` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 198 | `history.recent_high.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 199 | `history.recent_high.51` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 200 | `history.recent_high.52` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 201 | `history.recent_high.53` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 202 | `history.recent_high.54` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 203 | `history.recent_high.55` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 204 | `history.recent_high.56` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 205 | `history.recent_high.57` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 206 | `history.recent_high.58` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 207 | `history.recent_high.59` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 208 | `history.recent_high.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 209 | `history.momentum_close.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 210 | `history.momentum_close.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 211 | `history.momentum_close.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 212 | `history.momentum_close.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 213 | `history.momentum_close.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 214 | `history.momentum_close.6` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 215 | `history.momentum_close.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 216 | `history.momentum_close.8` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 217 | `history.momentum_close.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 218 | `history.momentum_close.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 219 | `history.momentum_close.11` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 220 | `history.momentum_close.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 221 | `history.momentum_close.13` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 222 | `history.momentum_close.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 223 | `history.momentum_close.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 224 | `history.momentum_close.16` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 225 | `history.momentum_close.17` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 226 | `history.momentum_close.18` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 227 | `history.momentum_close.19` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 228 | `history.momentum_close.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 229 | `history.momentum_close.21` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 230 | `history.momentum_close.22` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 231 | `history.momentum_close.23` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 232 | `history.momentum_close.24` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 233 | `history.momentum_close.25` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 234 | `history.momentum_close.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 235 | `history.momentum_close.27` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 236 | `history.momentum_close.28` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 237 | `history.momentum_close.29` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 238 | `history.momentum_close.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 239 | `history.momentum_close.31` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 240 | `history.momentum_close.32` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 241 | `history.momentum_close.33` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 242 | `history.momentum_close.34` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 243 | `history.momentum_close.35` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 244 | `history.momentum_close.36` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 245 | `history.momentum_close.37` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 246 | `history.momentum_close.38` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 247 | `history.momentum_close.39` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 248 | `history.momentum_close.40` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 249 | `history.momentum_close.41` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 250 | `history.momentum_close.42` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 251 | `history.momentum_close.43` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 252 | `history.momentum_close.44` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 253 | `history.momentum_close.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 254 | `history.momentum_close.46` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 255 | `history.momentum_close.47` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 256 | `history.momentum_close.48` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 257 | `history.momentum_close.49` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 258 | `history.momentum_close.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 259 | `history.momentum_close.51` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 260 | `history.momentum_close.52` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 261 | `history.momentum_close.53` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 262 | `history.momentum_close.54` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 263 | `history.momentum_close.55` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 264 | `history.momentum_close.56` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 265 | `history.momentum_close.57` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 266 | `history.momentum_close.58` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 267 | `history.momentum_close.59` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 268 | `history.momentum_close.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 149 | `history.recent_high.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 1s | 1 finite observed high slots |
+| 150 | `history.recent_high.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 2s | 2 finite observed high slots |
+| 151 | `history.recent_high.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 3s | 3 finite observed high slots |
+| 152 | `history.recent_high.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 4s | 4 finite observed high slots |
+| 153 | `history.recent_high.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 5s | 5 finite observed high slots |
+| 154 | `history.recent_high.6` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 6s | 6 finite observed high slots |
+| 155 | `history.recent_high.7` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 7s | 7 finite observed high slots |
+| 156 | `history.recent_high.8` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 8s | 8 finite observed high slots |
+| 157 | `history.recent_high.9` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 9s | 9 finite observed high slots |
+| 158 | `history.recent_high.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 10s | 10 finite observed high slots |
+| 159 | `history.recent_high.11` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 11s | 11 finite observed high slots |
+| 160 | `history.recent_high.12` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 12s | 12 finite observed high slots |
+| 161 | `history.recent_high.13` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 13s | 13 finite observed high slots |
+| 162 | `history.recent_high.14` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 14s | 14 finite observed high slots |
+| 163 | `history.recent_high.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 15s | 15 finite observed high slots |
+| 164 | `history.recent_high.16` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 16s | 16 finite observed high slots |
+| 165 | `history.recent_high.17` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 17s | 17 finite observed high slots |
+| 166 | `history.recent_high.18` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 18s | 18 finite observed high slots |
+| 167 | `history.recent_high.19` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 19s | 19 finite observed high slots |
+| 168 | `history.recent_high.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 20s | 20 finite observed high slots |
+| 169 | `history.recent_high.21` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 21s | 21 finite observed high slots |
+| 170 | `history.recent_high.22` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 22s | 22 finite observed high slots |
+| 171 | `history.recent_high.23` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 23s | 23 finite observed high slots |
+| 172 | `history.recent_high.24` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 24s | 24 finite observed high slots |
+| 173 | `history.recent_high.25` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 25s | 25 finite observed high slots |
+| 174 | `history.recent_high.26` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 26s | 26 finite observed high slots |
+| 175 | `history.recent_high.27` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 27s | 27 finite observed high slots |
+| 176 | `history.recent_high.28` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 28s | 28 finite observed high slots |
+| 177 | `history.recent_high.29` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 29s | 29 finite observed high slots |
+| 178 | `history.recent_high.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 30s | 30 finite observed high slots |
+| 179 | `history.recent_high.31` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 31s | 31 finite observed high slots |
+| 180 | `history.recent_high.32` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 32s | 32 finite observed high slots |
+| 181 | `history.recent_high.33` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 33s | 33 finite observed high slots |
+| 182 | `history.recent_high.34` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 34s | 34 finite observed high slots |
+| 183 | `history.recent_high.35` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 35s | 35 finite observed high slots |
+| 184 | `history.recent_high.36` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 36s | 36 finite observed high slots |
+| 185 | `history.recent_high.37` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 37s | 37 finite observed high slots |
+| 186 | `history.recent_high.38` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 38s | 38 finite observed high slots |
+| 187 | `history.recent_high.39` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 39s | 39 finite observed high slots |
+| 188 | `history.recent_high.40` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 40s | 40 finite observed high slots |
+| 189 | `history.recent_high.41` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 41s | 41 finite observed high slots |
+| 190 | `history.recent_high.42` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 42s | 42 finite observed high slots |
+| 191 | `history.recent_high.43` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 43s | 43 finite observed high slots |
+| 192 | `history.recent_high.44` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 44s | 44 finite observed high slots |
+| 193 | `history.recent_high.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 45s | 45 finite observed high slots |
+| 194 | `history.recent_high.46` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 46s | 46 finite observed high slots |
+| 195 | `history.recent_high.47` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 47s | 47 finite observed high slots |
+| 196 | `history.recent_high.48` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 48s | 48 finite observed high slots |
+| 197 | `history.recent_high.49` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 49s | 49 finite observed high slots |
+| 198 | `history.recent_high.50` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 50s | 50 finite observed high slots |
+| 199 | `history.recent_high.51` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 51s | 51 finite observed high slots |
+| 200 | `history.recent_high.52` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 52s | 52 finite observed high slots |
+| 201 | `history.recent_high.53` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 53s | 53 finite observed high slots |
+| 202 | `history.recent_high.54` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 54s | 54 finite observed high slots |
+| 203 | `history.recent_high.55` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 55s | 55 finite observed high slots |
+| 204 | `history.recent_high.56` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 56s | 56 finite observed high slots |
+| 205 | `history.recent_high.57` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 57s | 57 finite observed high slots |
+| 206 | `history.recent_high.58` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 58s | 58 finite observed high slots |
+| 207 | `history.recent_high.59` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 59s | 59 finite observed high slots |
+| 208 | `history.recent_high.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed previous 60s | 60 finite observed high slots |
+| 209 | `history.momentum_close.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 1s lag | Lag endpoint and current positive mark valid |
+| 210 | `history.momentum_close.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 2s lag | Lag endpoint and current positive mark valid |
+| 211 | `history.momentum_close.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 3s lag | Lag endpoint and current positive mark valid |
+| 212 | `history.momentum_close.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 4s lag | Lag endpoint and current positive mark valid |
+| 213 | `history.momentum_close.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 5s lag | Lag endpoint and current positive mark valid |
+| 214 | `history.momentum_close.6` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 6s lag | Lag endpoint and current positive mark valid |
+| 215 | `history.momentum_close.7` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 7s lag | Lag endpoint and current positive mark valid |
+| 216 | `history.momentum_close.8` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 8s lag | Lag endpoint and current positive mark valid |
+| 217 | `history.momentum_close.9` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 9s lag | Lag endpoint and current positive mark valid |
+| 218 | `history.momentum_close.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 10s lag | Lag endpoint and current positive mark valid |
+| 219 | `history.momentum_close.11` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 11s lag | Lag endpoint and current positive mark valid |
+| 220 | `history.momentum_close.12` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 12s lag | Lag endpoint and current positive mark valid |
+| 221 | `history.momentum_close.13` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 13s lag | Lag endpoint and current positive mark valid |
+| 222 | `history.momentum_close.14` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 14s lag | Lag endpoint and current positive mark valid |
+| 223 | `history.momentum_close.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 15s lag | Lag endpoint and current positive mark valid |
+| 224 | `history.momentum_close.16` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 16s lag | Lag endpoint and current positive mark valid |
+| 225 | `history.momentum_close.17` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 17s lag | Lag endpoint and current positive mark valid |
+| 226 | `history.momentum_close.18` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 18s lag | Lag endpoint and current positive mark valid |
+| 227 | `history.momentum_close.19` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 19s lag | Lag endpoint and current positive mark valid |
+| 228 | `history.momentum_close.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 20s lag | Lag endpoint and current positive mark valid |
+| 229 | `history.momentum_close.21` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 21s lag | Lag endpoint and current positive mark valid |
+| 230 | `history.momentum_close.22` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 22s lag | Lag endpoint and current positive mark valid |
+| 231 | `history.momentum_close.23` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 23s lag | Lag endpoint and current positive mark valid |
+| 232 | `history.momentum_close.24` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 24s lag | Lag endpoint and current positive mark valid |
+| 233 | `history.momentum_close.25` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 25s lag | Lag endpoint and current positive mark valid |
+| 234 | `history.momentum_close.26` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 26s lag | Lag endpoint and current positive mark valid |
+| 235 | `history.momentum_close.27` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 27s lag | Lag endpoint and current positive mark valid |
+| 236 | `history.momentum_close.28` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 28s lag | Lag endpoint and current positive mark valid |
+| 237 | `history.momentum_close.29` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 29s lag | Lag endpoint and current positive mark valid |
+| 238 | `history.momentum_close.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 30s lag | Lag endpoint and current positive mark valid |
+| 239 | `history.momentum_close.31` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 31s lag | Lag endpoint and current positive mark valid |
+| 240 | `history.momentum_close.32` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 32s lag | Lag endpoint and current positive mark valid |
+| 241 | `history.momentum_close.33` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 33s lag | Lag endpoint and current positive mark valid |
+| 242 | `history.momentum_close.34` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 34s lag | Lag endpoint and current positive mark valid |
+| 243 | `history.momentum_close.35` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 35s lag | Lag endpoint and current positive mark valid |
+| 244 | `history.momentum_close.36` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 36s lag | Lag endpoint and current positive mark valid |
+| 245 | `history.momentum_close.37` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 37s lag | Lag endpoint and current positive mark valid |
+| 246 | `history.momentum_close.38` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 38s lag | Lag endpoint and current positive mark valid |
+| 247 | `history.momentum_close.39` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 39s lag | Lag endpoint and current positive mark valid |
+| 248 | `history.momentum_close.40` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 40s lag | Lag endpoint and current positive mark valid |
+| 249 | `history.momentum_close.41` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 41s lag | Lag endpoint and current positive mark valid |
+| 250 | `history.momentum_close.42` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 42s lag | Lag endpoint and current positive mark valid |
+| 251 | `history.momentum_close.43` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 43s lag | Lag endpoint and current positive mark valid |
+| 252 | `history.momentum_close.44` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 44s lag | Lag endpoint and current positive mark valid |
+| 253 | `history.momentum_close.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 45s lag | Lag endpoint and current positive mark valid |
+| 254 | `history.momentum_close.46` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 46s lag | Lag endpoint and current positive mark valid |
+| 255 | `history.momentum_close.47` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 47s lag | Lag endpoint and current positive mark valid |
+| 256 | `history.momentum_close.48` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 48s lag | Lag endpoint and current positive mark valid |
+| 257 | `history.momentum_close.49` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 49s lag | Lag endpoint and current positive mark valid |
+| 258 | `history.momentum_close.50` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 50s lag | Lag endpoint and current positive mark valid |
+| 259 | `history.momentum_close.51` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 51s lag | Lag endpoint and current positive mark valid |
+| 260 | `history.momentum_close.52` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 52s lag | Lag endpoint and current positive mark valid |
+| 261 | `history.momentum_close.53` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 53s lag | Lag endpoint and current positive mark valid |
+| 262 | `history.momentum_close.54` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 54s lag | Lag endpoint and current positive mark valid |
+| 263 | `history.momentum_close.55` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 55s lag | Lag endpoint and current positive mark valid |
+| 264 | `history.momentum_close.56` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 56s lag | Lag endpoint and current positive mark valid |
+| 265 | `history.momentum_close.57` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 57s lag | Lag endpoint and current positive mark valid |
+| 266 | `history.momentum_close.58` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 58s lag | Lag endpoint and current positive mark valid |
+| 267 | `history.momentum_close.59` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 59s lag | Lag endpoint and current positive mark valid |
+| 268 | `history.momentum_close.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Fixed 60s lag | Lag endpoint and current positive mark valid |
 | 269 | `history.attention_mean.1` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 1s | Elapsed window available; causal notional; zero activity allowed |
 | 270 | `history.attention_mean.2` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 2s | Elapsed window available; causal notional; zero activity allowed |
 | 271 | `history.attention_mean.3` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 3s | Elapsed window available; causal notional; zero activity allowed |
@@ -761,158 +767,158 @@ The table enumerates the pinned source catalog and adds proposed next-version co
 | 326 | `history.attention_mean.58` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 58s | Elapsed window available; causal notional; zero activity allowed |
 | 327 | `history.attention_mean.59` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 59s | Elapsed window available; causal notional; zero activity allowed |
 | 328 | `history.attention_mean.60` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 60s | Elapsed window available; causal notional; zero activity allowed |
-| 329 | `history.average_move.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 330 | `history.average_move.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 331 | `history.average_move.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 332 | `history.average_move.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 333 | `history.average_move.6` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 334 | `history.average_move.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 335 | `history.average_move.8` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 336 | `history.average_move.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 337 | `history.average_move.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 338 | `history.average_move.11` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 339 | `history.average_move.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 340 | `history.average_move.13` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 341 | `history.average_move.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 342 | `history.average_move.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 343 | `history.average_move.16` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 344 | `history.average_move.17` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 345 | `history.average_move.18` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 346 | `history.average_move.19` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 347 | `history.average_move.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 348 | `history.average_move.21` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 349 | `history.average_move.22` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 350 | `history.average_move.23` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 351 | `history.average_move.24` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 352 | `history.average_move.25` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 353 | `history.average_move.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 354 | `history.average_move.27` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 355 | `history.average_move.28` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 356 | `history.average_move.29` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 357 | `history.average_move.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 358 | `history.average_move.31` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 359 | `history.average_move.32` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 360 | `history.swing_low.1.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 361 | `history.swing_low.1.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 362 | `history.swing_low.1.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 363 | `history.swing_low.1.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 364 | `history.swing_low.1.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 365 | `history.swing_low.1.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 366 | `history.swing_low.1.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 367 | `history.swing_low.1.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 368 | `history.swing_low.1.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 369 | `history.swing_low.1.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 370 | `history.swing_low.1.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 371 | `history.swing_low.2.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 372 | `history.swing_low.2.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 373 | `history.swing_low.2.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 374 | `history.swing_low.2.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 375 | `history.swing_low.2.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 376 | `history.swing_low.2.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 377 | `history.swing_low.2.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 378 | `history.swing_low.2.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 379 | `history.swing_low.2.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 380 | `history.swing_low.2.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 381 | `history.swing_low.2.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 382 | `history.swing_low.3.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 383 | `history.swing_low.3.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 384 | `history.swing_low.3.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 385 | `history.swing_low.3.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 386 | `history.swing_low.3.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 387 | `history.swing_low.3.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 388 | `history.swing_low.3.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 389 | `history.swing_low.3.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 390 | `history.swing_low.3.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 391 | `history.swing_low.3.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 392 | `history.swing_low.3.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 393 | `history.swing_low.4.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 394 | `history.swing_low.4.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 395 | `history.swing_low.4.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 396 | `history.swing_low.4.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 397 | `history.swing_low.4.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 398 | `history.swing_low.4.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 399 | `history.swing_low.4.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 400 | `history.swing_low.4.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 401 | `history.swing_low.4.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 402 | `history.swing_low.4.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 403 | `history.swing_low.4.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 404 | `history.swing_low.5.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 405 | `history.swing_low.5.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 406 | `history.swing_low.5.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 407 | `history.swing_low.5.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 408 | `history.swing_low.5.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 409 | `history.swing_low.5.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 410 | `history.swing_low.5.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 411 | `history.swing_low.5.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 412 | `history.swing_low.5.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 413 | `history.swing_low.5.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 414 | `history.swing_low.5.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 415 | `history.swing_low.10.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 416 | `history.swing_low.10.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 417 | `history.swing_low.10.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 418 | `history.swing_low.10.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 419 | `history.swing_low.10.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 420 | `history.swing_low.10.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 421 | `history.swing_low.10.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 422 | `history.swing_low.10.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 423 | `history.swing_low.10.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 424 | `history.swing_low.10.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 425 | `history.swing_low.10.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 426 | `history.swing_low.15.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 427 | `history.swing_low.15.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 428 | `history.swing_low.15.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 429 | `history.swing_low.15.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 430 | `history.swing_low.15.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 431 | `history.swing_low.15.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 432 | `history.swing_low.15.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 433 | `history.swing_low.15.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 434 | `history.swing_low.15.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 435 | `history.swing_low.15.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 436 | `history.swing_low.15.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 437 | `history.swing_low.20.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 438 | `history.swing_low.20.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 439 | `history.swing_low.20.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 440 | `history.swing_low.20.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 441 | `history.swing_low.20.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 442 | `history.swing_low.20.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 443 | `history.swing_low.20.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 444 | `history.swing_low.20.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 445 | `history.swing_low.20.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 446 | `history.swing_low.20.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 447 | `history.swing_low.20.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 448 | `history.swing_low.30.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 449 | `history.swing_low.30.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 450 | `history.swing_low.30.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 451 | `history.swing_low.30.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 452 | `history.swing_low.30.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 453 | `history.swing_low.30.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 454 | `history.swing_low.30.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 455 | `history.swing_low.30.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 456 | `history.swing_low.30.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 457 | `history.swing_low.30.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 458 | `history.swing_low.30.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 459 | `history.swing_low.45.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 460 | `history.swing_low.45.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 461 | `history.swing_low.45.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 462 | `history.swing_low.45.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 463 | `history.swing_low.45.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 464 | `history.swing_low.45.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 465 | `history.swing_low.45.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 466 | `history.swing_low.45.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 467 | `history.swing_low.45.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 468 | `history.swing_low.45.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 469 | `history.swing_low.45.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 470 | `history.swing_low.60.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 471 | `history.swing_low.60.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 472 | `history.swing_low.60.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 473 | `history.swing_low.60.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 474 | `history.swing_low.60.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 475 | `history.swing_low.60.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 476 | `history.swing_low.60.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 477 | `history.swing_low.60.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 478 | `history.swing_low.60.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 479 | `history.swing_low.60.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 480 | `history.swing_low.60.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 329 | `history.average_move.2` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 2s changes; 3 prices | 3 finite consecutive prices |
+| 330 | `history.average_move.3` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 3s changes; 4 prices | 4 finite consecutive prices |
+| 331 | `history.average_move.4` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 4s changes; 5 prices | 5 finite consecutive prices |
+| 332 | `history.average_move.5` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 5s changes; 6 prices | 6 finite consecutive prices |
+| 333 | `history.average_move.6` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 6s changes; 7 prices | 7 finite consecutive prices |
+| 334 | `history.average_move.7` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 7s changes; 8 prices | 8 finite consecutive prices |
+| 335 | `history.average_move.8` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 8s changes; 9 prices | 9 finite consecutive prices |
+| 336 | `history.average_move.9` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 9s changes; 10 prices | 10 finite consecutive prices |
+| 337 | `history.average_move.10` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 10s changes; 11 prices | 11 finite consecutive prices |
+| 338 | `history.average_move.11` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 11s changes; 12 prices | 12 finite consecutive prices |
+| 339 | `history.average_move.12` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 12s changes; 13 prices | 13 finite consecutive prices |
+| 340 | `history.average_move.13` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 13s changes; 14 prices | 14 finite consecutive prices |
+| 341 | `history.average_move.14` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 14s changes; 15 prices | 15 finite consecutive prices |
+| 342 | `history.average_move.15` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 15s changes; 16 prices | 16 finite consecutive prices |
+| 343 | `history.average_move.16` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 16s changes; 17 prices | 17 finite consecutive prices |
+| 344 | `history.average_move.17` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 17s changes; 18 prices | 18 finite consecutive prices |
+| 345 | `history.average_move.18` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 18s changes; 19 prices | 19 finite consecutive prices |
+| 346 | `history.average_move.19` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 19s changes; 20 prices | 20 finite consecutive prices |
+| 347 | `history.average_move.20` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 20s changes; 21 prices | 21 finite consecutive prices |
+| 348 | `history.average_move.21` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 21s changes; 22 prices | 22 finite consecutive prices |
+| 349 | `history.average_move.22` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 22s changes; 23 prices | 23 finite consecutive prices |
+| 350 | `history.average_move.23` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 23s changes; 24 prices | 24 finite consecutive prices |
+| 351 | `history.average_move.24` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 24s changes; 25 prices | 25 finite consecutive prices |
+| 352 | `history.average_move.25` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 25s changes; 26 prices | 26 finite consecutive prices |
+| 353 | `history.average_move.26` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 26s changes; 27 prices | 27 finite consecutive prices |
+| 354 | `history.average_move.27` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 27s changes; 28 prices | 28 finite consecutive prices |
+| 355 | `history.average_move.28` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 28s changes; 29 prices | 29 finite consecutive prices |
+| 356 | `history.average_move.29` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 29s changes; 30 prices | 30 finite consecutive prices |
+| 357 | `history.average_move.30` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 30s changes; 31 prices | 31 finite consecutive prices |
+| 358 | `history.average_move.31` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 31s changes; 32 prices | 32 finite consecutive prices |
+| 359 | `history.average_move.32` | price | 0 | 1000 | no | yes | 0 | 1000 | E | 32s changes; 33 prices | 33 finite consecutive prices |
+| 360 | `history.swing_low.1.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 3s formation; carried confirmed pivot | 3 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 361 | `history.swing_low.1.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 4s formation; carried confirmed pivot | 4 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 362 | `history.swing_low.1.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 5s formation; carried confirmed pivot | 5 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 363 | `history.swing_low.1.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 364 | `history.swing_low.1.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 365 | `history.swing_low.1.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 12s formation; carried confirmed pivot | 12 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 366 | `history.swing_low.1.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 17s formation; carried confirmed pivot | 17 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 367 | `history.swing_low.1.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 22s formation; carried confirmed pivot | 22 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 368 | `history.swing_low.1.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 32s formation; carried confirmed pivot | 32 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 369 | `history.swing_low.1.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 47s formation; carried confirmed pivot | 47 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 370 | `history.swing_low.1.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 62s formation; carried confirmed pivot | 62 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 371 | `history.swing_low.2.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 4s formation; carried confirmed pivot | 4 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 372 | `history.swing_low.2.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 5s formation; carried confirmed pivot | 5 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 373 | `history.swing_low.2.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 374 | `history.swing_low.2.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 375 | `history.swing_low.2.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 376 | `history.swing_low.2.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 13s formation; carried confirmed pivot | 13 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 377 | `history.swing_low.2.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 18s formation; carried confirmed pivot | 18 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 378 | `history.swing_low.2.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 23s formation; carried confirmed pivot | 23 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 379 | `history.swing_low.2.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 33s formation; carried confirmed pivot | 33 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 380 | `history.swing_low.2.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 48s formation; carried confirmed pivot | 48 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 381 | `history.swing_low.2.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 63s formation; carried confirmed pivot | 63 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 382 | `history.swing_low.3.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 5s formation; carried confirmed pivot | 5 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 383 | `history.swing_low.3.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 384 | `history.swing_low.3.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 385 | `history.swing_low.3.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 386 | `history.swing_low.3.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 9s formation; carried confirmed pivot | 9 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 387 | `history.swing_low.3.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 14s formation; carried confirmed pivot | 14 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 388 | `history.swing_low.3.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 19s formation; carried confirmed pivot | 19 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 389 | `history.swing_low.3.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 24s formation; carried confirmed pivot | 24 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 390 | `history.swing_low.3.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 34s formation; carried confirmed pivot | 34 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 391 | `history.swing_low.3.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 49s formation; carried confirmed pivot | 49 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 392 | `history.swing_low.3.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 64s formation; carried confirmed pivot | 64 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 393 | `history.swing_low.4.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 394 | `history.swing_low.4.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 395 | `history.swing_low.4.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 396 | `history.swing_low.4.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 9s formation; carried confirmed pivot | 9 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 397 | `history.swing_low.4.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 10s formation; carried confirmed pivot | 10 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 398 | `history.swing_low.4.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 15s formation; carried confirmed pivot | 15 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 399 | `history.swing_low.4.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 20s formation; carried confirmed pivot | 20 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 400 | `history.swing_low.4.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 25s formation; carried confirmed pivot | 25 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 401 | `history.swing_low.4.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 35s formation; carried confirmed pivot | 35 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 402 | `history.swing_low.4.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 50s formation; carried confirmed pivot | 50 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 403 | `history.swing_low.4.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 65s formation; carried confirmed pivot | 65 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 404 | `history.swing_low.5.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 405 | `history.swing_low.5.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 406 | `history.swing_low.5.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 9s formation; carried confirmed pivot | 9 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 407 | `history.swing_low.5.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 10s formation; carried confirmed pivot | 10 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 408 | `history.swing_low.5.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 11s formation; carried confirmed pivot | 11 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 409 | `history.swing_low.5.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 16s formation; carried confirmed pivot | 16 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 410 | `history.swing_low.5.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 21s formation; carried confirmed pivot | 21 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 411 | `history.swing_low.5.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 412 | `history.swing_low.5.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 413 | `history.swing_low.5.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 414 | `history.swing_low.5.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 415 | `history.swing_low.10.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 12s formation; carried confirmed pivot | 12 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 416 | `history.swing_low.10.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 13s formation; carried confirmed pivot | 13 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 417 | `history.swing_low.10.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 14s formation; carried confirmed pivot | 14 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 418 | `history.swing_low.10.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 15s formation; carried confirmed pivot | 15 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 419 | `history.swing_low.10.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 16s formation; carried confirmed pivot | 16 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 420 | `history.swing_low.10.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 21s formation; carried confirmed pivot | 21 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 421 | `history.swing_low.10.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 422 | `history.swing_low.10.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 31s formation; carried confirmed pivot | 31 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 423 | `history.swing_low.10.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 41s formation; carried confirmed pivot | 41 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 424 | `history.swing_low.10.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 56s formation; carried confirmed pivot | 56 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 425 | `history.swing_low.10.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 71s formation; carried confirmed pivot | 71 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 426 | `history.swing_low.15.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 17s formation; carried confirmed pivot | 17 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 427 | `history.swing_low.15.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 18s formation; carried confirmed pivot | 18 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 428 | `history.swing_low.15.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 19s formation; carried confirmed pivot | 19 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 429 | `history.swing_low.15.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 20s formation; carried confirmed pivot | 20 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 430 | `history.swing_low.15.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 21s formation; carried confirmed pivot | 21 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 431 | `history.swing_low.15.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 432 | `history.swing_low.15.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 31s formation; carried confirmed pivot | 31 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 433 | `history.swing_low.15.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 434 | `history.swing_low.15.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 46s formation; carried confirmed pivot | 46 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 435 | `history.swing_low.15.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 61s formation; carried confirmed pivot | 61 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 436 | `history.swing_low.15.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 437 | `history.swing_low.20.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 22s formation; carried confirmed pivot | 22 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 438 | `history.swing_low.20.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 23s formation; carried confirmed pivot | 23 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 439 | `history.swing_low.20.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 24s formation; carried confirmed pivot | 24 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 440 | `history.swing_low.20.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 25s formation; carried confirmed pivot | 25 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 441 | `history.swing_low.20.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 442 | `history.swing_low.20.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 31s formation; carried confirmed pivot | 31 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 443 | `history.swing_low.20.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 444 | `history.swing_low.20.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 41s formation; carried confirmed pivot | 41 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 445 | `history.swing_low.20.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 446 | `history.swing_low.20.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 447 | `history.swing_low.20.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 81s formation; carried confirmed pivot | 81 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 448 | `history.swing_low.30.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 32s formation; carried confirmed pivot | 32 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 449 | `history.swing_low.30.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 33s formation; carried confirmed pivot | 33 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 450 | `history.swing_low.30.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 34s formation; carried confirmed pivot | 34 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 451 | `history.swing_low.30.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 35s formation; carried confirmed pivot | 35 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 452 | `history.swing_low.30.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 453 | `history.swing_low.30.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 41s formation; carried confirmed pivot | 41 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 454 | `history.swing_low.30.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 46s formation; carried confirmed pivot | 46 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 455 | `history.swing_low.30.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 456 | `history.swing_low.30.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 61s formation; carried confirmed pivot | 61 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 457 | `history.swing_low.30.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 458 | `history.swing_low.30.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 91s formation; carried confirmed pivot | 91 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 459 | `history.swing_low.45.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 47s formation; carried confirmed pivot | 47 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 460 | `history.swing_low.45.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 48s formation; carried confirmed pivot | 48 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 461 | `history.swing_low.45.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 49s formation; carried confirmed pivot | 49 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 462 | `history.swing_low.45.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 50s formation; carried confirmed pivot | 50 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 463 | `history.swing_low.45.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 464 | `history.swing_low.45.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 56s formation; carried confirmed pivot | 56 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 465 | `history.swing_low.45.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 61s formation; carried confirmed pivot | 61 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 466 | `history.swing_low.45.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 467 | `history.swing_low.45.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 468 | `history.swing_low.45.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 91s formation; carried confirmed pivot | 91 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 469 | `history.swing_low.45.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 106s formation; carried confirmed pivot | 106 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 470 | `history.swing_low.60.1` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 62s formation; carried confirmed pivot | 62 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 471 | `history.swing_low.60.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 63s formation; carried confirmed pivot | 63 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 472 | `history.swing_low.60.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 64s formation; carried confirmed pivot | 64 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 473 | `history.swing_low.60.4` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 65s formation; carried confirmed pivot | 65 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 474 | `history.swing_low.60.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 475 | `history.swing_low.60.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 71s formation; carried confirmed pivot | 71 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 476 | `history.swing_low.60.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 477 | `history.swing_low.60.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 81s formation; carried confirmed pivot | 81 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 478 | `history.swing_low.60.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 91s formation; carried confirmed pivot | 91 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 479 | `history.swing_low.60.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 106s formation; carried confirmed pivot | 106 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 480 | `history.swing_low.60.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | 121s formation; carried confirmed pivot | 121 consecutive observed slots; prior-clock confirmation; age may exceed window |
 | 481 | `history.recent_high.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 1s | 1 finite observed high slots and valid current mark |
 | 482 | `history.recent_high.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 2s | 2 finite observed high slots and valid current mark |
 | 483 | `history.recent_high.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 3s | 3 finite observed high slots and valid current mark |
@@ -1192,39 +1198,39 @@ The table enumerates the pinned source catalog and adds proposed next-version co
 | 757 | `market.log_execution_volume` | log_shares | 0 | 30 | yes | yes | 0 | 20.723266 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
 | 758 | `market.log_execution_notional` | log_dollars | 0 | 30 | yes | yes | 0 | 25.328436 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
 | 759 | `market.log_execution_trade_count` | log_count | 0 | 20 | yes | yes | 0 | 13.815512 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
-| 760 | `market.bid` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 761 | `market.ask` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 762 | `market.spread` | price | 0 | 100 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 763 | `market.close` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
-| 764 | `indicator.ema.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 760 | `market.bid` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Current mapped source row; no extra history | Positive valid causal book for bid/ask; nonnegative spread; source mask for close; resolve F07 |
+| 761 | `market.ask` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Current mapped source row; no extra history | Positive valid causal book for bid/ask; nonnegative spread; source mask for close; resolve F07 |
+| 762 | `market.spread` | price | 0 | 100 | no | yes | 0 | 1000 | E | Current mapped source row; no extra history | Positive valid causal book for bid/ask; nonnegative spread; source mask for close; resolve F07 |
+| 763 | `market.close` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Current mapped source row; no extra history | Positive valid causal book for bid/ask; nonnegative spread; source mask for close; resolve F07 |
+| 764 | `indicator.ema.2` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 2; certified running state | At least 2 valid closes; finite state; no raw-history query |
 | 765 | `indicator.ema.2.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 2; certified running state | At least 2 valid closes; finite state; no raw-history query |
-| 766 | `indicator.ema.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 766 | `indicator.ema.3` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 3; certified running state | At least 3 valid closes; finite state; no raw-history query |
 | 767 | `indicator.ema.3.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 3; certified running state | At least 3 valid closes; finite state; no raw-history query |
-| 768 | `indicator.ema.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 768 | `indicator.ema.5` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 5; certified running state | At least 5 valid closes; finite state; no raw-history query |
 | 769 | `indicator.ema.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 5; certified running state | At least 5 valid closes; finite state; no raw-history query |
-| 770 | `indicator.ema.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 770 | `indicator.ema.7` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 7; certified running state | At least 7 valid closes; finite state; no raw-history query |
 | 771 | `indicator.ema.7.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 7; certified running state | At least 7 valid closes; finite state; no raw-history query |
-| 772 | `indicator.ema.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 772 | `indicator.ema.9` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 9; certified running state | At least 9 valid closes; finite state; no raw-history query |
 | 773 | `indicator.ema.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 9; certified running state | At least 9 valid closes; finite state; no raw-history query |
-| 774 | `indicator.ema.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 774 | `indicator.ema.10` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 10; certified running state | At least 10 valid closes; finite state; no raw-history query |
 | 775 | `indicator.ema.10.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 10; certified running state | At least 10 valid closes; finite state; no raw-history query |
-| 776 | `indicator.ema.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 776 | `indicator.ema.12` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 12; certified running state | At least 12 valid closes; finite state; no raw-history query |
 | 777 | `indicator.ema.12.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 12; certified running state | At least 12 valid closes; finite state; no raw-history query |
-| 778 | `indicator.ema.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 778 | `indicator.ema.14` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 14; certified running state | At least 14 valid closes; finite state; no raw-history query |
 | 779 | `indicator.ema.14.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 14; certified running state | At least 14 valid closes; finite state; no raw-history query |
-| 780 | `indicator.ema.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 780 | `indicator.ema.15` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 15; certified running state | At least 15 valid closes; finite state; no raw-history query |
 | 781 | `indicator.ema.15.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 15; certified running state | At least 15 valid closes; finite state; no raw-history query |
-| 782 | `indicator.ema.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 782 | `indicator.ema.20` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 20; certified running state | At least 20 valid closes; finite state; no raw-history query |
 | 783 | `indicator.ema.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 20; certified running state | At least 20 valid closes; finite state; no raw-history query |
-| 784 | `indicator.ema.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 784 | `indicator.ema.26` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 26; certified running state | At least 26 valid closes; finite state; no raw-history query |
 | 785 | `indicator.ema.26.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 26; certified running state | At least 26 valid closes; finite state; no raw-history query |
-| 786 | `indicator.ema.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 786 | `indicator.ema.30` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 30; certified running state | At least 30 valid closes; finite state; no raw-history query |
 | 787 | `indicator.ema.30.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 30; certified running state | At least 30 valid closes; finite state; no raw-history query |
-| 788 | `indicator.ema.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 788 | `indicator.ema.45` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 45; certified running state | At least 45 valid closes; finite state; no raw-history query |
 | 789 | `indicator.ema.45.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 45; certified running state | At least 45 valid closes; finite state; no raw-history query |
-| 790 | `indicator.ema.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 790 | `indicator.ema.50` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 50; certified running state | At least 50 valid closes; finite state; no raw-history query |
 | 791 | `indicator.ema.50.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 50; certified running state | At least 50 valid closes; finite state; no raw-history query |
-| 792 | `indicator.ema.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 792 | `indicator.ema.60` | price | 0 | 1000 | no | yes | 0.0001 | 10000 | E | Period 60; certified running state | At least 60 valid closes; finite state; no raw-history query |
 | 793 | `indicator.ema.60.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 60; certified running state | At least 60 valid closes; finite state; no raw-history query |
 | 794 | `indicator.rsi.2` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 2; certified running state | At least 2 price changes (3 valid closes); finite state |
 | 795 | `indicator.rsi.3` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 3; certified running state | At least 3 price changes (4 valid closes); finite state |
@@ -1241,35 +1247,35 @@ The table enumerates the pinned source catalog and adds proposed next-version co
 | 806 | `indicator.rsi.45` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 45; certified running state | At least 45 price changes (46 valid closes); finite state |
 | 807 | `indicator.rsi.50` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 50; certified running state | At least 50 price changes (51 valid closes); finite state |
 | 808 | `indicator.rsi.60` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 60; certified running state | At least 60 price changes (61 valid closes); finite state |
-| 809 | `indicator.atr.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 809 | `indicator.atr.2` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 2; certified running state | At least 2 valid extreme observations; finite state |
 | 810 | `indicator.atr.2.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 2; certified running state | At least 2 valid extreme observations; finite state |
-| 811 | `indicator.atr.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 811 | `indicator.atr.3` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 3; certified running state | At least 3 valid extreme observations; finite state |
 | 812 | `indicator.atr.3.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 3; certified running state | At least 3 valid extreme observations; finite state |
-| 813 | `indicator.atr.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 813 | `indicator.atr.5` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 5; certified running state | At least 5 valid extreme observations; finite state |
 | 814 | `indicator.atr.5.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 5; certified running state | At least 5 valid extreme observations; finite state |
-| 815 | `indicator.atr.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 815 | `indicator.atr.7` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 7; certified running state | At least 7 valid extreme observations; finite state |
 | 816 | `indicator.atr.7.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 7; certified running state | At least 7 valid extreme observations; finite state |
-| 817 | `indicator.atr.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 817 | `indicator.atr.9` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 9; certified running state | At least 9 valid extreme observations; finite state |
 | 818 | `indicator.atr.9.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 9; certified running state | At least 9 valid extreme observations; finite state |
-| 819 | `indicator.atr.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 819 | `indicator.atr.10` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 10; certified running state | At least 10 valid extreme observations; finite state |
 | 820 | `indicator.atr.10.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 10; certified running state | At least 10 valid extreme observations; finite state |
-| 821 | `indicator.atr.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 821 | `indicator.atr.12` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 12; certified running state | At least 12 valid extreme observations; finite state |
 | 822 | `indicator.atr.12.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 12; certified running state | At least 12 valid extreme observations; finite state |
-| 823 | `indicator.atr.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 823 | `indicator.atr.14` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 14; certified running state | At least 14 valid extreme observations; finite state |
 | 824 | `indicator.atr.14.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 14; certified running state | At least 14 valid extreme observations; finite state |
-| 825 | `indicator.atr.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 825 | `indicator.atr.15` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 15; certified running state | At least 15 valid extreme observations; finite state |
 | 826 | `indicator.atr.15.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 15; certified running state | At least 15 valid extreme observations; finite state |
-| 827 | `indicator.atr.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 827 | `indicator.atr.20` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 20; certified running state | At least 20 valid extreme observations; finite state |
 | 828 | `indicator.atr.20.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 20; certified running state | At least 20 valid extreme observations; finite state |
-| 829 | `indicator.atr.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 829 | `indicator.atr.26` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 26; certified running state | At least 26 valid extreme observations; finite state |
 | 830 | `indicator.atr.26.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 26; certified running state | At least 26 valid extreme observations; finite state |
-| 831 | `indicator.atr.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 831 | `indicator.atr.30` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 30; certified running state | At least 30 valid extreme observations; finite state |
 | 832 | `indicator.atr.30.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 30; certified running state | At least 30 valid extreme observations; finite state |
-| 833 | `indicator.atr.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 833 | `indicator.atr.45` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 45; certified running state | At least 45 valid extreme observations; finite state |
 | 834 | `indicator.atr.45.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 45; certified running state | At least 45 valid extreme observations; finite state |
-| 835 | `indicator.atr.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 835 | `indicator.atr.50` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 50; certified running state | At least 50 valid extreme observations; finite state |
 | 836 | `indicator.atr.50.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 50; certified running state | At least 50 valid extreme observations; finite state |
-| 837 | `indicator.atr.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 837 | `indicator.atr.60` | price | 0 | 1000 | no | yes | 0 | 1000 | E | Period 60; certified running state | At least 60 valid extreme observations; finite state |
 | 838 | `indicator.atr.60.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 60; certified running state | At least 60 valid extreme observations; finite state |
 | 839 | `indicator.macd_line.3.15.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15; running state | At least 15 valid closes per producer; finite state |
 | 840 | `indicator.macd_signal.3.15.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15/5; running state | At least 19 valid closes per producer; finite state |
