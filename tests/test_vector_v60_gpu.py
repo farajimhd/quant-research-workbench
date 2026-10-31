@@ -95,6 +95,11 @@ class GPUParity(unittest.TestCase):
             export(gpu_diagnostic)
             torch.testing.assert_close(fused_p,actual[0],rtol=0,atol=0)
             torch.testing.assert_close(fused_o,actual[1],rtol=0,atol=0)
+            torch.testing.assert_close(fused[4],actual[2],rtol=0,atol=0)
+            torch.testing.assert_close(fused[5][...,16],actual[3][...,16],rtol=0,atol=0)
+            # Fused records have payloads only for flagged journal events.
+            for mask,start in ((fused[4],0),(fused[5][...,16]>0,8)):
+                torch.testing.assert_close(fused[5][...,start:start+8][mask],actual[3][...,start:start+8][mask],rtol=0,atol=0)
             aggregate=account(p,expected[0],o,expected[1],aggregate,price,expected[2],expected[3])
             ag=gpu_account(pg,actual[0],og,actual[1],ag,price.cuda(),actual[3])
             torch.testing.assert_close(fused[0],ag,rtol=0,atol=0)

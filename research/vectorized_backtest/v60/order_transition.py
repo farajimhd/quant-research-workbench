@@ -55,13 +55,16 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     pending_buy=(kind==1)|(kind==2)
     cancelled=(pending_buy&(terminal|stopped|((sig&2)!=0)|((sig&8)!=0)))|((kind==1)&(filled==0)&fresh&~feasible)
     flatten=flatten&~(cancelled&~pending_buy)
-    # Preserve cancelled partial fills before replacing the request this candle.
-    tl.store(REC+at*17+8,kind,live);tl.store(REC+at*17+9,requested,live)
-    tl.store(REC+at*17+10,filled,live);tl.store(REC+at*17+11,notional,live)
-    tl.store(REC+at*17+12,fees,live);tl.store(REC+at*17+13,submitted,live)
-    tl.store(REC+at*17+14,first,live);tl.store(REC+at*17+15,clock,live)
     cancel_active=cancelled
     if FUSED:cancel_active=cancelled&tl.load(ACTIVE)
+    # Only flagged rows enter the fused journal. Avoid writing eight unused
+    # doubles for every candidate/listing on clocks without a cancellation.
+    cancel_row=live
+    if FUSED:cancel_row=live&cancel_active
+    tl.store(REC+at*17+8,kind,cancel_row);tl.store(REC+at*17+9,requested,cancel_row)
+    tl.store(REC+at*17+10,filled,cancel_row);tl.store(REC+at*17+11,notional,cancel_row)
+    tl.store(REC+at*17+12,fees,cancel_row);tl.store(REC+at*17+13,submitted,cancel_row)
+    tl.store(REC+at*17+14,first,cancel_row);tl.store(REC+at*17+15,clock,cancel_row)
     tl.store(REC+at*17+16,cancel_active.to(tl.float64),live)
     cancelled_stops+=cancelled.to(tl.float64);completed_count+=cancelled.to(tl.float64)
     kind=tl.where(cancelled,0.,kind);remaining=tl.where(cancelled,0.,remaining)
@@ -71,7 +74,8 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     water=tl.where(ratchet,tl.maximum(water,prev),water);stop=tl.where(ratchet,tl.maximum(stop,water*(1-trail)),stop)
     flatten=flatten|(held&(terminal|((sig&2)!=0)|(finite&(prev<=stop))))|(terminal&busy)
     managed=(clock-last)>=cooldown;gain=tl.full((BLOCK,),0.,tl.float64)
-    if tl.sum((held&finite).to(tl.int32),0)>0:gain=tl.where(held&finite,prev/tl.maximum(avg,1.e-12)-1,0.)
+    needs_gain=held&finite&~busy&~flatten&~terminal&managed&((sig&12)!=0)
+    if tl.sum(needs_gain.to(tl.int32),0)>0:gain=tl.where(needs_gain,prev/tl.maximum(avg,1.e-12)-1,0.)
     hit=held&finite&(prev>=target);reduction=tl.minimum(tl.maximum(tl.where(hit,rf,r2),0.),1.)
     exit_new=~busy&held&flatten
     reduce_new=~busy&held&~flatten&~terminal&~cancelled&managed&(reduction>0)&((((sig&8)!=0)&(gain>=redmin))|hit)
@@ -157,9 +161,11 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
         tl.store(BOOK+at*3,tl.where(newer,stamp,old_stamp),live&active)
         tl.store(BOOK+at*3+1,tl.maximum(buy_capacity-tl.maximum(delta,0.),0.),live&active)
         tl.store(BOOK+at*3+2,tl.maximum(sell_capacity-tl.maximum(-delta,0.),0.),live&active)
-    tl.store(REC+at*17,kind,live);tl.store(REC+at*17+1,requested,live);tl.store(REC+at*17+2,new_filled,live)
-    tl.store(REC+at*17+3,new_notional,live);tl.store(REC+at*17+4,new_fees,live);tl.store(REC+at*17+5,submitted,live)
-    tl.store(REC+at*17+6,first,live);tl.store(REC+at*17+7,clock,live);tl.store(DONE+at,complete,live)
+    complete_row=live
+    if FUSED:complete_row=live&complete&active
+    tl.store(REC+at*17,kind,complete_row);tl.store(REC+at*17+1,requested,complete_row);tl.store(REC+at*17+2,new_filled,complete_row)
+    tl.store(REC+at*17+3,new_notional,complete_row);tl.store(REC+at*17+4,new_fees,complete_row);tl.store(REC+at*17+5,submitted,complete_row)
+    tl.store(REC+at*17+6,first,complete_row);tl.store(REC+at*17+7,clock,complete_row);tl.store(DONE+at,complete,live)
     if FUSED:
         tl.store(DONE+at,complete&active,live)
         live=live&active

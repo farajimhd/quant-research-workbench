@@ -716,7 +716,9 @@ def render(model,width,height):
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
         lines.append(f"Branches: {r.get('branch_count',1)} | A-first arbitration; selected branch persists while held")
         parent_eligible=r.get('parent_eligible')
-        lines.append('Parent eligibility: '+('unavailable' if parent_eligible is None else 'eligible' if parent_eligible else 'ineligible: no closed position or invalid replay'))
+        validation_scope='validation' in r.get('metric_scope','') or model.validation
+        lines.append('Parent eligibility: validation is display-only' if validation_scope else
+            'Parent eligibility: '+('unavailable' if parent_eligible is None else 'eligible' if parent_eligible else 'ineligible: no closed position or invalid replay'))
         if 'admission_entry_signals' in r:
             lines.append('Entry signals '+number(r['admission_entry_signals'])+' | requests '+number(r['admission_entry_requests'])+' | first fills '+number(r['admission_entry_first_fills']))
             reasons=[(k.removeprefix('admission_abstain_'),v) for k,v in r.items() if k.startswith('admission_abstain_') and v]
