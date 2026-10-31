@@ -88,7 +88,9 @@ def diagnostics(value,prefix=''):
     return rows
 
 class Model:
-    def __init__(self,job):
+    def __init__(self,job,asynchronous=False):
+        from .observer_io import ObserverIO
+        self.io=ObserverIO() if asynchronous else None
         self.job=job;self.root=Path(job['campaign']);self.cache={};self.reports={};self.last_error=None;self.timing_cache={};self.strength_cache={}
         self.global_data=None;self.global_loading=None;self.global_error=None;self.global_thread=None;self.observer_stop=threading.Event();self.global_attempt=0.;self.global_day=None;self.global_role=None;self.summary_mode='combined'
         self.bus=remote(job['transport'],job['workstation_share'])
@@ -104,6 +106,7 @@ class Model:
         self.full_mode=False;self.full_data=None
         from .initial_progress import InitialData
         self.initial=InitialData(job,self.global_root().parent,self.observer_stop)
+        self.initial.io=self.io
     def remember(self):
         self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','aggregate_mode','aggregate_role','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation[-1]['initial_mode']=getattr(self,'initial_mode',False)
@@ -111,6 +114,7 @@ class Model:
         self.navigation[-1]['full_data']=getattr(self,'full_data',None)
         self.navigation=self.navigation[-32:]
     def read(self,path,default=None):
+        if self.io is not None:return self.io.read(path,default)
         path=Path(path);key=str(path)
         try:
             stamp=(path.stat().st_mtime_ns,path.stat().st_size)
@@ -153,7 +157,9 @@ class Model:
             return state
         node=self.read(self.bus/'workstation-status.json')
         return dict(status='running' if node.get('status','').startswith('verify-') else node.get('status','queued'),stage=node.get('status','Waiting for coordinator'),completed_generations=0)
-    def close(self):self.observer_stop.set()
+    def close(self):
+        self.observer_stop.set()
+        if self.io is not None:self.io.close()
     def strength(self,path,state):
         from .progress_sessions import strength
         key=(str(path),state.get('ranking_generation',state.get('completed_generations',0)))
@@ -172,7 +178,8 @@ class Model:
                 from .progress_sessions import load_global
                 def partial(value):
                     if self.global_data is None or self.global_data['generation']==generation:self.global_data=value
-                try:self.global_data=load_global(self.job,target/'global',generation,self.observer_stop,lambda done,total:setattr(self,'global_loading',(generation,done,total)),partial)
+                try:
+                    self.global_data=self.io.call('research.vectorized_backtest.v59.observer_io','load_complete',self.job,target/'global',generation) if self.io else load_global(self.job,target/'global',generation,self.observer_stop,lambda done,total:setattr(self,'global_loading',(generation,done,total)),partial)
                 except InterruptedError:pass
                 except Exception as error:self.global_error=str(error)
                 finally:self.global_loading=None
@@ -198,7 +205,10 @@ class Model:
                 if seal.get('source_sha256')==self.job.get('source_sha256'):
                     evidence=self.read(root/f'generation-{generation:04d}'/'training.json');refs=evidence.get('receipts',{})
                     # An absent/empty batch timing cannot establish a full replay rate.
-                    reused=bool(refs) and all(not self.read((remote(r['receipt'],self.job['workstation_share']) if str(root).startswith('\\\\') else Path(r['receipt'])).parent/'timings.json') for r in refs.values())
+                    timing_paths=[(remote(r['receipt'],self.job['workstation_share']) if str(root).startswith('\\\\') else Path(r['receipt'])).parent/'timings.json' for r in refs.values()]
+                    values=[self.read(p) for p in timing_paths]
+                    if self.io and (not evidence or any(str(p) not in self.io.checked for p in timing_paths)):continue
+                    reused=bool(refs) and all(not value for value in values)
                 cache[generation]=(seconds,seal.get('source_sha256'),reused)
         rows=[];total=0.
         for generation,(seconds,source,reused) in sorted(cache.items()):
@@ -247,7 +257,10 @@ class Model:
         key=(str(root),g)
         if key not in self.reports:
             from .evolution_report import historical
-            try:self.reports[key]=historical(root/f'generation-{g:04d}')
+            try:
+                value=self.io.request(key,'research.vectorized_backtest.v59.evolution_report','historical',root/f'generation-{g:04d}') if self.io else historical(root/f'generation-{g:04d}')
+                if value is None:return dict(generation=g,groups=[],candidates=[],loading=True)
+                self.reports[key]=value
             except (OSError,ValueError,KeyError):return dict(generation=g,groups=[],candidates=[],unavailable=True)
             if len(self.reports)>26:self.reports.pop(next(iter(self.reports)))
         return self.reports[key]
@@ -351,7 +364,8 @@ class Model:
                         if self.observer_stop.is_set():return
                         role,day=key.split(':',1)
                         if key not in data['panels']:
-                            panel,summary=load_live_session(self.job,root,generation,role,day,ids,token)
+                            args=(self.job,root,generation,role,day,ids,token)
+                            panel,summary=self.io.call('research.vectorized_backtest.v59.progress_sessions','load_live_session',*args) if self.io else load_live_session(*args)
                             data['panels'][key]=panel;data['summaries'][key]=summary
                         else:panel=data['panels'][key]
                         if records is not None:
@@ -391,6 +405,7 @@ class Model:
         for edit in row.get('mutation_fields',[]):rows.append(dict(step='Mutation',parents=str(edit.get('stage','-')),operator=str(edit.get('field','-')),depth='-'))
         if path:
             detail=self.read(remote(path,self.job['workstation_share']))
+            if not detail and self.io:return rows+[dict(step='Loading sealed lineage',parents='-',operator='background read',depth='-')]
             from .identity import digest
             if mix.get('provenance_sha256') and digest(detail)!=mix['provenance_sha256']:raise ValueError('Blind lineage provenance changed')
             rows.extend(dict(step=str(v['id']),parents=', '.join(map(str,v['parents'])),operator=v['mode'],depth=str(v['depth'])) for v in detail.get('steps',[]))
@@ -412,7 +427,7 @@ class Model:
         self.position_rows=[];self.position_error=None;self.position_session=session
         r=dict(self.selected);generation=r.get('last_evaluated_generation',r.get('generation',self.report().get('generation',0)))
         request=(self.target(),generation,r['serial'],session)
-        if getattr(self,'initial_mode',False):request=(self.initial.source_root,1,r['serial'],session)
+        if getattr(self,'initial_mode',False):request=(self.initial.source_root,self.initial.generation,r['serial'],session)
         def collect():
             while not self.observer_stop.is_set():
                 with self.position_lock:
@@ -421,7 +436,8 @@ class Model:
                 rows=[];error=None
                 try:
                     from .position_details import load
-                    rows=load(*current,self.job['workstation_share'],job=self.job)
+                    args=(*current,self.job['workstation_share'],self.job)
+                    rows=self.io.call('research.vectorized_backtest.v59.position_details','load',*args) if self.io else load(*args)
                 except Exception as exc:error=str(exc)
                 with self.position_lock:
                     if current==self.position_request:
@@ -751,7 +767,7 @@ def render(model,width,height):
         if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     if getattr(model,'initial_mode',False):
-        header=Text('V59 INITIAL FOUNDERS | 6,144 saved founders rescored with V59 concentration | NOT current generation\nTraining only | No founder GPU replay | G: live run | A: global paths',style='bright_cyan')
+        header=Text(f'V59 INITIAL FOUNDERS | 6,144 founders | generation {model.initial.generation}\nTraining results under this campaign execution contract | G: live run | A: global paths',style='bright_cyan')
         if model.initial.error:header.append('\n'+model.initial.error,style='bright_red')
         elif model.view=='detail':header.append(f'\nSession details: {len(model.initial.sessions)}/24 loaded in background')
     if getattr(model,'full_mode',False):
@@ -774,24 +790,30 @@ def render(model,width,height):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--job',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--view',default='overview');a=p.parse_args()
-    model=Model(json.loads(a.job.read_bytes()));model.view=a.view;console=Console()
+    console=Console();model=Model(json.loads(a.job.read_bytes()),asynchronous=console.is_terminal and not a.once);model.view=a.view
     if console.is_terminal:console=Console(color_system='truecolor',no_color=False,legacy_windows=False)
     if a.once or not console.is_terminal:console.print(render(model,console.width,console.height));model.close();return
     if os.name=='nt':
         import ctypes,msvcrt
         handle=msvcrt.get_osfhandle(console.file.fileno());mode=ctypes.c_ulong()
         ctypes.windll.kernel32.GetConsoleMode(ctypes.c_void_p(handle),ctypes.byref(mode));ctypes.windll.kernel32.SetConsoleMode(ctypes.c_void_p(handle),mode.value|4)
+    from .observer_io import InputLane
+    import queue
+    inputs=InputLane(msvcrt.kbhit,lambda:read_key(msvcrt.getwch)) if os.name=='nt' else None
     try:
         with FixedTerminal(console) as live:
             while True:
                 live.update(lambda w,h:render(model,w,h))
                 until=time.monotonic()+1
                 while time.monotonic()<until:
-                    if os.name=='nt' and msvcrt.kbhit():
-                        key=read_key(msvcrt.getwch)
+                    try:key=inputs.events.get(timeout=.02) if inputs else None
+                    except queue.Empty:continue
+                    if key:
                         if key=='q':return
                         model.key(key,live.dimensions()[1]);break
-                    time.sleep(.05)
+                    time.sleep(.01)
     except KeyboardInterrupt:return
-    finally:model.close()
+    finally:
+        if inputs:inputs.close()
+        model.close()
 if __name__=='__main__':main()

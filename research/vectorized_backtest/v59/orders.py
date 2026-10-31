@@ -47,13 +47,17 @@ fields are never derived from a later bar than the current execution clock.
     add_new = (idle & held & ~flatten & ~reduce_new & ~terminal & managed &
                ((signals & 4) != 0) & (gain >= policy[...,4]) & (adds < policy[...,6]))
     entry_new = idle & ~held & ~terminal & membership & ((signals & 1) != 0)
+    # While flat, last is the final liquidation fill clock. Initial lanes have
+    # last=0; partial exits remain held and cannot restart the timer early.
+    entry_new = entry_new & ((last <= 0) | ((clock-last) >= 3))
     entry_amount = entry_dollars * ratios[...,0].clamp(0,1)
     add_amount = add_dollars * ratios[...,1].clamp(0,1)
     entry_new = entry_new & (entry_amount > 0) & (entry_amount >= minimum_order_dollars)
     add_new = add_new & (add_amount > 0) & (add_amount >= minimum_order_dollars)
     # A missing swing stop cannot define an entry request. Later quote changes
     # never silently discard an already accepted order.
-    entry_new = entry_new & ((policy[...,8] <= 0) | (torch.isfinite(swing) & (swing > 0)))
+    entry_new = entry_new & ((policy[...,8] <= 0) | (torch.isfinite(swing) & (swing > 0) &
+        quote_valid & torch.isfinite(ask) & (swing < ask)))
     new_kind = torch.where(exit_new, EXIT, torch.where(reduce_new, REDUCE,
                     torch.where(add_new, ADD, torch.where(entry_new, ENTRY, 0))))
     new = new_kind != 0

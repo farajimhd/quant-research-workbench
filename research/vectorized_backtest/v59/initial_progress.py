@@ -80,6 +80,11 @@ class InitialData:
                 if self.stop.is_set() or self.request!=serial:return
                 key='training:'+day
                 if key in complete:continue
+                if getattr(self,'io',None):
+                    row=self.io.call('research.vectorized_backtest.v59.observer_io','initial_session',self.path(ref['receipt']),ref['receipt_sha256'],day,index)
+                    if self.request!=serial:return
+                    self.sessions=[*self.sessions,row]
+                    continue
                 receipt=read_verified(self.path(ref['receipt']),ref['receipt_sha256'])
                 if receipt['day']!=day or receipt['split']!='training' or receipt['validation_opened']:raise ValueError('Initial session scope differs')
                 metrics={k:[v[index]] for k,v in receipt['metrics'].items()};del receipt

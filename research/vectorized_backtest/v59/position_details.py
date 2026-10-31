@@ -39,6 +39,8 @@ def load(root,generation,serial,session,share,job=None):
     for listing,profit in zip(metrics.get('open_episode_listings',[[]]*len(evidence['ids']))[index],metrics.get('open_episode_realized',[[]]*len(evidence['ids']))[index]):
         rows.append(dict(position=len(rows)+1,status='open',listing_id=receipt['listing_ids'][int(listing)],net_pnl=profit))
     for row in rows:row['evidence']='sealed generation' if seal else 'published replay; generation unsealed'
+    from .order_details import attach
+    attach(rows,receipt,index,lambda p:remote(p,share) if str(root).startswith('\\\\') and not str(p).startswith('\\\\') else p)
     if job:
         import numpy as np
         from datetime import datetime,timezone

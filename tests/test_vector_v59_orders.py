@@ -4,6 +4,26 @@ from research.vectorized_backtest.v59.orders import transition, require_complete
 
 
 class PersistentOrders(unittest.TestCase):
+    def test_swing_stop_must_be_below_entry_quote(self):
+        self.policy[...,8]=2
+        for stop in (10.,10.1):
+            self.tick(price=10.,swing=stop,capacity=1000.)
+            self.assertEqual(self.p[...,0].item(),0.)
+            self.assertEqual(self.o[...,0].item(),0.)
+        self.tick(price=10.,swing=9.,capacity=1000.)
+        self.assertGreater(self.p[...,0].item(),0.)
+
+    def test_three_seconds_after_final_exit_fill(self):
+        self.tick(capacity=1000.)
+        self.tick(signal=2,capacity=50.)
+        self.tick(signal=0,capacity=1000.)
+        self.assertEqual(self.p[...,0].item(),0.)
+        for _ in range(2):
+            self.tick(capacity=1000.)
+            self.assertEqual(self.p[...,0].item(),0.)
+        self.tick(capacity=1000.)
+        self.assertGreater(self.p[...,0].item(),0.)
+
     def setUp(self):
         self.p=torch.zeros((1,1,1,9),dtype=torch.float64)
         self.o=torch.zeros((1,1,1,ORDER_WIDTH),dtype=torch.float64)
@@ -201,14 +221,14 @@ class ReplayPath(unittest.TestCase):
         small=self.run_path('cpu','eager',fast_orders=True,record_capacity=4)
         torch.testing.assert_close(full[0],small[0],rtol=0,atol=0)
         self.assertEqual(full[2:],small[2:])
-        self.assertEqual(len(small[2]['execution_orders'][0]),36)
+        self.assertEqual(len(small[2]['execution_orders'][0]),20)
 
     def test_position_pages_preserve_all_trades_during_chunk_retry(self):
         full=self.run_path('cpu','eager',fast_orders=True)
         small=self.run_path('cpu','eager',fast_orders=True,episode_capacity=4)
         torch.testing.assert_close(full[1],small[1],rtol=0,atol=0)
         self.assertEqual(full[2:],small[2:])
-        self.assertEqual(len(small[3][0]['episode_profits'][0]),18)
+        self.assertEqual(len(small[3][0]['episode_profits'][0]),10)
 
     @unittest.skipUnless(__import__('os').environ.get('V59_TEST_CUDA')=='1','opt-in GPU qualification')
     def test_captured_path_matches_eager_and_repeats_exactly(self):

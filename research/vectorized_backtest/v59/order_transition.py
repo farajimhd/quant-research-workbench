@@ -56,8 +56,9 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     reduce_new=~busy&held&~flatten&~terminal&managed&(reduction>0)&((((sig&8)!=0)&(gain>=redmin))|hit)
     add_new=~busy&held&~flatten&~reduce_new&~terminal&managed&((sig&4)!=0)&(gain>=addmin)&(adds<maxadds)
     entry_new=~busy&~held&~terminal&member&((sig&1)!=0)
+    entry_new=entry_new&((last<=0)|((clock-last)>=3))
     ea=ED*r0;aa=AD*r1
-    entry_new=entry_new&(ea>0)&(ea>=MINIMUM)&(~swingmode|((swing>0)&(tl.abs(swing)<float('inf'))))
+    entry_new=entry_new&(ea>0)&(ea>=MINIMUM)&(~swingmode|((swing>0)&(tl.abs(swing)<float('inf'))&valid&(tl.abs(ask)<float('inf'))&(swing<ask)))
     add_new=add_new&(aa>0)&(aa>=MINIMUM)
     new_kind=tl.where(exit_new,4,tl.where(reduce_new,3,tl.where(add_new,2,tl.where(entry_new,1,0))))
     new=new_kind!=0;kind=tl.where(new,new_kind,kind)
