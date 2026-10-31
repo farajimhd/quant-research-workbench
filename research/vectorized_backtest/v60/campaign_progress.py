@@ -107,11 +107,16 @@ class Model:
         from .initial_progress import InitialData
         self.initial=InitialData(job,self.global_root().parent,self.observer_stop)
         self.initial.io=self.io
+        from .quality_service import Service
+        from .quality_panel import setup
+        self.quality=Service(dict(job,campaign=str(self.global_root().parent)),asynchronous)
+        setup(self)
     def remember(self):
         self.navigation.append({k:getattr(self,k) for k in ('view','day','global_day','global_role','aggregate_mode','aggregate_role','selection','filter','selected','validation','detail_page','sort','reverse')})
         self.navigation[-1]['initial_mode']=getattr(self,'initial_mode',False)
         self.navigation[-1]['full_mode']=getattr(self,'full_mode',False)
         self.navigation[-1]['full_data']=getattr(self,'full_data',None)
+        self.navigation[-1].update({k:v for k,v in vars(self).items() if k.startswith('quality_')})
         self.navigation=self.navigation[-32:]
     def read(self,path,default=None):
         if self.io is not None:return self.io.read(path,default)
@@ -159,6 +164,7 @@ class Model:
         return dict(status='running' if node.get('status','').startswith('verify-') else node.get('status','queued'),stage=node.get('status','Waiting for coordinator'),completed_generations=0)
     def close(self):
         self.observer_stop.set()
+        self.quality.close()
         if self.io is not None:self.io.close()
     def strength(self,path,state):
         from .progress_sessions import strength
@@ -425,7 +431,8 @@ class Model:
 
     def open_positions(self,session):
         self.position_rows=[];self.position_error=None;self.position_session=session
-        r=dict(self.selected);generation=r.get('last_evaluated_generation',r.get('generation',self.report().get('generation',0)))
+        r=dict(self.selected);generation=r.get('last_evaluated_generation',r.get('generation'))
+        if generation is None:generation=self.report().get('generation',0)
         request=(self.target(),generation,r['serial'],session)
         if getattr(self,'initial_mode',False):request=(self.initial.source_root,self.initial.generation,r['serial'],session)
         def collect():
@@ -453,7 +460,7 @@ class Model:
         if self.view=='position_detail':return list(self.position_selected.items())
         if self.view=='global_splits':
             full=dict(self.full_report(),coverage=len(self.full_data['panels']) if self.full_data else 0,total=len(self.job['training_days'])+len(self.job['validation_days']))
-            return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]+[dict(role='initial',**self.initial.report()),dict(role='full results',**full)]
+            return [dict(role=role,**self.aggregate_report(role)) for role in ('training','validation')]+[dict(role='initial',**self.initial.report()),dict(role='full results',**full),dict(role='quality',coverage=len(self.quality.index.get('history',[])),total='generations',candidates=[])]
         if self.view=='overview':return self.snapshot()[1]
         if self.view=='global_sessions':
             data=self.global_snapshot();generation=data['generation'] if data else 0
@@ -493,6 +500,11 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if key=='y' or (self.view=='global_splits' and (key=='5' or (key in ('\r','\n') and self.selection==4))):
+            self.remember();self.view='quality';self.selection=0;return
+        if self.view.startswith('quality'):
+            from .quality_panel import key as quality_key
+            if quality_key(self,key,height):return
         if self.view=='global_splits' and (key=='4' or (key in ('\r','\n') and self.selection==3)):
             self.remember();self.initial_mode=False;self.full_mode=True;self.full_data=None
             self.aggregate_mode=True;self.aggregate_role='training';self.day=None;self.global_day=None
@@ -559,6 +571,9 @@ class Model:
             else:self.selected=row;self.view='detail';self.detail_page=0;self.selection=0
 
 def render(model,width,height):
+    if model.view.startswith('quality'):
+        from .quality_panel import render as quality_render
+        return quality_render(model,width,height)
     head_size=9 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V60 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
@@ -643,8 +658,8 @@ def render(model,width,height):
     elif model.view=='global_splits':
         for h in ('Path','Sessions ready','Candidates','Purpose'):table.add_column(h)
         for i,r in enumerate(model.rows()):
-            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",str(len(r['candidates'])), 'Latest completed generation; all configured sessions' if r['role']=='full results' else 'Fresh founder replay results' if r['role']=='initial' else 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
-        caption='1 Training | 2 Validation | 3 Initial | 4 Full results | Enter: open selected path'
+            table.add_row(r['role'].title(),f"{r['coverage']}/{r['total']}",'-' if r['role']=='quality' else str(len(r['candidates'])), 'Population / evolution / generalization / groups' if r['role']=='quality' else 'Latest completed generation; all configured sessions' if r['role']=='full results' else 'Fresh founder replay results' if r['role']=='initial' else 'Selection score' if r['role']=='training' else 'Display only',style=SELECTED if i==model.selection else None)
+        caption='1 Training | 2 Validation | 3 Initial | 4 Full results | 5 Quality | Enter: open'
     elif model.view in ('operators','families','methods','origins','immigration'):
         report=model.report();rows=model.rows()
         compact=width<120
@@ -791,8 +806,9 @@ def render(model,width,height):
     if width<120:
         keys='1 candidates | 2 groups | Enter open | Esc back | Q close\nO crossover | F family | M method | P source | E immigration\nArrows select | S sort | R reverse | N/B page | L lineage\nH overview | G sessions | A all global | C columns | D timings'
     else:keys='1: CANDIDATES (individuals) | 2: GROUPS (aggregate statistics)\nGroups O: crossover | F: family | M: method | P: source session | E: immigration\nArrows: select | Enter: open | Esc: back | S: sort | R: reverse | N/B: page\nH overview | G sessions | A all global | C columns | D timings | L lineage | Q close'
-    if model.view=='global_splits':keys='1 Training (live) | 2 Validation (live) | 3 Initial | 4 Full results\nFull results: latest completed generation, all 36 candidate sessions.\nArrows: select | Enter: open | Validation is display-only.\nEsc: back | G: global sessions | Q: close panel'
+    if model.view=='global_splits':keys='1 Training (live) | 2 Validation (live) | 3 Initial | 4 Full results | 5 Quality\nFull results: latest completed generation, all 36 candidate sessions.\nArrows: select | Enter: open | Validation is display-only.\nEsc: back | G: global sessions | Q: close panel'
     keys=keys.replace('Q: close panel','3 / I: initial founders | Q: close panel').replace('Q: close','I: initial founders | Q: close').replace('Q close','I initial | Q close')
+    keys=keys.replace('Q close','Y quality | Q close').replace('Q: close','Y: quality | Q: close')
     layout['keys'].update(Text(keys))
     return layout
 
