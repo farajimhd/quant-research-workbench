@@ -23,7 +23,7 @@ def step(p:torch.Tensor,o:torch.Tensor,book:torch.Tensor,opened:torch.Tensor,tic
     policy=policy.expand(s,b,u,9);mark=mark.expand(s,b,u)
     complete=torch.empty((s,b,u),device=p.device,dtype=torch.bool)
     closed=torch.empty_like(complete);profit=torch.empty_like(opened);entries=torch.empty_like(opened)
-    record=torch.empty((s,b,u,8),device=p.device,dtype=p.dtype)
+    record=torch.empty((s,b,u,17),device=p.device,dtype=p.dtype)
     partial=torch.empty((s*b,tiles,15),device=p.device,dtype=p.dtype)
     out=torch.empty_like(aggregate)
     order_fill_kernel[(s*b,tiles)](p,o,vectors[0],ratios,policy,*vectors[1:],clock,terminal,p,o,complete,record,
@@ -39,4 +39,4 @@ def fake(p,o,book,opened,ticker,aggregate,signals,ratios,policy,previous,mark,me
          clock,terminal,active,entry,addition,fee,minimum_fee,cost,minimum):
     mask=torch.empty(p.shape[:-1],device=p.device,dtype=torch.bool)
     return (torch.empty_like(aggregate),mask,torch.empty_like(opened),torch.empty_like(opened),torch.empty_like(mask),
-            torch.empty((*p.shape[:-1],8),device=p.device,dtype=p.dtype))
+            torch.empty((*p.shape[:-1],17),device=p.device,dtype=p.dtype))

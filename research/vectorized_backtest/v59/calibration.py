@@ -23,11 +23,17 @@ def load_probe(path,training):
             v=torch.from_numpy(original['inputs'][w,tick,:,:MARKET_INPUTS])
             original['inputs'][w,tick,:,:MARKET_INPUTS]=transform_projected(v).numpy()
     original['held_states']=original['held_states'][...,[0,1,2,3,4,5,6,-1]].copy()
+    original['inputs']=np.pad(original['inputs'],[(0,0)]*(original['inputs'].ndim-1)+[(0,3)])
+    original['held_states']=np.pad(original['held_states'],[(0,0)]*(original['held_states'].ndim-1)+[(0,3)])
+    # Synthetic current order state, not previous-action feedback or fitness.
+    original['held_states'][...,8]=original['held_states'][...,0]*.25
+    original['held_states'][...,9]=original['held_states'][...,3]*.5
+    original['held_states'][...,10]=original['held_states'][...,0]*.5
     return original
 
 def observe(net,probe,stage='entry',*,reference=False):
     """Float32 CPU graph arithmetic. Recurrence resets per independent window."""
-    if not reference:
+    if not reference and not any(n.op=='cross' for n in net.nodes):
         from research.vectorized_backtest.v42.calibration_cpu import observe as compiled
         return compiled(net,probe,stage,MARKET_INPUTS,len(CATALOG))
     x=probe['inputs'];known=probe['known'];f=len(CATALOG)
@@ -47,7 +53,14 @@ def observe(net,probe,stage='entry',*,reference=False):
                 else:v=values[source-INPUTS];mask=masks[source-INPUTS]
                 term=v*np.float32(w);terms.append(term);z=z+term;ok|=mask if w!=0 else False
             from research.vectorized_backtest.v42.operators import evaluate
-            v=np.tanh(z) if node.op in ('tanh','conv') else evaluate(node.op,terms,node.bias,z);values.append(v);masks.append(ok)
+            if node.op=='cross':
+                before=np.full_like(z,np.float32(node.bias));ok=np.ones_like(ok)&(tick>0)
+                for source,w in zip(node.sources,node.weights):
+                    before=before+x[:,max(0,tick-1),:,source]*np.float32(w)
+                    ok&=known[:,tick,:,source]&known[:,max(0,tick-1),:,source]
+                v=np.clip(np.minimum(z,-before),-1,1)
+            else:v=np.tanh(z) if node.op in ('tanh','conv') else evaluate(node.op,terms,node.bias,z)
+            values.append(v);masks.append(ok)
             saturated+=int(((np.abs(v)>.99)&ok).sum());total+=int(ok.sum())
         memory=np.asarray(values);memory_known=np.asarray(masks)
         outputs.append(values[-1]);valid.append(masks[-1])

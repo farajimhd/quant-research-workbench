@@ -23,6 +23,7 @@ class NetworkPlan:
     builds=hits=evictions=capture_seconds=0
     def __init__(self,members,device,*,packed=None):
         self.members=members;self.device=torch.device(device);self.owner_indices=None
+        self.uses_cross=any(n.op=='cross' for m in members for net in m.networks.values() for n in net.nodes)
         self.cuda_block=int(os.environ.get('V42_NEURAL_BLOCK','128'))
         if self.cuda_block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
         # Fixed catalog layout makes normalization independent of cohort membership.
@@ -41,7 +42,7 @@ class NetworkPlan:
         from .genome import MARKET_INPUTS,INPUTS
         masks=[]
         for member in members:
-            used={0}  # Workspace tile applicability always needs held state.
+            used={0,8}  # Pending orders also need management decisions before a fill.
             used.update(s-MARKET_INPUTS for net in member.networks.values() for node in net.nodes for s in node.sources if MARKET_INPUTS<=s<INPUTS)
             masks.append(sum(1<<s for s in used))
         self.state_used=torch.tensor(masks,device=device,dtype=torch.int32)
@@ -115,8 +116,18 @@ class NetworkPlan:
     def signals(self,data,index,position,opened,previous,out=None):
         self.prepare(position.shape[1],position.shape[2]);v,valid=self.project(data,index)
         market_clock=data.resident_features.tensors['clocks'].index_select(0,index.reshape(1)).reshape(())
-        self.feedback[...,-1].copy_(torch.where(self.previous_clock>=0,(market_clock-self.previous_clock).clamp_min(0)/60,0.))
+        self.feedback[...,0].copy_(torch.where(self.previous_clock>=0,(market_clock-self.previous_clock).clamp_min(0)/60,0.))
+        pending=getattr(self,'pending_orders',None)
+        if pending is not None:
+            order=pending[0];kind=order[...,0]
+            self.feedback[...,1].copy_(kind/4.)
+            self.feedback[...,2].copy_(torch.where(kind!=0,order[...,1]*previous[0,0]/1000.,0.).nan_to_num())
+            self.feedback[...,3].copy_(torch.where(kind!=0,order[...,4]/order[...,3].clamp_min(1.e-12),0.))
         self.previous_clock.copy_(market_clock)
+        if self.uses_cross:
+            lag,lag_valid=self.project(data,(index-1).clamp_min(0))
+            v=torch.cat((v,lag[:,:len(CATALOG)]),-1)
+            valid=torch.cat((valid,lag_valid&(index>0)),-1)
         if v.shape[0]<position.shape[2]:
             from torch.nn.functional import pad
             extra=position.shape[2]-v.shape[0];v=pad(v,(0,0,0,extra));valid=pad(valid,(0,0,0,extra),value=False)
@@ -144,7 +155,13 @@ class NetworkPlan:
                         else:x=outputs[source-INPUTS];mask=masks[source-INPUTS]
                         term=x*float(np.float32(w));terms.append(term);z=z+term;ok=ok|(mask if w!=0 else False)
                     from .operators import evaluate
-                    if n.op in OPS[9:]:
+                    if n.op=='cross':
+                        before=torch.full_like(z,float(np.float32(n.bias)));known=torch.ones_like(ok)
+                        for source,w in zip(n.sources,n.weights):
+                            before=before+v[:,3*len(CATALOG)+source]*float(np.float32(w))
+                            known=known&valid[:,source]&valid[:,len(CATALOG)+source]
+                        value=torch.minimum(z,-before).clamp(-1,1);ok=known
+                    elif n.op in OPS[9:17]:
                         xs=[outputs[source-INPUTS] for source in n.sources]
                         ms=[masks[source-INPUTS] for source in n.sources]
                         if n.op=='decision':

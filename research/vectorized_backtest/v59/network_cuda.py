@@ -59,10 +59,10 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
     phase=tl.load(PHASE)&1
     old=MEMORY;current=WORK
     old_known=MEMORY_KNOWN;current_known=KNOWN
-    held=tl.load(POSITION_STATES+(member*STATES)*U+u,live,0)>0
+    held=(tl.load(POSITION_STATES+(member*STATES)*U+u,live,0)>0)|(tl.load(POSITION_STATES+(member*STATES+8)*U+u,live,0)>0)
     entry_allowed=tl.load(ENTRY_ALLOWED+u,live,False)
     representative=tl.load(ENTRY_REP+member)
-    active=live&tl.where(action==0,entry_allowed&(representative==member),held)
+    active=live&tl.where(action==0,entry_allowed&(representative==member),held|((action==1)&entry_allowed))
     tl.store(OUT+(member*5+action)*U+u,False,live)
     if tl.sum(active.to(tl.int32),0)>0:
         # V59 has no delayed edges or action feedback. Only eligible entry
@@ -121,7 +121,15 @@ def workspace_kernel(V,VALID,SOURCES,WEIGHTS,EDGE_COUNTS,OPS,BIAS,COUNTS,OFFSETS
             h=2./(1.+tl.exp(2.*-z))-1.
             if op==5:h=h/(1.+tl.exp(-query))
             elif op==7:h=tl.minimum(1.,tl.maximum(-1.,z))
-            if op>=9:
+            if op==17:
+                before=tl.full((BLOCK,),0,tl.float32)+tl.load(BIAS+base+i);now=before;ok=live
+                for edge in range(tl.load(EDGE_COUNTS+base+i)):
+                    source=tl.load(SOURCES+(base+i)*FAN+edge);weight=tl.load(WEIGHTS+(base+i)*FAN+edge)
+                    now=libdevice.add_rn(now,libdevice.mul_rn(tl.load(V+source*U+u,live,0),weight))
+                    before=libdevice.add_rn(before,libdevice.mul_rn(tl.load(V+(3*C+source)*U+u,live,0),weight))
+                    ok=ok&tl.load(VALID+source*U+u,live,False)&tl.load(VALID+(C+source)*U+u,live,False)
+                h=tl.minimum(1.,tl.maximum(-1.,tl.minimum(now,-before)))
+            elif op>=9:
                 source=tl.load(SOURCES+(base+i)*FAN)-3*C-STATES
                 x0=tl.load(current+(base+source)*U+u,live,0)
                 k0=tl.load(current_known+(base+source)*U+u,live,False)

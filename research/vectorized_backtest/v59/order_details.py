@@ -21,7 +21,7 @@ def attach(rows,receipt,index,remote_path):
         if h.hexdigest()!=page['sha256']:raise ValueError('Order journal changed')
         parts.append(pl.scan_parquet(file).filter(pl.col('candidate')==local).collect())
     if not parts:return
-    orders=pl.concat(parts)
+    orders=pl.concat(parts).with_columns(pl.when((pl.col('filled_quantity')+1.e-12<pl.col('requested_quantity')) | (pl.col('first_fill_clock')<0)).then(pl.lit('cancelled remainder')).otherwise(pl.lit('filled')).alias('order_status'))
     closed=[r for r in rows if r['status']=='closed']
     if not closed:return
     positions=pl.DataFrame([dict(listing=int(r['listings']),entry_clock=float(r['entry_clocks']),exit_clock=float(r['exit_clocks']),position=r['position']) for r in closed])

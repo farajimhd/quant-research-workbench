@@ -137,7 +137,10 @@ class Controller:
                 from .execution_restart import seed
                 state=seed(self.job)
             else:
-                state=global_seed(exports,self.job,probe,**options);state.update(completed=0,seals={},species=species.state)
+                state=global_seed(exports,self.job,probe,**options)
+                fresh=self.job.get('fresh_initial_replay')=='crossing-orders-v3'
+                state.update(completed=-1 if fresh else 0,seals={},species=species.state)
+                if fresh:state['pedigree']=[dict(r,generation=0) for r in state['pedigree']]
             write_json(root/'initial-pool.json',state);write_checkpoint(cp,contract,state)
             completed=state['completed']
         members=[Individual.restore(p) for p in state['population']];ids=np.asarray(state['ids']);pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);rng=np.random.default_rng();rng.bit_generator.state=state['rng']

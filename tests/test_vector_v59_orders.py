@@ -4,6 +4,50 @@ from research.vectorized_backtest.v59.orders import transition, require_complete
 
 
 class PersistentOrders(unittest.TestCase):
+    def test_reduce_cancels_only_unfilled_remainder_and_preserves_fees(self):
+        self.tick(capacity=30.)
+        done,record=self.tick(signal=8,capacity=100.)
+        self.assertFalse(done.item())
+        self.assertEqual(record[...,16].item(),1.)
+        self.assertEqual(record[...,10].item(),30.)
+        self.assertEqual(record[...,12].item(),1.)
+        self.assertEqual(self.p[...,0].item(),30.)
+        self.assertEqual(self.o[...,0].item(),0.)
+        self.tick(signal=0,capacity=100.)
+        self.assertEqual(self.p[...,0].item(),30.)
+        self.tick(signal=2,capacity=100.)
+        self.assertEqual(self.p[...,7].item(),-2.)
+
+    def test_add_amends_partial_order_without_double_fee(self):
+        self.tick(capacity=30.)
+        self.tick(signal=4,capacity=0.)
+        self.assertEqual(self.o[...,3].item(),120.)
+        self.assertEqual(self.o[...,1].item(),90.)
+        self.assertEqual(self.o[...,12].item(),1.)
+        done,record=self.tick(signal=0,capacity=90.)
+        self.assertTrue(done.item())
+        self.assertEqual(self.p[...,0].item(),120.)
+        self.assertEqual(record[...,4].item(),1.)
+
+    def test_exit_cancels_buy_and_fills_sale_in_same_candle(self):
+        self.tick(capacity=30.)
+        done,record=self.tick(signal=2,capacity=100.)
+        self.assertTrue(done.item())
+        self.assertEqual(record[...,16].item(),1.)
+        self.assertEqual(record[...,0].item(),4.)
+        self.assertEqual(record[...,6].item(),2.)
+        self.assertEqual(self.p[...,0].item(),0.)
+        self.assertEqual(self.p[...,7].item(),-2.)
+
+    def test_same_candle_entry_exit_conflict_does_not_enter(self):
+        self.tick(signal=3,capacity=100.)
+        self.assertEqual(self.p[...,0].item(),0.)
+
+    def test_wide_spread_already_breaches_initial_stop(self):
+        self.tick(price=11.59,ask=17.50,capacity=1000.)
+        self.assertEqual(self.p[...,0].item(),0.)
+        self.assertEqual(self.o[...,12].item(),0.)
+
     def test_controller_cancels_unfilled_entry_without_replacing_stop(self):
         self.policy[...,8]=2
         self.tick(price=10.,swing=9.,capacity=0.)
@@ -39,13 +83,13 @@ class PersistentOrders(unittest.TestCase):
         self.o=torch.zeros((1,1,1,ORDER_WIDTH),dtype=torch.float64)
         self.policy=torch.tensor([.05,.5,.5,.05,0.,0.,2.,0.,0.],dtype=torch.float64).reshape(1,1,1,9)
         self.clock=0
-    def tick(self,signal=1,capacity=30.,fresh=True,terminal=False,price=10.,swing=0.):
+    def tick(self,signal=1,capacity=30.,fresh=True,terminal=False,price=10.,swing=0.,ask=None):
         self.clock+=1
         shape=(1,1,1)
         values=dict(signals=torch.full(shape,signal,dtype=torch.int16),ratios=torch.ones((*shape,3),dtype=torch.float64),
             policy=self.policy,mark=torch.full(shape,price),previous=torch.full(shape,price),
             membership=torch.ones(shape,dtype=torch.bool),observed=torch.ones(shape,dtype=torch.bool),
-            swing=torch.full(shape,swing),bid=torch.full(shape,price,dtype=torch.float64),ask=torch.full(shape,price,dtype=torch.float64),
+            swing=torch.full(shape,swing),bid=torch.full(shape,price,dtype=torch.float64),ask=torch.full(shape,price if ask is None else ask,dtype=torch.float64),
             quote_valid=torch.full(shape,fresh),capacity=torch.full((*shape,2),capacity,dtype=torch.float64),clock=torch.tensor(float(self.clock)),
             terminal=torch.full(shape,terminal),entry_dollars=1000.,add_dollars=200.,fee_per_share=.005,minimum_order_fee=1.,cost=0.,minimum_order_dollars=0.)
         self.p,self.o,complete,record=transition(self.p,self.o,**values)
@@ -53,15 +97,14 @@ class PersistentOrders(unittest.TestCase):
     def test_stale_then_partial_fill_and_terminal_drain(self):
         self.tick(fresh=False)
         self.assertEqual(self.p[...,0].item(),0.)
-        self.assertEqual(self.o[...,0].item(),1.)
+        self.assertEqual(self.o[...,0].item(),0.)
         self.tick(capacity=30);self.tick(capacity=20)
         self.assertEqual(self.p[...,0].item(),50.)
         self.assertEqual(self.o[...,12].item(),1.)
         done,record=self.tick(capacity=50,terminal=True)
-        self.assertTrue(done.item());self.assertEqual(record[...,3].item()/record[...,2].item(),10.)
-        self.tick(capacity=40,terminal=True)
-        self.assertEqual(self.p[...,0].item(),60.)
-        self.tick(capacity=60,terminal=True)
+        self.assertTrue(done.item());self.assertEqual(record[...,16].item(),1.)
+        self.assertEqual(record[...,10].item(),50.)
+        self.assertEqual(self.p[...,0].item(),0.)
         require_complete(self.p,self.o)
         self.assertEqual(self.p[...,7].item(),-2.)
         self.assertEqual(self.o[...,12].item(),2.)
@@ -70,12 +113,13 @@ class PersistentOrders(unittest.TestCase):
         self.tick(capacity=0)
         self.assertEqual(self.p[...,0].item(),0.)
         with self.assertRaisesRegex(RuntimeError,'no fitness published'):require_complete(self.p,self.o)
-    def test_pending_exit_is_not_cancelled_by_later_signals(self):
+    def test_add_cancels_pending_sell_and_adds_on_same_candle(self):
         self.tick(capacity=100)
         self.tick(signal=2,capacity=20)
         self.tick(signal=4,capacity=80)
-        require_complete(self.p,self.o)
-        self.assertEqual(self.o[...,12].item(),2.)
+        self.assertEqual(self.p[...,0].item(),100.)
+        self.assertEqual(self.o[...,0].item(),0.)
+        self.assertEqual(self.o[...,12].item(),3.)
     def test_price_and_minimum_fee_accumulate_per_order(self):
         self.tick(capacity=50,price=10)
         done,record=self.tick(capacity=50,price=11)
@@ -192,7 +236,7 @@ class ReplayPath(unittest.TestCase):
             signals.fill_(0 if active_only else 1)
             if active_only:signals[:,0].fill_(1)
             if fast_orders:signals.copy_(torch.where(index%2==0,1,2).to(signals.dtype).expand_as(signals))
-        execution=Execution(risk_limits_enabled=False,order_mode='persistent-quote-size-orders-v2',maximum_quote_age_seconds=None,minimum_order_fee=1.)
+        execution=Execution(risk_limits_enabled=False,order_mode='strategy-managed-quote-orders-v3',maximum_quote_age_seconds=None,minimum_order_fee=1.)
         stamps=torch.tensor([0,1,1,1] if repeated_quote else list(range(total)),device=device,dtype=torch.float64)[:,None,None,None].expand_as(prices)*1.e6
         size=100. if fast_orders else 30.
         capacity=torch.stack((torch.full_like(prices,size),torch.full_like(prices,size),stamps),-1)
@@ -209,23 +253,23 @@ class ReplayPath(unittest.TestCase):
         p,a,orders,episodes=self.run_path('cpu','eager')
         self.assertTrue((p[...,0]==0).all())
         self.assertEqual(len(orders['execution_orders'][0]),4)
-        # 90 bought at 10, last 10 at 9; 100 sold at 9, $2 fees per ticker.
-        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-92.))
-        torch.testing.assert_close(a[...,1],torch.full_like(a[...,1],184.))
-        self.assertEqual(episodes[0]['episode_exit_clocks'],[[5,5],[5,5]])
+        # Terminal cancels the unfilled 40. Sell 30 at 10 now, 30 at 9 in tail.
+        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-32.))
+        torch.testing.assert_close(a[...,1],torch.full_like(a[...,1],64.))
+        self.assertEqual(episodes[0]['episode_exit_clocks'],[[4,4],[4,4]])
 
     def test_tail_compaction_preserves_original_candidate_indices(self):
         p,a,orders,episodes=self.run_path('cpu','eager',64,True)
         self.assertEqual(len(orders['execution_orders'][0]),4)
         self.assertTrue(all(not row for row in orders['execution_orders'][1:]))
         self.assertTrue((p[:,1:]==0).all())
-        self.assertEqual(episodes[0]['episode_exit_clocks'][0],[5,5])
+        self.assertEqual(episodes[0]['episode_exit_clocks'][0],[4,4])
 
     def test_repeated_quote_does_not_replenish_consumed_size(self):
         p,a,orders,episodes=self.run_path('cpu','eager',repeated_quote=True)
-        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-32.))
-        self.assertEqual(episodes[0]['episode_exit_clocks'],[[7,7],[7,7]])
-        self.assertEqual(orders['execution_orders'][0][0][-1],6.)
+        torch.testing.assert_close(p[...,7],torch.full_like(p[...,7],-2.))
+        self.assertEqual(episodes[0]['episode_exit_clocks'],[[3,3],[3,3]])
+        self.assertEqual(orders['execution_orders'][0][0][-1],3.)
 
     def test_order_journal_retries_chunks_without_losing_or_duplicating_fills(self):
         full=self.run_path('cpu','eager',fast_orders=True)

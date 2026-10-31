@@ -11,7 +11,7 @@ def independent(network):
     # validated graphs include the sizing head as well as the action head.
     for node in network.nodes:
         if node.op not in OPS or node.op=='decision':return False
-        if any(s<0 or MARKET_INPUTS<=s<MARKET_INPUTS+7 for s in node.sources):return False
+        if any(s<0 or (MARKET_INPUTS<=s<INPUTS and s!=MARKET_INPUTS+7) for s in node.sources):return False
     return True
 
 

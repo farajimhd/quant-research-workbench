@@ -1,6 +1,6 @@
 """Persisted search and compute envelope; independent of symbolic crossover."""
 
-VERSION='v59-feedforward-log-target-routing-v1'
+VERSION='v59-feedforward-log-target-routing-orders-v3'
 
 MAX_NODES=1024
 
@@ -16,7 +16,7 @@ WEIGHT_BOUND=8.
 
 STATES=('held','profit_fraction','age_hours','capital_entries','stop_distance','adds_fraction','management_age',
 
-        'elapsed_seconds')
+        'elapsed_seconds','pending_order_kind','pending_remaining_capital','pending_fill_fraction')
 
 ACTION_RATES={'uniform':.25,'union':.25,'intersection':.25,'xor':.25}
 
@@ -32,9 +32,9 @@ def contract():
 
                 states=list(STATES),action_rates=ACTION_RATES,composition_whole_probability=.5,
 
-                parameter_mutation_probability=PARAMETER_RATE,activation='bounded-typed-v2',operators=['tanh','max','min','mean','product','gate','attention','identity','conv'],
+                parameter_mutation_probability=PARAMETER_RATE,activation='bounded-typed-v2',operators=['tanh','max','min','mean','product','gate','attention','identity','conv','cross'],
 
-                temporal_clock='current-clock feed-forward graphs; no delayed edges or action feedback',
+                temporal_clock='same-candle requests; causal market crossing events; current pending-order state; no recurrent edges',
 
                 attention='scalar query plus key/value pairs; stable softmax; weighted terms',
 

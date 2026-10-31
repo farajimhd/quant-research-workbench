@@ -15,6 +15,10 @@ class OrderRecords:
         self.chunks.clear()
 
     def append(self,complete,record):
+        if record.shape[-1]==17:
+            self.append(record[...,16]>0,record[...,8:16])
+            self.append(complete,record[...,:8])
+            return
         if self.data.device.type=='cuda':
             from .order_scatter import append
             append(self,complete,record);return

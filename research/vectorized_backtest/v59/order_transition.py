@@ -2,6 +2,7 @@
 import torch
 import triton
 import triton.language as tl
+from .order_liquidity_cuda import fill
 
 
 @triton.jit
@@ -11,7 +12,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
            FUSED:tl.constexpr=False,BOOK=None,MARK=None,OPENED=None,TICKER=None,ACTIVE=None,
            CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0):
     row=tl.program_id(0);i=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=i<U
-    at=row*U+i;pp=P+at*9;op=O+at*16
+    at=row*U+i;pp=P+at*9;op=O+at*17
     q=tl.load(pp,live,0.);avg=tl.load(pp+1,live,0.);stop=tl.load(pp+2,live,0.)
     target=tl.load(pp+3,live,0.);water=tl.load(pp+4,live,0.);adds=tl.load(pp+5,live,0.)
     last=tl.load(pp+6,live,0.);realized=tl.load(pp+7,live,0.);episode=tl.load(pp+8,live,0.)
@@ -22,6 +23,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     initial=tl.load(op+9,live,0.);flatten=tl.load(op+10,live,0.)>0;target_order=tl.load(op+11,live,0.)
     submitted_count=tl.load(op+12,live,0.);completed_count=tl.load(op+13,live,0.)
     fill_count=tl.load(op+14,live,0.);cancelled_stops=tl.load(op+15,live,0.)
+    amended_clock=tl.load(op+16,live,0.)
     session=row//B;candidate=row%B
     sig=tl.load(S+session*VS[0][0]+candidate*VS[0][1]+i*VS[0][2],live,0)
     prev=tl.load(PRE+session*VS[1][0]+candidate*VS[1][1]+i*VS[1][2],live,0.)
@@ -30,10 +32,6 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     bid=tl.load(BID+session*VS[4][0]+candidate*VS[4][1]+i*VS[4][2],live,0.)
     ask=tl.load(ASK+session*VS[5][0]+candidate*VS[5][1]+i*VS[5][2],live,0.)
     valid=tl.load(V+session*VS[6][0]+candidate*VS[6][1]+i*VS[6][2],live,False)
-    cancelled=(kind==1)&(filled==0)&(initial>0)&valid&(ask>0)&(tl.abs(ask)<float('inf'))&(initial>=ask)
-    cancelled_stops+=cancelled.to(tl.float64)
-    kind=tl.where(cancelled,0.,kind);remaining=tl.where(cancelled,0.,remaining)
-    requested=tl.where(cancelled,0.,requested);dollars=tl.where(cancelled,0.,dollars)
     cp=CAP+session*VS[7][0]+candidate*VS[7][1]+i*VS[7][2]
     buy_capacity=tl.load(cp,live,0.);sell_capacity=tl.load(cp+VS[7][3],live,0.)
     if FUSED:
@@ -49,6 +47,33 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     ratios=R+session*RS[0]+candidate*RS[1]+i*RS[2]
     r0=tl.load(ratios,live,0.);r1=tl.load(ratios+RS[3],live,0.);r2=tl.load(ratios+2*RS[3],live,0.)
     r0=tl.where((r0>=0)&(r0<=1),r0,0.);r1=tl.where((r1>=0)&(r1<=1),r1,0.);r2=tl.where((r2>=0)&(r2<=1),r2,0.)
+    finite=(prev>0)&(tl.abs(prev)<float('inf'));stopped=(q>1.e-12)&finite&(prev<=stop)
+    fresh=valid&(bid>0)&(ask>=bid)&(tl.abs(ask)<float('inf'))&(tl.abs(bid)<float('inf'))
+    proposed_stop=tl.where(swingmode,tl.where(kind==1,initial,swing),ask*(1-sf))
+    feasible=fresh&(tl.abs(proposed_stop)<float('inf'))&(proposed_stop>0)&(proposed_stop<ask)&(bid>proposed_stop)&finite&(prev>proposed_stop)
+    intended_quantity=ED*r0/tl.maximum(ask,1.e-12)
+    expected_cost=(ask-bid)*intended_quantity+2*tl.maximum(intended_quantity*FEE,MINFEE)
+    feasible=feasible&(ask*tf*intended_quantity>expected_cost)
+    pending_buy=(kind==1)|(kind==2)
+    cancelled=(pending_buy&(terminal|stopped|((sig&2)!=0)|((sig&8)!=0)))|((kind==1)&(filled==0)&fresh&~feasible)
+    cancelled=cancelled|(((kind==3)|(kind==4))&((sig&4)!=0)&~terminal&~stopped&((sig&2)==0))
+    flatten=flatten&~(cancelled&~pending_buy)
+    # Preserve cancelled partial fills before replacing the request this candle.
+    tl.store(REC+at*17+8,kind,live);tl.store(REC+at*17+9,requested,live)
+    tl.store(REC+at*17+10,filled,live);tl.store(REC+at*17+11,notional,live)
+    tl.store(REC+at*17+12,fees,live);tl.store(REC+at*17+13,submitted,live)
+    tl.store(REC+at*17+14,first,live);tl.store(REC+at*17+15,clock,live)
+    cancel_active=cancelled
+    if FUSED:cancel_active=cancelled&tl.load(ACTIVE)
+    tl.store(REC+at*17+16,cancel_active.to(tl.float64),live)
+    cancelled_stops+=cancelled.to(tl.float64);completed_count+=cancelled.to(tl.float64)
+    kind=tl.where(cancelled,0.,kind);remaining=tl.where(cancelled,0.,remaining)
+    requested=tl.where(cancelled,0.,requested);dollars=tl.where(cancelled,0.,dollars)
+    extra=AD*r1
+    amend=pending_buy&~cancelled&~terminal&((sig&4)!=0)&fresh&((clock-amended_clock)>=cooldown)&(adds<maxadds)&(extra>0)&(extra>=MINIMUM)
+    extra_quantity=tl.where(amend&(requested>0),extra/tl.maximum(ask,1.e-12),0.)
+    remaining+=extra_quantity;requested+=extra_quantity;dollars=tl.where(amend,dollars+extra,dollars)
+    adds+=amend.to(tl.float64);amended_clock=tl.where(amend,clock,amended_clock)
     held=q>1.e-12;busy=kind!=0;finite=(prev>0)&(tl.abs(prev)<float('inf'))
     ratchet=held&((sig&16)!=0)&finite&~terminal
     water=tl.where(ratchet,tl.maximum(water,prev),water);stop=tl.where(ratchet,tl.maximum(stop,water*(1-trail)),stop)
@@ -57,32 +82,25 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     if tl.sum((held&finite).to(tl.int32),0)>0:gain=tl.where(held&finite,prev/tl.maximum(avg,1.e-12)-1,0.)
     hit=held&finite&(prev>=target);reduction=tl.minimum(tl.maximum(tl.where(hit,rf,r2),0.),1.)
     exit_new=~busy&held&flatten
-    reduce_new=~busy&held&~flatten&~terminal&managed&(reduction>0)&((((sig&8)!=0)&(gain>=redmin))|hit)
+    reduce_new=~busy&held&~flatten&~terminal&~cancelled&managed&(reduction>0)&((((sig&8)!=0)&(gain>=redmin))|hit)
     add_new=~busy&held&~flatten&~reduce_new&~terminal&managed&((sig&4)!=0)&(gain>=addmin)&(adds<maxadds)
-    entry_new=~busy&~held&~terminal&member&((sig&1)!=0)
+    entry_new=~busy&~held&~terminal&~cancelled&member&((sig&1)!=0)&((sig&2)==0)&feasible
     entry_new=entry_new&((last<=0)|((clock-last)>=3))
     ea=ED*r0;aa=AD*r1
     entry_new=entry_new&(ea>0)&(ea>=MINIMUM)&(~swingmode|((swing>0)&(tl.abs(swing)<float('inf'))&valid&(tl.abs(ask)<float('inf'))&(swing<ask)))
     add_new=add_new&(aa>0)&(aa>=MINIMUM)
     new_kind=tl.where(exit_new,4,tl.where(reduce_new,3,tl.where(add_new,2,tl.where(entry_new,1,0))))
     new=new_kind!=0;kind=tl.where(new,new_kind,kind)
+    amended_clock=tl.where(new,clock,amended_clock)
     dollars=tl.where(entry_new,ea,tl.where(add_new,aa,dollars))
     requested=tl.where(exit_new,q,tl.where(reduce_new,q*reduction,tl.where(entry_new|add_new,0.,requested)))
     remaining=tl.where(new,requested,remaining);filled=tl.where(new,0.,filled);notional=tl.where(new,0.,notional)
     fees=tl.where(new,0.,fees);submitted=tl.where(new,clock,submitted);first=tl.where(new,-1.,first)
     initial=tl.where(entry_new,tl.where(swingmode,swing,0.),initial);target_order=tl.where(new,(reduce_new&hit).to(tl.float64),target_order)
     submitted_count+=new.to(tl.float64);buy=(kind==1)|(kind==2);sell=(kind==3)|(kind==4)
-    fresh=valid&(bid>0)&(ask>=bid)&(tl.abs(bid)<float('inf'))&(tl.abs(ask)<float('inf'))
-    capacity=tl.where(buy,buy_capacity,sell_capacity)
-    capfinite=tl.abs(capacity)<float('inf');activate=buy&(requested==0)&fresh&capfinite&(capacity>0)
-    if tl.sum(activate.to(tl.int32),0)>0:requested=tl.where(activate,dollars/tl.maximum(ask,1.e-12),requested)
-    remaining=tl.where(activate,requested,remaining)
-    available=tl.where(fresh&capfinite,tl.maximum(capacity,0.),0.)
-    quantity=tl.minimum(tl.maximum(remaining,0.),available);quantity=tl.where(sell,tl.minimum(quantity,q),quantity)
-    quantity=tl.where(kind!=0,quantity,0.);executed=quantity>0
-    price=tl.where(fresh,tl.where(buy,ask,bid),0.);value=quantity*price
-    new_filled=filled+quantity;new_notional=notional+value
-    new_fees=tl.where(executed,tl.maximum(new_filled*FEE,MINFEE),fees);fee_delta=new_fees-fees
+    requested,remaining,quantity,price,new_filled,new_notional,new_fees,executed=fill(
+        kind,remaining,dollars,requested,filled,notional,fees,q,bid,ask,valid,buy_capacity,sell_capacity,FEE,MINFEE)
+    value=quantity*price;fee_delta=new_fees-fees
     first_fill=executed&(filled==0);first=tl.where(first_fill,clock,first)
     entry_fill=first_fill&(kind==1);add_fill=first_fill&(kind==2);episode=tl.where(entry_fill,realized,episode)
     sold=tl.where(sell,quantity,0.);bought=tl.where(buy,quantity,0.);new_q=q-sold+bought
@@ -128,9 +146,9 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
         tl.store(BOOK+at*3,tl.where(newer,stamp,old_stamp),live&active)
         tl.store(BOOK+at*3+1,tl.maximum(buy_capacity-tl.maximum(delta,0.),0.),live&active)
         tl.store(BOOK+at*3+2,tl.maximum(sell_capacity-tl.maximum(-delta,0.),0.),live&active)
-    tl.store(REC+at*8,kind,live);tl.store(REC+at*8+1,requested,live);tl.store(REC+at*8+2,new_filled,live)
-    tl.store(REC+at*8+3,new_notional,live);tl.store(REC+at*8+4,new_fees,live);tl.store(REC+at*8+5,submitted,live)
-    tl.store(REC+at*8+6,first,live);tl.store(REC+at*8+7,clock,live);tl.store(DONE+at,complete,live)
+    tl.store(REC+at*17,kind,live);tl.store(REC+at*17+1,requested,live);tl.store(REC+at*17+2,new_filled,live)
+    tl.store(REC+at*17+3,new_notional,live);tl.store(REC+at*17+4,new_fees,live);tl.store(REC+at*17+5,submitted,live)
+    tl.store(REC+at*17+6,first,live);tl.store(REC+at*17+7,clock,live);tl.store(DONE+at,complete,live)
     if FUSED:
         tl.store(DONE+at,complete&active,live)
         live=live&active
@@ -140,11 +158,12 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     output=PO+at*9
     tl.store(output,new_q,live);tl.store(output+1,new_avg,live);tl.store(output+2,stop,live);tl.store(output+3,target,live)
     tl.store(output+4,water,live);tl.store(output+5,adds,live);tl.store(output+6,last,live);tl.store(output+7,realized,live);tl.store(output+8,episode,live)
-    out=OO+at*16
+    out=OO+at*17
     tl.store(out,kind,live);tl.store(out+1,remaining,live);tl.store(out+2,dollars,live);tl.store(out+3,requested,live)
     tl.store(out+4,new_filled,live);tl.store(out+5,new_notional,live);tl.store(out+6,new_fees,live);tl.store(out+7,submitted,live)
     tl.store(out+8,first,live);tl.store(out+9,initial,live);tl.store(out+10,flatten.to(tl.float64),live);tl.store(out+11,target_order,live)
     tl.store(out+12,submitted_count,live);tl.store(out+13,completed_count,live);tl.store(out+14,fill_count,live);tl.store(out+15,cancelled_stops,live)
+    tl.store(out+16,amended_clock,live)
 
 
 @torch.library.custom_op('vector_v59::persistent_orders',mutates_args=())
@@ -157,7 +176,7 @@ def transition(p:torch.Tensor,o:torch.Tensor,signals:torch.Tensor,ratios:torch.T
     vectors=[x.expand(s,b,u) for x in (signals,previous,membership,swing,bid,ask,valid)]+[capacity.expand(s,b,u,2)]
     policy=policy.expand(s,b,u,9)
     out=torch.empty_like(p);orders=torch.empty_like(o);complete=torch.empty(p.shape[:-1],device=p.device,dtype=torch.bool)
-    record=torch.empty((*p.shape[:-1],8),device=p.device,dtype=p.dtype)
+    record=torch.empty((*p.shape[:-1],17),device=p.device,dtype=p.dtype)
     order_fill_kernel[(s*b,triton.cdiv(u,128))](p,o,vectors[0],ratios,policy,*vectors[1:],clock,terminal,out,orders,complete,record,
         u,b,tuple(x.stride() for x in vectors),policy.stride(),ratios.stride(),entry,addition,fee,minimum_fee,cost,minimum,
         128,num_warps=4,enable_fp_fusion=False)
@@ -166,4 +185,4 @@ def transition(p:torch.Tensor,o:torch.Tensor,signals:torch.Tensor,ratios:torch.T
 
 @transition.register_fake
 def fake(p,o,signals,ratios,policy,previous,membership,swing,bid,ask,valid,capacity,clock,terminal,entry,addition,fee,minimum_fee,cost,minimum):
-    return torch.empty_like(p),torch.empty_like(o),torch.empty(p.shape[:-1],device=p.device,dtype=torch.bool),torch.empty((*p.shape[:-1],8),device=p.device,dtype=p.dtype)
+    return torch.empty_like(p),torch.empty_like(o),torch.empty(p.shape[:-1],device=p.device,dtype=torch.bool),torch.empty((*p.shape[:-1],17),device=p.device,dtype=p.dtype)

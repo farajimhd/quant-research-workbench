@@ -22,7 +22,7 @@ MARKET_INPUTS=3*len(CATALOG)
 
 INPUTS=MARKET_INPUTS+len(STATES)
 
-OPS=('tanh','max','min','mean','product','gate','attention','identity','conv','decision','whole_or','whole_and','whole_xor','linear','whole_size','whole_xnor','whole_xnor_size')
+OPS=('tanh','max','min','mean','product','gate','attention','identity','conv','decision','whole_or','whole_and','whole_xor','linear','whole_size','whole_xnor','whole_xnor_size','cross')
 
 
 
@@ -91,7 +91,9 @@ class Network:
             if any(0<=source<MARKET_INPUTS and source%len(CATALOG) in BLOCKED for source in n.sources):raise ValueError('Forbidden identity/absolute-price input')
             if n.op not in OPS:raise ValueError('Unknown neural operator')
 
-            if n.op in OPS[9:]:
+            if n.op=='cross' and (len(n.sources)>2 or any(not 0<=s<len(CATALOG) for s in n.sources)):
+                raise ValueError('Crossing requires one or two causal market values')
+            if n.op in OPS[9:17]:
                 expected={'decision':1,'whole_or':2,'whole_and':2,'whole_xor':2,'linear':1,'whole_size':4,'whole_xnor':2,'whole_xnor_size':4}[n.op]
                 if len(n.sources)!=expected or any(x<INPUTS for x in n.sources):raise ValueError('Invalid whole-network bridge')
                 if n.op=='decision' and (not -1<n.weights[0]<1 or not 0<=n.bias<=1):raise ValueError('Invalid parental threshold/age')
@@ -176,7 +178,7 @@ def random_input(rng,stage):
 
     # Flat-only entry has no meaningful held-position state.
 
-    if stage!='entry' and rng.random()<.15:return MARKET_INPUTS+int(rng.integers(0,7))
+    if stage!='entry' and rng.random()<.15:return MARKET_INPUTS+int(rng.choice((0,1,2,3,4,5,6,8,9,10)))
 
     # Equivalent to choice's normalized cumulative probabilities and side='right'.
 
@@ -294,7 +296,7 @@ class Individual:
         return self
 
     def payload(self):
-        value=dict(version='v59-feedforward-routing-v1',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
+        value=dict(version='v59-feedforward-routing-orders-v3',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
         if self.routing:value['routing']=[m.payload() for m in self.routing]
         if self.case_owner is not None:value['case_owner']=self.case_owner
         return value
@@ -303,7 +305,7 @@ class Individual:
 
     def restore(cls,p):
 
-        if p.get('version') not in ('v59-feedforward-routing-v1',):raise ValueError('Only fresh V42 recurrent genomes accepted')
+        if p.get('version')!='v59-feedforward-routing-orders-v3':raise ValueError('Fresh V59 crossing/order-state genomes required; old state layouts cannot be reused')
 
         return cls({s:Network._decode(n) for s,n in p['networks'].items()},Policy(**p['policy']),p['minimum_age'],p.get('case_owner'),tuple(cls.restore(v) for v in p['routing']) if p.get('routing') else None).validate()
 

@@ -27,7 +27,12 @@ def check(job):
     if job['ticker_parent_fraction']!=.25 or job['selection_risk_caps'] is not False:raise ValueError('Parent selection changed')
     original=json.loads(Path(job['source_job']).read_bytes())
     expected=dict(original['execution'],risk_limits_enabled=False)
-    if job.get('execution_restart'):
+    if job.get('fresh_initial_replay'):
+        if job['fresh_initial_replay']!='crossing-orders-v3' or job.get('execution_restart'):raise ValueError('Fresh crossing/order-state initialization cannot inherit genomes')
+        from .orders import VERSION as ORDER_VERSION
+        expected.update(order_mode=ORDER_VERSION,maximum_quote_age_seconds=None)
+        if not job.get('execution_tail'):raise ValueError('Certified quote-size execution pages required')
+    elif job.get('execution_restart'):
         from .orders import VERSION as ORDER_VERSION
         expected['order_mode']=ORDER_VERSION
         expected['maximum_quote_age_seconds']=None

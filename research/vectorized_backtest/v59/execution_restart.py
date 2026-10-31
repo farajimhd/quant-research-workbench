@@ -6,7 +6,7 @@ from .orders import VERSION
 from research.vectorized_backtest.v42.distributed_assets import sha
 
 def initial_replay(job):
-    return job.get('execution_restart',{}).get('mode')=='initial-founders'
+    return job.get('fresh_initial_replay')=='crossing-orders-v3' or job.get('execution_restart',{}).get('mode')=='initial-founders'
 
 
 def verify(job):

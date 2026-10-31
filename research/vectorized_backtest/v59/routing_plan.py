@@ -41,6 +41,8 @@ class RoutingPlan:
     def signals(self,data,index,position,opened,previous,out=None):
         if hasattr(self,'market_block'):self.base.market_block=self.market_block
         expanded=position.index_select(1,self.parent_index)
+        if 'pending_orders' in self.__dict__:
+            self.base.pending_orders=self.pending_orders.index_select(1,self.parent_index)
         clocks=opened.index_select(1,self.parent_index)
         raw=self.base.signals(data,index,expanded,clocks,previous)[0]
         branch=raw[self.branch_index]

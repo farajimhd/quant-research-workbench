@@ -39,11 +39,17 @@ class Graph:
     def cross(self,name,level=0.,up=True):
         # Strict previous-side comparison deliberately excludes equality; no
         # repeated level-trigger masquerading as a crossover.
-        return self.compare(name,level,up)
+        f=CATALOG[INDEX[name]]
+        scaled=tanh(level if f.unit in ('ratio','bool') else __import__('math').copysign(__import__('math').log1p(abs(level))/4,level))
+        sign=1. if up else -1.
+        return self.node([INDEX[name]],[sign],-sign*scaled,op='cross')
     def pair(self,a,b,up=True,cross=False):
         def diff(delay,sign):
             v=self.node([self.value(a,delay),self.value(b,delay)],[sign,-sign])
             return self.all(v,self.known(a,delay),self.known(b,delay))
+        if cross:
+            sign=1. if up else -1.
+            return self.node([INDEX[a],INDEX[b]],[sign,-sign],op='cross')
         return diff(False,1 if up else -1)
     def finish(self,root,fraction=1.):
         # Constant size head uses zero edge weight; the decision remains market

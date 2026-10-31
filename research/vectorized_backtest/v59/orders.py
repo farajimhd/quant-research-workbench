@@ -7,11 +7,11 @@ All operations are tensor expressions so the same oracle can be CUDA compiled.
 """
 import torch
 
-VERSION = 'persistent-quote-size-orders-v2'
+VERSION = 'strategy-managed-quote-orders-v3'
 # kind, remaining, requested dollars, requested qty, filled qty, notional, fee,
 # submitted clock, first fill, initial stop, flatten requested, target reduction,
-# submitted order count, completed order count, fill count, invalid-stop cancellations
-ORDER_WIDTH = 16
+# submitted order count, completed order count, fill count, cancellations, last amendment clock
+ORDER_WIDTH = 17
 ENTRY, ADD, REDUCE, EXIT = 1, 2, 3, 4
 
 
@@ -19,7 +19,7 @@ def transition(position, orders, *, signals, ratios, policy, mark, previous,
                membership, observed, swing, bid, ask, quote_valid, capacity,
                clock, terminal, entry_dollars, add_dollars, fee_per_share,
                minimum_order_fee, cost, minimum_order_dollars):
-    """Submit at the decision boundary and fill from the subsequent bar.
+    """Strategy requests then independent fills at the same candle boundary.
 
 Returns position, order state, and completed-order records. Price/quantity
 fields are never derived from a later bar than the current execution clock.
@@ -27,15 +27,38 @@ fields are never derived from a later bar than the current execution clock.
     q, avg, stop, target, water, adds, last, realized, episode = position.unbind(-1)
     (kind, remaining, dollars, requested, filled, notional, fees, submitted,
      first, initial, flatten, target_order, submitted_count, completed_count,
-     fill_count, cancelled_stops) = orders.unbind(-1)
-    # Strategy-side order validation, before the policy-independent fill stage.
-    # Never rewrite a stop or cancel an already partially filled order.
-    cancelled=(kind==ENTRY)&(filled==0)&(initial>0)&quote_valid&torch.isfinite(ask)&(ask>0)&(initial>=ask)
+     fill_count, cancelled_stops, amended_clock) = orders.unbind(-1)
+    # Strategy-side request validation and amendment. Fills below use only
+    # requested quantity, quote/size, fees and already-owned inventory.
+    ratios=torch.where(torch.isfinite(ratios)&(ratios>=0)&(ratios<=1),ratios,0.)
+    held=q>1.e-12
+    finite=torch.isfinite(previous)&(previous>0)
+    stopped=held&finite&(previous<=stop)
+    fresh=quote_valid&torch.isfinite(bid)&torch.isfinite(ask)&(bid>0)&(ask>=bid)
+    proposed_stop=torch.where(policy[...,8]>0,torch.where(kind==ENTRY,initial,swing),ask*(1-policy[...,0]))
+    feasible=fresh&torch.isfinite(proposed_stop)&(proposed_stop>0)&(proposed_stop<ask)&(bid>proposed_stop)&finite&(previous>proposed_stop)
+    intended_quantity=entry_dollars*ratios[...,0].clamp(0,1)/ask.clamp_min(1.e-12)
+    expected_cost=(ask-bid)*intended_quantity+2*torch.maximum(intended_quantity*fee_per_share,torch.full_like(ask,minimum_order_fee))
+    feasible=feasible&(ask*policy[...,1]*intended_quantity>expected_cost)
+    pending_buy=(kind==ENTRY)|(kind==ADD)
+    cancelled=(pending_buy & (terminal|stopped|((signals&2)!=0)|((signals&8)!=0))) | ((kind==ENTRY)&(filled==0)&fresh&~feasible)
+    cancelled=cancelled|(((kind==REDUCE)|(kind==EXIT))&((signals&4)!=0)&~terminal&~stopped&((signals&2)==0))
+    cancelled_record=torch.stack((kind,requested,filled,notional,fees,submitted,first,clock.expand_as(q)),-1)
+    flatten=torch.where(cancelled&~pending_buy,0.,flatten)
     cancelled_stops=cancelled_stops+cancelled.to(position.dtype)
+    completed_count=completed_count+cancelled.to(position.dtype)
     kind=torch.where(cancelled,0.,kind)
     remaining=torch.where(cancelled,0.,remaining)
     requested=torch.where(cancelled,0.,requested)
     dollars=torch.where(cancelled,0.,dollars)
+    # Adding amends this order; it does not reset its accumulated fees or fills.
+    amend=pending_buy&~cancelled&~terminal&((signals&4)!=0)&fresh&((clock-amended_clock)>=policy[...,7])&(adds<policy[...,6])
+    extra=add_dollars*ratios[...,1].clamp(0,1)
+    amend=amend&(extra>0)&(extra>=minimum_order_dollars)
+    extra_quantity=torch.where(amend&(requested>0),extra/ask.clamp_min(1.e-12),0.)
+    remaining=remaining+extra_quantity;requested=requested+extra_quantity
+    dollars=torch.where(amend,dollars+extra,dollars)
+    adds=adds+amend.to(position.dtype);amended_clock=torch.where(amend,clock,amended_clock)
     held = q > 1.e-12
     busy = kind != 0
     finite = torch.isfinite(previous) & (previous > 0)
@@ -48,14 +71,13 @@ fields are never derived from a later bar than the current execution clock.
     managed = (clock-last) >= policy[...,7]
     gain = torch.where(held & finite, previous / avg.clamp_min(1.e-12)-1, 0.)
     target_hit = held & finite & (previous >= target)
-    ratios=torch.where(torch.isfinite(ratios)&(ratios>=0)&(ratios<=1),ratios,0.)
     reduction = torch.where(target_hit, policy[...,2], ratios[...,2]).clamp(0,1)
     exit_new = idle & held & flatten
-    reduce_new = (idle & held & ~flatten & ~terminal & managed & (reduction > 0) &
+    reduce_new = (idle & held & ~flatten & ~terminal & ~cancelled & managed & (reduction > 0) &
                   ((((signals & 8) != 0) & (gain >= policy[...,5])) | target_hit))
     add_new = (idle & held & ~flatten & ~reduce_new & ~terminal & managed &
                ((signals & 4) != 0) & (gain >= policy[...,4]) & (adds < policy[...,6]))
-    entry_new = idle & ~held & ~terminal & membership & ((signals & 1) != 0)
+    entry_new = idle & ~held & ~terminal & ~cancelled & membership & ((signals & 1) != 0) & ((signals&2)==0) & feasible
     # While flat, last is the final liquidation fill clock. Initial lanes have
     # last=0; partial exits remain held and cannot restart the timer early.
     entry_new = entry_new & ((last <= 0) | ((clock-last) >= 3))
@@ -80,28 +102,13 @@ fields are never derived from a later bar than the current execution clock.
     initial = torch.where(entry_new, torch.where(policy[...,8]>0,swing,0.), initial)
     target_order = torch.where(new, (reduce_new & target_hit).to(position.dtype), target_order)
     submitted_count = submitted_count + new.to(position.dtype)
+    amended_clock=torch.where(new,clock,amended_clock)
     buy = (kind == ENTRY) | (kind == ADD)
     sell = (kind == REDUCE) | (kind == EXIT)
-    # quote_valid is structural/causal validity in v2, never an age threshold.
-    fresh = (quote_valid & torch.isfinite(bid) & torch.isfinite(ask) &
-             (bid > 0) & (ask >= bid))
-    # Dollar intents become fixed-quantity orders at their first executable quote.
-    buy_capacity=capacity[...,0];sell_capacity=capacity[...,1]
-    activate = buy & (requested == 0) & fresh & torch.isfinite(buy_capacity) & (buy_capacity>0)
-    requested = torch.where(activate, dollars / ask.clamp_min(1.e-12), requested)
-    remaining = torch.where(activate, requested, remaining)
-    capacity=torch.where(buy,buy_capacity,sell_capacity)
-    available = torch.where(fresh & torch.isfinite(capacity), capacity.clamp_min(0), 0.)
-    quantity = torch.minimum(remaining.clamp_min(0), available)
-    quantity = torch.where(sell, torch.minimum(quantity, q), quantity)
-    quantity = torch.where(kind != 0, quantity, 0.)
-    executed = quantity > 0
-    price = torch.where(buy, ask, bid)
-    price = torch.where(fresh, price, 0.)
-    value = quantity * price
-    new_filled = filled + quantity;new_notional = notional + value
-    new_fees = torch.where(executed, torch.maximum(new_filled*fee_per_share,
-                          torch.full_like(fees, minimum_order_fee)), fees)
+    from .order_liquidity import fill
+    requested,remaining,quantity,price,new_filled,new_notional,new_fees,executed=fill(
+        kind,remaining,dollars,requested,filled,notional,fees,q,bid,ask,quote_valid,capacity,fee_per_share,minimum_order_fee)
+    value=quantity*price
     incremental_fee = new_fees-fees
     first_fill = executed & (filled == 0)
     first = torch.where(first_fill, clock, first)
@@ -124,13 +131,14 @@ fields are never derived from a later bar than the current execution clock.
     # An order completion record contains its actual VWAP, never a quoted proxy.
     record = torch.stack((kind, requested, new_filled, new_notional,
                           new_fees, submitted, first, clock.expand_as(q)), -1)
+    record=torch.cat((record,cancelled_record,cancelled[...,None].to(position.dtype)),-1)
     completed_count = completed_count+complete.to(position.dtype)
     fill_count = fill_count+executed.to(position.dtype)
     kind = torch.where(complete, 0., kind)
     flatten = torch.where((new_q <= 1.e-12) & (kind == 0), False, flatten)
     out_orders = torch.stack((kind, remaining, dollars, requested, new_filled,
         new_notional, new_fees, submitted, first, initial, flatten.to(position.dtype),
-        target_order, submitted_count, completed_count, fill_count, cancelled_stops), -1)
+        target_order, submitted_count, completed_count, fill_count, cancelled_stops,amended_clock), -1)
     out_position = torch.stack((new_q,new_avg,stop,target,water,adds,last,realized,episode),-1)
     return out_position, out_orders, complete, record
 

@@ -23,15 +23,15 @@ def financial_tick(index,total,position,orders,book,aggregate,opened,policy,pric
         terminal=torch.ones((),device=index.device,dtype=torch.bool)
         member=torch.zeros_like(held)
     else:
-        selected=state_signals(signals,held,clock-1-opened,limits,False)
+        selected=state_signals(signals,held,clock-opened,limits,False)
         swing=values[take(ids,clock)[:,None,:],columns[None] if columns.ndim==2 else columns[None,:,None]]
-        terminal=clock==total;member=take(membership,clock-1)
+        terminal=clock==total;member=take(membership,clock)
     elapsed=(clock+offset).to(torch.float64)
     snapshot=take(capacity,clock)
     if position.device.type=='cuda':
         from .order_step import step
         a,closed,profits,entries,complete,record=step(position,orders,book,opened,ticker_state,aggregate,
-            selected,ratios,policy,take(prices,(clock-1).clamp_min(0)),take(prices,clock),member,swing,
+            selected,ratios,policy,take(prices,clock),take(prices,clock),member,swing,
             take(bids,clock),take(asks,clock),take(valid,clock),snapshot,elapsed,terminal,active,
             execution.entry_dollars,execution.add_dollars,execution.fee_per_share,execution.minimum_order_fee,
             execution.cost_bps/10000.,execution.minimum_order_dollars)
@@ -43,7 +43,7 @@ def financial_tick(index,total,position,orders,book,aggregate,opened,policy,pric
     bid_remaining=torch.where(newer,snapshot[...,1],book[...,2]).clamp_min(0)
     available=torch.stack((ask_remaining,bid_remaining),-1)
     p,o,complete,record=transition(position,orders,signals=selected,ratios=ratios,policy=policy,
-        mark=take(prices,clock),previous=take(prices,(clock-1).clamp_min(0)),membership=member,
+        mark=take(prices,clock),previous=take(prices,clock),membership=member,
         observed=take(observed,clock),swing=swing,bid=take(bids,clock),ask=take(asks,clock),
         quote_valid=take(valid,clock),capacity=available,clock=elapsed,terminal=terminal,
         entry_dollars=execution.entry_dollars,add_dollars=execution.add_dollars,
@@ -102,11 +102,12 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         from .order_journal import Journal
         from dataclasses import asdict
         journal=Journal(item.execution_order_root,b,dict(data=item.identity,execution=asdict(execution)))
-    journal_capacity=max(8192,block*u) if record_capacity is None else record_capacity
-    if journal_capacity<block*u:raise ValueError('Journal must hold at least one graph of completed orders')
+    journal_capacity=max(8192,2*block*u) if record_capacity is None else record_capacity
+    if record_capacity is not None:block=min(block,max(1,record_capacity//(2*u)))
+    if journal_capacity<2*block*u:raise ValueError('Journal must hold cancellations and fills from one graph')
     records=OrderRecords(b,u,device,capacity=journal_capacity,sink=journal)
     ratios=plan.ratios
-    if hasattr(plan,'branch_index'):plan.pending_orders=orders
+    plan.pending_orders=orders
     tail=Tail(item.execution_tail,item)
     profile={};started=time.perf_counter()
     pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='execution-tail')
@@ -122,7 +123,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
               values,ids,columns,limits,ratios,ticker_state,bb,aa,vv,cap,execution,tail_mode,offset)
         fn=program(args) if use_cuda else financial_tick
         def tick():
-            if not tail_mode:provide(index.clamp_max(total)-1,position,opened)
+            if not tail_mode:provide(index.clamp_max(total),position,opened)
             closed,profits,entries,clock,complete,record=fn(*args)
             episodes.append_events(closed,profits,entries,clock)
             records.append(complete,record)
@@ -262,8 +263,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         # Each metric remains indexed by candidate, matching result-cache slicing.
         # Row schema: listing,kind,requested qty,filled qty,notional,fees,
         # submitted clock,first fill clock,completion clock.
-        return dict(execution_orders=result,cancelled_initial_stop_orders=orders[...,15].sum(-1)[0].cpu().tolist())
+        return dict(execution_orders=result,cancelled_orders=orders[...,15].sum(-1)[0].cpu().tolist())
     finally:
         pool.shutdown(wait=True,cancel_futures=True)
         if journal is not None:journal.close()
-        if hasattr(plan,'branch_index'):del plan.pending_orders
+        del plan.pending_orders

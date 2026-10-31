@@ -23,7 +23,7 @@ class Execution:
     @property
     def admission_budget(self):return self.maximum_position_risk if self.risk_limits_enabled else float("inf")
     def validate(self):
-        if self.order_mode not in ('immediate','persistent-quote-size-orders-v2'):raise ValueError('Unknown execution order contract')
+        if self.order_mode not in ('immediate','strategy-managed-quote-orders-v3'):raise ValueError('Unknown execution order contract')
         if self.order_mode!='immediate' and self.risk_limits_enabled:raise ValueError('Persistent execution requires the approved risk-admission-caps-off campaign')
         if type(self.risk_limits_enabled) is not bool:raise ValueError("Invalid risk admission switch")
         if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds!=(1. if self.order_mode=='immediate' else None):raise ValueError('Quote age policy differs from the execution contract')

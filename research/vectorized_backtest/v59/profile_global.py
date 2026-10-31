@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--offset',type=int,default=0);parser.add_argument('--count',type=int,default=6144)
     parser.add_argument('--neural-tile',type=int,default=64,choices=(32,64,128,256))
     parser.add_argument('--compare',type=Path);parser.add_argument('--reproduce',action='store_true')
+    parser.add_argument('--mixed',action='store_true',help='Equal template/random sample; no outcome-based selection')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
     seedpath=args.output/'founders.json'
@@ -30,10 +31,14 @@ def main():
         write_json(seedpath,state)
     state=json.loads(seedpath.read_bytes());members=[Individual.restore(p) for p in state['population']]
     if args.offset<0 or args.count<1 or args.offset+args.count>len(members):raise ValueError('Invalid profile subset')
-    members=members[args.offset:args.offset+args.count]
+    if args.mixed:
+        if args.offset or args.count%2 or args.count>6144:raise ValueError('Even mixed cohort and zero offset required')
+        indices=list(range(args.count//2))+list(range(3072,3072+args.count//2))
+        members=[members[i] for i in indices]
+    else:indices=list(range(args.offset,args.offset+args.count));members=members[args.offset:args.offset+args.count]
     days=['2026-08-13','2026-08-18']
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
-    label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '');root=args.output/label
+    label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
     local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile)
     c=Global(local);c.publication_lane=Lane();c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
@@ -51,7 +56,7 @@ def main():
             from .reproduction_prefetch import FreshPrefetch
             from .allocation import budgets
             rng=np.random.default_rng();rng.bit_generator.state=state['rng'];probe=load_probe(job['initialization_probe'],job['training'])
-            pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);ids=np.asarray(state['ids'][args.offset:args.offset+args.count])
+            pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);ids=np.asarray(state['ids'])[indices]
             records=[pedigree.records[int(i)] for i in ids]
             c.fresh_prefetch=FreshPrefetch(rng,2,budgets(1024)['fresh'],probe)
             c.artifact_write=Buffer().write
@@ -71,11 +76,21 @@ def main():
                     two_session_return_seconds=returned-started,two_session_published_seconds=time.perf_counter()-started,sessions=rows,
                     metrics_sha256=digest(published),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
+        import numpy as np
+        report['quality']=[]
+        for day,metrics in zip(days,published):
+            net=np.asarray(metrics['net_pnl']);trades=np.asarray(metrics['closed_positions']);violations=0
+            for listings,entries,exits in zip(metrics['episode_listings'],metrics['episode_entry_clocks'],metrics['episode_exit_clocks']):
+                listings=np.asarray(listings);entries=np.asarray(entries);exits=np.asarray(exits);order=np.lexsort((entries,listings))
+                violations+=int(((listings[order][1:]==listings[order][:-1])&(entries[order][1:]-exits[order][:-1]<3)).sum())
+            report['quality'].append(dict(day=day,positive=int((net>0).sum()),best=float(net.max()),median=float(np.median(net)),
+                total_trades=int(trades.sum()),inactive=int((trades==0).sum()),terminal_invalid=int((~np.asarray(metrics['terminal_valid'],bool)).sum()),
+                reentry_violations=violations,ledger_error=max(abs(sum(p)-n) for p,n in zip(metrics['episode_profits'],net))))
         if args.compare:
             expected=[]
             for day in days:
                 original=json.loads((args.compare/'phase-2/replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics']
-                expected.append({k:v[args.offset:args.offset+args.count] for k,v in original.items()})
+                expected.append({k:[v[i] for i in indices] for k,v in original.items()})
             report['exact_financial_parity']=digest(expected)==digest(published)
             if not report['exact_financial_parity']:
                 report['differences']={day:[k for k in actual if actual[k]!=prior[k]] for day,actual,prior in zip(days,published,expected)}
