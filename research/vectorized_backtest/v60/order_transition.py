@@ -92,6 +92,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     fees=tl.where(new,0.,fees);submitted=tl.where(new,clock,submitted);first=tl.where(new,-1.,first)
     initial=tl.where(entry_new,proposed_stop,initial);target_order=tl.where(new,(reduce_new&hit).to(tl.float64),target_order)
     submitted_count+=new.to(tl.float64);buy=(kind==1)|(kind==2);sell=(kind==3)|(kind==4)
+    order_limit=tl.where(terminal&sell,bid,order_limit)
     requested,remaining,quantity,price,new_filled,new_notional,new_fees,executed=fill(
         kind,remaining,dollars,requested,filled,notional,fees,q,bid,ask,valid&tl.where(buy,ask<=order_limit,bid>=order_limit),buy_capacity,sell_capacity,FEE,MINFEE)
     value=quantity*price;fee_delta=new_fees-fees

@@ -1,21 +1,14 @@
 """Addressable slot construction; failed proposals never become replay slots."""
 from collections import Counter
-import hashlib
-import json
 import numpy as np
 from .authority import dependency_certificate
 
 
 def canonical_key(member):
-    value = member.payload()
-    def strip(obj):
-        if isinstance(obj, dict):
-            return {k: strip(v) for k, v in obj.items() if k not in ('uid', 'slot')}
-        if isinstance(obj, (tuple, list)):
-            return [strip(v) for v in obj]
-        return obj
-    return hashlib.sha256(json.dumps(strip(value), sort_keys=True,
-                                    separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    # Use the same immutable genotype identity as reproduction/packing rather
+    # than serialize and hash the entire population a second time.
+    from .lineage import program_key
+    return program_key(member)
 
 
 def build(size, producer, fallback, *, seed, generation=0, initial=(), attempts=8):

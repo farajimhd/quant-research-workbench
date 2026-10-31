@@ -3,7 +3,11 @@ import json,zlib
 from pathlib import Path
 import numpy as np
 from .runtime import file_hash
-from .features import ORIGINAL as CATALOG
+from dataclasses import replace
+from .features import ORIGINAL
+# Serialized cache schema predates the corrected average-move display label.
+CATALOG=tuple(replace(f,name=f.name.replace('.fraction_of_close','.relative_to_close'))
+              if f.name.startswith('history.average_move.') else f for f in ORIGINAL)
 VERSION="v7-lossless-feature-tiles-v1"
 FEATURE_VERSION="v7-original-plus-causal-history-relative-v1"
 TILE=2048
@@ -14,8 +18,8 @@ MASK_WIDTH=(WIDTH+7)//8
 def identity(data):
     return dict(version=VERSION,feature_version=FEATURE_VERSION,source=data.identity,
         catalog=[f.name for f in CATALOG],clocks=data.clocks,listings=data.listing_ids.tolist(),
-        tile=TILE,listing_tile=LISTINGS,implementation_sha256='8351a204cd640b6b6e02832a50a1e96a9c17ad341c646f62b9eb9b8fbd8f0a2c',
-        preparation_sha256='272796087455666012dd65d4fcc7e13d11caf0bb049fb2e183d374dccd7e5857')
+        tile=TILE,listing_tile=LISTINGS,implementation_sha256='103f842e7c8028ca2b02acc577b4798baff08d29ed89dc19100a7c1e0c105a47',
+        preparation_sha256='2c9fd0a6047b8748c1f58cb9cc558e6682e999664020a10fa7050f7c1916a567')
 
 def tile_name(ticker,clock):return f'{ticker:04d}-{clock:05d}.bin'
 

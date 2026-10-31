@@ -21,15 +21,22 @@ def main():
     parser.add_argument('--offset',type=int,default=0);parser.add_argument('--count',type=int,default=6144)
     parser.add_argument('--neural-tile',type=int,default=64,choices=(32,64,128,256))
     parser.add_argument('--compare',type=Path);parser.add_argument('--reproduce',action='store_true')
+    parser.add_argument('--founders',type=Path);parser.add_argument('--founders-sha256')
     parser.add_argument('--mixed',action='store_true',help='Equal template/random sample; no outcome-based selection')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
     seedpath=args.output/'founders.json'
+    if args.founders:
+        from .distributed_assets import sha
+        if not args.founders_sha256 or sha(args.founders)!=args.founders_sha256:
+            raise ValueError('Pinned V60 diagnostic genomes required')
+        seedpath=args.founders
     if not seedpath.exists():
         print('Initializing 6144 fresh founders from training-only calibration',flush=True)
         state=global_seed({},job,load_probe(job['initialization_probe'],job['training']))
         write_json(seedpath,state)
     state=json.loads(seedpath.read_bytes());members=[Individual.restore(p) for p in state['population']]
+    if len(members)!=6144:raise ValueError('Complete V60 diagnostic founder cohort required')
     if args.offset<0 or args.count<1 or args.offset+args.count>len(members):raise ValueError('Invalid profile subset')
     if args.mixed:
         if args.offset or args.count%2 or args.count>6144:raise ValueError('Even mixed cohort and zero offset required')

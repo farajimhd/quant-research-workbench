@@ -9,7 +9,8 @@ class Objective:
     drawdown_weight:float=1.
     loss_weight:float=0.
     def validate(self):
-        if any(not math.isfinite(v) or v<0 for v in (self.drawdown_weight,self.loss_weight)):raise ValueError('Finite nonnegative cost weights required')
+        if (self.drawdown_weight,self.loss_weight)!=(1.,0.):
+            raise ValueError('V60 fixes drawdown weight at one and adds no gross-loss penalty')
         return self
 
 def local_panel(ordered,config=Objective(),*,case_maps=None):

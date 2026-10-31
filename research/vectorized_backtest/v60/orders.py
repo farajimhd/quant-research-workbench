@@ -96,6 +96,7 @@ fields are never derived from a later bar than the current execution clock.
     order_limit=torch.where(new,proposed_limit,order_limit)
     buy = (kind == ENTRY) | (kind == ADD)
     sell = (kind == REDUCE) | (kind == EXIT)
+    order_limit=torch.where(terminal&sell,bid,order_limit)
     marketable=torch.where(buy,ask<=order_limit,bid>=order_limit)
     from .order_liquidity import fill
     requested,remaining,quantity,price,new_filled,new_notional,new_fees,executed=fill(

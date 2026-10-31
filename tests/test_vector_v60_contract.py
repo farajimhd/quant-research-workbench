@@ -8,6 +8,20 @@ from research.vectorized_backtest.v60.orders import transition, ORDER_WIDTH
 
 
 class ConstructionContract(unittest.TestCase):
+    def test_base_quote_catalog_offsets_are_not_shifted_by_new_indicators(self):
+        from research.vectorized_backtest.v60.base_resident_features import ResidentFeatures
+        from research.vectorized_backtest.v60.features import ORIGINAL
+        obj=ResidentFeatures.__new__(ResidentFeatures)
+        obj.device=torch.device('cpu');obj.column_plans={}
+        obj.tensors={k:torch.tensor([v],dtype=torch.float64) for k,v in
+            dict(feature_row=0,mark=10.,bid=9.9,ask=10.1,quote_us=1000000,quote_seconds=1.,
+                 market_clock=1.,log_volume=0.,log_notional=0.,log_trade_count=0.).items()}
+        columns=[i for i,f in enumerate(ORIGINAL) if f.name in ('market.bid','market.ask')]
+        rows=torch.zeros((1,1),dtype=torch.int64)
+        values,known=obj._values(rows,rows,torch.ones((1,1)),columns)
+        torch.testing.assert_close(values,torch.tensor([[[9.9,10.1]]]))
+        self.assertTrue(known.all())
+
     def test_vectorized_probe_projection_keeps_each_clock_independent(self):
         from research.vectorized_backtest.v60.feature_policy import transform_projected
         from research.vectorized_backtest.v60.features import CATALOG
@@ -43,7 +57,7 @@ class MinimalExecution(unittest.TestCase):
         self.policy = torch.tensor([.03,.05,.25,.03,0.,0.,20.,1.,0.,0.,0.], dtype=torch.float64).reshape(1,1,1,11)
         self.clock = 0
 
-    def tick(self, signal=1, bid=10., ask=10., capacity=100., clock=None):
+    def tick(self, signal=1, bid=10., ask=10., capacity=100., clock=None, terminal=False):
         self.clock = self.clock + 1 if clock is None else clock
         shape=(1,1,1)
         v=lambda x: torch.full(shape, x, dtype=torch.float64)
@@ -52,7 +66,7 @@ class MinimalExecution(unittest.TestCase):
             policy=self.policy,mark=v(bid),previous=v(bid),membership=torch.ones(shape,dtype=torch.bool),
             observed=torch.ones(shape,dtype=torch.bool),swing=v(9.),bid=v(bid),ask=v(ask),
             quote_valid=torch.ones(shape,dtype=torch.bool),capacity=torch.full((*shape,2),capacity,dtype=torch.float64),
-            clock=torch.tensor(float(self.clock)),terminal=torch.tensor(False),entry_dollars=1000.,add_dollars=200.,
+            clock=torch.tensor(float(self.clock)),terminal=torch.tensor(terminal),entry_dollars=1000.,add_dollars=200.,
             fee_per_share=.005,minimum_order_fee=1.,cost=0.,minimum_order_dollars=0.)
         return done,record
 
@@ -88,6 +102,14 @@ class MinimalExecution(unittest.TestCase):
         self.assertEqual(self.p[...,0].item(),0.)
         self.tick(clock=5)
         self.assertEqual(self.p[...,0].item(),100.)
+
+    def test_terminal_controller_finishes_nonmarketable_standing_sell(self):
+        self.tick()
+        self.policy[...,10]=-.01
+        self.tick(signal=2)
+        self.assertEqual(self.p[...,0].item(),100.)
+        self.tick(signal=0,terminal=True)
+        self.assertEqual(self.p[...,0].item(),0.)
 
 
 if __name__ == '__main__': unittest.main()

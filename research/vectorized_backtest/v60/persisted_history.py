@@ -5,6 +5,7 @@ import numpy as np
 from .certified_history_bank import VERSION,SWING_WINDOWS,LAYOUT
 from research.vectorized_backtest.v60.runtime import file_hash
 from research.vectorized_backtest.v60.input_constants import KEY_STRIDE
+from .source_contracts import producer_hashes
 
 
 def load_history(inputs,root,maximum_gib=16.):
@@ -13,7 +14,7 @@ def load_history(inputs,root,maximum_gib=16.):
     if (record.get('version')!=VERSION or record.get('status')!='complete' or record.get('validation_opened') is not bool(inputs.receipt.get('validation_opened'))
             or record.get('input_receipt_sha256')!=file_hash(inputs.root/'complete.json')
             or record.get('listing_ids')!=union.tolist() or record.get('swing_windows')!=list(SWING_WINDOWS)
-            or record.get('implementation_sha256')!=file_hash(Path(__file__).with_name('certified_history_bank.py'))
+            or record.get('implementation_sha256') not in producer_hashes(Path(__file__).with_name('certified_history_bank.py'))
             or record.get('layout')!={k:list(v) for k,v in LAYOUT.items()} or record.get('clocks')!=len(inputs.arrays['clocks'])):
         raise ValueError('Persisted history contract/identity mismatch')
     if record['resident_bytes']>maximum_gib*1024**3:raise MemoryError('History residency exceeds explicit envelope')

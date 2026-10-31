@@ -9,6 +9,7 @@ from .persisted_history import load_history
 from research.vectorized_backtest.v60.input_constants import KEY_STRIDE
 from research.vectorized_backtest.v60.runtime import file_hash
 from .features import CATALOG,BASE,PRICE_COLUMNS,LIQUIDITY
+from .source_contracts import producer_hashes
 
 
 class SessionData:
@@ -51,7 +52,7 @@ class SessionData:
             path=folder/'values.npy'
             if (certificate.get('version')!=VERSION or certificate.get('status')!='complete'
                 or certificate['input_sha256']!=self.identity['input_sha256']
-                or certificate['definition']['math_sha256']!=file_hash(Path(__file__).with_name('indicator_math.py'))
+                or certificate['definition']['math_sha256'] not in producer_hashes(Path(__file__).with_name('indicator_math.py'))
                 or bool(certificate['validation_opened'])!=bool(self.receipt['validation_opened'])
                 or file_hash(path)!=certificate['values_sha256']):raise ValueError('Continuous indicator bank identity/integrity changed')
             self.indicator_values=np.load(path,mmap_mode='r',allow_pickle=False)

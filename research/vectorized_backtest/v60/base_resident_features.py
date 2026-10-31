@@ -6,7 +6,7 @@ Only the requested channels are gathered; this does not change their clocks.
 """
 import numpy as np
 import torch
-from .features import BASE, HISTORY, PRICE_COLUMNS, CATALOG
+from .features import BASE, HISTORY, PRICE_COLUMNS, ORIGINAL as CATALOG
 from research.vectorized_backtest.v60.input_constants import KEY_STRIDE
 
 
