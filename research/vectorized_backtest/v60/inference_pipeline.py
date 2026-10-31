@@ -41,7 +41,7 @@ class Pipeline:
         profile['inference_packet_clocks']=block
         profile['inference_execution_overlap']=True
         self.submit(0);self.submit(block)
-        self.stage(0)
+        self.stage(0,consume=False)
 
     def submit(self,begin):
         if begin>self.total or begin in self.submitted:return
@@ -51,12 +51,19 @@ class Pipeline:
             self.starts[slot].fill_(begin);self.graphs[slot].replay();self.ready[slot].record(self.stream)
         self.submitted[begin]=slot
 
-    def stage(self,begin):
+    def stage(self,begin,consume=True):
         slot=self.submitted[begin]
         current=torch.cuda.current_stream();current.wait_event(self.ready[slot])
         for target,value in zip(self.active,self.slots[slot]):
             if target is not None:target.copy_(value)
         event=torch.cuda.Event();event.record(current);self.free[slot]=event
+        if consume:del self.submitted[begin]
+
+    def rewind(self,begin):
+        # Journal retry may revisit already consumed packets. Recompute market
+        # signals without changing strategy state, which no longer exists.
+        self.stream.synchronize();self.submitted.clear()
+        self.submit(begin);self.submit(begin+self.block)
 
     def provide(self,index):
         row=(index%self.block).reshape(1)

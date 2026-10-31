@@ -162,8 +162,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 restore()
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
             torch.cuda.current_stream(device).wait_stream(stream)
-        chunk=block if tail_mode or pipeline is not None else max(block,(512//block)*block)
-        def execute(count):
+        chunk=block if tail_mode else max(block,(512//block)*block)
+        def execute(count,start_clock):
             # Checkpoint only live state/counters, not the large append-only
             # ledgers. If a journal page fills, replay smaller chunks exactly.
             mutable=[position,orders,book,aggregate,opened,ticker_state,index,episodes.counts,records.counts]
@@ -173,7 +173,12 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             if not tail_mode and hasattr(plan,'branch_index'):mutable.extend([plan.owner,policy,limits,columns])
             with gate.turn() if gate is not None else nullcontext():
                 checkpoint=[x.clone() for x in mutable]
-                for _ in range(count):
+                for step_index in range(count):
+                    if pipeline is not None:
+                        begin=start_clock+step_index*block
+                        pipeline.stage(begin)
+                        pipeline.submit(begin+block)
+                        pipeline.submit(begin+2*block)
                     if use_cuda:graph.replay()
                     else:tick()
                 if device.type=='cuda':torch.cuda.current_stream(device).synchronize()
@@ -182,19 +187,16 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 return
             for target,value in zip(mutable,checkpoint):target.copy_(value)
             if count==1:raise RuntimeError('One graph exceeded its proven order-journal event bound')
-            first=count//2;execute(first);execute(count-first)
+            if pipeline is not None:pipeline.rewind(start_clock)
+            first=count//2;execute(first,start_clock);execute(count-first,start_clock+first*(block if use_cuda else 1))
         profiled=False
         for begin in range(0,ticks,chunk):
-            if pipeline is not None:
-                pipeline.stage(begin)
-                pipeline.submit(begin+block)
-                pipeline.submit(begin+2*block)
             count=len(range(begin,min(ticks,begin+chunk),block if use_cuda else 1))
             if use_cuda and not tail_mode and hasattr(item,'execution_diagnostic_root') and not profiled and begin>=total//2:
                 from research.vectorized_backtest.v60.publication import write_json
                 sampled=time.perf_counter()
                 with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,torch.profiler.ProfilerActivity.CUDA]) as trace:
-                    execute(count)
+                    execute(count,begin)
                 kernels={}
                 for event in trace.events():
                     if 'CUDA' not in str(event.device_type):continue
@@ -202,7 +204,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                     row['calls']+=1;row['microseconds']+=event.device_time_total
                 write_json(item.execution_diagnostic_root/'gpu-kernels.json',dict(begin_clock=begin,clocks=count*block,kernels=kernels))
                 profile['instrumented_chunk_wall_seconds']=time.perf_counter()-sampled;profiled=True
-            else:execute(count)
+            else:execute(count,begin)
             done=min(ticks,begin+chunk)
             if progress:progress(done,ticks)
             if tail_mode and not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
