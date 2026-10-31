@@ -259,7 +259,7 @@ Revision: verify fill conservation at each snapshot and across chunks/pages, mon
 1. **Freeze the minimal close-time contract and schemas:** candidate action/size/limit/stop/target outputs; causal market and current position inputs without recurrence; deterministic remainder/expiry/replacement/protective-exit rules; same-boundary quote and size authority. Record bug fixes versus deliberate behavior changes. Keep objective, sessions and budgets fixed.
 2. **Fix proven boundary defects:** current membership swing projection, feasibility-aware branch routing, impossible policy endpoint, and named abstention reasons. Preserve history definition until explicitly revised.
 3. **Implement price outputs and deterministic execution:** candidate-defined limit/stop/target prices; fixed order/partial-fill bookkeeping; position feedback without learned pending-order management; minimal close-time matching. Share CPU/CUDA semantics and retain actual fills/fees. Version genomes, state packing, execution and replay identities as affected.
-4. **Align initialization and reproduction:** jointly sample/mutate/cross action and price outputs with admissibility probes, without profitability filtering; coherent branch selection, retry accounting, exact scheduled/realized counts and deterministic RNG. Enforce the new per-feature construction caps in the table through a versioned feature-aware constructor, mutations and crossover checks; use formula/domain checks and bounded training-only coverage to prevent impossible, duplicate or uninformative proposals before replay. Do not use legacy priors as value limits or silently clip market observations. Separate policy choices F12–F14 from necessary correctness repairs.
+4. **Align initialization and reproduction:** jointly sample/mutate/cross action and price outputs with admissibility probes, without profitability filtering; coherent branch selection, retry accounting, exact scheduled/realized counts and deterministic RNG. Enforce the new per-feature construction caps and history contracts through a versioned feature-aware constructor, mutations and crossover checks. Remove all V7 and explicit market-time inputs, replace the V7 support-bounce template with causal swings, and reject unsupported history requests before replay. Use formula/domain checks and bounded training-only coverage to prevent impossible, duplicate or uninformative proposals. Do not use legacy priors as value limits or silently clip market observations. Separate policy choices F12–F14 from necessary correctness repairs.
 5. **Validate real runnable paths:** causal boundary fixtures; missing-history, invalid-stop, first-admission, routed fallback, exit conflict, cooldown, partial fills, limit waits, cancellation/amendment, cutoff/tail exhaustion, ledger conservation, all-founder inclusion, validation isolation, identity invalidation and deterministic recovery. Include a forced-overflow retry and shared-entry state-dependence check.
 6. **Short performance qualification then explicit recovery:** use frozen representative candidates and two contrasting sessions; compare baseline/fixed wall time and all unchanged-case decisions/ledgers. For intentional behavior changes report changed requests/fills/P&L and reasons instead of claiming financial parity. A history/input/execution change invalidates affected financial receipts; retain genomes/RNG where schema-compatible, but replay affected founders before selection. Do not reuse old scores merely because genomes match.
 
@@ -272,6 +272,33 @@ Per candidate/session: raw proposal counts by action; decision opportunities; re
 Every record must carry candidate/program identity, session/split, decision/execution contract versions, clock range and complete/partial coverage. Missing data is unavailable, never zero. Aggregate counters should be bounded tensors; sampled details can be persisted by the existing publication lane. UI should distinguish raw proposals, actionable requests, orders and positions.
 
 ## Full pinned market-input catalog
+
+### Feature exclusions and history admission revision
+
+User revision: remove V7 level features and market time-related inputs; use causal swings instead. This changes the **next-version** search space only. Existing V59 catalog identity and its current Allowed column remain historical facts. A new **Next allowed** column records the revised authority. Remove all110 `v7.*` feature IDs across absolute, cross-sectional and validity channels, not the shared Python modules whose names happen to contain v7. Also remove `time_of_day_sin`, `time_of_day_cos`, `premarket`, `regular`, `after_hours`, `log_inter_candle_gap` and `market.quote_age_seconds` from model inputs. Previously forbidden split/date-age features stay forbidden.
+
+Interpretation: “time-related” means explicit clock/calendar, session-phase and elapsed-market-time signals. Return horizons, candle resolutions and indicator periods remain necessary feature definitions. Position age and cooldown state remain available as agreed position/controller state; the general `elapsed_seconds` model slot should be removed. Exact timestamps remain internal to the deterministic executor and data-validity checks. This does not assert that all remaining market features are free of time-of-day or identity correlations.
+
+The resulting pinned-catalog proposal has **524 allowed /433 forbidden** feature IDs (117 newly forbidden). Forbidden rows have no construction caps or history request. The old caps for newly excluded inputs are superseded, not a loophole allowing their validity channel.
+
+Use normalized confirmed swing-low features already present in `history.swing_low.L.R.relative_to_close`, plus their availability masks. Left/right choices are limited to {1,2,3,4,5,10,15,20,30,45,60}; maximum confirmation window is121 observed one-second slots for60/60. Current history uses prior-clock confirmation and invalidates windows containing unobserved seconds. F05 remains unresolved: do not silently change to observed-bar indexing or fill gaps. A missing pivot makes that strategy branch unavailable; it must not submit an unusable stop request.
+
+Replace V7-based `support_bounce` templates with swing-based entry/management templates before constructing founders. The current catalog has swing lows, **not confirmed swing highs**. If symmetric resistance/target features are required, add a separately versioned confirmed swing-high family with the same causal confirmation/availability contract and dedicated tests; do not claim those highs already exist or relabel V7 outputs as swings. Candidate-defined target prices need not depend on a swing-high input.
+
+#### Per-row history contract
+
+The table now separates **Supported history/dependency** from **Readiness requirement**. A static table cannot truthfully promise that every session/ticker has that much valid history at every close. The next manifest/runtime must provide actual available counts, boundary clocks and validity masks. Construction may select only registered feature IDs and their fixed supported periods; it cannot invent a longer period or ask a missing bank to synthesize it.
+
+- Fixed-window rows state their window. A window ending at the previous clock still preserves that lag. Return endpoints are valid only when the producer's freshness/missing-data rules hold.
+- Candle aggregations use the most recent completed bucket; its end may be up to one bucket old. Reading a return at that bucket's end can reach nearly2H seconds behind the decision. The table records that dependency rather than claiming onlyH seconds.
+- Recursive indicators use certified accumulated state. Their warm-up observation count is not a maximum memory length, nor authorization for arbitrary historical bar queries. EMA, RSI and ATR periods up to60 and MACD registered combinations are supported; state may include a longer certified prefix.
+- Carried confirmed pivots can be older than their confirmation window. “L+R+1” is the formation requirement, not a guaranteed maximum pivot age. Expose availability; any stale-pivot limit would be a separately declared strategy condition.
+- The base loader retains up to119 preceding actual feature rows as context, not119 guaranteed seconds. This is not a universal lookback cap on already prepared300-second features or running indicator state. Do not impose it on all rows.
+- V59 graphs have no general arbitrary lag/window operator. The next design retains only an explicit one-previous-clock input for the existing crossing operator, requiring both observations valid. Do not add unbounded history access. Nested history requests and unsupported periods must fail construction before replay.
+
+For each candidate, compile a dependency certificate from all referenced features/branches: fixed windows, indicator warm-up requirements, pivot pairs, optional crossing lag and required masks. Check it against the sealed input/history manifest before allocating replay work. At each candle, the strategy boundary checks actual readiness and reports abstention. Checking only a maximum declared lookback cannot guarantee activity; market-dependent signals and gaps still exist. Do not discard an entire otherwise valid candidate merely because one early candle lacks history.
+
+Required implementation additions: new feature-policy/version; enforce exclusions in restoration/validation as well as all construction paths; replace affected templates; compile dependency certificates; prepare only registered histories; expose readiness; audit masked/rejected proposal counts; verify no removed input survives crossover or aliasing. Preserve population and compute budgets. New input/strategy semantics require new replay identities and affected financial replays before selection.
 
 ### Next-version hard construction caps (proposed; not deployed)
 
@@ -337,964 +364,964 @@ This is a review of formula families and consumers plus an enumeration of all957
 
 **Current versus next implementation:** the957 catalog, masks,641 allowed features,316 blocked features, normalization and11 current state inputs are already implemented in V59. The corrected documentation interpretation is delivered now. The minimal deterministic controller contract and candidate-defined limit/stop/target output schema, revised candidate input slots and audit fixes remain proposed work for the next implementation. They are not activated by this report. New schema metadata should separate `sampling_prior`, `mathematical_domain`, `missing_policy` and `model_transform` instead of overloading lower/upper; preserve finite prior ranges for any legacy sampler that requires them.
 
-The table enumerates the pinned source catalog and adds proposed next-version construction caps. `Allowed` applies to all three channels. **Legacy prior lower/upper are not permitted-value boundaries.** New caps constrain candidate construction only as specified above. M/E label the basis; `forbidden` rows cannot be sampled. Numbers are rounded for display (six decimals); the implementation manifest should store the defining expressions/full precision, particularly logarithms and strict endpoints.
+The table enumerates the pinned source catalog and adds proposed next-version construction caps and per-row history/readiness. `V59 allowed` describes current code; `Next allowed` describes the new exclusions across all three channels. **Legacy prior lower/upper are not permitted-value boundaries.** New caps constrain candidate construction only as specified above. M/E label the basis; next-version `forbidden` rows cannot be sampled. Supported history is a dependency ceiling/registered definition, not a promise of available data at every candle. No additional arbitrary history request is allowed; the explicitly supported crossing operator may read one prior clock with both masks valid. Numbers are rounded for display (six decimals); the implementation manifest should store the defining expressions/full precision, particularly logarithms and strict endpoints.
 
-| ID | Name | Unit | Legacy prior lower | Legacy prior upper | Allowed | Next construction min | Next construction max | Basis |
-|---:|---|---|---:|---:|---|---:|---:|---|
-| 0 | `log_open` | log_price | -5 | 10 | no | — | — | forbidden |
-| 1 | `log_high` | log_price | -5 | 10 | no | — | — | forbidden |
-| 2 | `log_low` | log_price | -5 | 10 | no | — | — | forbidden |
-| 3 | `log_close` | log_price | -5 | 10 | no | — | — | forbidden |
-| 4 | `bar_vwap_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
-| 5 | `session_vwap_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
-| 6 | `bar_vwap_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 7 | `session_vwap_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 8 | `log_volume` | log_shares | 0 | 30 | yes | 0 | 20.723266 | E |
-| 9 | `log_trades` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 10 | `log_volume_60s` | log_shares | 0 | 30 | yes | 0 | 20.723266 | E |
-| 11 | `log_trades_60s` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 12 | `log_rvol_10s_prev_session` | log_duration | 0 | 20 | yes | 0 | 9.21044 | E |
-| 13 | `rvol_10s_available` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 14 | `macd_line_rel` | ratio | -2 | 2 | yes | -4 | 4 | E |
-| 15 | `macd_signal_rel` | ratio | -2 | 2 | yes | -4 | 4 | E |
-| 16 | `rsi_14` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 17 | `atr_14_rel` | ratio | -2 | 2 | yes | 0 | 4 | E |
-| 18 | `ema_7_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
-| 19 | `ema_26_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
-| 20 | `indicator_available` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 21 | `time_of_day_sin` | ratio | -2 | 2 | yes | -1 | 1 | M |
-| 22 | `time_of_day_cos` | ratio | -2 | 2 | yes | -1 | 1 | M |
-| 23 | `premarket` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 24 | `regular` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 25 | `after_hours` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 26 | `log_inter_candle_gap` | log_duration | 0 | 30 | yes | 0 | 10.961295 | E |
-| 27 | `log_float_shares` | log_shares | 0 | 30 | yes | 0 | 27.631021 | E |
-| 28 | `float_present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 29 | `log_shares_outstanding` | log_shares | 0 | 30 | yes | 0 | 27.631021 | E |
-| 30 | `shares_present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 31 | `log_days_since_split` | log_duration | 0 | 30 | no | — | — | forbidden |
-| 32 | `split_present` | bool | 0 | 1 | no | — | — | forbidden |
-| 33 | `log_days_since_reverse_split` | log_duration | 0 | 30 | no | — | — | forbidden |
-| 34 | `reverse_split_present` | bool | 0 | 1 | no | — | — | forbidden |
-| 35 | `bar_price_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 36 | `bar_extremes_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 37 | `v7.below.1.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
-| 38 | `v7.below.1.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 39 | `v7.below.1.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 40 | `v7.below.1.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 41 | `v7.below.1.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 42 | `v7.below.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 43 | `v7.below.1.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 44 | `v7.below.1.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 45 | `v7.below.1.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 46 | `v7.below.1.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 47 | `v7.below.1.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 48 | `v7.below.2.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
-| 49 | `v7.below.2.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 50 | `v7.below.2.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 51 | `v7.below.2.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 52 | `v7.below.2.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 53 | `v7.below.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 54 | `v7.below.2.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 55 | `v7.below.2.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 56 | `v7.below.2.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 57 | `v7.below.2.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 58 | `v7.below.2.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 59 | `v7.below.3.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
-| 60 | `v7.below.3.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 61 | `v7.below.3.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 62 | `v7.below.3.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 63 | `v7.below.3.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 64 | `v7.below.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 65 | `v7.below.3.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 66 | `v7.below.3.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 67 | `v7.below.3.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 68 | `v7.below.3.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 69 | `v7.below.3.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 70 | `v7.below.4.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
-| 71 | `v7.below.4.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 72 | `v7.below.4.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 73 | `v7.below.4.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 74 | `v7.below.4.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 75 | `v7.below.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 76 | `v7.below.4.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 77 | `v7.below.4.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 78 | `v7.below.4.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 79 | `v7.below.4.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 80 | `v7.below.4.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 81 | `v7.below.5.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
-| 82 | `v7.below.5.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 83 | `v7.below.5.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 84 | `v7.below.5.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 85 | `v7.below.5.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 86 | `v7.below.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 87 | `v7.below.5.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 88 | `v7.below.5.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 89 | `v7.below.5.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 90 | `v7.below.5.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 91 | `v7.below.5.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 92 | `v7.above.1.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
-| 93 | `v7.above.1.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 94 | `v7.above.1.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 95 | `v7.above.1.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 96 | `v7.above.1.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 97 | `v7.above.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 98 | `v7.above.1.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 99 | `v7.above.1.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 100 | `v7.above.1.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 101 | `v7.above.1.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 102 | `v7.above.1.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 103 | `v7.above.2.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
-| 104 | `v7.above.2.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 105 | `v7.above.2.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 106 | `v7.above.2.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 107 | `v7.above.2.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 108 | `v7.above.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 109 | `v7.above.2.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 110 | `v7.above.2.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 111 | `v7.above.2.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 112 | `v7.above.2.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 113 | `v7.above.2.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 114 | `v7.above.3.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
-| 115 | `v7.above.3.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 116 | `v7.above.3.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 117 | `v7.above.3.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 118 | `v7.above.3.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 119 | `v7.above.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 120 | `v7.above.3.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 121 | `v7.above.3.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 122 | `v7.above.3.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 123 | `v7.above.3.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 124 | `v7.above.3.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 125 | `v7.above.4.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
-| 126 | `v7.above.4.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 127 | `v7.above.4.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 128 | `v7.above.4.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 129 | `v7.above.4.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 130 | `v7.above.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 131 | `v7.above.4.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 132 | `v7.above.4.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 133 | `v7.above.4.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 134 | `v7.above.4.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 135 | `v7.above.4.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 136 | `v7.above.5.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
-| 137 | `v7.above.5.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 138 | `v7.above.5.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
-| 139 | `v7.above.5.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 140 | `v7.above.5.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
-| 141 | `v7.above.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
-| 142 | `v7.above.5.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 143 | `v7.above.5.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 144 | `v7.above.5.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 145 | `v7.above.5.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 146 | `v7.above.5.present` | bool | 0 | 1 | yes | 0 | 1 | M |
-| 147 | `split_this_session` | bool | 0 | 1 | no | — | — | forbidden |
-| 148 | `reverse_split_this_session` | bool | 0 | 1 | no | — | — | forbidden |
-| 149 | `history.recent_high.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 150 | `history.recent_high.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 151 | `history.recent_high.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 152 | `history.recent_high.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 153 | `history.recent_high.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 154 | `history.recent_high.6` | price | 0 | 1000 | no | — | — | forbidden |
-| 155 | `history.recent_high.7` | price | 0 | 1000 | no | — | — | forbidden |
-| 156 | `history.recent_high.8` | price | 0 | 1000 | no | — | — | forbidden |
-| 157 | `history.recent_high.9` | price | 0 | 1000 | no | — | — | forbidden |
-| 158 | `history.recent_high.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 159 | `history.recent_high.11` | price | 0 | 1000 | no | — | — | forbidden |
-| 160 | `history.recent_high.12` | price | 0 | 1000 | no | — | — | forbidden |
-| 161 | `history.recent_high.13` | price | 0 | 1000 | no | — | — | forbidden |
-| 162 | `history.recent_high.14` | price | 0 | 1000 | no | — | — | forbidden |
-| 163 | `history.recent_high.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 164 | `history.recent_high.16` | price | 0 | 1000 | no | — | — | forbidden |
-| 165 | `history.recent_high.17` | price | 0 | 1000 | no | — | — | forbidden |
-| 166 | `history.recent_high.18` | price | 0 | 1000 | no | — | — | forbidden |
-| 167 | `history.recent_high.19` | price | 0 | 1000 | no | — | — | forbidden |
-| 168 | `history.recent_high.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 169 | `history.recent_high.21` | price | 0 | 1000 | no | — | — | forbidden |
-| 170 | `history.recent_high.22` | price | 0 | 1000 | no | — | — | forbidden |
-| 171 | `history.recent_high.23` | price | 0 | 1000 | no | — | — | forbidden |
-| 172 | `history.recent_high.24` | price | 0 | 1000 | no | — | — | forbidden |
-| 173 | `history.recent_high.25` | price | 0 | 1000 | no | — | — | forbidden |
-| 174 | `history.recent_high.26` | price | 0 | 1000 | no | — | — | forbidden |
-| 175 | `history.recent_high.27` | price | 0 | 1000 | no | — | — | forbidden |
-| 176 | `history.recent_high.28` | price | 0 | 1000 | no | — | — | forbidden |
-| 177 | `history.recent_high.29` | price | 0 | 1000 | no | — | — | forbidden |
-| 178 | `history.recent_high.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 179 | `history.recent_high.31` | price | 0 | 1000 | no | — | — | forbidden |
-| 180 | `history.recent_high.32` | price | 0 | 1000 | no | — | — | forbidden |
-| 181 | `history.recent_high.33` | price | 0 | 1000 | no | — | — | forbidden |
-| 182 | `history.recent_high.34` | price | 0 | 1000 | no | — | — | forbidden |
-| 183 | `history.recent_high.35` | price | 0 | 1000 | no | — | — | forbidden |
-| 184 | `history.recent_high.36` | price | 0 | 1000 | no | — | — | forbidden |
-| 185 | `history.recent_high.37` | price | 0 | 1000 | no | — | — | forbidden |
-| 186 | `history.recent_high.38` | price | 0 | 1000 | no | — | — | forbidden |
-| 187 | `history.recent_high.39` | price | 0 | 1000 | no | — | — | forbidden |
-| 188 | `history.recent_high.40` | price | 0 | 1000 | no | — | — | forbidden |
-| 189 | `history.recent_high.41` | price | 0 | 1000 | no | — | — | forbidden |
-| 190 | `history.recent_high.42` | price | 0 | 1000 | no | — | — | forbidden |
-| 191 | `history.recent_high.43` | price | 0 | 1000 | no | — | — | forbidden |
-| 192 | `history.recent_high.44` | price | 0 | 1000 | no | — | — | forbidden |
-| 193 | `history.recent_high.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 194 | `history.recent_high.46` | price | 0 | 1000 | no | — | — | forbidden |
-| 195 | `history.recent_high.47` | price | 0 | 1000 | no | — | — | forbidden |
-| 196 | `history.recent_high.48` | price | 0 | 1000 | no | — | — | forbidden |
-| 197 | `history.recent_high.49` | price | 0 | 1000 | no | — | — | forbidden |
-| 198 | `history.recent_high.50` | price | 0 | 1000 | no | — | — | forbidden |
-| 199 | `history.recent_high.51` | price | 0 | 1000 | no | — | — | forbidden |
-| 200 | `history.recent_high.52` | price | 0 | 1000 | no | — | — | forbidden |
-| 201 | `history.recent_high.53` | price | 0 | 1000 | no | — | — | forbidden |
-| 202 | `history.recent_high.54` | price | 0 | 1000 | no | — | — | forbidden |
-| 203 | `history.recent_high.55` | price | 0 | 1000 | no | — | — | forbidden |
-| 204 | `history.recent_high.56` | price | 0 | 1000 | no | — | — | forbidden |
-| 205 | `history.recent_high.57` | price | 0 | 1000 | no | — | — | forbidden |
-| 206 | `history.recent_high.58` | price | 0 | 1000 | no | — | — | forbidden |
-| 207 | `history.recent_high.59` | price | 0 | 1000 | no | — | — | forbidden |
-| 208 | `history.recent_high.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 209 | `history.momentum_close.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 210 | `history.momentum_close.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 211 | `history.momentum_close.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 212 | `history.momentum_close.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 213 | `history.momentum_close.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 214 | `history.momentum_close.6` | price | 0 | 1000 | no | — | — | forbidden |
-| 215 | `history.momentum_close.7` | price | 0 | 1000 | no | — | — | forbidden |
-| 216 | `history.momentum_close.8` | price | 0 | 1000 | no | — | — | forbidden |
-| 217 | `history.momentum_close.9` | price | 0 | 1000 | no | — | — | forbidden |
-| 218 | `history.momentum_close.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 219 | `history.momentum_close.11` | price | 0 | 1000 | no | — | — | forbidden |
-| 220 | `history.momentum_close.12` | price | 0 | 1000 | no | — | — | forbidden |
-| 221 | `history.momentum_close.13` | price | 0 | 1000 | no | — | — | forbidden |
-| 222 | `history.momentum_close.14` | price | 0 | 1000 | no | — | — | forbidden |
-| 223 | `history.momentum_close.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 224 | `history.momentum_close.16` | price | 0 | 1000 | no | — | — | forbidden |
-| 225 | `history.momentum_close.17` | price | 0 | 1000 | no | — | — | forbidden |
-| 226 | `history.momentum_close.18` | price | 0 | 1000 | no | — | — | forbidden |
-| 227 | `history.momentum_close.19` | price | 0 | 1000 | no | — | — | forbidden |
-| 228 | `history.momentum_close.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 229 | `history.momentum_close.21` | price | 0 | 1000 | no | — | — | forbidden |
-| 230 | `history.momentum_close.22` | price | 0 | 1000 | no | — | — | forbidden |
-| 231 | `history.momentum_close.23` | price | 0 | 1000 | no | — | — | forbidden |
-| 232 | `history.momentum_close.24` | price | 0 | 1000 | no | — | — | forbidden |
-| 233 | `history.momentum_close.25` | price | 0 | 1000 | no | — | — | forbidden |
-| 234 | `history.momentum_close.26` | price | 0 | 1000 | no | — | — | forbidden |
-| 235 | `history.momentum_close.27` | price | 0 | 1000 | no | — | — | forbidden |
-| 236 | `history.momentum_close.28` | price | 0 | 1000 | no | — | — | forbidden |
-| 237 | `history.momentum_close.29` | price | 0 | 1000 | no | — | — | forbidden |
-| 238 | `history.momentum_close.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 239 | `history.momentum_close.31` | price | 0 | 1000 | no | — | — | forbidden |
-| 240 | `history.momentum_close.32` | price | 0 | 1000 | no | — | — | forbidden |
-| 241 | `history.momentum_close.33` | price | 0 | 1000 | no | — | — | forbidden |
-| 242 | `history.momentum_close.34` | price | 0 | 1000 | no | — | — | forbidden |
-| 243 | `history.momentum_close.35` | price | 0 | 1000 | no | — | — | forbidden |
-| 244 | `history.momentum_close.36` | price | 0 | 1000 | no | — | — | forbidden |
-| 245 | `history.momentum_close.37` | price | 0 | 1000 | no | — | — | forbidden |
-| 246 | `history.momentum_close.38` | price | 0 | 1000 | no | — | — | forbidden |
-| 247 | `history.momentum_close.39` | price | 0 | 1000 | no | — | — | forbidden |
-| 248 | `history.momentum_close.40` | price | 0 | 1000 | no | — | — | forbidden |
-| 249 | `history.momentum_close.41` | price | 0 | 1000 | no | — | — | forbidden |
-| 250 | `history.momentum_close.42` | price | 0 | 1000 | no | — | — | forbidden |
-| 251 | `history.momentum_close.43` | price | 0 | 1000 | no | — | — | forbidden |
-| 252 | `history.momentum_close.44` | price | 0 | 1000 | no | — | — | forbidden |
-| 253 | `history.momentum_close.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 254 | `history.momentum_close.46` | price | 0 | 1000 | no | — | — | forbidden |
-| 255 | `history.momentum_close.47` | price | 0 | 1000 | no | — | — | forbidden |
-| 256 | `history.momentum_close.48` | price | 0 | 1000 | no | — | — | forbidden |
-| 257 | `history.momentum_close.49` | price | 0 | 1000 | no | — | — | forbidden |
-| 258 | `history.momentum_close.50` | price | 0 | 1000 | no | — | — | forbidden |
-| 259 | `history.momentum_close.51` | price | 0 | 1000 | no | — | — | forbidden |
-| 260 | `history.momentum_close.52` | price | 0 | 1000 | no | — | — | forbidden |
-| 261 | `history.momentum_close.53` | price | 0 | 1000 | no | — | — | forbidden |
-| 262 | `history.momentum_close.54` | price | 0 | 1000 | no | — | — | forbidden |
-| 263 | `history.momentum_close.55` | price | 0 | 1000 | no | — | — | forbidden |
-| 264 | `history.momentum_close.56` | price | 0 | 1000 | no | — | — | forbidden |
-| 265 | `history.momentum_close.57` | price | 0 | 1000 | no | — | — | forbidden |
-| 266 | `history.momentum_close.58` | price | 0 | 1000 | no | — | — | forbidden |
-| 267 | `history.momentum_close.59` | price | 0 | 1000 | no | — | — | forbidden |
-| 268 | `history.momentum_close.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 269 | `history.attention_mean.1` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 270 | `history.attention_mean.2` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 271 | `history.attention_mean.3` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 272 | `history.attention_mean.4` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 273 | `history.attention_mean.5` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 274 | `history.attention_mean.6` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 275 | `history.attention_mean.7` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 276 | `history.attention_mean.8` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 277 | `history.attention_mean.9` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 278 | `history.attention_mean.10` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 279 | `history.attention_mean.11` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 280 | `history.attention_mean.12` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 281 | `history.attention_mean.13` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 282 | `history.attention_mean.14` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 283 | `history.attention_mean.15` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 284 | `history.attention_mean.16` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 285 | `history.attention_mean.17` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 286 | `history.attention_mean.18` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 287 | `history.attention_mean.19` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 288 | `history.attention_mean.20` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 289 | `history.attention_mean.21` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 290 | `history.attention_mean.22` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 291 | `history.attention_mean.23` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 292 | `history.attention_mean.24` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 293 | `history.attention_mean.25` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 294 | `history.attention_mean.26` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 295 | `history.attention_mean.27` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 296 | `history.attention_mean.28` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 297 | `history.attention_mean.29` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 298 | `history.attention_mean.30` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 299 | `history.attention_mean.31` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 300 | `history.attention_mean.32` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 301 | `history.attention_mean.33` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 302 | `history.attention_mean.34` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 303 | `history.attention_mean.35` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 304 | `history.attention_mean.36` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 305 | `history.attention_mean.37` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 306 | `history.attention_mean.38` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 307 | `history.attention_mean.39` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 308 | `history.attention_mean.40` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 309 | `history.attention_mean.41` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 310 | `history.attention_mean.42` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 311 | `history.attention_mean.43` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 312 | `history.attention_mean.44` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 313 | `history.attention_mean.45` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 314 | `history.attention_mean.46` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 315 | `history.attention_mean.47` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 316 | `history.attention_mean.48` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 317 | `history.attention_mean.49` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 318 | `history.attention_mean.50` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 319 | `history.attention_mean.51` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 320 | `history.attention_mean.52` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 321 | `history.attention_mean.53` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 322 | `history.attention_mean.54` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 323 | `history.attention_mean.55` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 324 | `history.attention_mean.56` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 325 | `history.attention_mean.57` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 326 | `history.attention_mean.58` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 327 | `history.attention_mean.59` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 328 | `history.attention_mean.60` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
-| 329 | `history.average_move.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 330 | `history.average_move.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 331 | `history.average_move.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 332 | `history.average_move.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 333 | `history.average_move.6` | price | 0 | 1000 | no | — | — | forbidden |
-| 334 | `history.average_move.7` | price | 0 | 1000 | no | — | — | forbidden |
-| 335 | `history.average_move.8` | price | 0 | 1000 | no | — | — | forbidden |
-| 336 | `history.average_move.9` | price | 0 | 1000 | no | — | — | forbidden |
-| 337 | `history.average_move.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 338 | `history.average_move.11` | price | 0 | 1000 | no | — | — | forbidden |
-| 339 | `history.average_move.12` | price | 0 | 1000 | no | — | — | forbidden |
-| 340 | `history.average_move.13` | price | 0 | 1000 | no | — | — | forbidden |
-| 341 | `history.average_move.14` | price | 0 | 1000 | no | — | — | forbidden |
-| 342 | `history.average_move.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 343 | `history.average_move.16` | price | 0 | 1000 | no | — | — | forbidden |
-| 344 | `history.average_move.17` | price | 0 | 1000 | no | — | — | forbidden |
-| 345 | `history.average_move.18` | price | 0 | 1000 | no | — | — | forbidden |
-| 346 | `history.average_move.19` | price | 0 | 1000 | no | — | — | forbidden |
-| 347 | `history.average_move.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 348 | `history.average_move.21` | price | 0 | 1000 | no | — | — | forbidden |
-| 349 | `history.average_move.22` | price | 0 | 1000 | no | — | — | forbidden |
-| 350 | `history.average_move.23` | price | 0 | 1000 | no | — | — | forbidden |
-| 351 | `history.average_move.24` | price | 0 | 1000 | no | — | — | forbidden |
-| 352 | `history.average_move.25` | price | 0 | 1000 | no | — | — | forbidden |
-| 353 | `history.average_move.26` | price | 0 | 1000 | no | — | — | forbidden |
-| 354 | `history.average_move.27` | price | 0 | 1000 | no | — | — | forbidden |
-| 355 | `history.average_move.28` | price | 0 | 1000 | no | — | — | forbidden |
-| 356 | `history.average_move.29` | price | 0 | 1000 | no | — | — | forbidden |
-| 357 | `history.average_move.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 358 | `history.average_move.31` | price | 0 | 1000 | no | — | — | forbidden |
-| 359 | `history.average_move.32` | price | 0 | 1000 | no | — | — | forbidden |
-| 360 | `history.swing_low.1.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 361 | `history.swing_low.1.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 362 | `history.swing_low.1.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 363 | `history.swing_low.1.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 364 | `history.swing_low.1.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 365 | `history.swing_low.1.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 366 | `history.swing_low.1.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 367 | `history.swing_low.1.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 368 | `history.swing_low.1.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 369 | `history.swing_low.1.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 370 | `history.swing_low.1.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 371 | `history.swing_low.2.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 372 | `history.swing_low.2.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 373 | `history.swing_low.2.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 374 | `history.swing_low.2.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 375 | `history.swing_low.2.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 376 | `history.swing_low.2.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 377 | `history.swing_low.2.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 378 | `history.swing_low.2.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 379 | `history.swing_low.2.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 380 | `history.swing_low.2.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 381 | `history.swing_low.2.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 382 | `history.swing_low.3.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 383 | `history.swing_low.3.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 384 | `history.swing_low.3.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 385 | `history.swing_low.3.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 386 | `history.swing_low.3.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 387 | `history.swing_low.3.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 388 | `history.swing_low.3.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 389 | `history.swing_low.3.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 390 | `history.swing_low.3.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 391 | `history.swing_low.3.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 392 | `history.swing_low.3.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 393 | `history.swing_low.4.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 394 | `history.swing_low.4.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 395 | `history.swing_low.4.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 396 | `history.swing_low.4.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 397 | `history.swing_low.4.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 398 | `history.swing_low.4.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 399 | `history.swing_low.4.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 400 | `history.swing_low.4.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 401 | `history.swing_low.4.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 402 | `history.swing_low.4.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 403 | `history.swing_low.4.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 404 | `history.swing_low.5.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 405 | `history.swing_low.5.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 406 | `history.swing_low.5.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 407 | `history.swing_low.5.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 408 | `history.swing_low.5.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 409 | `history.swing_low.5.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 410 | `history.swing_low.5.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 411 | `history.swing_low.5.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 412 | `history.swing_low.5.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 413 | `history.swing_low.5.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 414 | `history.swing_low.5.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 415 | `history.swing_low.10.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 416 | `history.swing_low.10.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 417 | `history.swing_low.10.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 418 | `history.swing_low.10.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 419 | `history.swing_low.10.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 420 | `history.swing_low.10.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 421 | `history.swing_low.10.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 422 | `history.swing_low.10.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 423 | `history.swing_low.10.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 424 | `history.swing_low.10.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 425 | `history.swing_low.10.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 426 | `history.swing_low.15.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 427 | `history.swing_low.15.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 428 | `history.swing_low.15.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 429 | `history.swing_low.15.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 430 | `history.swing_low.15.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 431 | `history.swing_low.15.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 432 | `history.swing_low.15.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 433 | `history.swing_low.15.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 434 | `history.swing_low.15.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 435 | `history.swing_low.15.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 436 | `history.swing_low.15.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 437 | `history.swing_low.20.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 438 | `history.swing_low.20.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 439 | `history.swing_low.20.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 440 | `history.swing_low.20.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 441 | `history.swing_low.20.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 442 | `history.swing_low.20.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 443 | `history.swing_low.20.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 444 | `history.swing_low.20.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 445 | `history.swing_low.20.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 446 | `history.swing_low.20.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 447 | `history.swing_low.20.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 448 | `history.swing_low.30.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 449 | `history.swing_low.30.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 450 | `history.swing_low.30.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 451 | `history.swing_low.30.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 452 | `history.swing_low.30.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 453 | `history.swing_low.30.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 454 | `history.swing_low.30.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 455 | `history.swing_low.30.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 456 | `history.swing_low.30.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 457 | `history.swing_low.30.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 458 | `history.swing_low.30.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 459 | `history.swing_low.45.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 460 | `history.swing_low.45.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 461 | `history.swing_low.45.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 462 | `history.swing_low.45.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 463 | `history.swing_low.45.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 464 | `history.swing_low.45.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 465 | `history.swing_low.45.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 466 | `history.swing_low.45.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 467 | `history.swing_low.45.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 468 | `history.swing_low.45.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 469 | `history.swing_low.45.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 470 | `history.swing_low.60.1` | price | 0 | 1000 | no | — | — | forbidden |
-| 471 | `history.swing_low.60.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 472 | `history.swing_low.60.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 473 | `history.swing_low.60.4` | price | 0 | 1000 | no | — | — | forbidden |
-| 474 | `history.swing_low.60.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 475 | `history.swing_low.60.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 476 | `history.swing_low.60.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 477 | `history.swing_low.60.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 478 | `history.swing_low.60.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 479 | `history.swing_low.60.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 480 | `history.swing_low.60.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 481 | `history.recent_high.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 482 | `history.recent_high.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 483 | `history.recent_high.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 484 | `history.recent_high.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 485 | `history.recent_high.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 486 | `history.recent_high.6.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 487 | `history.recent_high.7.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 488 | `history.recent_high.8.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 489 | `history.recent_high.9.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 490 | `history.recent_high.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 491 | `history.recent_high.11.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 492 | `history.recent_high.12.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 493 | `history.recent_high.13.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 494 | `history.recent_high.14.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 495 | `history.recent_high.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 496 | `history.recent_high.16.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 497 | `history.recent_high.17.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 498 | `history.recent_high.18.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 499 | `history.recent_high.19.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 500 | `history.recent_high.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 501 | `history.recent_high.21.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 502 | `history.recent_high.22.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 503 | `history.recent_high.23.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 504 | `history.recent_high.24.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 505 | `history.recent_high.25.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 506 | `history.recent_high.26.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 507 | `history.recent_high.27.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 508 | `history.recent_high.28.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 509 | `history.recent_high.29.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 510 | `history.recent_high.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 511 | `history.recent_high.31.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 512 | `history.recent_high.32.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 513 | `history.recent_high.33.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 514 | `history.recent_high.34.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 515 | `history.recent_high.35.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 516 | `history.recent_high.36.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 517 | `history.recent_high.37.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 518 | `history.recent_high.38.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 519 | `history.recent_high.39.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 520 | `history.recent_high.40.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 521 | `history.recent_high.41.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 522 | `history.recent_high.42.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 523 | `history.recent_high.43.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 524 | `history.recent_high.44.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 525 | `history.recent_high.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 526 | `history.recent_high.46.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 527 | `history.recent_high.47.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 528 | `history.recent_high.48.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 529 | `history.recent_high.49.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 530 | `history.recent_high.50.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 531 | `history.recent_high.51.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 532 | `history.recent_high.52.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 533 | `history.recent_high.53.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 534 | `history.recent_high.54.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 535 | `history.recent_high.55.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 536 | `history.recent_high.56.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 537 | `history.recent_high.57.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 538 | `history.recent_high.58.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 539 | `history.recent_high.59.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 540 | `history.recent_high.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 541 | `history.momentum_close.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 542 | `history.momentum_close.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 543 | `history.momentum_close.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 544 | `history.momentum_close.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 545 | `history.momentum_close.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 546 | `history.momentum_close.6.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 547 | `history.momentum_close.7.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 548 | `history.momentum_close.8.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 549 | `history.momentum_close.9.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 550 | `history.momentum_close.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 551 | `history.momentum_close.11.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 552 | `history.momentum_close.12.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 553 | `history.momentum_close.13.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 554 | `history.momentum_close.14.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 555 | `history.momentum_close.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 556 | `history.momentum_close.16.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 557 | `history.momentum_close.17.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 558 | `history.momentum_close.18.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 559 | `history.momentum_close.19.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 560 | `history.momentum_close.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 561 | `history.momentum_close.21.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 562 | `history.momentum_close.22.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 563 | `history.momentum_close.23.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 564 | `history.momentum_close.24.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 565 | `history.momentum_close.25.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 566 | `history.momentum_close.26.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 567 | `history.momentum_close.27.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 568 | `history.momentum_close.28.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 569 | `history.momentum_close.29.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 570 | `history.momentum_close.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 571 | `history.momentum_close.31.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 572 | `history.momentum_close.32.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 573 | `history.momentum_close.33.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 574 | `history.momentum_close.34.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 575 | `history.momentum_close.35.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 576 | `history.momentum_close.36.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 577 | `history.momentum_close.37.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 578 | `history.momentum_close.38.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 579 | `history.momentum_close.39.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 580 | `history.momentum_close.40.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 581 | `history.momentum_close.41.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 582 | `history.momentum_close.42.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 583 | `history.momentum_close.43.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 584 | `history.momentum_close.44.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 585 | `history.momentum_close.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 586 | `history.momentum_close.46.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 587 | `history.momentum_close.47.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 588 | `history.momentum_close.48.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 589 | `history.momentum_close.49.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 590 | `history.momentum_close.50.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 591 | `history.momentum_close.51.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 592 | `history.momentum_close.52.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 593 | `history.momentum_close.53.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 594 | `history.momentum_close.54.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 595 | `history.momentum_close.55.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 596 | `history.momentum_close.56.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 597 | `history.momentum_close.57.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 598 | `history.momentum_close.58.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 599 | `history.momentum_close.59.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 600 | `history.momentum_close.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 601 | `history.average_move.2.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 602 | `history.average_move.3.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 603 | `history.average_move.4.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 604 | `history.average_move.5.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 605 | `history.average_move.6.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 606 | `history.average_move.7.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 607 | `history.average_move.8.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 608 | `history.average_move.9.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 609 | `history.average_move.10.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 610 | `history.average_move.11.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 611 | `history.average_move.12.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 612 | `history.average_move.13.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 613 | `history.average_move.14.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 614 | `history.average_move.15.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 615 | `history.average_move.16.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 616 | `history.average_move.17.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 617 | `history.average_move.18.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 618 | `history.average_move.19.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 619 | `history.average_move.20.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 620 | `history.average_move.21.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 621 | `history.average_move.22.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 622 | `history.average_move.23.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 623 | `history.average_move.24.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 624 | `history.average_move.25.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 625 | `history.average_move.26.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 626 | `history.average_move.27.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 627 | `history.average_move.28.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 628 | `history.average_move.29.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 629 | `history.average_move.30.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 630 | `history.average_move.31.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 631 | `history.average_move.32.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
-| 632 | `history.swing_low.1.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 633 | `history.swing_low.1.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 634 | `history.swing_low.1.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 635 | `history.swing_low.1.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 636 | `history.swing_low.1.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 637 | `history.swing_low.1.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 638 | `history.swing_low.1.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 639 | `history.swing_low.1.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 640 | `history.swing_low.1.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 641 | `history.swing_low.1.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 642 | `history.swing_low.1.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 643 | `history.swing_low.2.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 644 | `history.swing_low.2.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 645 | `history.swing_low.2.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 646 | `history.swing_low.2.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 647 | `history.swing_low.2.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 648 | `history.swing_low.2.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 649 | `history.swing_low.2.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 650 | `history.swing_low.2.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 651 | `history.swing_low.2.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 652 | `history.swing_low.2.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 653 | `history.swing_low.2.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 654 | `history.swing_low.3.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 655 | `history.swing_low.3.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 656 | `history.swing_low.3.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 657 | `history.swing_low.3.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 658 | `history.swing_low.3.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 659 | `history.swing_low.3.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 660 | `history.swing_low.3.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 661 | `history.swing_low.3.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 662 | `history.swing_low.3.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 663 | `history.swing_low.3.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 664 | `history.swing_low.3.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 665 | `history.swing_low.4.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 666 | `history.swing_low.4.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 667 | `history.swing_low.4.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 668 | `history.swing_low.4.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 669 | `history.swing_low.4.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 670 | `history.swing_low.4.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 671 | `history.swing_low.4.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 672 | `history.swing_low.4.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 673 | `history.swing_low.4.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 674 | `history.swing_low.4.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 675 | `history.swing_low.4.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 676 | `history.swing_low.5.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 677 | `history.swing_low.5.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 678 | `history.swing_low.5.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 679 | `history.swing_low.5.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 680 | `history.swing_low.5.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 681 | `history.swing_low.5.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 682 | `history.swing_low.5.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 683 | `history.swing_low.5.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 684 | `history.swing_low.5.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 685 | `history.swing_low.5.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 686 | `history.swing_low.5.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 687 | `history.swing_low.10.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 688 | `history.swing_low.10.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 689 | `history.swing_low.10.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 690 | `history.swing_low.10.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 691 | `history.swing_low.10.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 692 | `history.swing_low.10.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 693 | `history.swing_low.10.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 694 | `history.swing_low.10.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 695 | `history.swing_low.10.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 696 | `history.swing_low.10.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 697 | `history.swing_low.10.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 698 | `history.swing_low.15.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 699 | `history.swing_low.15.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 700 | `history.swing_low.15.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 701 | `history.swing_low.15.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 702 | `history.swing_low.15.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 703 | `history.swing_low.15.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 704 | `history.swing_low.15.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 705 | `history.swing_low.15.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 706 | `history.swing_low.15.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 707 | `history.swing_low.15.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 708 | `history.swing_low.15.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 709 | `history.swing_low.20.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 710 | `history.swing_low.20.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 711 | `history.swing_low.20.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 712 | `history.swing_low.20.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 713 | `history.swing_low.20.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 714 | `history.swing_low.20.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 715 | `history.swing_low.20.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 716 | `history.swing_low.20.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 717 | `history.swing_low.20.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 718 | `history.swing_low.20.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 719 | `history.swing_low.20.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 720 | `history.swing_low.30.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 721 | `history.swing_low.30.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 722 | `history.swing_low.30.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 723 | `history.swing_low.30.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 724 | `history.swing_low.30.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 725 | `history.swing_low.30.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 726 | `history.swing_low.30.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 727 | `history.swing_low.30.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 728 | `history.swing_low.30.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 729 | `history.swing_low.30.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 730 | `history.swing_low.30.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 731 | `history.swing_low.45.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 732 | `history.swing_low.45.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 733 | `history.swing_low.45.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 734 | `history.swing_low.45.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 735 | `history.swing_low.45.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 736 | `history.swing_low.45.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 737 | `history.swing_low.45.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 738 | `history.swing_low.45.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 739 | `history.swing_low.45.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 740 | `history.swing_low.45.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 741 | `history.swing_low.45.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 742 | `history.swing_low.60.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 743 | `history.swing_low.60.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 744 | `history.swing_low.60.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 745 | `history.swing_low.60.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 746 | `history.swing_low.60.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 747 | `history.swing_low.60.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 748 | `history.swing_low.60.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 749 | `history.swing_low.60.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 750 | `history.swing_low.60.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 751 | `history.swing_low.60.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 752 | `history.swing_low.60.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 753 | `market.bid_relative` | ratio | -0.1 | 0.1 | yes | -0.99 | 9 | E |
-| 754 | `market.ask_relative` | ratio | -0.1 | 0.1 | yes | -0.99 | 9 | E |
-| 755 | `market.spread_fraction` | ratio | 0 | 0.1 | yes | 0 | 9 | E |
-| 756 | `market.quote_age_seconds` | duration | 0 | 3600 | yes | 0 | 57600 | E |
-| 757 | `market.log_execution_volume` | log_shares | 0 | 30 | yes | 0 | 20.723266 | E |
-| 758 | `market.log_execution_notional` | log_dollars | 0 | 30 | yes | 0 | 25.328436 | E |
-| 759 | `market.log_execution_trade_count` | log_count | 0 | 20 | yes | 0 | 13.815512 | E |
-| 760 | `market.bid` | price | 0 | 1000 | no | — | — | forbidden |
-| 761 | `market.ask` | price | 0 | 1000 | no | — | — | forbidden |
-| 762 | `market.spread` | price | 0 | 100 | no | — | — | forbidden |
-| 763 | `market.close` | price | 0 | 1000 | no | — | — | forbidden |
-| 764 | `indicator.ema.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 765 | `indicator.ema.2.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 766 | `indicator.ema.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 767 | `indicator.ema.3.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 768 | `indicator.ema.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 769 | `indicator.ema.5.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 770 | `indicator.ema.7` | price | 0 | 1000 | no | — | — | forbidden |
-| 771 | `indicator.ema.7.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 772 | `indicator.ema.9` | price | 0 | 1000 | no | — | — | forbidden |
-| 773 | `indicator.ema.9.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 774 | `indicator.ema.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 775 | `indicator.ema.10.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 776 | `indicator.ema.12` | price | 0 | 1000 | no | — | — | forbidden |
-| 777 | `indicator.ema.12.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 778 | `indicator.ema.14` | price | 0 | 1000 | no | — | — | forbidden |
-| 779 | `indicator.ema.14.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 780 | `indicator.ema.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 781 | `indicator.ema.15.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 782 | `indicator.ema.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 783 | `indicator.ema.20.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 784 | `indicator.ema.26` | price | 0 | 1000 | no | — | — | forbidden |
-| 785 | `indicator.ema.26.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 786 | `indicator.ema.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 787 | `indicator.ema.30.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 788 | `indicator.ema.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 789 | `indicator.ema.45.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 790 | `indicator.ema.50` | price | 0 | 1000 | no | — | — | forbidden |
-| 791 | `indicator.ema.50.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 792 | `indicator.ema.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 793 | `indicator.ema.60.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
-| 794 | `indicator.rsi.2` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 795 | `indicator.rsi.3` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 796 | `indicator.rsi.5` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 797 | `indicator.rsi.7` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 798 | `indicator.rsi.9` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 799 | `indicator.rsi.10` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 800 | `indicator.rsi.12` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 801 | `indicator.rsi.14` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 802 | `indicator.rsi.15` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 803 | `indicator.rsi.20` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 804 | `indicator.rsi.26` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 805 | `indicator.rsi.30` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 806 | `indicator.rsi.45` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 807 | `indicator.rsi.50` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 808 | `indicator.rsi.60` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 809 | `indicator.atr.2` | price | 0 | 1000 | no | — | — | forbidden |
-| 810 | `indicator.atr.2.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 811 | `indicator.atr.3` | price | 0 | 1000 | no | — | — | forbidden |
-| 812 | `indicator.atr.3.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 813 | `indicator.atr.5` | price | 0 | 1000 | no | — | — | forbidden |
-| 814 | `indicator.atr.5.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 815 | `indicator.atr.7` | price | 0 | 1000 | no | — | — | forbidden |
-| 816 | `indicator.atr.7.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 817 | `indicator.atr.9` | price | 0 | 1000 | no | — | — | forbidden |
-| 818 | `indicator.atr.9.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 819 | `indicator.atr.10` | price | 0 | 1000 | no | — | — | forbidden |
-| 820 | `indicator.atr.10.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 821 | `indicator.atr.12` | price | 0 | 1000 | no | — | — | forbidden |
-| 822 | `indicator.atr.12.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 823 | `indicator.atr.14` | price | 0 | 1000 | no | — | — | forbidden |
-| 824 | `indicator.atr.14.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 825 | `indicator.atr.15` | price | 0 | 1000 | no | — | — | forbidden |
-| 826 | `indicator.atr.15.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 827 | `indicator.atr.20` | price | 0 | 1000 | no | — | — | forbidden |
-| 828 | `indicator.atr.20.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 829 | `indicator.atr.26` | price | 0 | 1000 | no | — | — | forbidden |
-| 830 | `indicator.atr.26.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 831 | `indicator.atr.30` | price | 0 | 1000 | no | — | — | forbidden |
-| 832 | `indicator.atr.30.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 833 | `indicator.atr.45` | price | 0 | 1000 | no | — | — | forbidden |
-| 834 | `indicator.atr.45.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 835 | `indicator.atr.50` | price | 0 | 1000 | no | — | — | forbidden |
-| 836 | `indicator.atr.50.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 837 | `indicator.atr.60` | price | 0 | 1000 | no | — | — | forbidden |
-| 838 | `indicator.atr.60.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
-| 839 | `indicator.macd_line.3.15.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 840 | `indicator.macd_signal.3.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 841 | `indicator.macd_histogram.3.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 842 | `indicator.macd_signal.3.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 843 | `indicator.macd_histogram.3.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 844 | `indicator.macd_signal.3.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 845 | `indicator.macd_histogram.3.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 846 | `indicator.macd_line.3.26.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 847 | `indicator.macd_signal.3.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 848 | `indicator.macd_histogram.3.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 849 | `indicator.macd_signal.3.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 850 | `indicator.macd_histogram.3.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 851 | `indicator.macd_signal.3.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 852 | `indicator.macd_histogram.3.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 853 | `indicator.macd_line.3.50.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 854 | `indicator.macd_signal.3.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 855 | `indicator.macd_histogram.3.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 856 | `indicator.macd_signal.3.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 857 | `indicator.macd_histogram.3.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 858 | `indicator.macd_signal.3.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 859 | `indicator.macd_histogram.3.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 860 | `indicator.macd_line.7.15.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 861 | `indicator.macd_signal.7.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 862 | `indicator.macd_histogram.7.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 863 | `indicator.macd_signal.7.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 864 | `indicator.macd_histogram.7.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 865 | `indicator.macd_signal.7.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 866 | `indicator.macd_histogram.7.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 867 | `indicator.macd_line.7.26.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 868 | `indicator.macd_signal.7.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 869 | `indicator.macd_histogram.7.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 870 | `indicator.macd_signal.7.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 871 | `indicator.macd_histogram.7.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 872 | `indicator.macd_signal.7.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 873 | `indicator.macd_histogram.7.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 874 | `indicator.macd_line.7.50.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 875 | `indicator.macd_signal.7.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 876 | `indicator.macd_histogram.7.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 877 | `indicator.macd_signal.7.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 878 | `indicator.macd_histogram.7.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 879 | `indicator.macd_signal.7.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 880 | `indicator.macd_histogram.7.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 881 | `indicator.macd_line.12.15.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 882 | `indicator.macd_signal.12.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 883 | `indicator.macd_histogram.12.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 884 | `indicator.macd_signal.12.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 885 | `indicator.macd_histogram.12.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 886 | `indicator.macd_signal.12.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 887 | `indicator.macd_histogram.12.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 888 | `indicator.macd_line.12.26.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 889 | `indicator.macd_signal.12.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 890 | `indicator.macd_histogram.12.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 891 | `indicator.macd_signal.12.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 892 | `indicator.macd_histogram.12.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 893 | `indicator.macd_signal.12.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 894 | `indicator.macd_histogram.12.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 895 | `indicator.macd_line.12.50.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 896 | `indicator.macd_signal.12.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 897 | `indicator.macd_histogram.12.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 898 | `indicator.macd_signal.12.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 899 | `indicator.macd_histogram.12.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 900 | `indicator.macd_signal.12.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 901 | `indicator.macd_histogram.12.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
-| 902 | `enriched.return.5s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 903 | `enriched.volatility.5s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
-| 904 | `enriched.return.15s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 905 | `enriched.volatility.15s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
-| 906 | `enriched.return.60s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 907 | `enriched.volatility.60s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
-| 908 | `enriched.return.300s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 909 | `enriched.volatility.300s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
-| 910 | `enriched.activity.volume_acceleration` | ratio | -0.5 | 1 | yes | -1 | 11 | M |
-| 911 | `enriched.activity.trade_acceleration` | ratio | -0.5 | 1 | yes | -1 | 11 | M |
-| 912 | `enriched.execution.volatility_fee_ratio` | ratio | 0 | 100 | yes | 0 | 1000 | E |
-| 913 | `enriched.candle.5s.body` | ratio | -0.5 | 1 | yes | -9 | 0.99 | E |
-| 914 | `enriched.candle.5s.range` | ratio | 0 | 1 | yes | 0 | 9 | E |
-| 915 | `enriched.candle.5s.close_location` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 916 | `enriched.candle.5s.return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 917 | `enriched.candle.5s.log_volume` | ratio | 0 | 30 | yes | 0 | 20.723266 | E |
-| 918 | `enriched.candle.5s.log_trades` | ratio | 0 | 30 | yes | 0 | 13.815512 | E |
-| 919 | `enriched.candle.5s.active_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 920 | `enriched.candle.15s.body` | ratio | -0.5 | 1 | yes | -9 | 0.99 | E |
-| 921 | `enriched.candle.15s.range` | ratio | 0 | 1 | yes | 0 | 9 | E |
-| 922 | `enriched.candle.15s.close_location` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 923 | `enriched.candle.15s.return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 924 | `enriched.candle.15s.log_volume` | ratio | 0 | 30 | yes | 0 | 20.723266 | E |
-| 925 | `enriched.candle.15s.log_trades` | ratio | 0 | 30 | yes | 0 | 13.815512 | E |
-| 926 | `enriched.candle.15s.active_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 927 | `enriched.candle.60s.body` | ratio | -0.5 | 1 | yes | -9 | 0.99 | E |
-| 928 | `enriched.candle.60s.range` | ratio | 0 | 1 | yes | 0 | 9 | E |
-| 929 | `enriched.candle.60s.close_location` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 930 | `enriched.candle.60s.return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 931 | `enriched.candle.60s.log_volume` | ratio | 0 | 30 | yes | 0 | 20.723266 | E |
-| 932 | `enriched.candle.60s.log_trades` | ratio | 0 | 30 | yes | 0 | 13.815512 | E |
-| 933 | `enriched.candle.60s.active_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 934 | `enriched.context.15s.median_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 935 | `enriched.context.15s.mean_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 936 | `enriched.context.15s.advancing_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 937 | `enriched.context.15s.dispersion` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 938 | `enriched.context.15s.coverage` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 939 | `enriched.context.15s.relative_return` | ratio | -0.5 | 1 | yes | -4.60517 | 4.60517 | E |
-| 940 | `enriched.context.15s.return_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 941 | `enriched.context.60s.median_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 942 | `enriched.context.60s.mean_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 943 | `enriched.context.60s.advancing_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 944 | `enriched.context.60s.dispersion` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 945 | `enriched.context.60s.coverage` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 946 | `enriched.context.60s.relative_return` | ratio | -0.5 | 1 | yes | -4.60517 | 4.60517 | E |
-| 947 | `enriched.context.60s.return_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 948 | `enriched.context.300s.median_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 949 | `enriched.context.300s.mean_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
-| 950 | `enriched.context.300s.advancing_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 951 | `enriched.context.300s.dispersion` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 952 | `enriched.context.300s.coverage` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 953 | `enriched.context.300s.relative_return` | ratio | -0.5 | 1 | yes | -4.60517 | 4.60517 | E |
-| 954 | `enriched.context.300s.return_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 955 | `enriched.rank.dollar_volume_60s_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
-| 956 | `enriched.rank.dollar_volume_60s_change_15s` | ratio | -0.5 | 1 | yes | -1 | 1 | M |
+| ID | Name | Unit | Legacy prior lower | Legacy prior upper | V59 allowed | Next allowed | Next construction min | Next construction max | Basis | Supported history/dependency | Readiness requirement |
+|---:|---|---|---:|---:|---|---|---:|---:|---|---|---|
+| 0 | `log_open` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 1 | `log_high` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 2 | `log_low` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 3 | `log_close` | log_price | -5 | 10 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 4 | `bar_vwap_rel` | ratio | -2 | 2 | yes | yes | -0.99 | 9 | E | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
+| 5 | `session_vwap_rel` | ratio | -2 | 2 | yes | yes | -0.99 | 9 | E | Session-to-date accumulated summary | Causal cumulative volume/notional; valid denominator for value |
+| 6 | `bar_vwap_valid` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
+| 7 | `session_vwap_valid` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Session-to-date accumulated summary | Causal cumulative volume/notional; valid denominator for value |
+| 8 | `log_volume` | log_shares | 0 | 30 | yes | yes | 0 | 20.723266 | E | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
+| 9 | `log_trades` | log_count | 0 | 30 | yes | yes | 0 | 13.815512 | E | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
+| 10 | `log_volume_60s` | log_shares | 0 | 30 | yes | yes | 0 | 20.723266 | E | Fixed60s rolling activity | Causal activity rows; zero activity allowed |
+| 11 | `log_trades_60s` | log_count | 0 | 30 | yes | yes | 0 | 13.815512 | E | Fixed60s rolling activity | Causal activity rows; zero activity allowed |
+| 12 | `log_rvol_10s_prev_session` | log_duration | 0 | 20 | yes | yes | 0 | 9.21044 | E | Current10s + matched10s previous session | Previous-session certified same-clock volume denominator >0 |
+| 13 | `rvol_10s_available` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Same previous-session10s availability dependency | Boolean availability; not authorization to request extra sessions |
+| 14 | `macd_line_rel` | ratio | -2 | 2 | yes | yes | -4 | 4 | E | Prepared indicator state; no raw-history extension | Sealed base producer indicator_available and finite fields |
+| 15 | `macd_signal_rel` | ratio | -2 | 2 | yes | yes | -4 | 4 | E | Prepared indicator state; no raw-history extension | Sealed base producer indicator_available and finite fields |
+| 16 | `rsi_14` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Prepared indicator state; no raw-history extension | Sealed base producer indicator_available and finite fields |
+| 17 | `atr_14_rel` | ratio | -2 | 2 | yes | yes | 0 | 4 | E | Prepared indicator state; no raw-history extension | Sealed base producer indicator_available and finite fields |
+| 18 | `ema_7_rel` | ratio | -2 | 2 | yes | yes | -0.99 | 9 | E | Prepared indicator state; no raw-history extension | Sealed base producer indicator_available and finite fields |
+| 19 | `ema_26_rel` | ratio | -2 | 2 | yes | yes | -0.99 | 9 | E | Prepared indicator state; no raw-history extension | Sealed base producer indicator_available and finite fields |
+| 20 | `indicator_available` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Prepared indicator state; no raw-history extension | Sealed base producer indicator_available and finite fields |
+| 21 | `time_of_day_sin` | ratio | -2 | 2 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 22 | `time_of_day_cos` | ratio | -2 | 2 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 23 | `premarket` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 24 | `regular` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 25 | `after_hours` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 26 | `log_inter_candle_gap` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 27 | `log_float_shares` | log_shares | 0 | 30 | yes | yes | 0 | 27.631021 | E | Point-in-time reference snapshot; no bar history | Source presence mask and as-of reference provenance |
+| 28 | `float_present` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Point-in-time reference snapshot; no bar history | Source presence mask and as-of reference provenance |
+| 29 | `log_shares_outstanding` | log_shares | 0 | 30 | yes | yes | 0 | 27.631021 | E | Point-in-time reference snapshot; no bar history | Source presence mask and as-of reference provenance |
+| 30 | `shares_present` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Point-in-time reference snapshot; no bar history | Source presence mask and as-of reference provenance |
+| 31 | `log_days_since_split` | log_duration | 0 | 30 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 32 | `split_present` | bool | 0 | 1 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 33 | `log_days_since_reverse_split` | log_duration | 0 | 30 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 34 | `reverse_split_present` | bool | 0 | 1 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 35 | `bar_price_valid` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
+| 36 | `bar_extremes_valid` | bool | 0 | 1 | yes | yes | 0 | 1 | M | Current completed candle only | Source price/extreme/value mask; positive denominator where used |
+| 37 | `v7.below.1.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 38 | `v7.below.1.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 39 | `v7.below.1.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 40 | `v7.below.1.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 41 | `v7.below.1.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 42 | `v7.below.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 43 | `v7.below.1.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 44 | `v7.below.1.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 45 | `v7.below.1.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 46 | `v7.below.1.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 47 | `v7.below.1.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 48 | `v7.below.2.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 49 | `v7.below.2.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 50 | `v7.below.2.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 51 | `v7.below.2.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 52 | `v7.below.2.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 53 | `v7.below.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 54 | `v7.below.2.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 55 | `v7.below.2.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 56 | `v7.below.2.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 57 | `v7.below.2.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 58 | `v7.below.2.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 59 | `v7.below.3.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 60 | `v7.below.3.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 61 | `v7.below.3.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 62 | `v7.below.3.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 63 | `v7.below.3.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 64 | `v7.below.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 65 | `v7.below.3.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 66 | `v7.below.3.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 67 | `v7.below.3.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 68 | `v7.below.3.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 69 | `v7.below.3.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 70 | `v7.below.4.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 71 | `v7.below.4.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 72 | `v7.below.4.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 73 | `v7.below.4.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 74 | `v7.below.4.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 75 | `v7.below.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 76 | `v7.below.4.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 77 | `v7.below.4.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 78 | `v7.below.4.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 79 | `v7.below.4.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 80 | `v7.below.4.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 81 | `v7.below.5.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 82 | `v7.below.5.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 83 | `v7.below.5.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 84 | `v7.below.5.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 85 | `v7.below.5.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 86 | `v7.below.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 87 | `v7.below.5.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 88 | `v7.below.5.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 89 | `v7.below.5.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 90 | `v7.below.5.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 91 | `v7.below.5.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 92 | `v7.above.1.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 93 | `v7.above.1.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 94 | `v7.above.1.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 95 | `v7.above.1.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 96 | `v7.above.1.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 97 | `v7.above.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 98 | `v7.above.1.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 99 | `v7.above.1.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 100 | `v7.above.1.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 101 | `v7.above.1.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 102 | `v7.above.1.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 103 | `v7.above.2.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 104 | `v7.above.2.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 105 | `v7.above.2.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 106 | `v7.above.2.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 107 | `v7.above.2.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 108 | `v7.above.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 109 | `v7.above.2.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 110 | `v7.above.2.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 111 | `v7.above.2.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 112 | `v7.above.2.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 113 | `v7.above.2.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 114 | `v7.above.3.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 115 | `v7.above.3.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 116 | `v7.above.3.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 117 | `v7.above.3.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 118 | `v7.above.3.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 119 | `v7.above.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 120 | `v7.above.3.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 121 | `v7.above.3.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 122 | `v7.above.3.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 123 | `v7.above.3.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 124 | `v7.above.3.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 125 | `v7.above.4.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 126 | `v7.above.4.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 127 | `v7.above.4.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 128 | `v7.above.4.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 129 | `v7.above.4.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 130 | `v7.above.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 131 | `v7.above.4.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 132 | `v7.above.4.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 133 | `v7.above.4.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 134 | `v7.above.4.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 135 | `v7.above.4.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 136 | `v7.above.5.center_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 137 | `v7.above.5.lower_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 138 | `v7.above.5.upper_distance_rel` | ratio | -10 | 10 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 139 | `v7.above.5.log_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 140 | `v7.above.5.log_today_observation_count` | log_count | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 141 | `v7.above.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 142 | `v7.above.5.role_support` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 143 | `v7.above.5.role_resistance` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 144 | `v7.above.5.role_transition` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 145 | `v7.above.5.historical_origin` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 146 | `v7.above.5.present` | bool | 0 | 1 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 147 | `split_this_session` | bool | 0 | 1 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 148 | `reverse_split_this_session` | bool | 0 | 1 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 149 | `history.recent_high.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 150 | `history.recent_high.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 151 | `history.recent_high.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 152 | `history.recent_high.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 153 | `history.recent_high.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 154 | `history.recent_high.6` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 155 | `history.recent_high.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 156 | `history.recent_high.8` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 157 | `history.recent_high.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 158 | `history.recent_high.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 159 | `history.recent_high.11` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 160 | `history.recent_high.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 161 | `history.recent_high.13` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 162 | `history.recent_high.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 163 | `history.recent_high.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 164 | `history.recent_high.16` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 165 | `history.recent_high.17` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 166 | `history.recent_high.18` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 167 | `history.recent_high.19` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 168 | `history.recent_high.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 169 | `history.recent_high.21` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 170 | `history.recent_high.22` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 171 | `history.recent_high.23` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 172 | `history.recent_high.24` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 173 | `history.recent_high.25` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 174 | `history.recent_high.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 175 | `history.recent_high.27` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 176 | `history.recent_high.28` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 177 | `history.recent_high.29` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 178 | `history.recent_high.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 179 | `history.recent_high.31` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 180 | `history.recent_high.32` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 181 | `history.recent_high.33` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 182 | `history.recent_high.34` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 183 | `history.recent_high.35` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 184 | `history.recent_high.36` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 185 | `history.recent_high.37` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 186 | `history.recent_high.38` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 187 | `history.recent_high.39` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 188 | `history.recent_high.40` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 189 | `history.recent_high.41` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 190 | `history.recent_high.42` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 191 | `history.recent_high.43` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 192 | `history.recent_high.44` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 193 | `history.recent_high.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 194 | `history.recent_high.46` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 195 | `history.recent_high.47` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 196 | `history.recent_high.48` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 197 | `history.recent_high.49` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 198 | `history.recent_high.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 199 | `history.recent_high.51` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 200 | `history.recent_high.52` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 201 | `history.recent_high.53` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 202 | `history.recent_high.54` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 203 | `history.recent_high.55` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 204 | `history.recent_high.56` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 205 | `history.recent_high.57` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 206 | `history.recent_high.58` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 207 | `history.recent_high.59` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 208 | `history.recent_high.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 209 | `history.momentum_close.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 210 | `history.momentum_close.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 211 | `history.momentum_close.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 212 | `history.momentum_close.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 213 | `history.momentum_close.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 214 | `history.momentum_close.6` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 215 | `history.momentum_close.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 216 | `history.momentum_close.8` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 217 | `history.momentum_close.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 218 | `history.momentum_close.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 219 | `history.momentum_close.11` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 220 | `history.momentum_close.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 221 | `history.momentum_close.13` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 222 | `history.momentum_close.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 223 | `history.momentum_close.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 224 | `history.momentum_close.16` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 225 | `history.momentum_close.17` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 226 | `history.momentum_close.18` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 227 | `history.momentum_close.19` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 228 | `history.momentum_close.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 229 | `history.momentum_close.21` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 230 | `history.momentum_close.22` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 231 | `history.momentum_close.23` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 232 | `history.momentum_close.24` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 233 | `history.momentum_close.25` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 234 | `history.momentum_close.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 235 | `history.momentum_close.27` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 236 | `history.momentum_close.28` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 237 | `history.momentum_close.29` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 238 | `history.momentum_close.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 239 | `history.momentum_close.31` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 240 | `history.momentum_close.32` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 241 | `history.momentum_close.33` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 242 | `history.momentum_close.34` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 243 | `history.momentum_close.35` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 244 | `history.momentum_close.36` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 245 | `history.momentum_close.37` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 246 | `history.momentum_close.38` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 247 | `history.momentum_close.39` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 248 | `history.momentum_close.40` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 249 | `history.momentum_close.41` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 250 | `history.momentum_close.42` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 251 | `history.momentum_close.43` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 252 | `history.momentum_close.44` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 253 | `history.momentum_close.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 254 | `history.momentum_close.46` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 255 | `history.momentum_close.47` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 256 | `history.momentum_close.48` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 257 | `history.momentum_close.49` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 258 | `history.momentum_close.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 259 | `history.momentum_close.51` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 260 | `history.momentum_close.52` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 261 | `history.momentum_close.53` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 262 | `history.momentum_close.54` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 263 | `history.momentum_close.55` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 264 | `history.momentum_close.56` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 265 | `history.momentum_close.57` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 266 | `history.momentum_close.58` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 267 | `history.momentum_close.59` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 268 | `history.momentum_close.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 269 | `history.attention_mean.1` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 1s | Elapsed window available; causal notional; zero activity allowed |
+| 270 | `history.attention_mean.2` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 2s | Elapsed window available; causal notional; zero activity allowed |
+| 271 | `history.attention_mean.3` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 3s | Elapsed window available; causal notional; zero activity allowed |
+| 272 | `history.attention_mean.4` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 4s | Elapsed window available; causal notional; zero activity allowed |
+| 273 | `history.attention_mean.5` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 5s | Elapsed window available; causal notional; zero activity allowed |
+| 274 | `history.attention_mean.6` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 6s | Elapsed window available; causal notional; zero activity allowed |
+| 275 | `history.attention_mean.7` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 7s | Elapsed window available; causal notional; zero activity allowed |
+| 276 | `history.attention_mean.8` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 8s | Elapsed window available; causal notional; zero activity allowed |
+| 277 | `history.attention_mean.9` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 9s | Elapsed window available; causal notional; zero activity allowed |
+| 278 | `history.attention_mean.10` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 10s | Elapsed window available; causal notional; zero activity allowed |
+| 279 | `history.attention_mean.11` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 11s | Elapsed window available; causal notional; zero activity allowed |
+| 280 | `history.attention_mean.12` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 12s | Elapsed window available; causal notional; zero activity allowed |
+| 281 | `history.attention_mean.13` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 13s | Elapsed window available; causal notional; zero activity allowed |
+| 282 | `history.attention_mean.14` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 14s | Elapsed window available; causal notional; zero activity allowed |
+| 283 | `history.attention_mean.15` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 15s | Elapsed window available; causal notional; zero activity allowed |
+| 284 | `history.attention_mean.16` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 16s | Elapsed window available; causal notional; zero activity allowed |
+| 285 | `history.attention_mean.17` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 17s | Elapsed window available; causal notional; zero activity allowed |
+| 286 | `history.attention_mean.18` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 18s | Elapsed window available; causal notional; zero activity allowed |
+| 287 | `history.attention_mean.19` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 19s | Elapsed window available; causal notional; zero activity allowed |
+| 288 | `history.attention_mean.20` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 20s | Elapsed window available; causal notional; zero activity allowed |
+| 289 | `history.attention_mean.21` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 21s | Elapsed window available; causal notional; zero activity allowed |
+| 290 | `history.attention_mean.22` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 22s | Elapsed window available; causal notional; zero activity allowed |
+| 291 | `history.attention_mean.23` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 23s | Elapsed window available; causal notional; zero activity allowed |
+| 292 | `history.attention_mean.24` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 24s | Elapsed window available; causal notional; zero activity allowed |
+| 293 | `history.attention_mean.25` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 25s | Elapsed window available; causal notional; zero activity allowed |
+| 294 | `history.attention_mean.26` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 26s | Elapsed window available; causal notional; zero activity allowed |
+| 295 | `history.attention_mean.27` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 27s | Elapsed window available; causal notional; zero activity allowed |
+| 296 | `history.attention_mean.28` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 28s | Elapsed window available; causal notional; zero activity allowed |
+| 297 | `history.attention_mean.29` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 29s | Elapsed window available; causal notional; zero activity allowed |
+| 298 | `history.attention_mean.30` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 30s | Elapsed window available; causal notional; zero activity allowed |
+| 299 | `history.attention_mean.31` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 31s | Elapsed window available; causal notional; zero activity allowed |
+| 300 | `history.attention_mean.32` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 32s | Elapsed window available; causal notional; zero activity allowed |
+| 301 | `history.attention_mean.33` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 33s | Elapsed window available; causal notional; zero activity allowed |
+| 302 | `history.attention_mean.34` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 34s | Elapsed window available; causal notional; zero activity allowed |
+| 303 | `history.attention_mean.35` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 35s | Elapsed window available; causal notional; zero activity allowed |
+| 304 | `history.attention_mean.36` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 36s | Elapsed window available; causal notional; zero activity allowed |
+| 305 | `history.attention_mean.37` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 37s | Elapsed window available; causal notional; zero activity allowed |
+| 306 | `history.attention_mean.38` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 38s | Elapsed window available; causal notional; zero activity allowed |
+| 307 | `history.attention_mean.39` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 39s | Elapsed window available; causal notional; zero activity allowed |
+| 308 | `history.attention_mean.40` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 40s | Elapsed window available; causal notional; zero activity allowed |
+| 309 | `history.attention_mean.41` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 41s | Elapsed window available; causal notional; zero activity allowed |
+| 310 | `history.attention_mean.42` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 42s | Elapsed window available; causal notional; zero activity allowed |
+| 311 | `history.attention_mean.43` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 43s | Elapsed window available; causal notional; zero activity allowed |
+| 312 | `history.attention_mean.44` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 44s | Elapsed window available; causal notional; zero activity allowed |
+| 313 | `history.attention_mean.45` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 45s | Elapsed window available; causal notional; zero activity allowed |
+| 314 | `history.attention_mean.46` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 46s | Elapsed window available; causal notional; zero activity allowed |
+| 315 | `history.attention_mean.47` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 47s | Elapsed window available; causal notional; zero activity allowed |
+| 316 | `history.attention_mean.48` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 48s | Elapsed window available; causal notional; zero activity allowed |
+| 317 | `history.attention_mean.49` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 49s | Elapsed window available; causal notional; zero activity allowed |
+| 318 | `history.attention_mean.50` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 50s | Elapsed window available; causal notional; zero activity allowed |
+| 319 | `history.attention_mean.51` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 51s | Elapsed window available; causal notional; zero activity allowed |
+| 320 | `history.attention_mean.52` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 52s | Elapsed window available; causal notional; zero activity allowed |
+| 321 | `history.attention_mean.53` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 53s | Elapsed window available; causal notional; zero activity allowed |
+| 322 | `history.attention_mean.54` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 54s | Elapsed window available; causal notional; zero activity allowed |
+| 323 | `history.attention_mean.55` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 55s | Elapsed window available; causal notional; zero activity allowed |
+| 324 | `history.attention_mean.56` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 56s | Elapsed window available; causal notional; zero activity allowed |
+| 325 | `history.attention_mean.57` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 57s | Elapsed window available; causal notional; zero activity allowed |
+| 326 | `history.attention_mean.58` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 58s | Elapsed window available; causal notional; zero activity allowed |
+| 327 | `history.attention_mean.59` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 59s | Elapsed window available; causal notional; zero activity allowed |
+| 328 | `history.attention_mean.60` | dollars | 0 | 1e+07 | yes | yes | 0 | 100000000000 | E | Fixed previous 60s | Elapsed window available; causal notional; zero activity allowed |
+| 329 | `history.average_move.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 330 | `history.average_move.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 331 | `history.average_move.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 332 | `history.average_move.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 333 | `history.average_move.6` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 334 | `history.average_move.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 335 | `history.average_move.8` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 336 | `history.average_move.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 337 | `history.average_move.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 338 | `history.average_move.11` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 339 | `history.average_move.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 340 | `history.average_move.13` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 341 | `history.average_move.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 342 | `history.average_move.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 343 | `history.average_move.16` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 344 | `history.average_move.17` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 345 | `history.average_move.18` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 346 | `history.average_move.19` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 347 | `history.average_move.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 348 | `history.average_move.21` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 349 | `history.average_move.22` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 350 | `history.average_move.23` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 351 | `history.average_move.24` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 352 | `history.average_move.25` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 353 | `history.average_move.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 354 | `history.average_move.27` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 355 | `history.average_move.28` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 356 | `history.average_move.29` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 357 | `history.average_move.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 358 | `history.average_move.31` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 359 | `history.average_move.32` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 360 | `history.swing_low.1.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 361 | `history.swing_low.1.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 362 | `history.swing_low.1.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 363 | `history.swing_low.1.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 364 | `history.swing_low.1.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 365 | `history.swing_low.1.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 366 | `history.swing_low.1.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 367 | `history.swing_low.1.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 368 | `history.swing_low.1.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 369 | `history.swing_low.1.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 370 | `history.swing_low.1.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 371 | `history.swing_low.2.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 372 | `history.swing_low.2.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 373 | `history.swing_low.2.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 374 | `history.swing_low.2.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 375 | `history.swing_low.2.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 376 | `history.swing_low.2.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 377 | `history.swing_low.2.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 378 | `history.swing_low.2.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 379 | `history.swing_low.2.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 380 | `history.swing_low.2.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 381 | `history.swing_low.2.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 382 | `history.swing_low.3.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 383 | `history.swing_low.3.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 384 | `history.swing_low.3.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 385 | `history.swing_low.3.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 386 | `history.swing_low.3.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 387 | `history.swing_low.3.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 388 | `history.swing_low.3.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 389 | `history.swing_low.3.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 390 | `history.swing_low.3.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 391 | `history.swing_low.3.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 392 | `history.swing_low.3.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 393 | `history.swing_low.4.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 394 | `history.swing_low.4.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 395 | `history.swing_low.4.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 396 | `history.swing_low.4.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 397 | `history.swing_low.4.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 398 | `history.swing_low.4.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 399 | `history.swing_low.4.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 400 | `history.swing_low.4.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 401 | `history.swing_low.4.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 402 | `history.swing_low.4.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 403 | `history.swing_low.4.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 404 | `history.swing_low.5.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 405 | `history.swing_low.5.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 406 | `history.swing_low.5.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 407 | `history.swing_low.5.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 408 | `history.swing_low.5.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 409 | `history.swing_low.5.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 410 | `history.swing_low.5.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 411 | `history.swing_low.5.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 412 | `history.swing_low.5.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 413 | `history.swing_low.5.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 414 | `history.swing_low.5.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 415 | `history.swing_low.10.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 416 | `history.swing_low.10.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 417 | `history.swing_low.10.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 418 | `history.swing_low.10.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 419 | `history.swing_low.10.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 420 | `history.swing_low.10.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 421 | `history.swing_low.10.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 422 | `history.swing_low.10.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 423 | `history.swing_low.10.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 424 | `history.swing_low.10.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 425 | `history.swing_low.10.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 426 | `history.swing_low.15.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 427 | `history.swing_low.15.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 428 | `history.swing_low.15.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 429 | `history.swing_low.15.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 430 | `history.swing_low.15.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 431 | `history.swing_low.15.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 432 | `history.swing_low.15.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 433 | `history.swing_low.15.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 434 | `history.swing_low.15.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 435 | `history.swing_low.15.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 436 | `history.swing_low.15.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 437 | `history.swing_low.20.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 438 | `history.swing_low.20.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 439 | `history.swing_low.20.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 440 | `history.swing_low.20.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 441 | `history.swing_low.20.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 442 | `history.swing_low.20.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 443 | `history.swing_low.20.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 444 | `history.swing_low.20.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 445 | `history.swing_low.20.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 446 | `history.swing_low.20.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 447 | `history.swing_low.20.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 448 | `history.swing_low.30.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 449 | `history.swing_low.30.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 450 | `history.swing_low.30.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 451 | `history.swing_low.30.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 452 | `history.swing_low.30.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 453 | `history.swing_low.30.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 454 | `history.swing_low.30.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 455 | `history.swing_low.30.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 456 | `history.swing_low.30.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 457 | `history.swing_low.30.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 458 | `history.swing_low.30.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 459 | `history.swing_low.45.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 460 | `history.swing_low.45.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 461 | `history.swing_low.45.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 462 | `history.swing_low.45.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 463 | `history.swing_low.45.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 464 | `history.swing_low.45.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 465 | `history.swing_low.45.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 466 | `history.swing_low.45.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 467 | `history.swing_low.45.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 468 | `history.swing_low.45.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 469 | `history.swing_low.45.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 470 | `history.swing_low.60.1` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 471 | `history.swing_low.60.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 472 | `history.swing_low.60.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 473 | `history.swing_low.60.4` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 474 | `history.swing_low.60.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 475 | `history.swing_low.60.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 476 | `history.swing_low.60.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 477 | `history.swing_low.60.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 478 | `history.swing_low.60.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 479 | `history.swing_low.60.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 480 | `history.swing_low.60.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 481 | `history.recent_high.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 1s | 1 finite observed high slots and valid current mark |
+| 482 | `history.recent_high.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 2s | 2 finite observed high slots and valid current mark |
+| 483 | `history.recent_high.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 3s | 3 finite observed high slots and valid current mark |
+| 484 | `history.recent_high.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 4s | 4 finite observed high slots and valid current mark |
+| 485 | `history.recent_high.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 5s | 5 finite observed high slots and valid current mark |
+| 486 | `history.recent_high.6.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 6s | 6 finite observed high slots and valid current mark |
+| 487 | `history.recent_high.7.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 7s | 7 finite observed high slots and valid current mark |
+| 488 | `history.recent_high.8.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 8s | 8 finite observed high slots and valid current mark |
+| 489 | `history.recent_high.9.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 9s | 9 finite observed high slots and valid current mark |
+| 490 | `history.recent_high.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 10s | 10 finite observed high slots and valid current mark |
+| 491 | `history.recent_high.11.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 11s | 11 finite observed high slots and valid current mark |
+| 492 | `history.recent_high.12.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 12s | 12 finite observed high slots and valid current mark |
+| 493 | `history.recent_high.13.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 13s | 13 finite observed high slots and valid current mark |
+| 494 | `history.recent_high.14.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 14s | 14 finite observed high slots and valid current mark |
+| 495 | `history.recent_high.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 15s | 15 finite observed high slots and valid current mark |
+| 496 | `history.recent_high.16.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 16s | 16 finite observed high slots and valid current mark |
+| 497 | `history.recent_high.17.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 17s | 17 finite observed high slots and valid current mark |
+| 498 | `history.recent_high.18.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 18s | 18 finite observed high slots and valid current mark |
+| 499 | `history.recent_high.19.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 19s | 19 finite observed high slots and valid current mark |
+| 500 | `history.recent_high.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 20s | 20 finite observed high slots and valid current mark |
+| 501 | `history.recent_high.21.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 21s | 21 finite observed high slots and valid current mark |
+| 502 | `history.recent_high.22.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 22s | 22 finite observed high slots and valid current mark |
+| 503 | `history.recent_high.23.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 23s | 23 finite observed high slots and valid current mark |
+| 504 | `history.recent_high.24.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 24s | 24 finite observed high slots and valid current mark |
+| 505 | `history.recent_high.25.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 25s | 25 finite observed high slots and valid current mark |
+| 506 | `history.recent_high.26.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 26s | 26 finite observed high slots and valid current mark |
+| 507 | `history.recent_high.27.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 27s | 27 finite observed high slots and valid current mark |
+| 508 | `history.recent_high.28.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 28s | 28 finite observed high slots and valid current mark |
+| 509 | `history.recent_high.29.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 29s | 29 finite observed high slots and valid current mark |
+| 510 | `history.recent_high.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 30s | 30 finite observed high slots and valid current mark |
+| 511 | `history.recent_high.31.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 31s | 31 finite observed high slots and valid current mark |
+| 512 | `history.recent_high.32.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 32s | 32 finite observed high slots and valid current mark |
+| 513 | `history.recent_high.33.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 33s | 33 finite observed high slots and valid current mark |
+| 514 | `history.recent_high.34.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 34s | 34 finite observed high slots and valid current mark |
+| 515 | `history.recent_high.35.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 35s | 35 finite observed high slots and valid current mark |
+| 516 | `history.recent_high.36.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 36s | 36 finite observed high slots and valid current mark |
+| 517 | `history.recent_high.37.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 37s | 37 finite observed high slots and valid current mark |
+| 518 | `history.recent_high.38.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 38s | 38 finite observed high slots and valid current mark |
+| 519 | `history.recent_high.39.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 39s | 39 finite observed high slots and valid current mark |
+| 520 | `history.recent_high.40.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 40s | 40 finite observed high slots and valid current mark |
+| 521 | `history.recent_high.41.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 41s | 41 finite observed high slots and valid current mark |
+| 522 | `history.recent_high.42.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 42s | 42 finite observed high slots and valid current mark |
+| 523 | `history.recent_high.43.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 43s | 43 finite observed high slots and valid current mark |
+| 524 | `history.recent_high.44.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 44s | 44 finite observed high slots and valid current mark |
+| 525 | `history.recent_high.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 45s | 45 finite observed high slots and valid current mark |
+| 526 | `history.recent_high.46.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 46s | 46 finite observed high slots and valid current mark |
+| 527 | `history.recent_high.47.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 47s | 47 finite observed high slots and valid current mark |
+| 528 | `history.recent_high.48.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 48s | 48 finite observed high slots and valid current mark |
+| 529 | `history.recent_high.49.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 49s | 49 finite observed high slots and valid current mark |
+| 530 | `history.recent_high.50.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 50s | 50 finite observed high slots and valid current mark |
+| 531 | `history.recent_high.51.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 51s | 51 finite observed high slots and valid current mark |
+| 532 | `history.recent_high.52.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 52s | 52 finite observed high slots and valid current mark |
+| 533 | `history.recent_high.53.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 53s | 53 finite observed high slots and valid current mark |
+| 534 | `history.recent_high.54.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 54s | 54 finite observed high slots and valid current mark |
+| 535 | `history.recent_high.55.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 55s | 55 finite observed high slots and valid current mark |
+| 536 | `history.recent_high.56.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 56s | 56 finite observed high slots and valid current mark |
+| 537 | `history.recent_high.57.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 57s | 57 finite observed high slots and valid current mark |
+| 538 | `history.recent_high.58.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 58s | 58 finite observed high slots and valid current mark |
+| 539 | `history.recent_high.59.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 59s | 59 finite observed high slots and valid current mark |
+| 540 | `history.recent_high.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed previous 60s | 60 finite observed high slots and valid current mark |
+| 541 | `history.momentum_close.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 1s lag | Lag endpoint and current positive mark valid |
+| 542 | `history.momentum_close.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 2s lag | Lag endpoint and current positive mark valid |
+| 543 | `history.momentum_close.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 3s lag | Lag endpoint and current positive mark valid |
+| 544 | `history.momentum_close.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 4s lag | Lag endpoint and current positive mark valid |
+| 545 | `history.momentum_close.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 5s lag | Lag endpoint and current positive mark valid |
+| 546 | `history.momentum_close.6.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 6s lag | Lag endpoint and current positive mark valid |
+| 547 | `history.momentum_close.7.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 7s lag | Lag endpoint and current positive mark valid |
+| 548 | `history.momentum_close.8.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 8s lag | Lag endpoint and current positive mark valid |
+| 549 | `history.momentum_close.9.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 9s lag | Lag endpoint and current positive mark valid |
+| 550 | `history.momentum_close.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 10s lag | Lag endpoint and current positive mark valid |
+| 551 | `history.momentum_close.11.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 11s lag | Lag endpoint and current positive mark valid |
+| 552 | `history.momentum_close.12.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 12s lag | Lag endpoint and current positive mark valid |
+| 553 | `history.momentum_close.13.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 13s lag | Lag endpoint and current positive mark valid |
+| 554 | `history.momentum_close.14.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 14s lag | Lag endpoint and current positive mark valid |
+| 555 | `history.momentum_close.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 15s lag | Lag endpoint and current positive mark valid |
+| 556 | `history.momentum_close.16.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 16s lag | Lag endpoint and current positive mark valid |
+| 557 | `history.momentum_close.17.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 17s lag | Lag endpoint and current positive mark valid |
+| 558 | `history.momentum_close.18.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 18s lag | Lag endpoint and current positive mark valid |
+| 559 | `history.momentum_close.19.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 19s lag | Lag endpoint and current positive mark valid |
+| 560 | `history.momentum_close.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 20s lag | Lag endpoint and current positive mark valid |
+| 561 | `history.momentum_close.21.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 21s lag | Lag endpoint and current positive mark valid |
+| 562 | `history.momentum_close.22.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 22s lag | Lag endpoint and current positive mark valid |
+| 563 | `history.momentum_close.23.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 23s lag | Lag endpoint and current positive mark valid |
+| 564 | `history.momentum_close.24.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 24s lag | Lag endpoint and current positive mark valid |
+| 565 | `history.momentum_close.25.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 25s lag | Lag endpoint and current positive mark valid |
+| 566 | `history.momentum_close.26.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 26s lag | Lag endpoint and current positive mark valid |
+| 567 | `history.momentum_close.27.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 27s lag | Lag endpoint and current positive mark valid |
+| 568 | `history.momentum_close.28.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 28s lag | Lag endpoint and current positive mark valid |
+| 569 | `history.momentum_close.29.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 29s lag | Lag endpoint and current positive mark valid |
+| 570 | `history.momentum_close.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 30s lag | Lag endpoint and current positive mark valid |
+| 571 | `history.momentum_close.31.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 31s lag | Lag endpoint and current positive mark valid |
+| 572 | `history.momentum_close.32.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 32s lag | Lag endpoint and current positive mark valid |
+| 573 | `history.momentum_close.33.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 33s lag | Lag endpoint and current positive mark valid |
+| 574 | `history.momentum_close.34.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 34s lag | Lag endpoint and current positive mark valid |
+| 575 | `history.momentum_close.35.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 35s lag | Lag endpoint and current positive mark valid |
+| 576 | `history.momentum_close.36.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 36s lag | Lag endpoint and current positive mark valid |
+| 577 | `history.momentum_close.37.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 37s lag | Lag endpoint and current positive mark valid |
+| 578 | `history.momentum_close.38.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 38s lag | Lag endpoint and current positive mark valid |
+| 579 | `history.momentum_close.39.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 39s lag | Lag endpoint and current positive mark valid |
+| 580 | `history.momentum_close.40.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 40s lag | Lag endpoint and current positive mark valid |
+| 581 | `history.momentum_close.41.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 41s lag | Lag endpoint and current positive mark valid |
+| 582 | `history.momentum_close.42.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 42s lag | Lag endpoint and current positive mark valid |
+| 583 | `history.momentum_close.43.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 43s lag | Lag endpoint and current positive mark valid |
+| 584 | `history.momentum_close.44.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 44s lag | Lag endpoint and current positive mark valid |
+| 585 | `history.momentum_close.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 45s lag | Lag endpoint and current positive mark valid |
+| 586 | `history.momentum_close.46.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 46s lag | Lag endpoint and current positive mark valid |
+| 587 | `history.momentum_close.47.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 47s lag | Lag endpoint and current positive mark valid |
+| 588 | `history.momentum_close.48.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 48s lag | Lag endpoint and current positive mark valid |
+| 589 | `history.momentum_close.49.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 49s lag | Lag endpoint and current positive mark valid |
+| 590 | `history.momentum_close.50.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 50s lag | Lag endpoint and current positive mark valid |
+| 591 | `history.momentum_close.51.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 51s lag | Lag endpoint and current positive mark valid |
+| 592 | `history.momentum_close.52.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 52s lag | Lag endpoint and current positive mark valid |
+| 593 | `history.momentum_close.53.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 53s lag | Lag endpoint and current positive mark valid |
+| 594 | `history.momentum_close.54.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 54s lag | Lag endpoint and current positive mark valid |
+| 595 | `history.momentum_close.55.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 55s lag | Lag endpoint and current positive mark valid |
+| 596 | `history.momentum_close.56.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 56s lag | Lag endpoint and current positive mark valid |
+| 597 | `history.momentum_close.57.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 57s lag | Lag endpoint and current positive mark valid |
+| 598 | `history.momentum_close.58.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 58s lag | Lag endpoint and current positive mark valid |
+| 599 | `history.momentum_close.59.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 59s lag | Lag endpoint and current positive mark valid |
+| 600 | `history.momentum_close.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Fixed 60s lag | Lag endpoint and current positive mark valid |
+| 601 | `history.average_move.2.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 2s changes; 3 prices | 3 finite consecutive prices and positive current mark |
+| 602 | `history.average_move.3.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 3s changes; 4 prices | 4 finite consecutive prices and positive current mark |
+| 603 | `history.average_move.4.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 4s changes; 5 prices | 5 finite consecutive prices and positive current mark |
+| 604 | `history.average_move.5.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 5s changes; 6 prices | 6 finite consecutive prices and positive current mark |
+| 605 | `history.average_move.6.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 6s changes; 7 prices | 7 finite consecutive prices and positive current mark |
+| 606 | `history.average_move.7.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 7s changes; 8 prices | 8 finite consecutive prices and positive current mark |
+| 607 | `history.average_move.8.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 8s changes; 9 prices | 9 finite consecutive prices and positive current mark |
+| 608 | `history.average_move.9.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 9s changes; 10 prices | 10 finite consecutive prices and positive current mark |
+| 609 | `history.average_move.10.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 10s changes; 11 prices | 11 finite consecutive prices and positive current mark |
+| 610 | `history.average_move.11.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 11s changes; 12 prices | 12 finite consecutive prices and positive current mark |
+| 611 | `history.average_move.12.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 12s changes; 13 prices | 13 finite consecutive prices and positive current mark |
+| 612 | `history.average_move.13.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 13s changes; 14 prices | 14 finite consecutive prices and positive current mark |
+| 613 | `history.average_move.14.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 14s changes; 15 prices | 15 finite consecutive prices and positive current mark |
+| 614 | `history.average_move.15.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 15s changes; 16 prices | 16 finite consecutive prices and positive current mark |
+| 615 | `history.average_move.16.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 16s changes; 17 prices | 17 finite consecutive prices and positive current mark |
+| 616 | `history.average_move.17.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 17s changes; 18 prices | 18 finite consecutive prices and positive current mark |
+| 617 | `history.average_move.18.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 18s changes; 19 prices | 19 finite consecutive prices and positive current mark |
+| 618 | `history.average_move.19.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 19s changes; 20 prices | 20 finite consecutive prices and positive current mark |
+| 619 | `history.average_move.20.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 20s changes; 21 prices | 21 finite consecutive prices and positive current mark |
+| 620 | `history.average_move.21.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 21s changes; 22 prices | 22 finite consecutive prices and positive current mark |
+| 621 | `history.average_move.22.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 22s changes; 23 prices | 23 finite consecutive prices and positive current mark |
+| 622 | `history.average_move.23.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 23s changes; 24 prices | 24 finite consecutive prices and positive current mark |
+| 623 | `history.average_move.24.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 24s changes; 25 prices | 25 finite consecutive prices and positive current mark |
+| 624 | `history.average_move.25.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 25s changes; 26 prices | 26 finite consecutive prices and positive current mark |
+| 625 | `history.average_move.26.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 26s changes; 27 prices | 27 finite consecutive prices and positive current mark |
+| 626 | `history.average_move.27.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 27s changes; 28 prices | 28 finite consecutive prices and positive current mark |
+| 627 | `history.average_move.28.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 28s changes; 29 prices | 29 finite consecutive prices and positive current mark |
+| 628 | `history.average_move.29.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 29s changes; 30 prices | 30 finite consecutive prices and positive current mark |
+| 629 | `history.average_move.30.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 30s changes; 31 prices | 31 finite consecutive prices and positive current mark |
+| 630 | `history.average_move.31.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 31s changes; 32 prices | 32 finite consecutive prices and positive current mark |
+| 631 | `history.average_move.32.fraction_of_close` | ratio | 0 | 0.5 | yes | yes | 0 | 4 | E | 32s changes; 33 prices | 33 finite consecutive prices and positive current mark |
+| 632 | `history.swing_low.1.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 3s formation; carried confirmed pivot | 3 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 633 | `history.swing_low.1.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 4s formation; carried confirmed pivot | 4 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 634 | `history.swing_low.1.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 5s formation; carried confirmed pivot | 5 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 635 | `history.swing_low.1.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 636 | `history.swing_low.1.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 637 | `history.swing_low.1.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 12s formation; carried confirmed pivot | 12 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 638 | `history.swing_low.1.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 17s formation; carried confirmed pivot | 17 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 639 | `history.swing_low.1.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 22s formation; carried confirmed pivot | 22 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 640 | `history.swing_low.1.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 32s formation; carried confirmed pivot | 32 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 641 | `history.swing_low.1.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 47s formation; carried confirmed pivot | 47 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 642 | `history.swing_low.1.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 62s formation; carried confirmed pivot | 62 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 643 | `history.swing_low.2.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 4s formation; carried confirmed pivot | 4 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 644 | `history.swing_low.2.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 5s formation; carried confirmed pivot | 5 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 645 | `history.swing_low.2.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 646 | `history.swing_low.2.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 647 | `history.swing_low.2.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 648 | `history.swing_low.2.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 13s formation; carried confirmed pivot | 13 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 649 | `history.swing_low.2.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 18s formation; carried confirmed pivot | 18 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 650 | `history.swing_low.2.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 23s formation; carried confirmed pivot | 23 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 651 | `history.swing_low.2.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 33s formation; carried confirmed pivot | 33 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 652 | `history.swing_low.2.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 48s formation; carried confirmed pivot | 48 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 653 | `history.swing_low.2.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 63s formation; carried confirmed pivot | 63 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 654 | `history.swing_low.3.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 5s formation; carried confirmed pivot | 5 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 655 | `history.swing_low.3.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 656 | `history.swing_low.3.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 657 | `history.swing_low.3.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 658 | `history.swing_low.3.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 9s formation; carried confirmed pivot | 9 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 659 | `history.swing_low.3.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 14s formation; carried confirmed pivot | 14 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 660 | `history.swing_low.3.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 19s formation; carried confirmed pivot | 19 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 661 | `history.swing_low.3.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 24s formation; carried confirmed pivot | 24 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 662 | `history.swing_low.3.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 34s formation; carried confirmed pivot | 34 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 663 | `history.swing_low.3.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 49s formation; carried confirmed pivot | 49 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 664 | `history.swing_low.3.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 64s formation; carried confirmed pivot | 64 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 665 | `history.swing_low.4.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 6s formation; carried confirmed pivot | 6 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 666 | `history.swing_low.4.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 667 | `history.swing_low.4.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 668 | `history.swing_low.4.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 9s formation; carried confirmed pivot | 9 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 669 | `history.swing_low.4.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 10s formation; carried confirmed pivot | 10 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 670 | `history.swing_low.4.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 15s formation; carried confirmed pivot | 15 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 671 | `history.swing_low.4.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 20s formation; carried confirmed pivot | 20 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 672 | `history.swing_low.4.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 25s formation; carried confirmed pivot | 25 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 673 | `history.swing_low.4.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 35s formation; carried confirmed pivot | 35 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 674 | `history.swing_low.4.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 50s formation; carried confirmed pivot | 50 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 675 | `history.swing_low.4.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 65s formation; carried confirmed pivot | 65 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 676 | `history.swing_low.5.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 7s formation; carried confirmed pivot | 7 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 677 | `history.swing_low.5.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 8s formation; carried confirmed pivot | 8 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 678 | `history.swing_low.5.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 9s formation; carried confirmed pivot | 9 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 679 | `history.swing_low.5.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 10s formation; carried confirmed pivot | 10 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 680 | `history.swing_low.5.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 11s formation; carried confirmed pivot | 11 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 681 | `history.swing_low.5.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 16s formation; carried confirmed pivot | 16 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 682 | `history.swing_low.5.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 21s formation; carried confirmed pivot | 21 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 683 | `history.swing_low.5.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 684 | `history.swing_low.5.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 685 | `history.swing_low.5.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 686 | `history.swing_low.5.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 687 | `history.swing_low.10.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 12s formation; carried confirmed pivot | 12 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 688 | `history.swing_low.10.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 13s formation; carried confirmed pivot | 13 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 689 | `history.swing_low.10.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 14s formation; carried confirmed pivot | 14 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 690 | `history.swing_low.10.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 15s formation; carried confirmed pivot | 15 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 691 | `history.swing_low.10.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 16s formation; carried confirmed pivot | 16 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 692 | `history.swing_low.10.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 21s formation; carried confirmed pivot | 21 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 693 | `history.swing_low.10.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 694 | `history.swing_low.10.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 31s formation; carried confirmed pivot | 31 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 695 | `history.swing_low.10.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 41s formation; carried confirmed pivot | 41 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 696 | `history.swing_low.10.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 56s formation; carried confirmed pivot | 56 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 697 | `history.swing_low.10.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 71s formation; carried confirmed pivot | 71 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 698 | `history.swing_low.15.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 17s formation; carried confirmed pivot | 17 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 699 | `history.swing_low.15.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 18s formation; carried confirmed pivot | 18 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 700 | `history.swing_low.15.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 19s formation; carried confirmed pivot | 19 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 701 | `history.swing_low.15.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 20s formation; carried confirmed pivot | 20 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 702 | `history.swing_low.15.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 21s formation; carried confirmed pivot | 21 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 703 | `history.swing_low.15.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 704 | `history.swing_low.15.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 31s formation; carried confirmed pivot | 31 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 705 | `history.swing_low.15.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 706 | `history.swing_low.15.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 46s formation; carried confirmed pivot | 46 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 707 | `history.swing_low.15.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 61s formation; carried confirmed pivot | 61 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 708 | `history.swing_low.15.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 709 | `history.swing_low.20.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 22s formation; carried confirmed pivot | 22 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 710 | `history.swing_low.20.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 23s formation; carried confirmed pivot | 23 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 711 | `history.swing_low.20.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 24s formation; carried confirmed pivot | 24 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 712 | `history.swing_low.20.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 25s formation; carried confirmed pivot | 25 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 713 | `history.swing_low.20.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 26s formation; carried confirmed pivot | 26 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 714 | `history.swing_low.20.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 31s formation; carried confirmed pivot | 31 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 715 | `history.swing_low.20.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 716 | `history.swing_low.20.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 41s formation; carried confirmed pivot | 41 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 717 | `history.swing_low.20.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 718 | `history.swing_low.20.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 719 | `history.swing_low.20.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 81s formation; carried confirmed pivot | 81 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 720 | `history.swing_low.30.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 32s formation; carried confirmed pivot | 32 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 721 | `history.swing_low.30.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 33s formation; carried confirmed pivot | 33 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 722 | `history.swing_low.30.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 34s formation; carried confirmed pivot | 34 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 723 | `history.swing_low.30.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 35s formation; carried confirmed pivot | 35 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 724 | `history.swing_low.30.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 36s formation; carried confirmed pivot | 36 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 725 | `history.swing_low.30.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 41s formation; carried confirmed pivot | 41 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 726 | `history.swing_low.30.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 46s formation; carried confirmed pivot | 46 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 727 | `history.swing_low.30.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 728 | `history.swing_low.30.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 61s formation; carried confirmed pivot | 61 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 729 | `history.swing_low.30.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 730 | `history.swing_low.30.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 91s formation; carried confirmed pivot | 91 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 731 | `history.swing_low.45.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 47s formation; carried confirmed pivot | 47 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 732 | `history.swing_low.45.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 48s formation; carried confirmed pivot | 48 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 733 | `history.swing_low.45.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 49s formation; carried confirmed pivot | 49 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 734 | `history.swing_low.45.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 50s formation; carried confirmed pivot | 50 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 735 | `history.swing_low.45.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 51s formation; carried confirmed pivot | 51 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 736 | `history.swing_low.45.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 56s formation; carried confirmed pivot | 56 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 737 | `history.swing_low.45.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 61s formation; carried confirmed pivot | 61 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 738 | `history.swing_low.45.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 739 | `history.swing_low.45.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 740 | `history.swing_low.45.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 91s formation; carried confirmed pivot | 91 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 741 | `history.swing_low.45.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 106s formation; carried confirmed pivot | 106 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 742 | `history.swing_low.60.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 62s formation; carried confirmed pivot | 62 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 743 | `history.swing_low.60.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 63s formation; carried confirmed pivot | 63 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 744 | `history.swing_low.60.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 64s formation; carried confirmed pivot | 64 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 745 | `history.swing_low.60.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 65s formation; carried confirmed pivot | 65 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 746 | `history.swing_low.60.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 66s formation; carried confirmed pivot | 66 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 747 | `history.swing_low.60.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 71s formation; carried confirmed pivot | 71 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 748 | `history.swing_low.60.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 76s formation; carried confirmed pivot | 76 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 749 | `history.swing_low.60.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 81s formation; carried confirmed pivot | 81 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 750 | `history.swing_low.60.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 91s formation; carried confirmed pivot | 91 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 751 | `history.swing_low.60.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 106s formation; carried confirmed pivot | 106 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 752 | `history.swing_low.60.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | 121s formation; carried confirmed pivot | 121 consecutive observed slots; prior-clock confirmation; age may exceed window |
+| 753 | `market.bid_relative` | ratio | -0.1 | 0.1 | yes | yes | -0.99 | 9 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
+| 754 | `market.ask_relative` | ratio | -0.1 | 0.1 | yes | yes | -0.99 | 9 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
+| 755 | `market.spread_fraction` | ratio | 0 | 0.1 | yes | yes | 0 | 9 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
+| 756 | `market.quote_age_seconds` | duration | 0 | 3600 | yes | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 757 | `market.log_execution_volume` | log_shares | 0 | 30 | yes | yes | 0 | 20.723266 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
+| 758 | `market.log_execution_notional` | log_dollars | 0 | 30 | yes | yes | 0 | 25.328436 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
+| 759 | `market.log_execution_trade_count` | log_count | 0 | 20 | yes | yes | 0 | 13.815512 | E | Current mapped source row; no extra bar history | Causal source validity; original quote features may require age<=1s |
+| 760 | `market.bid` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 761 | `market.ask` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 762 | `market.spread` | price | 0 | 100 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 763 | `market.close` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 764 | `indicator.ema.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 765 | `indicator.ema.2.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 2; certified running state | At least 2 valid closes; finite state; no raw-history query |
+| 766 | `indicator.ema.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 767 | `indicator.ema.3.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 3; certified running state | At least 3 valid closes; finite state; no raw-history query |
+| 768 | `indicator.ema.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 769 | `indicator.ema.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 5; certified running state | At least 5 valid closes; finite state; no raw-history query |
+| 770 | `indicator.ema.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 771 | `indicator.ema.7.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 7; certified running state | At least 7 valid closes; finite state; no raw-history query |
+| 772 | `indicator.ema.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 773 | `indicator.ema.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 9; certified running state | At least 9 valid closes; finite state; no raw-history query |
+| 774 | `indicator.ema.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 775 | `indicator.ema.10.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 10; certified running state | At least 10 valid closes; finite state; no raw-history query |
+| 776 | `indicator.ema.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 777 | `indicator.ema.12.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 12; certified running state | At least 12 valid closes; finite state; no raw-history query |
+| 778 | `indicator.ema.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 779 | `indicator.ema.14.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 14; certified running state | At least 14 valid closes; finite state; no raw-history query |
+| 780 | `indicator.ema.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 781 | `indicator.ema.15.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 15; certified running state | At least 15 valid closes; finite state; no raw-history query |
+| 782 | `indicator.ema.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 783 | `indicator.ema.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 20; certified running state | At least 20 valid closes; finite state; no raw-history query |
+| 784 | `indicator.ema.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 785 | `indicator.ema.26.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 26; certified running state | At least 26 valid closes; finite state; no raw-history query |
+| 786 | `indicator.ema.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 787 | `indicator.ema.30.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 30; certified running state | At least 30 valid closes; finite state; no raw-history query |
+| 788 | `indicator.ema.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 789 | `indicator.ema.45.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 45; certified running state | At least 45 valid closes; finite state; no raw-history query |
+| 790 | `indicator.ema.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 791 | `indicator.ema.50.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 50; certified running state | At least 50 valid closes; finite state; no raw-history query |
+| 792 | `indicator.ema.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 793 | `indicator.ema.60.relative` | ratio | -0.5 | 0.5 | yes | yes | -0.99 | 9 | E | Period 60; certified running state | At least 60 valid closes; finite state; no raw-history query |
+| 794 | `indicator.rsi.2` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 2; certified running state | At least 2 price changes (3 valid closes); finite state |
+| 795 | `indicator.rsi.3` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 3; certified running state | At least 3 price changes (4 valid closes); finite state |
+| 796 | `indicator.rsi.5` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 5; certified running state | At least 5 price changes (6 valid closes); finite state |
+| 797 | `indicator.rsi.7` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 7; certified running state | At least 7 price changes (8 valid closes); finite state |
+| 798 | `indicator.rsi.9` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 9; certified running state | At least 9 price changes (10 valid closes); finite state |
+| 799 | `indicator.rsi.10` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 10; certified running state | At least 10 price changes (11 valid closes); finite state |
+| 800 | `indicator.rsi.12` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 12; certified running state | At least 12 price changes (13 valid closes); finite state |
+| 801 | `indicator.rsi.14` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 14; certified running state | At least 14 price changes (15 valid closes); finite state |
+| 802 | `indicator.rsi.15` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 15; certified running state | At least 15 price changes (16 valid closes); finite state |
+| 803 | `indicator.rsi.20` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 20; certified running state | At least 20 price changes (21 valid closes); finite state |
+| 804 | `indicator.rsi.26` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 26; certified running state | At least 26 price changes (27 valid closes); finite state |
+| 805 | `indicator.rsi.30` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 30; certified running state | At least 30 price changes (31 valid closes); finite state |
+| 806 | `indicator.rsi.45` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 45; certified running state | At least 45 price changes (46 valid closes); finite state |
+| 807 | `indicator.rsi.50` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 50; certified running state | At least 50 price changes (51 valid closes); finite state |
+| 808 | `indicator.rsi.60` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Period 60; certified running state | At least 60 price changes (61 valid closes); finite state |
+| 809 | `indicator.atr.2` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 810 | `indicator.atr.2.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 2; certified running state | At least 2 valid extreme observations; finite state |
+| 811 | `indicator.atr.3` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 812 | `indicator.atr.3.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 3; certified running state | At least 3 valid extreme observations; finite state |
+| 813 | `indicator.atr.5` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 814 | `indicator.atr.5.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 5; certified running state | At least 5 valid extreme observations; finite state |
+| 815 | `indicator.atr.7` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 816 | `indicator.atr.7.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 7; certified running state | At least 7 valid extreme observations; finite state |
+| 817 | `indicator.atr.9` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 818 | `indicator.atr.9.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 9; certified running state | At least 9 valid extreme observations; finite state |
+| 819 | `indicator.atr.10` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 820 | `indicator.atr.10.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 10; certified running state | At least 10 valid extreme observations; finite state |
+| 821 | `indicator.atr.12` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 822 | `indicator.atr.12.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 12; certified running state | At least 12 valid extreme observations; finite state |
+| 823 | `indicator.atr.14` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 824 | `indicator.atr.14.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 14; certified running state | At least 14 valid extreme observations; finite state |
+| 825 | `indicator.atr.15` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 826 | `indicator.atr.15.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 15; certified running state | At least 15 valid extreme observations; finite state |
+| 827 | `indicator.atr.20` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 828 | `indicator.atr.20.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 20; certified running state | At least 20 valid extreme observations; finite state |
+| 829 | `indicator.atr.26` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 830 | `indicator.atr.26.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 26; certified running state | At least 26 valid extreme observations; finite state |
+| 831 | `indicator.atr.30` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 832 | `indicator.atr.30.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 30; certified running state | At least 30 valid extreme observations; finite state |
+| 833 | `indicator.atr.45` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 834 | `indicator.atr.45.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 45; certified running state | At least 45 valid extreme observations; finite state |
+| 835 | `indicator.atr.50` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 836 | `indicator.atr.50.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 50; certified running state | At least 50 valid extreme observations; finite state |
+| 837 | `indicator.atr.60` | price | 0 | 1000 | no | no | — | — | forbidden | N/A - forbidden | Cannot be requested |
+| 838 | `indicator.atr.60.relative` | ratio | 0 | 1 | yes | yes | 0 | 4 | E | Period 60; certified running state | At least 60 valid extreme observations; finite state |
+| 839 | `indicator.macd_line.3.15.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15; running state | At least 15 valid closes per producer; finite state |
+| 840 | `indicator.macd_signal.3.15.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15/5; running state | At least 19 valid closes per producer; finite state |
+| 841 | `indicator.macd_histogram.3.15.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15/5; running state | At least 19 valid closes per producer; finite state |
+| 842 | `indicator.macd_signal.3.15.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15/9; running state | At least 23 valid closes per producer; finite state |
+| 843 | `indicator.macd_histogram.3.15.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15/9; running state | At least 23 valid closes per producer; finite state |
+| 844 | `indicator.macd_signal.3.15.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15/20; running state | At least 34 valid closes per producer; finite state |
+| 845 | `indicator.macd_histogram.3.15.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/15/20; running state | At least 34 valid closes per producer; finite state |
+| 846 | `indicator.macd_line.3.26.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/26; running state | At least 26 valid closes per producer; finite state |
+| 847 | `indicator.macd_signal.3.26.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/26/5; running state | At least 30 valid closes per producer; finite state |
+| 848 | `indicator.macd_histogram.3.26.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/26/5; running state | At least 30 valid closes per producer; finite state |
+| 849 | `indicator.macd_signal.3.26.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/26/9; running state | At least 34 valid closes per producer; finite state |
+| 850 | `indicator.macd_histogram.3.26.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/26/9; running state | At least 34 valid closes per producer; finite state |
+| 851 | `indicator.macd_signal.3.26.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/26/20; running state | At least 45 valid closes per producer; finite state |
+| 852 | `indicator.macd_histogram.3.26.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/26/20; running state | At least 45 valid closes per producer; finite state |
+| 853 | `indicator.macd_line.3.50.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/50; running state | At least 50 valid closes per producer; finite state |
+| 854 | `indicator.macd_signal.3.50.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/50/5; running state | At least 54 valid closes per producer; finite state |
+| 855 | `indicator.macd_histogram.3.50.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/50/5; running state | At least 54 valid closes per producer; finite state |
+| 856 | `indicator.macd_signal.3.50.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/50/9; running state | At least 58 valid closes per producer; finite state |
+| 857 | `indicator.macd_histogram.3.50.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/50/9; running state | At least 58 valid closes per producer; finite state |
+| 858 | `indicator.macd_signal.3.50.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/50/20; running state | At least 69 valid closes per producer; finite state |
+| 859 | `indicator.macd_histogram.3.50.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 3/50/20; running state | At least 69 valid closes per producer; finite state |
+| 860 | `indicator.macd_line.7.15.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/15; running state | At least 15 valid closes per producer; finite state |
+| 861 | `indicator.macd_signal.7.15.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/15/5; running state | At least 19 valid closes per producer; finite state |
+| 862 | `indicator.macd_histogram.7.15.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/15/5; running state | At least 19 valid closes per producer; finite state |
+| 863 | `indicator.macd_signal.7.15.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/15/9; running state | At least 23 valid closes per producer; finite state |
+| 864 | `indicator.macd_histogram.7.15.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/15/9; running state | At least 23 valid closes per producer; finite state |
+| 865 | `indicator.macd_signal.7.15.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/15/20; running state | At least 34 valid closes per producer; finite state |
+| 866 | `indicator.macd_histogram.7.15.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/15/20; running state | At least 34 valid closes per producer; finite state |
+| 867 | `indicator.macd_line.7.26.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/26; running state | At least 26 valid closes per producer; finite state |
+| 868 | `indicator.macd_signal.7.26.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/26/5; running state | At least 30 valid closes per producer; finite state |
+| 869 | `indicator.macd_histogram.7.26.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/26/5; running state | At least 30 valid closes per producer; finite state |
+| 870 | `indicator.macd_signal.7.26.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/26/9; running state | At least 34 valid closes per producer; finite state |
+| 871 | `indicator.macd_histogram.7.26.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/26/9; running state | At least 34 valid closes per producer; finite state |
+| 872 | `indicator.macd_signal.7.26.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/26/20; running state | At least 45 valid closes per producer; finite state |
+| 873 | `indicator.macd_histogram.7.26.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/26/20; running state | At least 45 valid closes per producer; finite state |
+| 874 | `indicator.macd_line.7.50.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/50; running state | At least 50 valid closes per producer; finite state |
+| 875 | `indicator.macd_signal.7.50.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/50/5; running state | At least 54 valid closes per producer; finite state |
+| 876 | `indicator.macd_histogram.7.50.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/50/5; running state | At least 54 valid closes per producer; finite state |
+| 877 | `indicator.macd_signal.7.50.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/50/9; running state | At least 58 valid closes per producer; finite state |
+| 878 | `indicator.macd_histogram.7.50.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/50/9; running state | At least 58 valid closes per producer; finite state |
+| 879 | `indicator.macd_signal.7.50.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/50/20; running state | At least 69 valid closes per producer; finite state |
+| 880 | `indicator.macd_histogram.7.50.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 7/50/20; running state | At least 69 valid closes per producer; finite state |
+| 881 | `indicator.macd_line.12.15.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/15; running state | At least 15 valid closes per producer; finite state |
+| 882 | `indicator.macd_signal.12.15.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/15/5; running state | At least 19 valid closes per producer; finite state |
+| 883 | `indicator.macd_histogram.12.15.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/15/5; running state | At least 19 valid closes per producer; finite state |
+| 884 | `indicator.macd_signal.12.15.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/15/9; running state | At least 23 valid closes per producer; finite state |
+| 885 | `indicator.macd_histogram.12.15.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/15/9; running state | At least 23 valid closes per producer; finite state |
+| 886 | `indicator.macd_signal.12.15.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/15/20; running state | At least 34 valid closes per producer; finite state |
+| 887 | `indicator.macd_histogram.12.15.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/15/20; running state | At least 34 valid closes per producer; finite state |
+| 888 | `indicator.macd_line.12.26.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/26; running state | At least 26 valid closes per producer; finite state |
+| 889 | `indicator.macd_signal.12.26.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/26/5; running state | At least 30 valid closes per producer; finite state |
+| 890 | `indicator.macd_histogram.12.26.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/26/5; running state | At least 30 valid closes per producer; finite state |
+| 891 | `indicator.macd_signal.12.26.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/26/9; running state | At least 34 valid closes per producer; finite state |
+| 892 | `indicator.macd_histogram.12.26.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/26/9; running state | At least 34 valid closes per producer; finite state |
+| 893 | `indicator.macd_signal.12.26.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/26/20; running state | At least 45 valid closes per producer; finite state |
+| 894 | `indicator.macd_histogram.12.26.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/26/20; running state | At least 45 valid closes per producer; finite state |
+| 895 | `indicator.macd_line.12.50.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/50; running state | At least 50 valid closes per producer; finite state |
+| 896 | `indicator.macd_signal.12.50.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/50/5; running state | At least 54 valid closes per producer; finite state |
+| 897 | `indicator.macd_histogram.12.50.5.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/50/5; running state | At least 54 valid closes per producer; finite state |
+| 898 | `indicator.macd_signal.12.50.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/50/9; running state | At least 58 valid closes per producer; finite state |
+| 899 | `indicator.macd_histogram.12.50.9.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/50/9; running state | At least 58 valid closes per producer; finite state |
+| 900 | `indicator.macd_signal.12.50.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/50/20; running state | At least 69 valid closes per producer; finite state |
+| 901 | `indicator.macd_histogram.12.50.20.relative` | ratio | -0.5 | 0.5 | yes | yes | -4 | 4 | E | Registered 12/50/20; running state | At least 69 valid closes per producer; finite state |
+| 902 | `enriched.return.5s` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 5s (+1s endpoint tolerance) | Both fresh positive endpoints |
+| 903 | `enriched.volatility.5s` | ratio | 0 | 1 | yes | yes | 0 | 2.302585 | E | Fixed 5s (+1s endpoint tolerance) | 5 valid one-second returns |
+| 904 | `enriched.return.15s` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 15s (+1s endpoint tolerance) | Both fresh positive endpoints |
+| 905 | `enriched.volatility.15s` | ratio | 0 | 1 | yes | yes | 0 | 2.302585 | E | Fixed 15s (+1s endpoint tolerance) | 15 valid one-second returns |
+| 906 | `enriched.return.60s` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 60s (+1s endpoint tolerance) | Both fresh positive endpoints |
+| 907 | `enriched.volatility.60s` | ratio | 0 | 1 | yes | yes | 0 | 2.302585 | E | Fixed 60s (+1s endpoint tolerance) | 60 valid one-second returns |
+| 908 | `enriched.return.300s` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 300s (+1s endpoint tolerance) | Both fresh positive endpoints |
+| 909 | `enriched.volatility.300s` | ratio | 0 | 1 | yes | yes | 0 | 2.302585 | E | Fixed 300s (+1s endpoint tolerance) | 300 valid one-second returns |
+| 910 | `enriched.activity.volume_acceleration` | ratio | -0.5 | 1 | yes | yes | -1 | 11 | M | Fixed 5s and 60s sums | Causal activity sums; zero allowed; no extra window request |
+| 911 | `enriched.activity.trade_acceleration` | ratio | -0.5 | 1 | yes | yes | -1 | 11 | M | Fixed 5s and 60s sums | Causal activity sums; zero allowed; no extra window request |
+| 912 | `enriched.execution.volatility_fee_ratio` | ratio | 0 | 100 | yes | yes | 0 | 1000 | E | Fixed 15s volatility plus current price/fee assumptions | Complete volatility window; positive sizing denominator |
+| 913 | `enriched.candle.5s.body` | ratio | -0.5 | 1 | yes | yes | -9 | 0.99 | E | Fixed 5s completed candle; dependency <10s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 914 | `enriched.candle.5s.range` | ratio | 0 | 1 | yes | yes | 0 | 9 | E | Fixed 5s completed candle; dependency <10s (+1s return tolerance) | Full valid extremes for range/location; bucket age < resolution |
+| 915 | `enriched.candle.5s.close_location` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 5s completed candle; dependency <10s (+1s return tolerance) | Full valid extremes for range/location; bucket age < resolution |
+| 916 | `enriched.candle.5s.return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 5s completed candle; dependency <10s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 917 | `enriched.candle.5s.log_volume` | ratio | 0 | 30 | yes | yes | 0 | 20.723266 | E | Fixed 5s completed candle; dependency <10s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 918 | `enriched.candle.5s.log_trades` | ratio | 0 | 30 | yes | yes | 0 | 13.815512 | E | Fixed 5s completed candle; dependency <10s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 919 | `enriched.candle.5s.active_fraction` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 5s completed candle; dependency <10s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 920 | `enriched.candle.15s.body` | ratio | -0.5 | 1 | yes | yes | -9 | 0.99 | E | Fixed 15s completed candle; dependency <30s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 921 | `enriched.candle.15s.range` | ratio | 0 | 1 | yes | yes | 0 | 9 | E | Fixed 15s completed candle; dependency <30s (+1s return tolerance) | Full valid extremes for range/location; bucket age < resolution |
+| 922 | `enriched.candle.15s.close_location` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 15s completed candle; dependency <30s (+1s return tolerance) | Full valid extremes for range/location; bucket age < resolution |
+| 923 | `enriched.candle.15s.return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 15s completed candle; dependency <30s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 924 | `enriched.candle.15s.log_volume` | ratio | 0 | 30 | yes | yes | 0 | 20.723266 | E | Fixed 15s completed candle; dependency <30s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 925 | `enriched.candle.15s.log_trades` | ratio | 0 | 30 | yes | yes | 0 | 13.815512 | E | Fixed 15s completed candle; dependency <30s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 926 | `enriched.candle.15s.active_fraction` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 15s completed candle; dependency <30s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 927 | `enriched.candle.60s.body` | ratio | -0.5 | 1 | yes | yes | -9 | 0.99 | E | Fixed 60s completed candle; dependency <120s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 928 | `enriched.candle.60s.range` | ratio | 0 | 1 | yes | yes | 0 | 9 | E | Fixed 60s completed candle; dependency <120s (+1s return tolerance) | Full valid extremes for range/location; bucket age < resolution |
+| 929 | `enriched.candle.60s.close_location` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 60s completed candle; dependency <120s (+1s return tolerance) | Full valid extremes for range/location; bucket age < resolution |
+| 930 | `enriched.candle.60s.return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 60s completed candle; dependency <120s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 931 | `enriched.candle.60s.log_volume` | ratio | 0 | 30 | yes | yes | 0 | 20.723266 | E | Fixed 60s completed candle; dependency <120s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 932 | `enriched.candle.60s.log_trades` | ratio | 0 | 30 | yes | yes | 0 | 13.815512 | E | Fixed 60s completed candle; dependency <120s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 933 | `enriched.candle.60s.active_fraction` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 60s completed candle; dependency <120s (+1s return tolerance) | Producer validity for completed bucket; bucket age < resolution |
+| 934 | `enriched.context.15s.median_return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 15s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 935 | `enriched.context.15s.mean_return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 15s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 936 | `enriched.context.15s.advancing_fraction` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 15s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 937 | `enriched.context.15s.dispersion` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 15s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 938 | `enriched.context.15s.coverage` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 15s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 939 | `enriched.context.15s.relative_return` | ratio | -0.5 | 1 | yes | yes | -4.60517 | 4.60517 | E | Fixed 15s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 940 | `enriched.context.15s.return_percentile` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 15s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 941 | `enriched.context.60s.median_return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 60s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 942 | `enriched.context.60s.mean_return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 60s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 943 | `enriched.context.60s.advancing_fraction` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 60s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 944 | `enriched.context.60s.dispersion` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 60s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 945 | `enriched.context.60s.coverage` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 60s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 946 | `enriched.context.60s.relative_return` | ratio | -0.5 | 1 | yes | yes | -4.60517 | 4.60517 | E | Fixed 60s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 947 | `enriched.context.60s.return_percentile` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 60s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 948 | `enriched.context.300s.median_return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 300s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 949 | `enriched.context.300s.mean_return` | ratio | -0.5 | 1 | yes | yes | -2.302585 | 2.302585 | E | Fixed 300s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 950 | `enriched.context.300s.advancing_fraction` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 300s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 951 | `enriched.context.300s.dispersion` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 300s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 952 | `enriched.context.300s.coverage` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 300s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 953 | `enriched.context.300s.relative_return` | ratio | -0.5 | 1 | yes | yes | -4.60517 | 4.60517 | E | Fixed 300s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 954 | `enriched.context.300s.return_percentile` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed 300s endpoints (+1s tolerance); current cross-section | Fresh positive endpoints; context validity; >=2 listings for non-coverage statistics |
+| 955 | `enriched.rank.dollar_volume_60s_percentile` | ratio | 0 | 1 | yes | yes | 0 | 1 | M | Fixed60s notional ranking | Valid contemporaneous cross-section/rank |
+| 956 | `enriched.rank.dollar_volume_60s_change_15s` | ratio | -0.5 | 1 | yes | yes | -1 | 1 | M | 60s rank now and 15s ago; total75s | Both rank observations valid; same causal universe contract |
