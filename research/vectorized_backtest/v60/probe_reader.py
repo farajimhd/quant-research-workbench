@@ -19,11 +19,16 @@ def load_probe(path,training):
             raise ValueError('Calibration receipt binding mismatch')
         x=np.array(z['inputs']);known=np.array(z['known']);eligible=np.array(z['eligible']);held=np.array(z['held_states'])
         extra={k:np.array(z[k]) for k in ('ask','bid','quote_valid','ask_size','swings') if k in z}
-    if x.ndim!=4 or x.shape[-1]!=INPUTS or x.dtype!=np.float32 or not np.isfinite(x).all() or np.abs(x).max()>1:
+    columns=meta.get("feature_columns",list(range(len(CATALOG))))
+    if "feature_columns" in meta:
+        from .feature_layout import COLUMNS
+        if columns!=list(COLUMNS):raise ValueError("Calibration feature layout mismatch")
+    features=len(columns); market=3*features
+    if x.ndim!=4 or x.shape[-1]!=market+18 or x.dtype!=np.float32 or not np.isfinite(x).all() or np.abs(x).max()>1:
         raise ValueError('Bounded normalized activation inputs required')
-    if known.shape!=x.shape[:-1]+(len(CATALOG),) or eligible.shape!=x.shape[:-1] or known.dtype!=bool or eligible.dtype!=bool:
+    if known.shape!=x.shape[:-1]+(features,) or eligible.shape!=x.shape[:-1] or known.dtype!=bool or eligible.dtype!=bool:
         raise ValueError('Calibration mask shape/type mismatch')
-    if held.shape!=x.shape[:-1]+(INPUTS-MARKET_INPUTS,) or held.dtype!=np.float32 or not np.isfinite(held).all() or np.abs(held).max()>1:
+    if held.shape!=x.shape[:-1]+(18,) or held.dtype!=np.float32 or not np.isfinite(held).all() or np.abs(held).max()>1:
         raise ValueError('Representative held-state probe required')
     if not 1<=x.shape[0]<=8 or not 2<=x.shape[1]<=64 or not 1<=x.shape[2]<=128 or not eligible.any():
         raise ValueError('Finite calibration envelope exceeded')

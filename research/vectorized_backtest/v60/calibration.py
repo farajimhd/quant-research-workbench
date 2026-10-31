@@ -14,27 +14,40 @@ RATE_WEIGHTS=(.30,.30,.20,.20)
 def load_probe(path,training):
     from research.vectorized_backtest.v60.probe_reader import load_probe as load
     original=load(path,training)
-    indices=list(range(MARKET_INPUTS+7))+[original['inputs'].shape[-1]-1]
-    original['inputs']=original['inputs'][...,indices].copy()
+    from .feature_layout import COLUMNS,WIDTH
+    from .config import STATES
     from .feature_policy import transform_projected
     import torch
-    values=torch.from_numpy(original['inputs'][...,:MARKET_INPUTS])
+    columns=original['metadata'].get('feature_columns',list(range(len(CATALOG))))
+    market=3*len(columns)
+    values=torch.from_numpy(original['inputs'][...,:market])
     if not original['metadata'].get('projected_policy'):
-        original['inputs'][...,:MARKET_INPUTS]=transform_projected(values).numpy()
-    original['held_states']=original['held_states'][...,[0,1,2,3,4,5,6,-1]].copy()
-    original['inputs']=np.pad(original['inputs'],[(0,0)]*(original['inputs'].ndim-1)+[(0,3)])
-    original['held_states']=np.pad(original['held_states'],[(0,0)]*(original['held_states'].ndim-1)+[(0,3)])
-    # Synthetic current order state, not previous-action feedback or fitness.
-    original['held_states'][...]=0.
-    original['inputs'][...,MARKET_INPUTS:]=0.
+        values=transform_projected(values,columns)
+    if columns!=list(COLUMNS):
+        indices=[columns.index(c)+k*len(columns) for k in range(3) for c in COLUMNS]
+        values=values[...,indices]
+        original['known']=original['known'][...,[columns.index(c) for c in COLUMNS]]
+    original['inputs']=np.pad(values.numpy(),[(0,0)]*3+[(0,len(STATES))])
+    original['held_states']=np.zeros(original['inputs'].shape[:-1]+(len(STATES),),np.float32)
+    original['compact_layout']=True
     return original
 
 def observe(net,probe,stage='entry',*,reference=False):
     """Float32 CPU graph arithmetic. Recurrence resets per independent window."""
+    market_inputs=MARKET_INPUTS;input_count=INPUTS;features=len(CATALOG)
+    if probe.get('compact_layout'):
+        from .feature_layout import remap_sources,WIDTH
+        from .config import STATES
+        counts=np.array([len(n.sources) for n in net.nodes])
+        sources=np.zeros((len(counts),int(counts.max())),np.int32)
+        for i,n in enumerate(net.nodes):sources[i,:counts[i]]=n.sources
+        sources=remap_sources(sources,counts)
+        net=replace(net,nodes=tuple(replace(n,sources=tuple(sources[i,:counts[i]])) for i,n in enumerate(net.nodes)))
+        market_inputs=3*WIDTH;input_count=market_inputs+len(STATES);features=WIDTH
     if not reference and not any(n.op=='cross' for n in net.nodes):
         from research.vectorized_backtest.v60.calibration_cpu import observe as compiled
-        return compiled(net,probe,stage,MARKET_INPUTS,len(CATALOG))
-    x=probe['inputs'];known=probe['known'];f=len(CATALOG)
+        return compiled(net,probe,stage,market_inputs,features)
+    x=probe['inputs'];known=probe['known'];f=features
     memory=np.zeros((len(net.nodes),x.shape[0],x.shape[2]),np.float32)
     memory_known=np.zeros_like(memory,dtype=bool)
     outputs=[];valid=[];saturated=total=0
@@ -46,9 +59,9 @@ def observe(net,probe,stage='entry',*,reference=False):
             for source,w in zip(node.sources,node.weights):
                 if w==0 and node.op in ('tanh','conv','identity'):continue
                 if source<0:v=memory[-source-1];mask=memory_known[-source-1]
-                elif source<MARKET_INPUTS:v=x[:,tick,:,source];mask=known[:,tick,:,source%f] if source<2*f else False
-                elif source<INPUTS:v=(x[:,tick,:,source] if stage=='entry' else probe['held_states'][:,tick,:,source-MARKET_INPUTS]);mask=False
-                else:v=values[source-INPUTS];mask=masks[source-INPUTS]
+                elif source<market_inputs:v=x[:,tick,:,source];mask=known[:,tick,:,source%f] if source<2*f else False
+                elif source<input_count:v=(x[:,tick,:,source] if stage=='entry' else probe['held_states'][:,tick,:,source-market_inputs]);mask=False
+                else:v=values[source-input_count];mask=masks[source-input_count]
                 term=v*np.float32(w);terms.append(term);z=z+term;ok|=mask if w!=0 else False
             from research.vectorized_backtest.v60.operators import evaluate
             if node.op=='cross':

@@ -136,14 +136,15 @@ def dependency_certificate(member):
                                    readiness=FEATURES[i].readiness) for i in sorted(used)])
 
 
-def coverage(values, valid):
+def coverage(values, valid, columns=None):
     """Vectorized training-only cap diagnostic; never clips input observations."""
     values = np.asarray(values)
     valid = np.asarray(valid, dtype=bool)
-    if values.shape != valid.shape or values.shape[-1] != len(FEATURES):
+    columns = tuple(range(len(FEATURES))) if columns is None else tuple(columns)
+    if values.shape != valid.shape or values.shape[-1] != len(columns):
         raise ValueError('Catalog-aligned values and masks required')
-    lo = np.array([f.lower if f.allowed else -np.inf for f in FEATURES])
-    hi = np.array([f.upper if f.allowed else np.inf for f in FEATURES])
+    lo = np.array([f.lower if f.allowed else -np.inf for f in (FEATURES[i] for i in columns)])
+    hi = np.array([f.upper if f.allowed else np.inf for f in (FEATURES[i] for i in columns)])
     known = valid & np.isfinite(values)
     axes = tuple(range(values.ndim - 1))
     return dict(observed=known.sum(axis=axes), below=(known & (values < lo)).sum(axis=axes),

@@ -12,14 +12,14 @@ LISTINGS=21  # Preserve the prior 8 x 16 x 21 bounded calibration work budget.
 def prepare(job):
     import torch
     from .authority import REGISTRY_SHA256,coverage
-    from .features import CATALOG
+    from .feature_layout import COLUMNS
     from .full_common import config
     from .publication import write_json
     from .runtime import require_runtime
     code=Path(__file__).parent
-    source_files=('calibration_probe.py','network.py','features.py','feature_policy.py','data.py','swing_projection.py')
+    source_files=('calibration_probe.py','network.py','features.py','feature_policy.py','data.py','swing_projection.py','feature_layout.py')
     source=hashlib.sha256(b''.join((code/f).read_bytes() for f in source_files)).hexdigest()
-    identity=dict(version=VERSION,source=source,registry=REGISTRY_SHA256,
+    identity=dict(version=VERSION,source=source,registry=REGISTRY_SHA256,feature_columns=list(COLUMNS),
                   training=job['training_sha256'],execution_tail=job['execution_tail'],
                   assets=job['asset_sha256'])
     key=hashlib.sha256(json.dumps(identity,sort_keys=True).encode()).hexdigest()
@@ -49,7 +49,7 @@ def prepare(job):
             plan=NetworkPlan(sample(np.random.default_rng(0),1),'cpu')
             member=item.tensors['membership'].numpy();ready=member&item.tensors['quote_valid'].numpy()
             start=min(max(0,int(ready.sum(1).argmax())-STEPS//2),max(0,len(member)-STEPS-1))
-            ticks=list(range(start,start+STEPS));n=min(LISTINGS,member.shape[1]);c=len(CATALOG)
+            ticks=list(range(start,start+STEPS));n=min(LISTINGS,member.shape[1]);c=len(COLUMNS)
             # Select listings by availability, never by profit or model outcome.
             listings=np.argsort(-ready[ticks].sum(0),kind='stable')[:n]
             values=[];masks=[];caps=[]
@@ -58,11 +58,9 @@ def prepare(job):
                 values.append(v[listings].numpy());masks.append(m[listings].numpy())
                 bank=item.resident_features;a=bank.tensors
                 raw,valid=bank._values(a['source'][tick:tick+1].T,a['ids'][tick:tick+1].T.long(),a['clocks'][tick:tick+1][None],plan.columns)
-                caps.append(coverage(raw[:,0].numpy(),valid[:,0].numpy()))
+                caps.append(coverage(raw[:,0].numpy(),valid[:,0].numpy(),COLUMNS))
             x=np.zeros((STEPS,n,3*c+18),np.float32);x[...,:3*c]=np.stack(values)
-            held=np.zeros((STEPS,n,18),np.float32);held[...,0]=np.tanh(1.)
-            held[...,1]=np.tanh(np.linspace(-.15,.15,STEPS)[:,None]);held[...,2]=np.tanh(np.arange(STEPS)[:,None]/3600.)
-            held[...,3]=np.tanh(1.);held[...,4]=np.tanh(.03);held[...,6]=np.tanh(np.arange(STEPS)[:,None]/300.)
+            held=np.zeros((STEPS,n,18),np.float32)  # Legacy archive ABI; no strategy feedback.
             pick=lambda name:item.tensors[name].numpy()[np.ix_(ticks,listings)]
             swing_ids=pick('v60_entry_swing_ids');swings=item.tensors['v60_entry_swing_values'].numpy()[swing_ids]
             arrays=dict(inputs=x,known=np.stack(masks),eligible=member[np.ix_(ticks,listings)],held_states=held,

@@ -80,3 +80,43 @@ def test_shared_whole_branch_preserves_outputs_and_exact_budget(monkeypatch):
             torch.testing.assert_close(sig[:,0],sig[:,1],rtol=0,atol=0)
             torch.testing.assert_close(plan.ratios[:,0],plan.ratios[:,1],rtol=0,atol=0)
         plan.close()
+
+@pytest.mark.parametrize('reference',[False,True])
+def test_compact_calibration_keeps_activation_values(reference):
+    from research.vectorized_backtest.v60.calibration import observe
+    from research.vectorized_backtest.v60.genome import sample,INPUTS,MARKET_INPUTS
+    from research.vectorized_backtest.v60.features import CATALOG
+    from research.vectorized_backtest.v60.feature_layout import COLUMNS,WIDTH
+    from research.vectorized_backtest.v60.config import STATES
+    rng=np.random.default_rng(91)
+    x=rng.uniform(-1,1,(2,4,3,INPUTS)).astype(np.float32);x[...,MARKET_INPUTS:]=0
+    known=rng.random((2,4,3,len(CATALOG)))>.2
+    full=dict(inputs=x,known=known,held_states=np.zeros((2,4,3,len(STATES)),np.float32))
+    indices=[c+k*len(CATALOG) for k in range(3) for c in COLUMNS]+list(range(MARKET_INPUTS,INPUTS))
+    compact=dict(inputs=x[...,indices],known=known[...,COLUMNS],held_states=full['held_states'],compact_layout=True)
+    assert compact['inputs'].shape[-1]==3*WIDTH+len(STATES)
+    for member in sample(rng,3):
+        for stage,net in member.networks.items():
+            before=observe(net,full,stage,reference=reference);after=observe(net,compact,stage,reference=reference)
+            for a,b in zip(before,after):np.testing.assert_array_equal(a,b)
+
+
+def test_compact_probe_reader_and_loader(tmp_path):
+    import json
+    from hashlib import sha256
+    from research.vectorized_backtest.v60.feature_layout import COLUMNS,WIDTH
+    from research.vectorized_backtest.v60.authority import REGISTRY_SHA256,SWING_WINDOWS,coverage
+    from research.vectorized_backtest.v60.calibration import load_probe
+    from research.vectorized_backtest.v60.config import STATES
+    manifest=tmp_path/'training.json';manifest.write_text(json.dumps(dict(days=['day'],receipts={'day':'receipt'})))
+    shape=(1,2,1)
+    arrays=dict(inputs=np.zeros(shape+(3*WIDTH+18,),np.float32),known=np.ones(shape+(WIDTH,),bool),
+        eligible=np.ones(shape,bool),held_states=np.zeros(shape+(18,),np.float32),
+        ask=np.ones(shape),bid=np.ones(shape),quote_valid=np.ones(shape,bool),ask_size=np.ones(shape),swings=np.ones(shape+(len(SWING_WINDOWS)**2,)))
+    meta=dict(version='v60-training-boundary-probe-v1',training_sha256=sha256(manifest.read_bytes()).hexdigest(),
+        days=['day'],receipts={'day':'receipt'},validation_opened=False,registry=REGISTRY_SHA256,
+        feature_columns=list(COLUMNS),projected_policy=True,slice_sha256={k:sha256(v.tobytes()).hexdigest() for k,v in arrays.items()})
+    path=tmp_path/'probe.npz';np.savez(path,**arrays,metadata=np.asarray(json.dumps(meta)))
+    result=load_probe(path,manifest)
+    assert result['inputs'].shape[-1]==3*WIDTH+len(STATES) and result['compact_layout']
+    assert coverage(np.zeros((2,WIDTH)),np.ones((2,WIDTH),bool),COLUMNS)['observed'].tolist()==[2]*WIDTH
