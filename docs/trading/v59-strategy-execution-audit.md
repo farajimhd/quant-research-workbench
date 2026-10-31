@@ -259,7 +259,7 @@ Revision: verify fill conservation at each snapshot and across chunks/pages, mon
 1. **Freeze the minimal close-time contract and schemas:** candidate action/size/limit/stop/target outputs; causal market and current position inputs without recurrence; deterministic remainder/expiry/replacement/protective-exit rules; same-boundary quote and size authority. Record bug fixes versus deliberate behavior changes. Keep objective, sessions and budgets fixed.
 2. **Fix proven boundary defects:** current membership swing projection, feasibility-aware branch routing, impossible policy endpoint, and named abstention reasons. Preserve history definition until explicitly revised.
 3. **Implement price outputs and deterministic execution:** candidate-defined limit/stop/target prices; fixed order/partial-fill bookkeeping; position feedback without learned pending-order management; minimal close-time matching. Share CPU/CUDA semantics and retain actual fills/fees. Version genomes, state packing, execution and replay identities as affected.
-4. **Align initialization and reproduction:** jointly sample/mutate/cross action and price outputs with admissibility probes, without profitability filtering; coherent branch selection, retry accounting, exact scheduled/realized counts and deterministic RNG. Do not adopt legacy feature prior ranges as hard value limits. Separate policy choices F12–F14 from necessary correctness repairs.
+4. **Align initialization and reproduction:** jointly sample/mutate/cross action and price outputs with admissibility probes, without profitability filtering; coherent branch selection, retry accounting, exact scheduled/realized counts and deterministic RNG. Enforce the new per-feature construction caps in the table through a versioned feature-aware constructor, mutations and crossover checks; use formula/domain checks and bounded training-only coverage to prevent impossible, duplicate or uninformative proposals before replay. Do not use legacy priors as value limits or silently clip market observations. Separate policy choices F12–F14 from necessary correctness repairs.
 5. **Validate real runnable paths:** causal boundary fixtures; missing-history, invalid-stop, first-admission, routed fallback, exit conflict, cooldown, partial fills, limit waits, cancellation/amendment, cutoff/tail exhaustion, ledger conservation, all-founder inclusion, validation isolation, identity invalidation and deterministic recovery. Include a forced-overflow retry and shared-entry state-dependence check.
 6. **Short performance qualification then explicit recovery:** use frozen representative candidates and two contrasting sessions; compare baseline/fixed wall time and all unchanged-case decisions/ledgers. For intentional behavior changes report changed requests/fills/P&L and reasons instead of claiming financial parity. A history/input/execution change invalidates affected financial receipts; retain genomes/RNG where schema-compatible, but replay affected founders before selection. Do not reuse old scores merely because genomes match.
 
@@ -272,6 +272,31 @@ Per candidate/session: raw proposal counts by action; decision opportunities; re
 Every record must carry candidate/program identity, session/split, decision/execution contract versions, clock range and complete/partial coverage. Missing data is unavailable, never zero. Aggregate counters should be bounded tensors; sampled details can be persisted by the existing publication lane. UI should distinguish raw proposals, actionable requests, orders and positions.
 
 ## Full pinned market-input catalog
+
+### Next-version hard construction caps (proposed; not deployed)
+
+The user requests hard limits on candidate construction to prevent wasting replay compute on inappropriate thresholds and incompatible conditions. The table now has **Next construction min/max** for every searchable feature, separate from the unchanged legacy priors. Blocked features have no construction range: they remain forbidden. These are bounds for raw-feature comparison thresholds and feature-specific numeric proposals, not automatic clipping of observed market data and not financial order limits.
+
+Two bases are distinguished: **M** = formula-derived domain bounds; **E** = explicit finite engineering search envelope (possibly with a mathematical bound on one side). E values below are proposed defaults, not empirically certified limits for this universe. Before launch, a bounded training-only scan must report valid counts, missingness, extrema, quantiles and out-of-envelope counts by feature/session and freeze the approved cap manifest. Do not consult validation to tune them. If the scan shows an unsuitable envelope, revise it visibly before creating the next population; never silently clamp data or tighten it during evolution. No existing run is modified.
+
+Concrete envelope choices:
+
+- Positive-price ratios minus1: −0.99 to9 (ratio0.01 to10); known support/resistance center side narrows this to [−0.99,0] or [0,9]. Band edges can straddle the current price and are not incorrectly constrained by the center's side.
+- Log returns: ±ln(10), including a tenfold rise or fall over the stated horizon; context-relative log returns: ±2ln(10). Thus a tripling is within the proposed envelope. Positive volatility/dispersion default to ln(10); these are engineering limits, not mathematical maximum volatility.
+- Signed MACD ratios: ±4; nonnegative ATR/average-move fractions:0..4; candle range/spread fractions:0..9; candle body:−9..0.99. Finite envelopes intentionally exclude extreme threshold proposals without deleting extreme observations.
+- Boolean/RSI/fractions/percentiles:0..1; time sine/cosine and percentile change:−1..1; nested5s/60s activity acceleration:−1..11 (upper endpoint is a supremum, not an attainable value).
+- Log1p activity caps distinguish units: shares/volume1e9, trades/counts1e6, notional1e11; share-reference quantities1e12; relative-volume ratio1e4. Intraday gaps/quote age use57,600 seconds; historical level age uses10*365.25 days. These are engineering upper limits in the stated units, converted to log1p where appropriate. History notional means use1e11 dollars; volatility/fee ratio uses1,000.
+
+Implementation requirements:
+
+1. Introduce a versioned feature-contract authority with construction caps, mathematical domain, endpoint openness, units, missing policy and model transform. Validate finite ordered caps. Keep forbidden IDs forbidden across all channels.
+2. Apply it to initial templates/random feature predicates, fresh immigrants, threshold mutations, input substitutions and crossover repair **before GPU replay**. Sample only inside the permitted interval; Boolean predicates use explicit true/false tests rather than continuous random thresholds. Handle strict/non-strict comparator endpoints so known bounded features do not generate tautologies or impossible predicates.
+3. The present V59 graph threshold is on a weighted/transformed graph output, not directly on a raw feature. Merely changing catalog numbers will not enforce this design. Use feature-aware predicate construction and transform raw thresholds through the same feature transform; validate graph-output thresholds using operator output ranges and bounded training probes. Do not compare a raw return threshold directly to tanh(return).
+4. Keep channel-specific contracts: these table caps describe raw/absolute-feature predicates. Cross-sectional z-score/tanh features are dimensionless relative channels and need their own construction interval and training coverage; validity channels use Boolean predicates. Share-decade inputs likewise require mapping through their special transform.
+5. Use sound domain/operator reasoning to reject provably dead/constant constructions, and deduplicate canonical genomes before replay. An engineering search envelope is **not** a guaranteed bound on live input values: do not use it as a false proof that a graph is constant. Separate mathematically impossible, duplicate, and training-probe-uninformative proposals in counters. Low profitability or rare trading alone is not a proof of redundancy.
+6. Add tests for every family, extreme observations beyond the construction envelope, missing values, endpoint comparisons, crossover/mutation compliance, deterministic proposal counts and unchanged population/network budgets. Report prevented proposals and actual saved replay work; caps alone cannot guarantee unique or useful neural behavior.
+
+The current design therefore keeps position inputs without recurrence, implements candidate-defined trading prices, and adds construction caps as an additional pre-replay authority. All are next-implementation tasks, not changes activated by this document.
 
 ### F19 — Catalog-range review and corrected interpretation
 
@@ -312,964 +337,964 @@ This is a review of formula families and consumers plus an enumeration of all957
 
 **Current versus next implementation:** the957 catalog, masks,641 allowed features,316 blocked features, normalization and11 current state inputs are already implemented in V59. The corrected documentation interpretation is delivered now. The minimal deterministic controller contract and candidate-defined limit/stop/target output schema, revised candidate input slots and audit fixes remain proposed work for the next implementation. They are not activated by this report. New schema metadata should separate `sampling_prior`, `mathematical_domain`, `missing_policy` and `model_transform` instead of overloading lower/upper; preserve finite prior ranges for any legacy sampler that requires them.
 
-The table below is an exact enumeration from the pinned source catalog. `Allowed` applies to all three channels. **Legacy prior lower/upper are not permitted-value boundaries.** The family definitions and availability rules above apply to every row. Input meanings that require detailed indicator/level mathematics remain source-defined by the listed authority; changing them requires a new contract, not relabeling this table. Actual mathematical domains and the current-runtime review are documented immediately above this catalog.
+The table enumerates the pinned source catalog and adds proposed next-version construction caps. `Allowed` applies to all three channels. **Legacy prior lower/upper are not permitted-value boundaries.** New caps constrain candidate construction only as specified above. M/E label the basis; `forbidden` rows cannot be sampled. Numbers are rounded for display (six decimals); the implementation manifest should store the defining expressions/full precision, particularly logarithms and strict endpoints.
 
-| ID | Name | Unit | Legacy prior lower (not a cap) | Legacy prior upper (not a cap) | Allowed |
-|---:|---|---|---:|---:|---|
-| 0 | `log_open` | log_price | -5 | 10 | no |
-| 1 | `log_high` | log_price | -5 | 10 | no |
-| 2 | `log_low` | log_price | -5 | 10 | no |
-| 3 | `log_close` | log_price | -5 | 10 | no |
-| 4 | `bar_vwap_rel` | ratio | -2 | 2 | yes |
-| 5 | `session_vwap_rel` | ratio | -2 | 2 | yes |
-| 6 | `bar_vwap_valid` | bool | 0 | 1 | yes |
-| 7 | `session_vwap_valid` | bool | 0 | 1 | yes |
-| 8 | `log_volume` | log_shares | 0 | 30 | yes |
-| 9 | `log_trades` | log_count | 0 | 30 | yes |
-| 10 | `log_volume_60s` | log_shares | 0 | 30 | yes |
-| 11 | `log_trades_60s` | log_count | 0 | 30 | yes |
-| 12 | `log_rvol_10s_prev_session` | log_duration | 0 | 20 | yes |
-| 13 | `rvol_10s_available` | bool | 0 | 1 | yes |
-| 14 | `macd_line_rel` | ratio | -2 | 2 | yes |
-| 15 | `macd_signal_rel` | ratio | -2 | 2 | yes |
-| 16 | `rsi_14` | ratio | 0 | 1 | yes |
-| 17 | `atr_14_rel` | ratio | -2 | 2 | yes |
-| 18 | `ema_7_rel` | ratio | -2 | 2 | yes |
-| 19 | `ema_26_rel` | ratio | -2 | 2 | yes |
-| 20 | `indicator_available` | bool | 0 | 1 | yes |
-| 21 | `time_of_day_sin` | ratio | -2 | 2 | yes |
-| 22 | `time_of_day_cos` | ratio | -2 | 2 | yes |
-| 23 | `premarket` | bool | 0 | 1 | yes |
-| 24 | `regular` | bool | 0 | 1 | yes |
-| 25 | `after_hours` | bool | 0 | 1 | yes |
-| 26 | `log_inter_candle_gap` | log_duration | 0 | 30 | yes |
-| 27 | `log_float_shares` | log_shares | 0 | 30 | yes |
-| 28 | `float_present` | bool | 0 | 1 | yes |
-| 29 | `log_shares_outstanding` | log_shares | 0 | 30 | yes |
-| 30 | `shares_present` | bool | 0 | 1 | yes |
-| 31 | `log_days_since_split` | log_duration | 0 | 30 | no |
-| 32 | `split_present` | bool | 0 | 1 | no |
-| 33 | `log_days_since_reverse_split` | log_duration | 0 | 30 | no |
-| 34 | `reverse_split_present` | bool | 0 | 1 | no |
-| 35 | `bar_price_valid` | bool | 0 | 1 | yes |
-| 36 | `bar_extremes_valid` | bool | 0 | 1 | yes |
-| 37 | `v7.below.1.center_distance_rel` | ratio | -10 | 10 | yes |
-| 38 | `v7.below.1.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 39 | `v7.below.1.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 40 | `v7.below.1.log_observation_count` | log_count | 0 | 30 | yes |
-| 41 | `v7.below.1.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 42 | `v7.below.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 43 | `v7.below.1.role_support` | bool | 0 | 1 | yes |
-| 44 | `v7.below.1.role_resistance` | bool | 0 | 1 | yes |
-| 45 | `v7.below.1.role_transition` | bool | 0 | 1 | yes |
-| 46 | `v7.below.1.historical_origin` | bool | 0 | 1 | yes |
-| 47 | `v7.below.1.present` | bool | 0 | 1 | yes |
-| 48 | `v7.below.2.center_distance_rel` | ratio | -10 | 10 | yes |
-| 49 | `v7.below.2.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 50 | `v7.below.2.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 51 | `v7.below.2.log_observation_count` | log_count | 0 | 30 | yes |
-| 52 | `v7.below.2.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 53 | `v7.below.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 54 | `v7.below.2.role_support` | bool | 0 | 1 | yes |
-| 55 | `v7.below.2.role_resistance` | bool | 0 | 1 | yes |
-| 56 | `v7.below.2.role_transition` | bool | 0 | 1 | yes |
-| 57 | `v7.below.2.historical_origin` | bool | 0 | 1 | yes |
-| 58 | `v7.below.2.present` | bool | 0 | 1 | yes |
-| 59 | `v7.below.3.center_distance_rel` | ratio | -10 | 10 | yes |
-| 60 | `v7.below.3.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 61 | `v7.below.3.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 62 | `v7.below.3.log_observation_count` | log_count | 0 | 30 | yes |
-| 63 | `v7.below.3.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 64 | `v7.below.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 65 | `v7.below.3.role_support` | bool | 0 | 1 | yes |
-| 66 | `v7.below.3.role_resistance` | bool | 0 | 1 | yes |
-| 67 | `v7.below.3.role_transition` | bool | 0 | 1 | yes |
-| 68 | `v7.below.3.historical_origin` | bool | 0 | 1 | yes |
-| 69 | `v7.below.3.present` | bool | 0 | 1 | yes |
-| 70 | `v7.below.4.center_distance_rel` | ratio | -10 | 10 | yes |
-| 71 | `v7.below.4.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 72 | `v7.below.4.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 73 | `v7.below.4.log_observation_count` | log_count | 0 | 30 | yes |
-| 74 | `v7.below.4.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 75 | `v7.below.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 76 | `v7.below.4.role_support` | bool | 0 | 1 | yes |
-| 77 | `v7.below.4.role_resistance` | bool | 0 | 1 | yes |
-| 78 | `v7.below.4.role_transition` | bool | 0 | 1 | yes |
-| 79 | `v7.below.4.historical_origin` | bool | 0 | 1 | yes |
-| 80 | `v7.below.4.present` | bool | 0 | 1 | yes |
-| 81 | `v7.below.5.center_distance_rel` | ratio | -10 | 10 | yes |
-| 82 | `v7.below.5.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 83 | `v7.below.5.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 84 | `v7.below.5.log_observation_count` | log_count | 0 | 30 | yes |
-| 85 | `v7.below.5.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 86 | `v7.below.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 87 | `v7.below.5.role_support` | bool | 0 | 1 | yes |
-| 88 | `v7.below.5.role_resistance` | bool | 0 | 1 | yes |
-| 89 | `v7.below.5.role_transition` | bool | 0 | 1 | yes |
-| 90 | `v7.below.5.historical_origin` | bool | 0 | 1 | yes |
-| 91 | `v7.below.5.present` | bool | 0 | 1 | yes |
-| 92 | `v7.above.1.center_distance_rel` | ratio | -10 | 10 | yes |
-| 93 | `v7.above.1.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 94 | `v7.above.1.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 95 | `v7.above.1.log_observation_count` | log_count | 0 | 30 | yes |
-| 96 | `v7.above.1.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 97 | `v7.above.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 98 | `v7.above.1.role_support` | bool | 0 | 1 | yes |
-| 99 | `v7.above.1.role_resistance` | bool | 0 | 1 | yes |
-| 100 | `v7.above.1.role_transition` | bool | 0 | 1 | yes |
-| 101 | `v7.above.1.historical_origin` | bool | 0 | 1 | yes |
-| 102 | `v7.above.1.present` | bool | 0 | 1 | yes |
-| 103 | `v7.above.2.center_distance_rel` | ratio | -10 | 10 | yes |
-| 104 | `v7.above.2.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 105 | `v7.above.2.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 106 | `v7.above.2.log_observation_count` | log_count | 0 | 30 | yes |
-| 107 | `v7.above.2.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 108 | `v7.above.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 109 | `v7.above.2.role_support` | bool | 0 | 1 | yes |
-| 110 | `v7.above.2.role_resistance` | bool | 0 | 1 | yes |
-| 111 | `v7.above.2.role_transition` | bool | 0 | 1 | yes |
-| 112 | `v7.above.2.historical_origin` | bool | 0 | 1 | yes |
-| 113 | `v7.above.2.present` | bool | 0 | 1 | yes |
-| 114 | `v7.above.3.center_distance_rel` | ratio | -10 | 10 | yes |
-| 115 | `v7.above.3.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 116 | `v7.above.3.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 117 | `v7.above.3.log_observation_count` | log_count | 0 | 30 | yes |
-| 118 | `v7.above.3.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 119 | `v7.above.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 120 | `v7.above.3.role_support` | bool | 0 | 1 | yes |
-| 121 | `v7.above.3.role_resistance` | bool | 0 | 1 | yes |
-| 122 | `v7.above.3.role_transition` | bool | 0 | 1 | yes |
-| 123 | `v7.above.3.historical_origin` | bool | 0 | 1 | yes |
-| 124 | `v7.above.3.present` | bool | 0 | 1 | yes |
-| 125 | `v7.above.4.center_distance_rel` | ratio | -10 | 10 | yes |
-| 126 | `v7.above.4.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 127 | `v7.above.4.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 128 | `v7.above.4.log_observation_count` | log_count | 0 | 30 | yes |
-| 129 | `v7.above.4.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 130 | `v7.above.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 131 | `v7.above.4.role_support` | bool | 0 | 1 | yes |
-| 132 | `v7.above.4.role_resistance` | bool | 0 | 1 | yes |
-| 133 | `v7.above.4.role_transition` | bool | 0 | 1 | yes |
-| 134 | `v7.above.4.historical_origin` | bool | 0 | 1 | yes |
-| 135 | `v7.above.4.present` | bool | 0 | 1 | yes |
-| 136 | `v7.above.5.center_distance_rel` | ratio | -10 | 10 | yes |
-| 137 | `v7.above.5.lower_distance_rel` | ratio | -10 | 10 | yes |
-| 138 | `v7.above.5.upper_distance_rel` | ratio | -10 | 10 | yes |
-| 139 | `v7.above.5.log_observation_count` | log_count | 0 | 30 | yes |
-| 140 | `v7.above.5.log_today_observation_count` | log_count | 0 | 30 | yes |
-| 141 | `v7.above.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes |
-| 142 | `v7.above.5.role_support` | bool | 0 | 1 | yes |
-| 143 | `v7.above.5.role_resistance` | bool | 0 | 1 | yes |
-| 144 | `v7.above.5.role_transition` | bool | 0 | 1 | yes |
-| 145 | `v7.above.5.historical_origin` | bool | 0 | 1 | yes |
-| 146 | `v7.above.5.present` | bool | 0 | 1 | yes |
-| 147 | `split_this_session` | bool | 0 | 1 | no |
-| 148 | `reverse_split_this_session` | bool | 0 | 1 | no |
-| 149 | `history.recent_high.1` | price | 0 | 1000 | no |
-| 150 | `history.recent_high.2` | price | 0 | 1000 | no |
-| 151 | `history.recent_high.3` | price | 0 | 1000 | no |
-| 152 | `history.recent_high.4` | price | 0 | 1000 | no |
-| 153 | `history.recent_high.5` | price | 0 | 1000 | no |
-| 154 | `history.recent_high.6` | price | 0 | 1000 | no |
-| 155 | `history.recent_high.7` | price | 0 | 1000 | no |
-| 156 | `history.recent_high.8` | price | 0 | 1000 | no |
-| 157 | `history.recent_high.9` | price | 0 | 1000 | no |
-| 158 | `history.recent_high.10` | price | 0 | 1000 | no |
-| 159 | `history.recent_high.11` | price | 0 | 1000 | no |
-| 160 | `history.recent_high.12` | price | 0 | 1000 | no |
-| 161 | `history.recent_high.13` | price | 0 | 1000 | no |
-| 162 | `history.recent_high.14` | price | 0 | 1000 | no |
-| 163 | `history.recent_high.15` | price | 0 | 1000 | no |
-| 164 | `history.recent_high.16` | price | 0 | 1000 | no |
-| 165 | `history.recent_high.17` | price | 0 | 1000 | no |
-| 166 | `history.recent_high.18` | price | 0 | 1000 | no |
-| 167 | `history.recent_high.19` | price | 0 | 1000 | no |
-| 168 | `history.recent_high.20` | price | 0 | 1000 | no |
-| 169 | `history.recent_high.21` | price | 0 | 1000 | no |
-| 170 | `history.recent_high.22` | price | 0 | 1000 | no |
-| 171 | `history.recent_high.23` | price | 0 | 1000 | no |
-| 172 | `history.recent_high.24` | price | 0 | 1000 | no |
-| 173 | `history.recent_high.25` | price | 0 | 1000 | no |
-| 174 | `history.recent_high.26` | price | 0 | 1000 | no |
-| 175 | `history.recent_high.27` | price | 0 | 1000 | no |
-| 176 | `history.recent_high.28` | price | 0 | 1000 | no |
-| 177 | `history.recent_high.29` | price | 0 | 1000 | no |
-| 178 | `history.recent_high.30` | price | 0 | 1000 | no |
-| 179 | `history.recent_high.31` | price | 0 | 1000 | no |
-| 180 | `history.recent_high.32` | price | 0 | 1000 | no |
-| 181 | `history.recent_high.33` | price | 0 | 1000 | no |
-| 182 | `history.recent_high.34` | price | 0 | 1000 | no |
-| 183 | `history.recent_high.35` | price | 0 | 1000 | no |
-| 184 | `history.recent_high.36` | price | 0 | 1000 | no |
-| 185 | `history.recent_high.37` | price | 0 | 1000 | no |
-| 186 | `history.recent_high.38` | price | 0 | 1000 | no |
-| 187 | `history.recent_high.39` | price | 0 | 1000 | no |
-| 188 | `history.recent_high.40` | price | 0 | 1000 | no |
-| 189 | `history.recent_high.41` | price | 0 | 1000 | no |
-| 190 | `history.recent_high.42` | price | 0 | 1000 | no |
-| 191 | `history.recent_high.43` | price | 0 | 1000 | no |
-| 192 | `history.recent_high.44` | price | 0 | 1000 | no |
-| 193 | `history.recent_high.45` | price | 0 | 1000 | no |
-| 194 | `history.recent_high.46` | price | 0 | 1000 | no |
-| 195 | `history.recent_high.47` | price | 0 | 1000 | no |
-| 196 | `history.recent_high.48` | price | 0 | 1000 | no |
-| 197 | `history.recent_high.49` | price | 0 | 1000 | no |
-| 198 | `history.recent_high.50` | price | 0 | 1000 | no |
-| 199 | `history.recent_high.51` | price | 0 | 1000 | no |
-| 200 | `history.recent_high.52` | price | 0 | 1000 | no |
-| 201 | `history.recent_high.53` | price | 0 | 1000 | no |
-| 202 | `history.recent_high.54` | price | 0 | 1000 | no |
-| 203 | `history.recent_high.55` | price | 0 | 1000 | no |
-| 204 | `history.recent_high.56` | price | 0 | 1000 | no |
-| 205 | `history.recent_high.57` | price | 0 | 1000 | no |
-| 206 | `history.recent_high.58` | price | 0 | 1000 | no |
-| 207 | `history.recent_high.59` | price | 0 | 1000 | no |
-| 208 | `history.recent_high.60` | price | 0 | 1000 | no |
-| 209 | `history.momentum_close.1` | price | 0 | 1000 | no |
-| 210 | `history.momentum_close.2` | price | 0 | 1000 | no |
-| 211 | `history.momentum_close.3` | price | 0 | 1000 | no |
-| 212 | `history.momentum_close.4` | price | 0 | 1000 | no |
-| 213 | `history.momentum_close.5` | price | 0 | 1000 | no |
-| 214 | `history.momentum_close.6` | price | 0 | 1000 | no |
-| 215 | `history.momentum_close.7` | price | 0 | 1000 | no |
-| 216 | `history.momentum_close.8` | price | 0 | 1000 | no |
-| 217 | `history.momentum_close.9` | price | 0 | 1000 | no |
-| 218 | `history.momentum_close.10` | price | 0 | 1000 | no |
-| 219 | `history.momentum_close.11` | price | 0 | 1000 | no |
-| 220 | `history.momentum_close.12` | price | 0 | 1000 | no |
-| 221 | `history.momentum_close.13` | price | 0 | 1000 | no |
-| 222 | `history.momentum_close.14` | price | 0 | 1000 | no |
-| 223 | `history.momentum_close.15` | price | 0 | 1000 | no |
-| 224 | `history.momentum_close.16` | price | 0 | 1000 | no |
-| 225 | `history.momentum_close.17` | price | 0 | 1000 | no |
-| 226 | `history.momentum_close.18` | price | 0 | 1000 | no |
-| 227 | `history.momentum_close.19` | price | 0 | 1000 | no |
-| 228 | `history.momentum_close.20` | price | 0 | 1000 | no |
-| 229 | `history.momentum_close.21` | price | 0 | 1000 | no |
-| 230 | `history.momentum_close.22` | price | 0 | 1000 | no |
-| 231 | `history.momentum_close.23` | price | 0 | 1000 | no |
-| 232 | `history.momentum_close.24` | price | 0 | 1000 | no |
-| 233 | `history.momentum_close.25` | price | 0 | 1000 | no |
-| 234 | `history.momentum_close.26` | price | 0 | 1000 | no |
-| 235 | `history.momentum_close.27` | price | 0 | 1000 | no |
-| 236 | `history.momentum_close.28` | price | 0 | 1000 | no |
-| 237 | `history.momentum_close.29` | price | 0 | 1000 | no |
-| 238 | `history.momentum_close.30` | price | 0 | 1000 | no |
-| 239 | `history.momentum_close.31` | price | 0 | 1000 | no |
-| 240 | `history.momentum_close.32` | price | 0 | 1000 | no |
-| 241 | `history.momentum_close.33` | price | 0 | 1000 | no |
-| 242 | `history.momentum_close.34` | price | 0 | 1000 | no |
-| 243 | `history.momentum_close.35` | price | 0 | 1000 | no |
-| 244 | `history.momentum_close.36` | price | 0 | 1000 | no |
-| 245 | `history.momentum_close.37` | price | 0 | 1000 | no |
-| 246 | `history.momentum_close.38` | price | 0 | 1000 | no |
-| 247 | `history.momentum_close.39` | price | 0 | 1000 | no |
-| 248 | `history.momentum_close.40` | price | 0 | 1000 | no |
-| 249 | `history.momentum_close.41` | price | 0 | 1000 | no |
-| 250 | `history.momentum_close.42` | price | 0 | 1000 | no |
-| 251 | `history.momentum_close.43` | price | 0 | 1000 | no |
-| 252 | `history.momentum_close.44` | price | 0 | 1000 | no |
-| 253 | `history.momentum_close.45` | price | 0 | 1000 | no |
-| 254 | `history.momentum_close.46` | price | 0 | 1000 | no |
-| 255 | `history.momentum_close.47` | price | 0 | 1000 | no |
-| 256 | `history.momentum_close.48` | price | 0 | 1000 | no |
-| 257 | `history.momentum_close.49` | price | 0 | 1000 | no |
-| 258 | `history.momentum_close.50` | price | 0 | 1000 | no |
-| 259 | `history.momentum_close.51` | price | 0 | 1000 | no |
-| 260 | `history.momentum_close.52` | price | 0 | 1000 | no |
-| 261 | `history.momentum_close.53` | price | 0 | 1000 | no |
-| 262 | `history.momentum_close.54` | price | 0 | 1000 | no |
-| 263 | `history.momentum_close.55` | price | 0 | 1000 | no |
-| 264 | `history.momentum_close.56` | price | 0 | 1000 | no |
-| 265 | `history.momentum_close.57` | price | 0 | 1000 | no |
-| 266 | `history.momentum_close.58` | price | 0 | 1000 | no |
-| 267 | `history.momentum_close.59` | price | 0 | 1000 | no |
-| 268 | `history.momentum_close.60` | price | 0 | 1000 | no |
-| 269 | `history.attention_mean.1` | dollars | 0 | 1e+07 | yes |
-| 270 | `history.attention_mean.2` | dollars | 0 | 1e+07 | yes |
-| 271 | `history.attention_mean.3` | dollars | 0 | 1e+07 | yes |
-| 272 | `history.attention_mean.4` | dollars | 0 | 1e+07 | yes |
-| 273 | `history.attention_mean.5` | dollars | 0 | 1e+07 | yes |
-| 274 | `history.attention_mean.6` | dollars | 0 | 1e+07 | yes |
-| 275 | `history.attention_mean.7` | dollars | 0 | 1e+07 | yes |
-| 276 | `history.attention_mean.8` | dollars | 0 | 1e+07 | yes |
-| 277 | `history.attention_mean.9` | dollars | 0 | 1e+07 | yes |
-| 278 | `history.attention_mean.10` | dollars | 0 | 1e+07 | yes |
-| 279 | `history.attention_mean.11` | dollars | 0 | 1e+07 | yes |
-| 280 | `history.attention_mean.12` | dollars | 0 | 1e+07 | yes |
-| 281 | `history.attention_mean.13` | dollars | 0 | 1e+07 | yes |
-| 282 | `history.attention_mean.14` | dollars | 0 | 1e+07 | yes |
-| 283 | `history.attention_mean.15` | dollars | 0 | 1e+07 | yes |
-| 284 | `history.attention_mean.16` | dollars | 0 | 1e+07 | yes |
-| 285 | `history.attention_mean.17` | dollars | 0 | 1e+07 | yes |
-| 286 | `history.attention_mean.18` | dollars | 0 | 1e+07 | yes |
-| 287 | `history.attention_mean.19` | dollars | 0 | 1e+07 | yes |
-| 288 | `history.attention_mean.20` | dollars | 0 | 1e+07 | yes |
-| 289 | `history.attention_mean.21` | dollars | 0 | 1e+07 | yes |
-| 290 | `history.attention_mean.22` | dollars | 0 | 1e+07 | yes |
-| 291 | `history.attention_mean.23` | dollars | 0 | 1e+07 | yes |
-| 292 | `history.attention_mean.24` | dollars | 0 | 1e+07 | yes |
-| 293 | `history.attention_mean.25` | dollars | 0 | 1e+07 | yes |
-| 294 | `history.attention_mean.26` | dollars | 0 | 1e+07 | yes |
-| 295 | `history.attention_mean.27` | dollars | 0 | 1e+07 | yes |
-| 296 | `history.attention_mean.28` | dollars | 0 | 1e+07 | yes |
-| 297 | `history.attention_mean.29` | dollars | 0 | 1e+07 | yes |
-| 298 | `history.attention_mean.30` | dollars | 0 | 1e+07 | yes |
-| 299 | `history.attention_mean.31` | dollars | 0 | 1e+07 | yes |
-| 300 | `history.attention_mean.32` | dollars | 0 | 1e+07 | yes |
-| 301 | `history.attention_mean.33` | dollars | 0 | 1e+07 | yes |
-| 302 | `history.attention_mean.34` | dollars | 0 | 1e+07 | yes |
-| 303 | `history.attention_mean.35` | dollars | 0 | 1e+07 | yes |
-| 304 | `history.attention_mean.36` | dollars | 0 | 1e+07 | yes |
-| 305 | `history.attention_mean.37` | dollars | 0 | 1e+07 | yes |
-| 306 | `history.attention_mean.38` | dollars | 0 | 1e+07 | yes |
-| 307 | `history.attention_mean.39` | dollars | 0 | 1e+07 | yes |
-| 308 | `history.attention_mean.40` | dollars | 0 | 1e+07 | yes |
-| 309 | `history.attention_mean.41` | dollars | 0 | 1e+07 | yes |
-| 310 | `history.attention_mean.42` | dollars | 0 | 1e+07 | yes |
-| 311 | `history.attention_mean.43` | dollars | 0 | 1e+07 | yes |
-| 312 | `history.attention_mean.44` | dollars | 0 | 1e+07 | yes |
-| 313 | `history.attention_mean.45` | dollars | 0 | 1e+07 | yes |
-| 314 | `history.attention_mean.46` | dollars | 0 | 1e+07 | yes |
-| 315 | `history.attention_mean.47` | dollars | 0 | 1e+07 | yes |
-| 316 | `history.attention_mean.48` | dollars | 0 | 1e+07 | yes |
-| 317 | `history.attention_mean.49` | dollars | 0 | 1e+07 | yes |
-| 318 | `history.attention_mean.50` | dollars | 0 | 1e+07 | yes |
-| 319 | `history.attention_mean.51` | dollars | 0 | 1e+07 | yes |
-| 320 | `history.attention_mean.52` | dollars | 0 | 1e+07 | yes |
-| 321 | `history.attention_mean.53` | dollars | 0 | 1e+07 | yes |
-| 322 | `history.attention_mean.54` | dollars | 0 | 1e+07 | yes |
-| 323 | `history.attention_mean.55` | dollars | 0 | 1e+07 | yes |
-| 324 | `history.attention_mean.56` | dollars | 0 | 1e+07 | yes |
-| 325 | `history.attention_mean.57` | dollars | 0 | 1e+07 | yes |
-| 326 | `history.attention_mean.58` | dollars | 0 | 1e+07 | yes |
-| 327 | `history.attention_mean.59` | dollars | 0 | 1e+07 | yes |
-| 328 | `history.attention_mean.60` | dollars | 0 | 1e+07 | yes |
-| 329 | `history.average_move.2` | price | 0 | 1000 | no |
-| 330 | `history.average_move.3` | price | 0 | 1000 | no |
-| 331 | `history.average_move.4` | price | 0 | 1000 | no |
-| 332 | `history.average_move.5` | price | 0 | 1000 | no |
-| 333 | `history.average_move.6` | price | 0 | 1000 | no |
-| 334 | `history.average_move.7` | price | 0 | 1000 | no |
-| 335 | `history.average_move.8` | price | 0 | 1000 | no |
-| 336 | `history.average_move.9` | price | 0 | 1000 | no |
-| 337 | `history.average_move.10` | price | 0 | 1000 | no |
-| 338 | `history.average_move.11` | price | 0 | 1000 | no |
-| 339 | `history.average_move.12` | price | 0 | 1000 | no |
-| 340 | `history.average_move.13` | price | 0 | 1000 | no |
-| 341 | `history.average_move.14` | price | 0 | 1000 | no |
-| 342 | `history.average_move.15` | price | 0 | 1000 | no |
-| 343 | `history.average_move.16` | price | 0 | 1000 | no |
-| 344 | `history.average_move.17` | price | 0 | 1000 | no |
-| 345 | `history.average_move.18` | price | 0 | 1000 | no |
-| 346 | `history.average_move.19` | price | 0 | 1000 | no |
-| 347 | `history.average_move.20` | price | 0 | 1000 | no |
-| 348 | `history.average_move.21` | price | 0 | 1000 | no |
-| 349 | `history.average_move.22` | price | 0 | 1000 | no |
-| 350 | `history.average_move.23` | price | 0 | 1000 | no |
-| 351 | `history.average_move.24` | price | 0 | 1000 | no |
-| 352 | `history.average_move.25` | price | 0 | 1000 | no |
-| 353 | `history.average_move.26` | price | 0 | 1000 | no |
-| 354 | `history.average_move.27` | price | 0 | 1000 | no |
-| 355 | `history.average_move.28` | price | 0 | 1000 | no |
-| 356 | `history.average_move.29` | price | 0 | 1000 | no |
-| 357 | `history.average_move.30` | price | 0 | 1000 | no |
-| 358 | `history.average_move.31` | price | 0 | 1000 | no |
-| 359 | `history.average_move.32` | price | 0 | 1000 | no |
-| 360 | `history.swing_low.1.1` | price | 0 | 1000 | no |
-| 361 | `history.swing_low.1.2` | price | 0 | 1000 | no |
-| 362 | `history.swing_low.1.3` | price | 0 | 1000 | no |
-| 363 | `history.swing_low.1.4` | price | 0 | 1000 | no |
-| 364 | `history.swing_low.1.5` | price | 0 | 1000 | no |
-| 365 | `history.swing_low.1.10` | price | 0 | 1000 | no |
-| 366 | `history.swing_low.1.15` | price | 0 | 1000 | no |
-| 367 | `history.swing_low.1.20` | price | 0 | 1000 | no |
-| 368 | `history.swing_low.1.30` | price | 0 | 1000 | no |
-| 369 | `history.swing_low.1.45` | price | 0 | 1000 | no |
-| 370 | `history.swing_low.1.60` | price | 0 | 1000 | no |
-| 371 | `history.swing_low.2.1` | price | 0 | 1000 | no |
-| 372 | `history.swing_low.2.2` | price | 0 | 1000 | no |
-| 373 | `history.swing_low.2.3` | price | 0 | 1000 | no |
-| 374 | `history.swing_low.2.4` | price | 0 | 1000 | no |
-| 375 | `history.swing_low.2.5` | price | 0 | 1000 | no |
-| 376 | `history.swing_low.2.10` | price | 0 | 1000 | no |
-| 377 | `history.swing_low.2.15` | price | 0 | 1000 | no |
-| 378 | `history.swing_low.2.20` | price | 0 | 1000 | no |
-| 379 | `history.swing_low.2.30` | price | 0 | 1000 | no |
-| 380 | `history.swing_low.2.45` | price | 0 | 1000 | no |
-| 381 | `history.swing_low.2.60` | price | 0 | 1000 | no |
-| 382 | `history.swing_low.3.1` | price | 0 | 1000 | no |
-| 383 | `history.swing_low.3.2` | price | 0 | 1000 | no |
-| 384 | `history.swing_low.3.3` | price | 0 | 1000 | no |
-| 385 | `history.swing_low.3.4` | price | 0 | 1000 | no |
-| 386 | `history.swing_low.3.5` | price | 0 | 1000 | no |
-| 387 | `history.swing_low.3.10` | price | 0 | 1000 | no |
-| 388 | `history.swing_low.3.15` | price | 0 | 1000 | no |
-| 389 | `history.swing_low.3.20` | price | 0 | 1000 | no |
-| 390 | `history.swing_low.3.30` | price | 0 | 1000 | no |
-| 391 | `history.swing_low.3.45` | price | 0 | 1000 | no |
-| 392 | `history.swing_low.3.60` | price | 0 | 1000 | no |
-| 393 | `history.swing_low.4.1` | price | 0 | 1000 | no |
-| 394 | `history.swing_low.4.2` | price | 0 | 1000 | no |
-| 395 | `history.swing_low.4.3` | price | 0 | 1000 | no |
-| 396 | `history.swing_low.4.4` | price | 0 | 1000 | no |
-| 397 | `history.swing_low.4.5` | price | 0 | 1000 | no |
-| 398 | `history.swing_low.4.10` | price | 0 | 1000 | no |
-| 399 | `history.swing_low.4.15` | price | 0 | 1000 | no |
-| 400 | `history.swing_low.4.20` | price | 0 | 1000 | no |
-| 401 | `history.swing_low.4.30` | price | 0 | 1000 | no |
-| 402 | `history.swing_low.4.45` | price | 0 | 1000 | no |
-| 403 | `history.swing_low.4.60` | price | 0 | 1000 | no |
-| 404 | `history.swing_low.5.1` | price | 0 | 1000 | no |
-| 405 | `history.swing_low.5.2` | price | 0 | 1000 | no |
-| 406 | `history.swing_low.5.3` | price | 0 | 1000 | no |
-| 407 | `history.swing_low.5.4` | price | 0 | 1000 | no |
-| 408 | `history.swing_low.5.5` | price | 0 | 1000 | no |
-| 409 | `history.swing_low.5.10` | price | 0 | 1000 | no |
-| 410 | `history.swing_low.5.15` | price | 0 | 1000 | no |
-| 411 | `history.swing_low.5.20` | price | 0 | 1000 | no |
-| 412 | `history.swing_low.5.30` | price | 0 | 1000 | no |
-| 413 | `history.swing_low.5.45` | price | 0 | 1000 | no |
-| 414 | `history.swing_low.5.60` | price | 0 | 1000 | no |
-| 415 | `history.swing_low.10.1` | price | 0 | 1000 | no |
-| 416 | `history.swing_low.10.2` | price | 0 | 1000 | no |
-| 417 | `history.swing_low.10.3` | price | 0 | 1000 | no |
-| 418 | `history.swing_low.10.4` | price | 0 | 1000 | no |
-| 419 | `history.swing_low.10.5` | price | 0 | 1000 | no |
-| 420 | `history.swing_low.10.10` | price | 0 | 1000 | no |
-| 421 | `history.swing_low.10.15` | price | 0 | 1000 | no |
-| 422 | `history.swing_low.10.20` | price | 0 | 1000 | no |
-| 423 | `history.swing_low.10.30` | price | 0 | 1000 | no |
-| 424 | `history.swing_low.10.45` | price | 0 | 1000 | no |
-| 425 | `history.swing_low.10.60` | price | 0 | 1000 | no |
-| 426 | `history.swing_low.15.1` | price | 0 | 1000 | no |
-| 427 | `history.swing_low.15.2` | price | 0 | 1000 | no |
-| 428 | `history.swing_low.15.3` | price | 0 | 1000 | no |
-| 429 | `history.swing_low.15.4` | price | 0 | 1000 | no |
-| 430 | `history.swing_low.15.5` | price | 0 | 1000 | no |
-| 431 | `history.swing_low.15.10` | price | 0 | 1000 | no |
-| 432 | `history.swing_low.15.15` | price | 0 | 1000 | no |
-| 433 | `history.swing_low.15.20` | price | 0 | 1000 | no |
-| 434 | `history.swing_low.15.30` | price | 0 | 1000 | no |
-| 435 | `history.swing_low.15.45` | price | 0 | 1000 | no |
-| 436 | `history.swing_low.15.60` | price | 0 | 1000 | no |
-| 437 | `history.swing_low.20.1` | price | 0 | 1000 | no |
-| 438 | `history.swing_low.20.2` | price | 0 | 1000 | no |
-| 439 | `history.swing_low.20.3` | price | 0 | 1000 | no |
-| 440 | `history.swing_low.20.4` | price | 0 | 1000 | no |
-| 441 | `history.swing_low.20.5` | price | 0 | 1000 | no |
-| 442 | `history.swing_low.20.10` | price | 0 | 1000 | no |
-| 443 | `history.swing_low.20.15` | price | 0 | 1000 | no |
-| 444 | `history.swing_low.20.20` | price | 0 | 1000 | no |
-| 445 | `history.swing_low.20.30` | price | 0 | 1000 | no |
-| 446 | `history.swing_low.20.45` | price | 0 | 1000 | no |
-| 447 | `history.swing_low.20.60` | price | 0 | 1000 | no |
-| 448 | `history.swing_low.30.1` | price | 0 | 1000 | no |
-| 449 | `history.swing_low.30.2` | price | 0 | 1000 | no |
-| 450 | `history.swing_low.30.3` | price | 0 | 1000 | no |
-| 451 | `history.swing_low.30.4` | price | 0 | 1000 | no |
-| 452 | `history.swing_low.30.5` | price | 0 | 1000 | no |
-| 453 | `history.swing_low.30.10` | price | 0 | 1000 | no |
-| 454 | `history.swing_low.30.15` | price | 0 | 1000 | no |
-| 455 | `history.swing_low.30.20` | price | 0 | 1000 | no |
-| 456 | `history.swing_low.30.30` | price | 0 | 1000 | no |
-| 457 | `history.swing_low.30.45` | price | 0 | 1000 | no |
-| 458 | `history.swing_low.30.60` | price | 0 | 1000 | no |
-| 459 | `history.swing_low.45.1` | price | 0 | 1000 | no |
-| 460 | `history.swing_low.45.2` | price | 0 | 1000 | no |
-| 461 | `history.swing_low.45.3` | price | 0 | 1000 | no |
-| 462 | `history.swing_low.45.4` | price | 0 | 1000 | no |
-| 463 | `history.swing_low.45.5` | price | 0 | 1000 | no |
-| 464 | `history.swing_low.45.10` | price | 0 | 1000 | no |
-| 465 | `history.swing_low.45.15` | price | 0 | 1000 | no |
-| 466 | `history.swing_low.45.20` | price | 0 | 1000 | no |
-| 467 | `history.swing_low.45.30` | price | 0 | 1000 | no |
-| 468 | `history.swing_low.45.45` | price | 0 | 1000 | no |
-| 469 | `history.swing_low.45.60` | price | 0 | 1000 | no |
-| 470 | `history.swing_low.60.1` | price | 0 | 1000 | no |
-| 471 | `history.swing_low.60.2` | price | 0 | 1000 | no |
-| 472 | `history.swing_low.60.3` | price | 0 | 1000 | no |
-| 473 | `history.swing_low.60.4` | price | 0 | 1000 | no |
-| 474 | `history.swing_low.60.5` | price | 0 | 1000 | no |
-| 475 | `history.swing_low.60.10` | price | 0 | 1000 | no |
-| 476 | `history.swing_low.60.15` | price | 0 | 1000 | no |
-| 477 | `history.swing_low.60.20` | price | 0 | 1000 | no |
-| 478 | `history.swing_low.60.30` | price | 0 | 1000 | no |
-| 479 | `history.swing_low.60.45` | price | 0 | 1000 | no |
-| 480 | `history.swing_low.60.60` | price | 0 | 1000 | no |
-| 481 | `history.recent_high.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 482 | `history.recent_high.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 483 | `history.recent_high.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 484 | `history.recent_high.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 485 | `history.recent_high.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 486 | `history.recent_high.6.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 487 | `history.recent_high.7.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 488 | `history.recent_high.8.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 489 | `history.recent_high.9.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 490 | `history.recent_high.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 491 | `history.recent_high.11.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 492 | `history.recent_high.12.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 493 | `history.recent_high.13.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 494 | `history.recent_high.14.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 495 | `history.recent_high.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 496 | `history.recent_high.16.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 497 | `history.recent_high.17.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 498 | `history.recent_high.18.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 499 | `history.recent_high.19.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 500 | `history.recent_high.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 501 | `history.recent_high.21.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 502 | `history.recent_high.22.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 503 | `history.recent_high.23.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 504 | `history.recent_high.24.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 505 | `history.recent_high.25.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 506 | `history.recent_high.26.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 507 | `history.recent_high.27.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 508 | `history.recent_high.28.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 509 | `history.recent_high.29.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 510 | `history.recent_high.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 511 | `history.recent_high.31.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 512 | `history.recent_high.32.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 513 | `history.recent_high.33.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 514 | `history.recent_high.34.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 515 | `history.recent_high.35.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 516 | `history.recent_high.36.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 517 | `history.recent_high.37.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 518 | `history.recent_high.38.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 519 | `history.recent_high.39.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 520 | `history.recent_high.40.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 521 | `history.recent_high.41.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 522 | `history.recent_high.42.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 523 | `history.recent_high.43.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 524 | `history.recent_high.44.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 525 | `history.recent_high.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 526 | `history.recent_high.46.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 527 | `history.recent_high.47.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 528 | `history.recent_high.48.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 529 | `history.recent_high.49.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 530 | `history.recent_high.50.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 531 | `history.recent_high.51.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 532 | `history.recent_high.52.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 533 | `history.recent_high.53.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 534 | `history.recent_high.54.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 535 | `history.recent_high.55.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 536 | `history.recent_high.56.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 537 | `history.recent_high.57.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 538 | `history.recent_high.58.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 539 | `history.recent_high.59.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 540 | `history.recent_high.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 541 | `history.momentum_close.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 542 | `history.momentum_close.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 543 | `history.momentum_close.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 544 | `history.momentum_close.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 545 | `history.momentum_close.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 546 | `history.momentum_close.6.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 547 | `history.momentum_close.7.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 548 | `history.momentum_close.8.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 549 | `history.momentum_close.9.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 550 | `history.momentum_close.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 551 | `history.momentum_close.11.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 552 | `history.momentum_close.12.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 553 | `history.momentum_close.13.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 554 | `history.momentum_close.14.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 555 | `history.momentum_close.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 556 | `history.momentum_close.16.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 557 | `history.momentum_close.17.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 558 | `history.momentum_close.18.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 559 | `history.momentum_close.19.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 560 | `history.momentum_close.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 561 | `history.momentum_close.21.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 562 | `history.momentum_close.22.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 563 | `history.momentum_close.23.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 564 | `history.momentum_close.24.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 565 | `history.momentum_close.25.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 566 | `history.momentum_close.26.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 567 | `history.momentum_close.27.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 568 | `history.momentum_close.28.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 569 | `history.momentum_close.29.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 570 | `history.momentum_close.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 571 | `history.momentum_close.31.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 572 | `history.momentum_close.32.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 573 | `history.momentum_close.33.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 574 | `history.momentum_close.34.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 575 | `history.momentum_close.35.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 576 | `history.momentum_close.36.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 577 | `history.momentum_close.37.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 578 | `history.momentum_close.38.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 579 | `history.momentum_close.39.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 580 | `history.momentum_close.40.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 581 | `history.momentum_close.41.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 582 | `history.momentum_close.42.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 583 | `history.momentum_close.43.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 584 | `history.momentum_close.44.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 585 | `history.momentum_close.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 586 | `history.momentum_close.46.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 587 | `history.momentum_close.47.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 588 | `history.momentum_close.48.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 589 | `history.momentum_close.49.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 590 | `history.momentum_close.50.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 591 | `history.momentum_close.51.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 592 | `history.momentum_close.52.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 593 | `history.momentum_close.53.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 594 | `history.momentum_close.54.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 595 | `history.momentum_close.55.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 596 | `history.momentum_close.56.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 597 | `history.momentum_close.57.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 598 | `history.momentum_close.58.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 599 | `history.momentum_close.59.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 600 | `history.momentum_close.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 601 | `history.average_move.2.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 602 | `history.average_move.3.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 603 | `history.average_move.4.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 604 | `history.average_move.5.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 605 | `history.average_move.6.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 606 | `history.average_move.7.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 607 | `history.average_move.8.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 608 | `history.average_move.9.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 609 | `history.average_move.10.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 610 | `history.average_move.11.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 611 | `history.average_move.12.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 612 | `history.average_move.13.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 613 | `history.average_move.14.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 614 | `history.average_move.15.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 615 | `history.average_move.16.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 616 | `history.average_move.17.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 617 | `history.average_move.18.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 618 | `history.average_move.19.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 619 | `history.average_move.20.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 620 | `history.average_move.21.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 621 | `history.average_move.22.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 622 | `history.average_move.23.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 623 | `history.average_move.24.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 624 | `history.average_move.25.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 625 | `history.average_move.26.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 626 | `history.average_move.27.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 627 | `history.average_move.28.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 628 | `history.average_move.29.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 629 | `history.average_move.30.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 630 | `history.average_move.31.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 631 | `history.average_move.32.fraction_of_close` | ratio | 0 | 0.5 | yes |
-| 632 | `history.swing_low.1.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 633 | `history.swing_low.1.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 634 | `history.swing_low.1.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 635 | `history.swing_low.1.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 636 | `history.swing_low.1.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 637 | `history.swing_low.1.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 638 | `history.swing_low.1.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 639 | `history.swing_low.1.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 640 | `history.swing_low.1.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 641 | `history.swing_low.1.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 642 | `history.swing_low.1.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 643 | `history.swing_low.2.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 644 | `history.swing_low.2.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 645 | `history.swing_low.2.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 646 | `history.swing_low.2.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 647 | `history.swing_low.2.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 648 | `history.swing_low.2.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 649 | `history.swing_low.2.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 650 | `history.swing_low.2.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 651 | `history.swing_low.2.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 652 | `history.swing_low.2.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 653 | `history.swing_low.2.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 654 | `history.swing_low.3.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 655 | `history.swing_low.3.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 656 | `history.swing_low.3.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 657 | `history.swing_low.3.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 658 | `history.swing_low.3.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 659 | `history.swing_low.3.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 660 | `history.swing_low.3.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 661 | `history.swing_low.3.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 662 | `history.swing_low.3.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 663 | `history.swing_low.3.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 664 | `history.swing_low.3.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 665 | `history.swing_low.4.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 666 | `history.swing_low.4.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 667 | `history.swing_low.4.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 668 | `history.swing_low.4.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 669 | `history.swing_low.4.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 670 | `history.swing_low.4.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 671 | `history.swing_low.4.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 672 | `history.swing_low.4.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 673 | `history.swing_low.4.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 674 | `history.swing_low.4.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 675 | `history.swing_low.4.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 676 | `history.swing_low.5.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 677 | `history.swing_low.5.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 678 | `history.swing_low.5.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 679 | `history.swing_low.5.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 680 | `history.swing_low.5.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 681 | `history.swing_low.5.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 682 | `history.swing_low.5.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 683 | `history.swing_low.5.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 684 | `history.swing_low.5.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 685 | `history.swing_low.5.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 686 | `history.swing_low.5.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 687 | `history.swing_low.10.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 688 | `history.swing_low.10.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 689 | `history.swing_low.10.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 690 | `history.swing_low.10.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 691 | `history.swing_low.10.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 692 | `history.swing_low.10.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 693 | `history.swing_low.10.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 694 | `history.swing_low.10.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 695 | `history.swing_low.10.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 696 | `history.swing_low.10.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 697 | `history.swing_low.10.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 698 | `history.swing_low.15.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 699 | `history.swing_low.15.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 700 | `history.swing_low.15.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 701 | `history.swing_low.15.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 702 | `history.swing_low.15.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 703 | `history.swing_low.15.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 704 | `history.swing_low.15.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 705 | `history.swing_low.15.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 706 | `history.swing_low.15.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 707 | `history.swing_low.15.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 708 | `history.swing_low.15.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 709 | `history.swing_low.20.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 710 | `history.swing_low.20.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 711 | `history.swing_low.20.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 712 | `history.swing_low.20.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 713 | `history.swing_low.20.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 714 | `history.swing_low.20.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 715 | `history.swing_low.20.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 716 | `history.swing_low.20.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 717 | `history.swing_low.20.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 718 | `history.swing_low.20.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 719 | `history.swing_low.20.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 720 | `history.swing_low.30.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 721 | `history.swing_low.30.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 722 | `history.swing_low.30.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 723 | `history.swing_low.30.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 724 | `history.swing_low.30.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 725 | `history.swing_low.30.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 726 | `history.swing_low.30.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 727 | `history.swing_low.30.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 728 | `history.swing_low.30.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 729 | `history.swing_low.30.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 730 | `history.swing_low.30.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 731 | `history.swing_low.45.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 732 | `history.swing_low.45.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 733 | `history.swing_low.45.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 734 | `history.swing_low.45.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 735 | `history.swing_low.45.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 736 | `history.swing_low.45.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 737 | `history.swing_low.45.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 738 | `history.swing_low.45.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 739 | `history.swing_low.45.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 740 | `history.swing_low.45.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 741 | `history.swing_low.45.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 742 | `history.swing_low.60.1.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 743 | `history.swing_low.60.2.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 744 | `history.swing_low.60.3.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 745 | `history.swing_low.60.4.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 746 | `history.swing_low.60.5.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 747 | `history.swing_low.60.10.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 748 | `history.swing_low.60.15.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 749 | `history.swing_low.60.20.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 750 | `history.swing_low.60.30.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 751 | `history.swing_low.60.45.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 752 | `history.swing_low.60.60.relative_to_close` | ratio | -0.5 | 0.5 | yes |
-| 753 | `market.bid_relative` | ratio | -0.1 | 0.1 | yes |
-| 754 | `market.ask_relative` | ratio | -0.1 | 0.1 | yes |
-| 755 | `market.spread_fraction` | ratio | 0 | 0.1 | yes |
-| 756 | `market.quote_age_seconds` | duration | 0 | 3600 | yes |
-| 757 | `market.log_execution_volume` | log_shares | 0 | 30 | yes |
-| 758 | `market.log_execution_notional` | log_dollars | 0 | 30 | yes |
-| 759 | `market.log_execution_trade_count` | log_count | 0 | 20 | yes |
-| 760 | `market.bid` | price | 0 | 1000 | no |
-| 761 | `market.ask` | price | 0 | 1000 | no |
-| 762 | `market.spread` | price | 0 | 100 | no |
-| 763 | `market.close` | price | 0 | 1000 | no |
-| 764 | `indicator.ema.2` | price | 0 | 1000 | no |
-| 765 | `indicator.ema.2.relative` | ratio | -0.5 | 0.5 | yes |
-| 766 | `indicator.ema.3` | price | 0 | 1000 | no |
-| 767 | `indicator.ema.3.relative` | ratio | -0.5 | 0.5 | yes |
-| 768 | `indicator.ema.5` | price | 0 | 1000 | no |
-| 769 | `indicator.ema.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 770 | `indicator.ema.7` | price | 0 | 1000 | no |
-| 771 | `indicator.ema.7.relative` | ratio | -0.5 | 0.5 | yes |
-| 772 | `indicator.ema.9` | price | 0 | 1000 | no |
-| 773 | `indicator.ema.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 774 | `indicator.ema.10` | price | 0 | 1000 | no |
-| 775 | `indicator.ema.10.relative` | ratio | -0.5 | 0.5 | yes |
-| 776 | `indicator.ema.12` | price | 0 | 1000 | no |
-| 777 | `indicator.ema.12.relative` | ratio | -0.5 | 0.5 | yes |
-| 778 | `indicator.ema.14` | price | 0 | 1000 | no |
-| 779 | `indicator.ema.14.relative` | ratio | -0.5 | 0.5 | yes |
-| 780 | `indicator.ema.15` | price | 0 | 1000 | no |
-| 781 | `indicator.ema.15.relative` | ratio | -0.5 | 0.5 | yes |
-| 782 | `indicator.ema.20` | price | 0 | 1000 | no |
-| 783 | `indicator.ema.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 784 | `indicator.ema.26` | price | 0 | 1000 | no |
-| 785 | `indicator.ema.26.relative` | ratio | -0.5 | 0.5 | yes |
-| 786 | `indicator.ema.30` | price | 0 | 1000 | no |
-| 787 | `indicator.ema.30.relative` | ratio | -0.5 | 0.5 | yes |
-| 788 | `indicator.ema.45` | price | 0 | 1000 | no |
-| 789 | `indicator.ema.45.relative` | ratio | -0.5 | 0.5 | yes |
-| 790 | `indicator.ema.50` | price | 0 | 1000 | no |
-| 791 | `indicator.ema.50.relative` | ratio | -0.5 | 0.5 | yes |
-| 792 | `indicator.ema.60` | price | 0 | 1000 | no |
-| 793 | `indicator.ema.60.relative` | ratio | -0.5 | 0.5 | yes |
-| 794 | `indicator.rsi.2` | ratio | 0 | 1 | yes |
-| 795 | `indicator.rsi.3` | ratio | 0 | 1 | yes |
-| 796 | `indicator.rsi.5` | ratio | 0 | 1 | yes |
-| 797 | `indicator.rsi.7` | ratio | 0 | 1 | yes |
-| 798 | `indicator.rsi.9` | ratio | 0 | 1 | yes |
-| 799 | `indicator.rsi.10` | ratio | 0 | 1 | yes |
-| 800 | `indicator.rsi.12` | ratio | 0 | 1 | yes |
-| 801 | `indicator.rsi.14` | ratio | 0 | 1 | yes |
-| 802 | `indicator.rsi.15` | ratio | 0 | 1 | yes |
-| 803 | `indicator.rsi.20` | ratio | 0 | 1 | yes |
-| 804 | `indicator.rsi.26` | ratio | 0 | 1 | yes |
-| 805 | `indicator.rsi.30` | ratio | 0 | 1 | yes |
-| 806 | `indicator.rsi.45` | ratio | 0 | 1 | yes |
-| 807 | `indicator.rsi.50` | ratio | 0 | 1 | yes |
-| 808 | `indicator.rsi.60` | ratio | 0 | 1 | yes |
-| 809 | `indicator.atr.2` | price | 0 | 1000 | no |
-| 810 | `indicator.atr.2.relative` | ratio | 0 | 1 | yes |
-| 811 | `indicator.atr.3` | price | 0 | 1000 | no |
-| 812 | `indicator.atr.3.relative` | ratio | 0 | 1 | yes |
-| 813 | `indicator.atr.5` | price | 0 | 1000 | no |
-| 814 | `indicator.atr.5.relative` | ratio | 0 | 1 | yes |
-| 815 | `indicator.atr.7` | price | 0 | 1000 | no |
-| 816 | `indicator.atr.7.relative` | ratio | 0 | 1 | yes |
-| 817 | `indicator.atr.9` | price | 0 | 1000 | no |
-| 818 | `indicator.atr.9.relative` | ratio | 0 | 1 | yes |
-| 819 | `indicator.atr.10` | price | 0 | 1000 | no |
-| 820 | `indicator.atr.10.relative` | ratio | 0 | 1 | yes |
-| 821 | `indicator.atr.12` | price | 0 | 1000 | no |
-| 822 | `indicator.atr.12.relative` | ratio | 0 | 1 | yes |
-| 823 | `indicator.atr.14` | price | 0 | 1000 | no |
-| 824 | `indicator.atr.14.relative` | ratio | 0 | 1 | yes |
-| 825 | `indicator.atr.15` | price | 0 | 1000 | no |
-| 826 | `indicator.atr.15.relative` | ratio | 0 | 1 | yes |
-| 827 | `indicator.atr.20` | price | 0 | 1000 | no |
-| 828 | `indicator.atr.20.relative` | ratio | 0 | 1 | yes |
-| 829 | `indicator.atr.26` | price | 0 | 1000 | no |
-| 830 | `indicator.atr.26.relative` | ratio | 0 | 1 | yes |
-| 831 | `indicator.atr.30` | price | 0 | 1000 | no |
-| 832 | `indicator.atr.30.relative` | ratio | 0 | 1 | yes |
-| 833 | `indicator.atr.45` | price | 0 | 1000 | no |
-| 834 | `indicator.atr.45.relative` | ratio | 0 | 1 | yes |
-| 835 | `indicator.atr.50` | price | 0 | 1000 | no |
-| 836 | `indicator.atr.50.relative` | ratio | 0 | 1 | yes |
-| 837 | `indicator.atr.60` | price | 0 | 1000 | no |
-| 838 | `indicator.atr.60.relative` | ratio | 0 | 1 | yes |
-| 839 | `indicator.macd_line.3.15.relative` | ratio | -0.5 | 0.5 | yes |
-| 840 | `indicator.macd_signal.3.15.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 841 | `indicator.macd_histogram.3.15.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 842 | `indicator.macd_signal.3.15.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 843 | `indicator.macd_histogram.3.15.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 844 | `indicator.macd_signal.3.15.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 845 | `indicator.macd_histogram.3.15.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 846 | `indicator.macd_line.3.26.relative` | ratio | -0.5 | 0.5 | yes |
-| 847 | `indicator.macd_signal.3.26.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 848 | `indicator.macd_histogram.3.26.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 849 | `indicator.macd_signal.3.26.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 850 | `indicator.macd_histogram.3.26.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 851 | `indicator.macd_signal.3.26.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 852 | `indicator.macd_histogram.3.26.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 853 | `indicator.macd_line.3.50.relative` | ratio | -0.5 | 0.5 | yes |
-| 854 | `indicator.macd_signal.3.50.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 855 | `indicator.macd_histogram.3.50.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 856 | `indicator.macd_signal.3.50.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 857 | `indicator.macd_histogram.3.50.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 858 | `indicator.macd_signal.3.50.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 859 | `indicator.macd_histogram.3.50.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 860 | `indicator.macd_line.7.15.relative` | ratio | -0.5 | 0.5 | yes |
-| 861 | `indicator.macd_signal.7.15.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 862 | `indicator.macd_histogram.7.15.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 863 | `indicator.macd_signal.7.15.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 864 | `indicator.macd_histogram.7.15.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 865 | `indicator.macd_signal.7.15.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 866 | `indicator.macd_histogram.7.15.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 867 | `indicator.macd_line.7.26.relative` | ratio | -0.5 | 0.5 | yes |
-| 868 | `indicator.macd_signal.7.26.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 869 | `indicator.macd_histogram.7.26.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 870 | `indicator.macd_signal.7.26.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 871 | `indicator.macd_histogram.7.26.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 872 | `indicator.macd_signal.7.26.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 873 | `indicator.macd_histogram.7.26.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 874 | `indicator.macd_line.7.50.relative` | ratio | -0.5 | 0.5 | yes |
-| 875 | `indicator.macd_signal.7.50.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 876 | `indicator.macd_histogram.7.50.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 877 | `indicator.macd_signal.7.50.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 878 | `indicator.macd_histogram.7.50.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 879 | `indicator.macd_signal.7.50.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 880 | `indicator.macd_histogram.7.50.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 881 | `indicator.macd_line.12.15.relative` | ratio | -0.5 | 0.5 | yes |
-| 882 | `indicator.macd_signal.12.15.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 883 | `indicator.macd_histogram.12.15.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 884 | `indicator.macd_signal.12.15.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 885 | `indicator.macd_histogram.12.15.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 886 | `indicator.macd_signal.12.15.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 887 | `indicator.macd_histogram.12.15.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 888 | `indicator.macd_line.12.26.relative` | ratio | -0.5 | 0.5 | yes |
-| 889 | `indicator.macd_signal.12.26.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 890 | `indicator.macd_histogram.12.26.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 891 | `indicator.macd_signal.12.26.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 892 | `indicator.macd_histogram.12.26.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 893 | `indicator.macd_signal.12.26.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 894 | `indicator.macd_histogram.12.26.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 895 | `indicator.macd_line.12.50.relative` | ratio | -0.5 | 0.5 | yes |
-| 896 | `indicator.macd_signal.12.50.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 897 | `indicator.macd_histogram.12.50.5.relative` | ratio | -0.5 | 0.5 | yes |
-| 898 | `indicator.macd_signal.12.50.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 899 | `indicator.macd_histogram.12.50.9.relative` | ratio | -0.5 | 0.5 | yes |
-| 900 | `indicator.macd_signal.12.50.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 901 | `indicator.macd_histogram.12.50.20.relative` | ratio | -0.5 | 0.5 | yes |
-| 902 | `enriched.return.5s` | ratio | -0.5 | 1 | yes |
-| 903 | `enriched.volatility.5s` | ratio | 0 | 1 | yes |
-| 904 | `enriched.return.15s` | ratio | -0.5 | 1 | yes |
-| 905 | `enriched.volatility.15s` | ratio | 0 | 1 | yes |
-| 906 | `enriched.return.60s` | ratio | -0.5 | 1 | yes |
-| 907 | `enriched.volatility.60s` | ratio | 0 | 1 | yes |
-| 908 | `enriched.return.300s` | ratio | -0.5 | 1 | yes |
-| 909 | `enriched.volatility.300s` | ratio | 0 | 1 | yes |
-| 910 | `enriched.activity.volume_acceleration` | ratio | -0.5 | 1 | yes |
-| 911 | `enriched.activity.trade_acceleration` | ratio | -0.5 | 1 | yes |
-| 912 | `enriched.execution.volatility_fee_ratio` | ratio | 0 | 100 | yes |
-| 913 | `enriched.candle.5s.body` | ratio | -0.5 | 1 | yes |
-| 914 | `enriched.candle.5s.range` | ratio | 0 | 1 | yes |
-| 915 | `enriched.candle.5s.close_location` | ratio | 0 | 1 | yes |
-| 916 | `enriched.candle.5s.return` | ratio | -0.5 | 1 | yes |
-| 917 | `enriched.candle.5s.log_volume` | ratio | 0 | 30 | yes |
-| 918 | `enriched.candle.5s.log_trades` | ratio | 0 | 30 | yes |
-| 919 | `enriched.candle.5s.active_fraction` | ratio | 0 | 1 | yes |
-| 920 | `enriched.candle.15s.body` | ratio | -0.5 | 1 | yes |
-| 921 | `enriched.candle.15s.range` | ratio | 0 | 1 | yes |
-| 922 | `enriched.candle.15s.close_location` | ratio | 0 | 1 | yes |
-| 923 | `enriched.candle.15s.return` | ratio | -0.5 | 1 | yes |
-| 924 | `enriched.candle.15s.log_volume` | ratio | 0 | 30 | yes |
-| 925 | `enriched.candle.15s.log_trades` | ratio | 0 | 30 | yes |
-| 926 | `enriched.candle.15s.active_fraction` | ratio | 0 | 1 | yes |
-| 927 | `enriched.candle.60s.body` | ratio | -0.5 | 1 | yes |
-| 928 | `enriched.candle.60s.range` | ratio | 0 | 1 | yes |
-| 929 | `enriched.candle.60s.close_location` | ratio | 0 | 1 | yes |
-| 930 | `enriched.candle.60s.return` | ratio | -0.5 | 1 | yes |
-| 931 | `enriched.candle.60s.log_volume` | ratio | 0 | 30 | yes |
-| 932 | `enriched.candle.60s.log_trades` | ratio | 0 | 30 | yes |
-| 933 | `enriched.candle.60s.active_fraction` | ratio | 0 | 1 | yes |
-| 934 | `enriched.context.15s.median_return` | ratio | -0.5 | 1 | yes |
-| 935 | `enriched.context.15s.mean_return` | ratio | -0.5 | 1 | yes |
-| 936 | `enriched.context.15s.advancing_fraction` | ratio | 0 | 1 | yes |
-| 937 | `enriched.context.15s.dispersion` | ratio | 0 | 1 | yes |
-| 938 | `enriched.context.15s.coverage` | ratio | 0 | 1 | yes |
-| 939 | `enriched.context.15s.relative_return` | ratio | -0.5 | 1 | yes |
-| 940 | `enriched.context.15s.return_percentile` | ratio | 0 | 1 | yes |
-| 941 | `enriched.context.60s.median_return` | ratio | -0.5 | 1 | yes |
-| 942 | `enriched.context.60s.mean_return` | ratio | -0.5 | 1 | yes |
-| 943 | `enriched.context.60s.advancing_fraction` | ratio | 0 | 1 | yes |
-| 944 | `enriched.context.60s.dispersion` | ratio | 0 | 1 | yes |
-| 945 | `enriched.context.60s.coverage` | ratio | 0 | 1 | yes |
-| 946 | `enriched.context.60s.relative_return` | ratio | -0.5 | 1 | yes |
-| 947 | `enriched.context.60s.return_percentile` | ratio | 0 | 1 | yes |
-| 948 | `enriched.context.300s.median_return` | ratio | -0.5 | 1 | yes |
-| 949 | `enriched.context.300s.mean_return` | ratio | -0.5 | 1 | yes |
-| 950 | `enriched.context.300s.advancing_fraction` | ratio | 0 | 1 | yes |
-| 951 | `enriched.context.300s.dispersion` | ratio | 0 | 1 | yes |
-| 952 | `enriched.context.300s.coverage` | ratio | 0 | 1 | yes |
-| 953 | `enriched.context.300s.relative_return` | ratio | -0.5 | 1 | yes |
-| 954 | `enriched.context.300s.return_percentile` | ratio | 0 | 1 | yes |
-| 955 | `enriched.rank.dollar_volume_60s_percentile` | ratio | 0 | 1 | yes |
-| 956 | `enriched.rank.dollar_volume_60s_change_15s` | ratio | -0.5 | 1 | yes |
+| ID | Name | Unit | Legacy prior lower | Legacy prior upper | Allowed | Next construction min | Next construction max | Basis |
+|---:|---|---|---:|---:|---|---:|---:|---|
+| 0 | `log_open` | log_price | -5 | 10 | no | — | — | forbidden |
+| 1 | `log_high` | log_price | -5 | 10 | no | — | — | forbidden |
+| 2 | `log_low` | log_price | -5 | 10 | no | — | — | forbidden |
+| 3 | `log_close` | log_price | -5 | 10 | no | — | — | forbidden |
+| 4 | `bar_vwap_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
+| 5 | `session_vwap_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
+| 6 | `bar_vwap_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 7 | `session_vwap_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 8 | `log_volume` | log_shares | 0 | 30 | yes | 0 | 20.723266 | E |
+| 9 | `log_trades` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 10 | `log_volume_60s` | log_shares | 0 | 30 | yes | 0 | 20.723266 | E |
+| 11 | `log_trades_60s` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 12 | `log_rvol_10s_prev_session` | log_duration | 0 | 20 | yes | 0 | 9.21044 | E |
+| 13 | `rvol_10s_available` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 14 | `macd_line_rel` | ratio | -2 | 2 | yes | -4 | 4 | E |
+| 15 | `macd_signal_rel` | ratio | -2 | 2 | yes | -4 | 4 | E |
+| 16 | `rsi_14` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 17 | `atr_14_rel` | ratio | -2 | 2 | yes | 0 | 4 | E |
+| 18 | `ema_7_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
+| 19 | `ema_26_rel` | ratio | -2 | 2 | yes | -0.99 | 9 | E |
+| 20 | `indicator_available` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 21 | `time_of_day_sin` | ratio | -2 | 2 | yes | -1 | 1 | M |
+| 22 | `time_of_day_cos` | ratio | -2 | 2 | yes | -1 | 1 | M |
+| 23 | `premarket` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 24 | `regular` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 25 | `after_hours` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 26 | `log_inter_candle_gap` | log_duration | 0 | 30 | yes | 0 | 10.961295 | E |
+| 27 | `log_float_shares` | log_shares | 0 | 30 | yes | 0 | 27.631021 | E |
+| 28 | `float_present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 29 | `log_shares_outstanding` | log_shares | 0 | 30 | yes | 0 | 27.631021 | E |
+| 30 | `shares_present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 31 | `log_days_since_split` | log_duration | 0 | 30 | no | — | — | forbidden |
+| 32 | `split_present` | bool | 0 | 1 | no | — | — | forbidden |
+| 33 | `log_days_since_reverse_split` | log_duration | 0 | 30 | no | — | — | forbidden |
+| 34 | `reverse_split_present` | bool | 0 | 1 | no | — | — | forbidden |
+| 35 | `bar_price_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 36 | `bar_extremes_valid` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 37 | `v7.below.1.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
+| 38 | `v7.below.1.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 39 | `v7.below.1.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 40 | `v7.below.1.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 41 | `v7.below.1.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 42 | `v7.below.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 43 | `v7.below.1.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 44 | `v7.below.1.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 45 | `v7.below.1.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 46 | `v7.below.1.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 47 | `v7.below.1.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 48 | `v7.below.2.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
+| 49 | `v7.below.2.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 50 | `v7.below.2.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 51 | `v7.below.2.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 52 | `v7.below.2.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 53 | `v7.below.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 54 | `v7.below.2.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 55 | `v7.below.2.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 56 | `v7.below.2.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 57 | `v7.below.2.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 58 | `v7.below.2.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 59 | `v7.below.3.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
+| 60 | `v7.below.3.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 61 | `v7.below.3.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 62 | `v7.below.3.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 63 | `v7.below.3.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 64 | `v7.below.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 65 | `v7.below.3.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 66 | `v7.below.3.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 67 | `v7.below.3.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 68 | `v7.below.3.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 69 | `v7.below.3.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 70 | `v7.below.4.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
+| 71 | `v7.below.4.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 72 | `v7.below.4.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 73 | `v7.below.4.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 74 | `v7.below.4.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 75 | `v7.below.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 76 | `v7.below.4.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 77 | `v7.below.4.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 78 | `v7.below.4.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 79 | `v7.below.4.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 80 | `v7.below.4.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 81 | `v7.below.5.center_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 0 | E |
+| 82 | `v7.below.5.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 83 | `v7.below.5.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 84 | `v7.below.5.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 85 | `v7.below.5.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 86 | `v7.below.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 87 | `v7.below.5.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 88 | `v7.below.5.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 89 | `v7.below.5.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 90 | `v7.below.5.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 91 | `v7.below.5.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 92 | `v7.above.1.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
+| 93 | `v7.above.1.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 94 | `v7.above.1.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 95 | `v7.above.1.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 96 | `v7.above.1.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 97 | `v7.above.1.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 98 | `v7.above.1.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 99 | `v7.above.1.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 100 | `v7.above.1.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 101 | `v7.above.1.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 102 | `v7.above.1.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 103 | `v7.above.2.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
+| 104 | `v7.above.2.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 105 | `v7.above.2.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 106 | `v7.above.2.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 107 | `v7.above.2.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 108 | `v7.above.2.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 109 | `v7.above.2.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 110 | `v7.above.2.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 111 | `v7.above.2.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 112 | `v7.above.2.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 113 | `v7.above.2.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 114 | `v7.above.3.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
+| 115 | `v7.above.3.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 116 | `v7.above.3.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 117 | `v7.above.3.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 118 | `v7.above.3.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 119 | `v7.above.3.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 120 | `v7.above.3.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 121 | `v7.above.3.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 122 | `v7.above.3.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 123 | `v7.above.3.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 124 | `v7.above.3.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 125 | `v7.above.4.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
+| 126 | `v7.above.4.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 127 | `v7.above.4.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 128 | `v7.above.4.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 129 | `v7.above.4.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 130 | `v7.above.4.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 131 | `v7.above.4.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 132 | `v7.above.4.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 133 | `v7.above.4.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 134 | `v7.above.4.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 135 | `v7.above.4.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 136 | `v7.above.5.center_distance_rel` | ratio | -10 | 10 | yes | 0 | 9 | E |
+| 137 | `v7.above.5.lower_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 138 | `v7.above.5.upper_distance_rel` | ratio | -10 | 10 | yes | -0.99 | 9 | E |
+| 139 | `v7.above.5.log_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 140 | `v7.above.5.log_today_observation_count` | log_count | 0 | 30 | yes | 0 | 13.815512 | E |
+| 141 | `v7.above.5.log_age_since_confirmation` | log_duration | 0 | 30 | yes | 0 | 19.56991 | E |
+| 142 | `v7.above.5.role_support` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 143 | `v7.above.5.role_resistance` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 144 | `v7.above.5.role_transition` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 145 | `v7.above.5.historical_origin` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 146 | `v7.above.5.present` | bool | 0 | 1 | yes | 0 | 1 | M |
+| 147 | `split_this_session` | bool | 0 | 1 | no | — | — | forbidden |
+| 148 | `reverse_split_this_session` | bool | 0 | 1 | no | — | — | forbidden |
+| 149 | `history.recent_high.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 150 | `history.recent_high.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 151 | `history.recent_high.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 152 | `history.recent_high.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 153 | `history.recent_high.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 154 | `history.recent_high.6` | price | 0 | 1000 | no | — | — | forbidden |
+| 155 | `history.recent_high.7` | price | 0 | 1000 | no | — | — | forbidden |
+| 156 | `history.recent_high.8` | price | 0 | 1000 | no | — | — | forbidden |
+| 157 | `history.recent_high.9` | price | 0 | 1000 | no | — | — | forbidden |
+| 158 | `history.recent_high.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 159 | `history.recent_high.11` | price | 0 | 1000 | no | — | — | forbidden |
+| 160 | `history.recent_high.12` | price | 0 | 1000 | no | — | — | forbidden |
+| 161 | `history.recent_high.13` | price | 0 | 1000 | no | — | — | forbidden |
+| 162 | `history.recent_high.14` | price | 0 | 1000 | no | — | — | forbidden |
+| 163 | `history.recent_high.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 164 | `history.recent_high.16` | price | 0 | 1000 | no | — | — | forbidden |
+| 165 | `history.recent_high.17` | price | 0 | 1000 | no | — | — | forbidden |
+| 166 | `history.recent_high.18` | price | 0 | 1000 | no | — | — | forbidden |
+| 167 | `history.recent_high.19` | price | 0 | 1000 | no | — | — | forbidden |
+| 168 | `history.recent_high.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 169 | `history.recent_high.21` | price | 0 | 1000 | no | — | — | forbidden |
+| 170 | `history.recent_high.22` | price | 0 | 1000 | no | — | — | forbidden |
+| 171 | `history.recent_high.23` | price | 0 | 1000 | no | — | — | forbidden |
+| 172 | `history.recent_high.24` | price | 0 | 1000 | no | — | — | forbidden |
+| 173 | `history.recent_high.25` | price | 0 | 1000 | no | — | — | forbidden |
+| 174 | `history.recent_high.26` | price | 0 | 1000 | no | — | — | forbidden |
+| 175 | `history.recent_high.27` | price | 0 | 1000 | no | — | — | forbidden |
+| 176 | `history.recent_high.28` | price | 0 | 1000 | no | — | — | forbidden |
+| 177 | `history.recent_high.29` | price | 0 | 1000 | no | — | — | forbidden |
+| 178 | `history.recent_high.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 179 | `history.recent_high.31` | price | 0 | 1000 | no | — | — | forbidden |
+| 180 | `history.recent_high.32` | price | 0 | 1000 | no | — | — | forbidden |
+| 181 | `history.recent_high.33` | price | 0 | 1000 | no | — | — | forbidden |
+| 182 | `history.recent_high.34` | price | 0 | 1000 | no | — | — | forbidden |
+| 183 | `history.recent_high.35` | price | 0 | 1000 | no | — | — | forbidden |
+| 184 | `history.recent_high.36` | price | 0 | 1000 | no | — | — | forbidden |
+| 185 | `history.recent_high.37` | price | 0 | 1000 | no | — | — | forbidden |
+| 186 | `history.recent_high.38` | price | 0 | 1000 | no | — | — | forbidden |
+| 187 | `history.recent_high.39` | price | 0 | 1000 | no | — | — | forbidden |
+| 188 | `history.recent_high.40` | price | 0 | 1000 | no | — | — | forbidden |
+| 189 | `history.recent_high.41` | price | 0 | 1000 | no | — | — | forbidden |
+| 190 | `history.recent_high.42` | price | 0 | 1000 | no | — | — | forbidden |
+| 191 | `history.recent_high.43` | price | 0 | 1000 | no | — | — | forbidden |
+| 192 | `history.recent_high.44` | price | 0 | 1000 | no | — | — | forbidden |
+| 193 | `history.recent_high.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 194 | `history.recent_high.46` | price | 0 | 1000 | no | — | — | forbidden |
+| 195 | `history.recent_high.47` | price | 0 | 1000 | no | — | — | forbidden |
+| 196 | `history.recent_high.48` | price | 0 | 1000 | no | — | — | forbidden |
+| 197 | `history.recent_high.49` | price | 0 | 1000 | no | — | — | forbidden |
+| 198 | `history.recent_high.50` | price | 0 | 1000 | no | — | — | forbidden |
+| 199 | `history.recent_high.51` | price | 0 | 1000 | no | — | — | forbidden |
+| 200 | `history.recent_high.52` | price | 0 | 1000 | no | — | — | forbidden |
+| 201 | `history.recent_high.53` | price | 0 | 1000 | no | — | — | forbidden |
+| 202 | `history.recent_high.54` | price | 0 | 1000 | no | — | — | forbidden |
+| 203 | `history.recent_high.55` | price | 0 | 1000 | no | — | — | forbidden |
+| 204 | `history.recent_high.56` | price | 0 | 1000 | no | — | — | forbidden |
+| 205 | `history.recent_high.57` | price | 0 | 1000 | no | — | — | forbidden |
+| 206 | `history.recent_high.58` | price | 0 | 1000 | no | — | — | forbidden |
+| 207 | `history.recent_high.59` | price | 0 | 1000 | no | — | — | forbidden |
+| 208 | `history.recent_high.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 209 | `history.momentum_close.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 210 | `history.momentum_close.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 211 | `history.momentum_close.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 212 | `history.momentum_close.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 213 | `history.momentum_close.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 214 | `history.momentum_close.6` | price | 0 | 1000 | no | — | — | forbidden |
+| 215 | `history.momentum_close.7` | price | 0 | 1000 | no | — | — | forbidden |
+| 216 | `history.momentum_close.8` | price | 0 | 1000 | no | — | — | forbidden |
+| 217 | `history.momentum_close.9` | price | 0 | 1000 | no | — | — | forbidden |
+| 218 | `history.momentum_close.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 219 | `history.momentum_close.11` | price | 0 | 1000 | no | — | — | forbidden |
+| 220 | `history.momentum_close.12` | price | 0 | 1000 | no | — | — | forbidden |
+| 221 | `history.momentum_close.13` | price | 0 | 1000 | no | — | — | forbidden |
+| 222 | `history.momentum_close.14` | price | 0 | 1000 | no | — | — | forbidden |
+| 223 | `history.momentum_close.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 224 | `history.momentum_close.16` | price | 0 | 1000 | no | — | — | forbidden |
+| 225 | `history.momentum_close.17` | price | 0 | 1000 | no | — | — | forbidden |
+| 226 | `history.momentum_close.18` | price | 0 | 1000 | no | — | — | forbidden |
+| 227 | `history.momentum_close.19` | price | 0 | 1000 | no | — | — | forbidden |
+| 228 | `history.momentum_close.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 229 | `history.momentum_close.21` | price | 0 | 1000 | no | — | — | forbidden |
+| 230 | `history.momentum_close.22` | price | 0 | 1000 | no | — | — | forbidden |
+| 231 | `history.momentum_close.23` | price | 0 | 1000 | no | — | — | forbidden |
+| 232 | `history.momentum_close.24` | price | 0 | 1000 | no | — | — | forbidden |
+| 233 | `history.momentum_close.25` | price | 0 | 1000 | no | — | — | forbidden |
+| 234 | `history.momentum_close.26` | price | 0 | 1000 | no | — | — | forbidden |
+| 235 | `history.momentum_close.27` | price | 0 | 1000 | no | — | — | forbidden |
+| 236 | `history.momentum_close.28` | price | 0 | 1000 | no | — | — | forbidden |
+| 237 | `history.momentum_close.29` | price | 0 | 1000 | no | — | — | forbidden |
+| 238 | `history.momentum_close.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 239 | `history.momentum_close.31` | price | 0 | 1000 | no | — | — | forbidden |
+| 240 | `history.momentum_close.32` | price | 0 | 1000 | no | — | — | forbidden |
+| 241 | `history.momentum_close.33` | price | 0 | 1000 | no | — | — | forbidden |
+| 242 | `history.momentum_close.34` | price | 0 | 1000 | no | — | — | forbidden |
+| 243 | `history.momentum_close.35` | price | 0 | 1000 | no | — | — | forbidden |
+| 244 | `history.momentum_close.36` | price | 0 | 1000 | no | — | — | forbidden |
+| 245 | `history.momentum_close.37` | price | 0 | 1000 | no | — | — | forbidden |
+| 246 | `history.momentum_close.38` | price | 0 | 1000 | no | — | — | forbidden |
+| 247 | `history.momentum_close.39` | price | 0 | 1000 | no | — | — | forbidden |
+| 248 | `history.momentum_close.40` | price | 0 | 1000 | no | — | — | forbidden |
+| 249 | `history.momentum_close.41` | price | 0 | 1000 | no | — | — | forbidden |
+| 250 | `history.momentum_close.42` | price | 0 | 1000 | no | — | — | forbidden |
+| 251 | `history.momentum_close.43` | price | 0 | 1000 | no | — | — | forbidden |
+| 252 | `history.momentum_close.44` | price | 0 | 1000 | no | — | — | forbidden |
+| 253 | `history.momentum_close.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 254 | `history.momentum_close.46` | price | 0 | 1000 | no | — | — | forbidden |
+| 255 | `history.momentum_close.47` | price | 0 | 1000 | no | — | — | forbidden |
+| 256 | `history.momentum_close.48` | price | 0 | 1000 | no | — | — | forbidden |
+| 257 | `history.momentum_close.49` | price | 0 | 1000 | no | — | — | forbidden |
+| 258 | `history.momentum_close.50` | price | 0 | 1000 | no | — | — | forbidden |
+| 259 | `history.momentum_close.51` | price | 0 | 1000 | no | — | — | forbidden |
+| 260 | `history.momentum_close.52` | price | 0 | 1000 | no | — | — | forbidden |
+| 261 | `history.momentum_close.53` | price | 0 | 1000 | no | — | — | forbidden |
+| 262 | `history.momentum_close.54` | price | 0 | 1000 | no | — | — | forbidden |
+| 263 | `history.momentum_close.55` | price | 0 | 1000 | no | — | — | forbidden |
+| 264 | `history.momentum_close.56` | price | 0 | 1000 | no | — | — | forbidden |
+| 265 | `history.momentum_close.57` | price | 0 | 1000 | no | — | — | forbidden |
+| 266 | `history.momentum_close.58` | price | 0 | 1000 | no | — | — | forbidden |
+| 267 | `history.momentum_close.59` | price | 0 | 1000 | no | — | — | forbidden |
+| 268 | `history.momentum_close.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 269 | `history.attention_mean.1` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 270 | `history.attention_mean.2` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 271 | `history.attention_mean.3` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 272 | `history.attention_mean.4` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 273 | `history.attention_mean.5` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 274 | `history.attention_mean.6` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 275 | `history.attention_mean.7` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 276 | `history.attention_mean.8` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 277 | `history.attention_mean.9` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 278 | `history.attention_mean.10` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 279 | `history.attention_mean.11` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 280 | `history.attention_mean.12` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 281 | `history.attention_mean.13` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 282 | `history.attention_mean.14` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 283 | `history.attention_mean.15` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 284 | `history.attention_mean.16` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 285 | `history.attention_mean.17` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 286 | `history.attention_mean.18` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 287 | `history.attention_mean.19` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 288 | `history.attention_mean.20` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 289 | `history.attention_mean.21` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 290 | `history.attention_mean.22` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 291 | `history.attention_mean.23` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 292 | `history.attention_mean.24` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 293 | `history.attention_mean.25` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 294 | `history.attention_mean.26` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 295 | `history.attention_mean.27` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 296 | `history.attention_mean.28` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 297 | `history.attention_mean.29` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 298 | `history.attention_mean.30` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 299 | `history.attention_mean.31` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 300 | `history.attention_mean.32` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 301 | `history.attention_mean.33` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 302 | `history.attention_mean.34` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 303 | `history.attention_mean.35` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 304 | `history.attention_mean.36` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 305 | `history.attention_mean.37` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 306 | `history.attention_mean.38` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 307 | `history.attention_mean.39` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 308 | `history.attention_mean.40` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 309 | `history.attention_mean.41` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 310 | `history.attention_mean.42` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 311 | `history.attention_mean.43` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 312 | `history.attention_mean.44` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 313 | `history.attention_mean.45` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 314 | `history.attention_mean.46` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 315 | `history.attention_mean.47` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 316 | `history.attention_mean.48` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 317 | `history.attention_mean.49` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 318 | `history.attention_mean.50` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 319 | `history.attention_mean.51` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 320 | `history.attention_mean.52` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 321 | `history.attention_mean.53` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 322 | `history.attention_mean.54` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 323 | `history.attention_mean.55` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 324 | `history.attention_mean.56` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 325 | `history.attention_mean.57` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 326 | `history.attention_mean.58` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 327 | `history.attention_mean.59` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 328 | `history.attention_mean.60` | dollars | 0 | 1e+07 | yes | 0 | 100000000000 | E |
+| 329 | `history.average_move.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 330 | `history.average_move.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 331 | `history.average_move.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 332 | `history.average_move.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 333 | `history.average_move.6` | price | 0 | 1000 | no | — | — | forbidden |
+| 334 | `history.average_move.7` | price | 0 | 1000 | no | — | — | forbidden |
+| 335 | `history.average_move.8` | price | 0 | 1000 | no | — | — | forbidden |
+| 336 | `history.average_move.9` | price | 0 | 1000 | no | — | — | forbidden |
+| 337 | `history.average_move.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 338 | `history.average_move.11` | price | 0 | 1000 | no | — | — | forbidden |
+| 339 | `history.average_move.12` | price | 0 | 1000 | no | — | — | forbidden |
+| 340 | `history.average_move.13` | price | 0 | 1000 | no | — | — | forbidden |
+| 341 | `history.average_move.14` | price | 0 | 1000 | no | — | — | forbidden |
+| 342 | `history.average_move.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 343 | `history.average_move.16` | price | 0 | 1000 | no | — | — | forbidden |
+| 344 | `history.average_move.17` | price | 0 | 1000 | no | — | — | forbidden |
+| 345 | `history.average_move.18` | price | 0 | 1000 | no | — | — | forbidden |
+| 346 | `history.average_move.19` | price | 0 | 1000 | no | — | — | forbidden |
+| 347 | `history.average_move.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 348 | `history.average_move.21` | price | 0 | 1000 | no | — | — | forbidden |
+| 349 | `history.average_move.22` | price | 0 | 1000 | no | — | — | forbidden |
+| 350 | `history.average_move.23` | price | 0 | 1000 | no | — | — | forbidden |
+| 351 | `history.average_move.24` | price | 0 | 1000 | no | — | — | forbidden |
+| 352 | `history.average_move.25` | price | 0 | 1000 | no | — | — | forbidden |
+| 353 | `history.average_move.26` | price | 0 | 1000 | no | — | — | forbidden |
+| 354 | `history.average_move.27` | price | 0 | 1000 | no | — | — | forbidden |
+| 355 | `history.average_move.28` | price | 0 | 1000 | no | — | — | forbidden |
+| 356 | `history.average_move.29` | price | 0 | 1000 | no | — | — | forbidden |
+| 357 | `history.average_move.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 358 | `history.average_move.31` | price | 0 | 1000 | no | — | — | forbidden |
+| 359 | `history.average_move.32` | price | 0 | 1000 | no | — | — | forbidden |
+| 360 | `history.swing_low.1.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 361 | `history.swing_low.1.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 362 | `history.swing_low.1.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 363 | `history.swing_low.1.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 364 | `history.swing_low.1.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 365 | `history.swing_low.1.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 366 | `history.swing_low.1.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 367 | `history.swing_low.1.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 368 | `history.swing_low.1.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 369 | `history.swing_low.1.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 370 | `history.swing_low.1.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 371 | `history.swing_low.2.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 372 | `history.swing_low.2.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 373 | `history.swing_low.2.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 374 | `history.swing_low.2.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 375 | `history.swing_low.2.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 376 | `history.swing_low.2.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 377 | `history.swing_low.2.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 378 | `history.swing_low.2.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 379 | `history.swing_low.2.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 380 | `history.swing_low.2.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 381 | `history.swing_low.2.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 382 | `history.swing_low.3.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 383 | `history.swing_low.3.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 384 | `history.swing_low.3.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 385 | `history.swing_low.3.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 386 | `history.swing_low.3.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 387 | `history.swing_low.3.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 388 | `history.swing_low.3.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 389 | `history.swing_low.3.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 390 | `history.swing_low.3.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 391 | `history.swing_low.3.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 392 | `history.swing_low.3.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 393 | `history.swing_low.4.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 394 | `history.swing_low.4.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 395 | `history.swing_low.4.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 396 | `history.swing_low.4.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 397 | `history.swing_low.4.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 398 | `history.swing_low.4.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 399 | `history.swing_low.4.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 400 | `history.swing_low.4.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 401 | `history.swing_low.4.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 402 | `history.swing_low.4.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 403 | `history.swing_low.4.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 404 | `history.swing_low.5.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 405 | `history.swing_low.5.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 406 | `history.swing_low.5.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 407 | `history.swing_low.5.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 408 | `history.swing_low.5.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 409 | `history.swing_low.5.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 410 | `history.swing_low.5.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 411 | `history.swing_low.5.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 412 | `history.swing_low.5.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 413 | `history.swing_low.5.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 414 | `history.swing_low.5.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 415 | `history.swing_low.10.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 416 | `history.swing_low.10.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 417 | `history.swing_low.10.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 418 | `history.swing_low.10.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 419 | `history.swing_low.10.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 420 | `history.swing_low.10.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 421 | `history.swing_low.10.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 422 | `history.swing_low.10.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 423 | `history.swing_low.10.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 424 | `history.swing_low.10.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 425 | `history.swing_low.10.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 426 | `history.swing_low.15.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 427 | `history.swing_low.15.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 428 | `history.swing_low.15.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 429 | `history.swing_low.15.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 430 | `history.swing_low.15.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 431 | `history.swing_low.15.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 432 | `history.swing_low.15.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 433 | `history.swing_low.15.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 434 | `history.swing_low.15.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 435 | `history.swing_low.15.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 436 | `history.swing_low.15.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 437 | `history.swing_low.20.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 438 | `history.swing_low.20.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 439 | `history.swing_low.20.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 440 | `history.swing_low.20.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 441 | `history.swing_low.20.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 442 | `history.swing_low.20.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 443 | `history.swing_low.20.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 444 | `history.swing_low.20.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 445 | `history.swing_low.20.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 446 | `history.swing_low.20.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 447 | `history.swing_low.20.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 448 | `history.swing_low.30.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 449 | `history.swing_low.30.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 450 | `history.swing_low.30.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 451 | `history.swing_low.30.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 452 | `history.swing_low.30.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 453 | `history.swing_low.30.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 454 | `history.swing_low.30.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 455 | `history.swing_low.30.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 456 | `history.swing_low.30.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 457 | `history.swing_low.30.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 458 | `history.swing_low.30.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 459 | `history.swing_low.45.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 460 | `history.swing_low.45.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 461 | `history.swing_low.45.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 462 | `history.swing_low.45.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 463 | `history.swing_low.45.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 464 | `history.swing_low.45.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 465 | `history.swing_low.45.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 466 | `history.swing_low.45.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 467 | `history.swing_low.45.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 468 | `history.swing_low.45.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 469 | `history.swing_low.45.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 470 | `history.swing_low.60.1` | price | 0 | 1000 | no | — | — | forbidden |
+| 471 | `history.swing_low.60.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 472 | `history.swing_low.60.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 473 | `history.swing_low.60.4` | price | 0 | 1000 | no | — | — | forbidden |
+| 474 | `history.swing_low.60.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 475 | `history.swing_low.60.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 476 | `history.swing_low.60.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 477 | `history.swing_low.60.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 478 | `history.swing_low.60.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 479 | `history.swing_low.60.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 480 | `history.swing_low.60.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 481 | `history.recent_high.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 482 | `history.recent_high.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 483 | `history.recent_high.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 484 | `history.recent_high.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 485 | `history.recent_high.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 486 | `history.recent_high.6.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 487 | `history.recent_high.7.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 488 | `history.recent_high.8.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 489 | `history.recent_high.9.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 490 | `history.recent_high.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 491 | `history.recent_high.11.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 492 | `history.recent_high.12.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 493 | `history.recent_high.13.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 494 | `history.recent_high.14.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 495 | `history.recent_high.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 496 | `history.recent_high.16.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 497 | `history.recent_high.17.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 498 | `history.recent_high.18.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 499 | `history.recent_high.19.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 500 | `history.recent_high.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 501 | `history.recent_high.21.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 502 | `history.recent_high.22.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 503 | `history.recent_high.23.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 504 | `history.recent_high.24.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 505 | `history.recent_high.25.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 506 | `history.recent_high.26.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 507 | `history.recent_high.27.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 508 | `history.recent_high.28.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 509 | `history.recent_high.29.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 510 | `history.recent_high.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 511 | `history.recent_high.31.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 512 | `history.recent_high.32.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 513 | `history.recent_high.33.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 514 | `history.recent_high.34.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 515 | `history.recent_high.35.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 516 | `history.recent_high.36.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 517 | `history.recent_high.37.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 518 | `history.recent_high.38.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 519 | `history.recent_high.39.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 520 | `history.recent_high.40.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 521 | `history.recent_high.41.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 522 | `history.recent_high.42.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 523 | `history.recent_high.43.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 524 | `history.recent_high.44.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 525 | `history.recent_high.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 526 | `history.recent_high.46.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 527 | `history.recent_high.47.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 528 | `history.recent_high.48.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 529 | `history.recent_high.49.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 530 | `history.recent_high.50.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 531 | `history.recent_high.51.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 532 | `history.recent_high.52.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 533 | `history.recent_high.53.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 534 | `history.recent_high.54.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 535 | `history.recent_high.55.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 536 | `history.recent_high.56.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 537 | `history.recent_high.57.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 538 | `history.recent_high.58.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 539 | `history.recent_high.59.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 540 | `history.recent_high.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 541 | `history.momentum_close.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 542 | `history.momentum_close.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 543 | `history.momentum_close.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 544 | `history.momentum_close.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 545 | `history.momentum_close.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 546 | `history.momentum_close.6.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 547 | `history.momentum_close.7.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 548 | `history.momentum_close.8.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 549 | `history.momentum_close.9.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 550 | `history.momentum_close.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 551 | `history.momentum_close.11.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 552 | `history.momentum_close.12.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 553 | `history.momentum_close.13.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 554 | `history.momentum_close.14.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 555 | `history.momentum_close.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 556 | `history.momentum_close.16.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 557 | `history.momentum_close.17.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 558 | `history.momentum_close.18.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 559 | `history.momentum_close.19.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 560 | `history.momentum_close.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 561 | `history.momentum_close.21.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 562 | `history.momentum_close.22.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 563 | `history.momentum_close.23.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 564 | `history.momentum_close.24.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 565 | `history.momentum_close.25.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 566 | `history.momentum_close.26.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 567 | `history.momentum_close.27.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 568 | `history.momentum_close.28.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 569 | `history.momentum_close.29.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 570 | `history.momentum_close.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 571 | `history.momentum_close.31.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 572 | `history.momentum_close.32.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 573 | `history.momentum_close.33.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 574 | `history.momentum_close.34.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 575 | `history.momentum_close.35.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 576 | `history.momentum_close.36.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 577 | `history.momentum_close.37.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 578 | `history.momentum_close.38.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 579 | `history.momentum_close.39.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 580 | `history.momentum_close.40.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 581 | `history.momentum_close.41.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 582 | `history.momentum_close.42.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 583 | `history.momentum_close.43.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 584 | `history.momentum_close.44.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 585 | `history.momentum_close.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 586 | `history.momentum_close.46.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 587 | `history.momentum_close.47.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 588 | `history.momentum_close.48.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 589 | `history.momentum_close.49.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 590 | `history.momentum_close.50.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 591 | `history.momentum_close.51.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 592 | `history.momentum_close.52.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 593 | `history.momentum_close.53.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 594 | `history.momentum_close.54.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 595 | `history.momentum_close.55.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 596 | `history.momentum_close.56.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 597 | `history.momentum_close.57.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 598 | `history.momentum_close.58.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 599 | `history.momentum_close.59.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 600 | `history.momentum_close.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 601 | `history.average_move.2.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 602 | `history.average_move.3.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 603 | `history.average_move.4.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 604 | `history.average_move.5.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 605 | `history.average_move.6.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 606 | `history.average_move.7.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 607 | `history.average_move.8.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 608 | `history.average_move.9.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 609 | `history.average_move.10.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 610 | `history.average_move.11.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 611 | `history.average_move.12.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 612 | `history.average_move.13.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 613 | `history.average_move.14.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 614 | `history.average_move.15.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 615 | `history.average_move.16.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 616 | `history.average_move.17.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 617 | `history.average_move.18.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 618 | `history.average_move.19.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 619 | `history.average_move.20.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 620 | `history.average_move.21.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 621 | `history.average_move.22.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 622 | `history.average_move.23.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 623 | `history.average_move.24.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 624 | `history.average_move.25.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 625 | `history.average_move.26.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 626 | `history.average_move.27.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 627 | `history.average_move.28.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 628 | `history.average_move.29.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 629 | `history.average_move.30.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 630 | `history.average_move.31.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 631 | `history.average_move.32.fraction_of_close` | ratio | 0 | 0.5 | yes | 0 | 4 | E |
+| 632 | `history.swing_low.1.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 633 | `history.swing_low.1.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 634 | `history.swing_low.1.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 635 | `history.swing_low.1.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 636 | `history.swing_low.1.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 637 | `history.swing_low.1.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 638 | `history.swing_low.1.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 639 | `history.swing_low.1.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 640 | `history.swing_low.1.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 641 | `history.swing_low.1.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 642 | `history.swing_low.1.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 643 | `history.swing_low.2.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 644 | `history.swing_low.2.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 645 | `history.swing_low.2.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 646 | `history.swing_low.2.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 647 | `history.swing_low.2.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 648 | `history.swing_low.2.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 649 | `history.swing_low.2.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 650 | `history.swing_low.2.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 651 | `history.swing_low.2.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 652 | `history.swing_low.2.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 653 | `history.swing_low.2.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 654 | `history.swing_low.3.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 655 | `history.swing_low.3.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 656 | `history.swing_low.3.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 657 | `history.swing_low.3.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 658 | `history.swing_low.3.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 659 | `history.swing_low.3.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 660 | `history.swing_low.3.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 661 | `history.swing_low.3.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 662 | `history.swing_low.3.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 663 | `history.swing_low.3.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 664 | `history.swing_low.3.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 665 | `history.swing_low.4.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 666 | `history.swing_low.4.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 667 | `history.swing_low.4.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 668 | `history.swing_low.4.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 669 | `history.swing_low.4.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 670 | `history.swing_low.4.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 671 | `history.swing_low.4.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 672 | `history.swing_low.4.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 673 | `history.swing_low.4.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 674 | `history.swing_low.4.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 675 | `history.swing_low.4.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 676 | `history.swing_low.5.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 677 | `history.swing_low.5.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 678 | `history.swing_low.5.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 679 | `history.swing_low.5.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 680 | `history.swing_low.5.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 681 | `history.swing_low.5.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 682 | `history.swing_low.5.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 683 | `history.swing_low.5.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 684 | `history.swing_low.5.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 685 | `history.swing_low.5.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 686 | `history.swing_low.5.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 687 | `history.swing_low.10.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 688 | `history.swing_low.10.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 689 | `history.swing_low.10.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 690 | `history.swing_low.10.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 691 | `history.swing_low.10.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 692 | `history.swing_low.10.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 693 | `history.swing_low.10.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 694 | `history.swing_low.10.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 695 | `history.swing_low.10.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 696 | `history.swing_low.10.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 697 | `history.swing_low.10.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 698 | `history.swing_low.15.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 699 | `history.swing_low.15.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 700 | `history.swing_low.15.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 701 | `history.swing_low.15.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 702 | `history.swing_low.15.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 703 | `history.swing_low.15.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 704 | `history.swing_low.15.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 705 | `history.swing_low.15.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 706 | `history.swing_low.15.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 707 | `history.swing_low.15.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 708 | `history.swing_low.15.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 709 | `history.swing_low.20.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 710 | `history.swing_low.20.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 711 | `history.swing_low.20.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 712 | `history.swing_low.20.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 713 | `history.swing_low.20.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 714 | `history.swing_low.20.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 715 | `history.swing_low.20.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 716 | `history.swing_low.20.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 717 | `history.swing_low.20.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 718 | `history.swing_low.20.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 719 | `history.swing_low.20.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 720 | `history.swing_low.30.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 721 | `history.swing_low.30.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 722 | `history.swing_low.30.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 723 | `history.swing_low.30.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 724 | `history.swing_low.30.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 725 | `history.swing_low.30.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 726 | `history.swing_low.30.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 727 | `history.swing_low.30.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 728 | `history.swing_low.30.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 729 | `history.swing_low.30.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 730 | `history.swing_low.30.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 731 | `history.swing_low.45.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 732 | `history.swing_low.45.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 733 | `history.swing_low.45.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 734 | `history.swing_low.45.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 735 | `history.swing_low.45.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 736 | `history.swing_low.45.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 737 | `history.swing_low.45.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 738 | `history.swing_low.45.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 739 | `history.swing_low.45.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 740 | `history.swing_low.45.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 741 | `history.swing_low.45.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 742 | `history.swing_low.60.1.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 743 | `history.swing_low.60.2.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 744 | `history.swing_low.60.3.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 745 | `history.swing_low.60.4.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 746 | `history.swing_low.60.5.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 747 | `history.swing_low.60.10.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 748 | `history.swing_low.60.15.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 749 | `history.swing_low.60.20.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 750 | `history.swing_low.60.30.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 751 | `history.swing_low.60.45.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 752 | `history.swing_low.60.60.relative_to_close` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 753 | `market.bid_relative` | ratio | -0.1 | 0.1 | yes | -0.99 | 9 | E |
+| 754 | `market.ask_relative` | ratio | -0.1 | 0.1 | yes | -0.99 | 9 | E |
+| 755 | `market.spread_fraction` | ratio | 0 | 0.1 | yes | 0 | 9 | E |
+| 756 | `market.quote_age_seconds` | duration | 0 | 3600 | yes | 0 | 57600 | E |
+| 757 | `market.log_execution_volume` | log_shares | 0 | 30 | yes | 0 | 20.723266 | E |
+| 758 | `market.log_execution_notional` | log_dollars | 0 | 30 | yes | 0 | 25.328436 | E |
+| 759 | `market.log_execution_trade_count` | log_count | 0 | 20 | yes | 0 | 13.815512 | E |
+| 760 | `market.bid` | price | 0 | 1000 | no | — | — | forbidden |
+| 761 | `market.ask` | price | 0 | 1000 | no | — | — | forbidden |
+| 762 | `market.spread` | price | 0 | 100 | no | — | — | forbidden |
+| 763 | `market.close` | price | 0 | 1000 | no | — | — | forbidden |
+| 764 | `indicator.ema.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 765 | `indicator.ema.2.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 766 | `indicator.ema.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 767 | `indicator.ema.3.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 768 | `indicator.ema.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 769 | `indicator.ema.5.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 770 | `indicator.ema.7` | price | 0 | 1000 | no | — | — | forbidden |
+| 771 | `indicator.ema.7.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 772 | `indicator.ema.9` | price | 0 | 1000 | no | — | — | forbidden |
+| 773 | `indicator.ema.9.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 774 | `indicator.ema.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 775 | `indicator.ema.10.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 776 | `indicator.ema.12` | price | 0 | 1000 | no | — | — | forbidden |
+| 777 | `indicator.ema.12.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 778 | `indicator.ema.14` | price | 0 | 1000 | no | — | — | forbidden |
+| 779 | `indicator.ema.14.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 780 | `indicator.ema.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 781 | `indicator.ema.15.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 782 | `indicator.ema.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 783 | `indicator.ema.20.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 784 | `indicator.ema.26` | price | 0 | 1000 | no | — | — | forbidden |
+| 785 | `indicator.ema.26.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 786 | `indicator.ema.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 787 | `indicator.ema.30.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 788 | `indicator.ema.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 789 | `indicator.ema.45.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 790 | `indicator.ema.50` | price | 0 | 1000 | no | — | — | forbidden |
+| 791 | `indicator.ema.50.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 792 | `indicator.ema.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 793 | `indicator.ema.60.relative` | ratio | -0.5 | 0.5 | yes | -0.99 | 9 | E |
+| 794 | `indicator.rsi.2` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 795 | `indicator.rsi.3` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 796 | `indicator.rsi.5` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 797 | `indicator.rsi.7` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 798 | `indicator.rsi.9` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 799 | `indicator.rsi.10` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 800 | `indicator.rsi.12` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 801 | `indicator.rsi.14` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 802 | `indicator.rsi.15` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 803 | `indicator.rsi.20` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 804 | `indicator.rsi.26` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 805 | `indicator.rsi.30` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 806 | `indicator.rsi.45` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 807 | `indicator.rsi.50` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 808 | `indicator.rsi.60` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 809 | `indicator.atr.2` | price | 0 | 1000 | no | — | — | forbidden |
+| 810 | `indicator.atr.2.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 811 | `indicator.atr.3` | price | 0 | 1000 | no | — | — | forbidden |
+| 812 | `indicator.atr.3.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 813 | `indicator.atr.5` | price | 0 | 1000 | no | — | — | forbidden |
+| 814 | `indicator.atr.5.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 815 | `indicator.atr.7` | price | 0 | 1000 | no | — | — | forbidden |
+| 816 | `indicator.atr.7.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 817 | `indicator.atr.9` | price | 0 | 1000 | no | — | — | forbidden |
+| 818 | `indicator.atr.9.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 819 | `indicator.atr.10` | price | 0 | 1000 | no | — | — | forbidden |
+| 820 | `indicator.atr.10.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 821 | `indicator.atr.12` | price | 0 | 1000 | no | — | — | forbidden |
+| 822 | `indicator.atr.12.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 823 | `indicator.atr.14` | price | 0 | 1000 | no | — | — | forbidden |
+| 824 | `indicator.atr.14.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 825 | `indicator.atr.15` | price | 0 | 1000 | no | — | — | forbidden |
+| 826 | `indicator.atr.15.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 827 | `indicator.atr.20` | price | 0 | 1000 | no | — | — | forbidden |
+| 828 | `indicator.atr.20.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 829 | `indicator.atr.26` | price | 0 | 1000 | no | — | — | forbidden |
+| 830 | `indicator.atr.26.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 831 | `indicator.atr.30` | price | 0 | 1000 | no | — | — | forbidden |
+| 832 | `indicator.atr.30.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 833 | `indicator.atr.45` | price | 0 | 1000 | no | — | — | forbidden |
+| 834 | `indicator.atr.45.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 835 | `indicator.atr.50` | price | 0 | 1000 | no | — | — | forbidden |
+| 836 | `indicator.atr.50.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 837 | `indicator.atr.60` | price | 0 | 1000 | no | — | — | forbidden |
+| 838 | `indicator.atr.60.relative` | ratio | 0 | 1 | yes | 0 | 4 | E |
+| 839 | `indicator.macd_line.3.15.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 840 | `indicator.macd_signal.3.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 841 | `indicator.macd_histogram.3.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 842 | `indicator.macd_signal.3.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 843 | `indicator.macd_histogram.3.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 844 | `indicator.macd_signal.3.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 845 | `indicator.macd_histogram.3.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 846 | `indicator.macd_line.3.26.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 847 | `indicator.macd_signal.3.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 848 | `indicator.macd_histogram.3.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 849 | `indicator.macd_signal.3.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 850 | `indicator.macd_histogram.3.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 851 | `indicator.macd_signal.3.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 852 | `indicator.macd_histogram.3.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 853 | `indicator.macd_line.3.50.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 854 | `indicator.macd_signal.3.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 855 | `indicator.macd_histogram.3.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 856 | `indicator.macd_signal.3.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 857 | `indicator.macd_histogram.3.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 858 | `indicator.macd_signal.3.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 859 | `indicator.macd_histogram.3.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 860 | `indicator.macd_line.7.15.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 861 | `indicator.macd_signal.7.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 862 | `indicator.macd_histogram.7.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 863 | `indicator.macd_signal.7.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 864 | `indicator.macd_histogram.7.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 865 | `indicator.macd_signal.7.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 866 | `indicator.macd_histogram.7.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 867 | `indicator.macd_line.7.26.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 868 | `indicator.macd_signal.7.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 869 | `indicator.macd_histogram.7.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 870 | `indicator.macd_signal.7.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 871 | `indicator.macd_histogram.7.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 872 | `indicator.macd_signal.7.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 873 | `indicator.macd_histogram.7.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 874 | `indicator.macd_line.7.50.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 875 | `indicator.macd_signal.7.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 876 | `indicator.macd_histogram.7.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 877 | `indicator.macd_signal.7.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 878 | `indicator.macd_histogram.7.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 879 | `indicator.macd_signal.7.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 880 | `indicator.macd_histogram.7.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 881 | `indicator.macd_line.12.15.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 882 | `indicator.macd_signal.12.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 883 | `indicator.macd_histogram.12.15.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 884 | `indicator.macd_signal.12.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 885 | `indicator.macd_histogram.12.15.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 886 | `indicator.macd_signal.12.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 887 | `indicator.macd_histogram.12.15.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 888 | `indicator.macd_line.12.26.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 889 | `indicator.macd_signal.12.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 890 | `indicator.macd_histogram.12.26.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 891 | `indicator.macd_signal.12.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 892 | `indicator.macd_histogram.12.26.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 893 | `indicator.macd_signal.12.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 894 | `indicator.macd_histogram.12.26.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 895 | `indicator.macd_line.12.50.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 896 | `indicator.macd_signal.12.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 897 | `indicator.macd_histogram.12.50.5.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 898 | `indicator.macd_signal.12.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 899 | `indicator.macd_histogram.12.50.9.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 900 | `indicator.macd_signal.12.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 901 | `indicator.macd_histogram.12.50.20.relative` | ratio | -0.5 | 0.5 | yes | -4 | 4 | E |
+| 902 | `enriched.return.5s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 903 | `enriched.volatility.5s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
+| 904 | `enriched.return.15s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 905 | `enriched.volatility.15s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
+| 906 | `enriched.return.60s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 907 | `enriched.volatility.60s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
+| 908 | `enriched.return.300s` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 909 | `enriched.volatility.300s` | ratio | 0 | 1 | yes | 0 | 2.302585 | E |
+| 910 | `enriched.activity.volume_acceleration` | ratio | -0.5 | 1 | yes | -1 | 11 | M |
+| 911 | `enriched.activity.trade_acceleration` | ratio | -0.5 | 1 | yes | -1 | 11 | M |
+| 912 | `enriched.execution.volatility_fee_ratio` | ratio | 0 | 100 | yes | 0 | 1000 | E |
+| 913 | `enriched.candle.5s.body` | ratio | -0.5 | 1 | yes | -9 | 0.99 | E |
+| 914 | `enriched.candle.5s.range` | ratio | 0 | 1 | yes | 0 | 9 | E |
+| 915 | `enriched.candle.5s.close_location` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 916 | `enriched.candle.5s.return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 917 | `enriched.candle.5s.log_volume` | ratio | 0 | 30 | yes | 0 | 20.723266 | E |
+| 918 | `enriched.candle.5s.log_trades` | ratio | 0 | 30 | yes | 0 | 13.815512 | E |
+| 919 | `enriched.candle.5s.active_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 920 | `enriched.candle.15s.body` | ratio | -0.5 | 1 | yes | -9 | 0.99 | E |
+| 921 | `enriched.candle.15s.range` | ratio | 0 | 1 | yes | 0 | 9 | E |
+| 922 | `enriched.candle.15s.close_location` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 923 | `enriched.candle.15s.return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 924 | `enriched.candle.15s.log_volume` | ratio | 0 | 30 | yes | 0 | 20.723266 | E |
+| 925 | `enriched.candle.15s.log_trades` | ratio | 0 | 30 | yes | 0 | 13.815512 | E |
+| 926 | `enriched.candle.15s.active_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 927 | `enriched.candle.60s.body` | ratio | -0.5 | 1 | yes | -9 | 0.99 | E |
+| 928 | `enriched.candle.60s.range` | ratio | 0 | 1 | yes | 0 | 9 | E |
+| 929 | `enriched.candle.60s.close_location` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 930 | `enriched.candle.60s.return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 931 | `enriched.candle.60s.log_volume` | ratio | 0 | 30 | yes | 0 | 20.723266 | E |
+| 932 | `enriched.candle.60s.log_trades` | ratio | 0 | 30 | yes | 0 | 13.815512 | E |
+| 933 | `enriched.candle.60s.active_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 934 | `enriched.context.15s.median_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 935 | `enriched.context.15s.mean_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 936 | `enriched.context.15s.advancing_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 937 | `enriched.context.15s.dispersion` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 938 | `enriched.context.15s.coverage` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 939 | `enriched.context.15s.relative_return` | ratio | -0.5 | 1 | yes | -4.60517 | 4.60517 | E |
+| 940 | `enriched.context.15s.return_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 941 | `enriched.context.60s.median_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 942 | `enriched.context.60s.mean_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 943 | `enriched.context.60s.advancing_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 944 | `enriched.context.60s.dispersion` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 945 | `enriched.context.60s.coverage` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 946 | `enriched.context.60s.relative_return` | ratio | -0.5 | 1 | yes | -4.60517 | 4.60517 | E |
+| 947 | `enriched.context.60s.return_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 948 | `enriched.context.300s.median_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 949 | `enriched.context.300s.mean_return` | ratio | -0.5 | 1 | yes | -2.302585 | 2.302585 | E |
+| 950 | `enriched.context.300s.advancing_fraction` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 951 | `enriched.context.300s.dispersion` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 952 | `enriched.context.300s.coverage` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 953 | `enriched.context.300s.relative_return` | ratio | -0.5 | 1 | yes | -4.60517 | 4.60517 | E |
+| 954 | `enriched.context.300s.return_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 955 | `enriched.rank.dollar_volume_60s_percentile` | ratio | 0 | 1 | yes | 0 | 1 | M |
+| 956 | `enriched.rank.dollar_volume_60s_change_15s` | ratio | -0.5 | 1 | yes | -1 | 1 | M |
