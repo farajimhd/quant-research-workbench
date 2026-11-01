@@ -13,10 +13,12 @@ class Inference:
         self.slots=torch.as_tensor(self.slots_cpu,device=data.device,dtype=torch.long)
         self.base.prepare(len(self.base.members),TOP_K)
         self.prices=PricePlan(self.base.members,data,self.slots_cpu)
-        free=torch.cuda.mem_get_info(data.device)[0]
         requested=getattr(plan,'replay_time_block',256)
         if requested not in (128,256,512,1024):raise ValueError('Unsupported independent-clock block')
-        self.width=max(1,min(requested,int(free*.05)//max(1,self.base.total_nodes*TOP_K*5)))
+        # Worker admission already reserves this workspace. Driver-free memory
+        # excludes reusable allocator caches and changes under concurrent lanes;
+        # using it here silently collapsed 256-clock jobs to one clock.
+        self.width=requested
         self.work=torch.empty((self.width,self.base.total_nodes,TOP_K),device=data.device)
         self.known=torch.empty_like(self.work,dtype=torch.bool)
         # Identity slots make every action graph evaluate only the same five tickers.

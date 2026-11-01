@@ -37,3 +37,19 @@ def test_compact_admission_counts_growth_and_blocks_without_gpu_episode_ledger()
     assert grown['required_bytes']>small['required_bytes']
     assert larger['required_bytes']>small['required_bytes']
     assert small['context_headroom_bytes']==2*1024**3
+
+
+def test_session_rotation_releases_only_obsolete_device_residency(monkeypatch):
+    from types import SimpleNamespace
+    from research.vectorized_backtest.v63.session_lanes import Worker
+    import torch
+    calls=[]
+    def item(name):
+        return SimpleNamespace(deactivate=lambda:calls.append(name),
+            resident_features=SimpleNamespace(deactivate=lambda:calls.append(name+' features')))
+    worker=Worker.__new__(Worker);worker.host={'old':item('old'),'active':item('active')}
+    worker.plans={'retained':object()}
+    monkeypatch.setattr(torch.cuda,'empty_cache',lambda:calls.append('release cache'))
+    worker.retire_device_sessions('active',torch.device('cuda'))
+    assert calls==['old features','old','release cache']
+    assert set(worker.host)=={'old','active'} and 'retained' in worker.plans

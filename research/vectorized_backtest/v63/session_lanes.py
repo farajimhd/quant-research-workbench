@@ -149,6 +149,17 @@ class Worker:
         # Active evaluation and bounded plans retain their own references.
         return item
 
+    def retire_device_sessions(self,day,device):
+        """One GPU session per lane; pageable prefetch and genome plans survive."""
+        if device.type!='cuda':return
+        for old_day,old in self.host.items():
+            if old_day!=day:
+                if hasattr(old,'resident_features'):old.resident_features.deactivate()
+                old.deactivate()
+        # Other processes cannot reuse this lane's allocator cache. Return it
+        # before admitting the next session, not after its upload peaks.
+        torch.cuda.empty_cache()
+
     def run(self,day,next_day,payload,generation,token,replay_width):
         if getattr(self,'last_result_day',None)!=day:self.resident_results=None
         self.last_result_day=day
@@ -159,6 +170,7 @@ class Worker:
         from hashlib import sha256
         self.batch_progress={}
         c=self.config;started=perf_counter();self.emit(day,stage='Load session',candidate_offset=0)
+        self.retire_device_sessions(day,torch.device(c['device']))
         if payload is None:
             if self.population_preparer is None or self.population_preparer.token!=token:raise ValueError('Missing immutable worker population')
             payload=self.population_preparer.payload
@@ -300,6 +312,12 @@ class Worker:
                     if plan.plan is not None:
                         timing.update({k:getattr(plan.plan,k)-v for k,v in prior.items()})
                     timings.append(timing);pending_timing=timing;del gates,result
+                    if device.type=='cuda':
+                        timing['cuda_allocated_bytes']=torch.cuda.memory_allocated(device)
+                        timing['cuda_reserved_bytes_before_release']=torch.cuda.memory_reserved(device)
+                        release_started=perf_counter();torch.cuda.empty_cache()
+                        timing['cuda_cache_release_seconds']=perf_counter()-release_started
+                        timing['cuda_reserved_bytes_after_release']=torch.cuda.memory_reserved(device)
                     self.emit(day,stage='Batch complete',candidate_offset=offset,completed_local_batches=len(timings),
                         completed_candidates=len(population)-len(missing)+offset+len(selection),gpu_gate_wait_seconds=self.execution_gate.wait_seconds if self.execution_gate else 0.)
                     offset+=len(selection)
