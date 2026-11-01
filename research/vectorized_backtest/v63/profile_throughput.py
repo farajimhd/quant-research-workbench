@@ -38,8 +38,7 @@ def main():
     a=p.parse_args()
     from .runtime import require_runtime
     root=require_runtime(a.output)
-    if root.exists():raise ValueError('Use a fresh qualification directory')
-    root.mkdir(parents=True)
+    if any(root.iterdir()):raise ValueError('Use an empty qualification directory')
     job=json.loads(a.job.read_bytes());saved=json.loads(a.checkpoint.read_bytes())
     state=saved['state']
     if digest(state)!=saved['state_sha256']:raise ValueError('Checkpoint state hash mismatch')
