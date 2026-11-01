@@ -60,7 +60,9 @@ class TestReplayJournals:
         assert full[3][0]['episode_exit_clocks'][0]==[6,6]
 
     @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
-    def test_captured_execution_matches_cpu_and_repeats_exactly(self):
+    def test_captured_execution_matches_cpu_and_repeats_exactly(self,tmp_path):
+        from research.vectorized_backtest.v61.compiler_runtime import configure_caches
+        configure_caches(tmp_path/'compiler')
         cpu=self.run_path('cpu','eager')
         first=self.run_path('cuda','compile')
         second=self.run_path('cuda','compile')
