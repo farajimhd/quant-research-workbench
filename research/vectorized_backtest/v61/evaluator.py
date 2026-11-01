@@ -184,12 +184,15 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     from .swing_projection import entry_swings
     plan.journal_blocks=1
     if execution.order_mode!='immediate':
-        # Two graph packets per ledger drain where admitted memory permits it.
+        # Up to four graph packets per ledger drain where admitted memory permits it.
         # Reserve at most 30% of currently free memory for both ledgers; retain
         # the original single-packet path on smaller devices.
         if device.type=='cuda':
-            ledger_bytes=2*replay_block*u*b*(2*72+(40 if trace else 24))
-            if ledger_bytes < torch.cuda.mem_get_info(device)[0]*.30:plan.journal_blocks=2
+            free=torch.cuda.mem_get_info(device)[0]
+            for blocks in (4,2):
+                ledger_bytes=blocks*replay_block*u*b*(2*72+(40 if trace else 24))
+                if ledger_bytes < free*.30:
+                    plan.journal_blocks=blocks;break
         episode_capacity=max(plan.journal_blocks*replay_block*u,min(episode_capacity,8192))
     # Include the live one-clock neuron values and provenance, in addition to
     # the unchanged financial buffers. Capacity is never reduced for admission.
