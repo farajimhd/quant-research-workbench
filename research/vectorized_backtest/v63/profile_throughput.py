@@ -31,7 +31,8 @@ def comparable(metrics):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--job',type=Path,required=True);p.add_argument('--checkpoint',type=Path,required=True)
-    p.add_argument('--output',type=Path,required=True);p.add_argument('--workers',type=int,choices=(2,4),required=True)
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--workers',type=int,choices=(2,4,6),required=True)
+    p.add_argument('--days',nargs='+',default=['2026-07-30','2026-07-31','2026-08-13','2026-08-18'])
     p.add_argument('--block',type=int,choices=(256,512,1024),required=True)
     p.add_argument('--mode',choices=('synchronous','events'),required=True)
     p.add_argument('--reference',type=Path)
@@ -47,7 +48,8 @@ def main():
     from .session_lanes import SessionLanes
     members=[Individual.restore(v) for v in state['population'][:1024]]
     if len(members)!=1024:raise ValueError('Expected 1024 saved genomes')
-    days=['2026-07-30','2026-07-31','2026-08-13','2026-08-18']
+    days=a.days
+    if len(days)<a.workers or len(days)!=len(set(days)):raise ValueError('Need distinct sessions for every worker')
     if not set(days)<=set(job['training_days']):raise ValueError('Training scope changed')
     cfg=config(job,'workstation','training')
     cfg.update(output=str(root/'replays'),source_sha256=source_hash(),stop_roots=[],boundary_stop=str(root),

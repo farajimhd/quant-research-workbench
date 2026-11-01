@@ -13,5 +13,5 @@ def tuning(job):
 
 def configuration(job):
     workers=job.get('global_session_workers',2)
-    if workers not in (2,4):raise ValueError('Replay workers must be two or four')
+    if workers not in (2,4,6):raise ValueError('Replay workers must be two, four, or six')
     return dict(session_workers=workers,**tuning(job))
