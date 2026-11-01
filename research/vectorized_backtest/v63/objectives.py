@@ -6,11 +6,11 @@ from . import base_objectives as base
 
 @dataclass(frozen=True)
 class Objective:
-    drawdown_weight:float=1.
+    drawdown_weight:float=0.
     loss_weight:float=0.
     def validate(self):
-        if (self.drawdown_weight,self.loss_weight)!=(1.,0.):
-            raise ValueError('V60 fixes drawdown weight at one and adds no gross-loss penalty')
+        if (self.drawdown_weight,self.loss_weight)!=(0.,0.):
+            raise ValueError('V63 uses profit rewards and blocked-request penalties; drawdown is diagnostic only')
         return self
 
 def local_panel(ordered,config=Objective(),*,case_maps=None):

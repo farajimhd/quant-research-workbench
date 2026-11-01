@@ -4,11 +4,24 @@ from pathlib import Path
 from .identity import digest
 from research.vectorized_backtest.v63.distributed_assets import sha
 
+def initial_score_transition(job,old):
+    change=job.get('resume_transition',{}).get('score_change')
+    if not change:return False
+    expected=dict(from_version='log-profit-target-blocked-request-v2',
+                  to_version='log-profit-target-blocked-request-no-dd-v3',initial_only=True)
+    if (change!=expected or old.get('score_version')!=expected['from_version']
+        or job.get('score_version')!=expected['to_version']
+        or old.get('objective')!=dict(drawdown_weight=1.,loss_weight=0.)
+        or job.get('objective')!=dict(drawdown_weight=0.,loss_weight=0.)):
+        raise ValueError('Unapproved objective transition')
+    return True
+
 def global_predecessor(job):
     transition=job.get('resume_transition',{});path=Path(transition.get('predecessor_job',''))
     if not path.is_file() or sha(path)!=transition.get('predecessor_job_sha256'):raise ValueError('Global predecessor changed')
     old=json.loads(path.read_bytes())
     mutable={'source_sha256','code','commit','deployment','resume_transition','result_cache_transition'}
+    if initial_score_transition(job,old):mutable.update(('objective','score_version'))
     def semantics(value):
         value=json.loads(json.dumps({k:v for k,v in value.items() if k not in mutable}))
         value['machines']['workstation']['code']=None
@@ -47,10 +60,15 @@ def lineage_jobs(job):
 def accept_checkpoint(job,path,saved,expected):
     if saved['contract']==expected:return
     if job.get('version')=='v63-global-v1':
-        global_predecessor(job)
+        old=global_predecessor(job)
         bound=job['resume_transition'].get('global_checkpoint',{})
         if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Global checkpoint differs from bound receipt')
-        if dict(saved['contract'],source_sha256=expected['source_sha256'])!=expected:raise ValueError('Global continuation changed more than implementation source')
+        actual=dict(saved['contract'],source_sha256=expected['source_sha256'])
+        if initial_score_transition(job,old):
+            if saved['state']['completed']!=-1 or saved['state']['seals']:
+                raise ValueError('Objective transition requires unselected initial founders')
+            actual.update(objective=job['objective'],score_version=job['score_version'])
+        if actual!=expected:raise ValueError('Global continuation changed more than approved source/objective')
         return
     if job.get('version')=='v60-pilot-v2':
         transition=job.get('resume_transition',{});prior=Path(transition.get('predecessor_job',''))

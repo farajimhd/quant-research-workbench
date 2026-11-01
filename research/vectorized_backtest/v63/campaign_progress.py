@@ -585,7 +585,7 @@ def render(model,width,height):
     title=f"V63 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     if model.job.get('version')=='v60-pilot-v2':title=f"V63 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
     if model.job.get('version')=='v63-global-v1':title=f"V63 WORKSTATION | GLOBAL ONLY | {model.job['phase2_generations']} generations | {len(model.job['training_days'])} train / {len(model.job['validation_days'])} validation"
-    note='Score: 0.5 ticker($2000) + 0.5 session($5000), log excess 0.1 - full DD - $5/blocked request | risk caps OFF | validation display-only'
+    note='Score: 0.5 ticker($2000) + 0.5 session($5000), log excess 0.1 - $5/blocked request | DD diagnostic only | risk caps OFF | validation display-only'
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
     table=Table(expand=True,padding=(0,0));limit=max(1,height-head_size-9);start=model.selection//limit*limit

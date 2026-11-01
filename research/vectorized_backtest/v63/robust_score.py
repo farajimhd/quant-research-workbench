@@ -1,6 +1,6 @@
-"""Logarithmic profit targets; losses and account drawdown remain uncapped."""
+"""Logarithmic profit targets with blocked-request penalties; drawdown is diagnostic."""
 import numpy as np
-VERSION='log-profit-target-blocked-request-v2'
+VERSION='log-profit-target-blocked-request-no-dd-v3'
 COEFFICIENT=.1
 TICKER_TARGET=2000.
 SESSION_TARGET=5000.
@@ -38,8 +38,8 @@ def combine(panels):
     nets=np.asarray([p['net_pnl'] for p in panels])
     out['session_component']=reward(nets,SESSION_TARGET).sum(axis=0)
     out['blocked_penalty']=5.*out['blocked_requests']
-    out['score']=.5*out['ticker_component']+.5*out['session_component']-out['drawdown']-out['blocked_penalty']
-    out['uncapped_score']=out['net_pnl']-out['drawdown']
+    out['score']=.5*out['ticker_component']+.5*out['session_component']-out['blocked_penalty']
+    out['uncapped_score']=out['net_pnl'].copy()
     out['profitable_sessions']=(nets>0).sum(axis=0)
     out['session_targets_met']=(nets>=SESSION_TARGET).sum(axis=0)
     out['best_session_net']=nets.max(axis=0)

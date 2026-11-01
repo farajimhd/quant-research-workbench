@@ -31,8 +31,8 @@ sells cannot exceed holdings. There is a three-second delay after becoming flat
 before a new entry. Existing execution-tail coverage must suffice; otherwise
 the replay fails visibly and publishes no fitness.
 
-Fitness retains the existing logarithmic ticker/session rewards and drawdown
-term, subtracting $5 per distinct blocked request. An outstanding order is
+Fitness retains the existing logarithmic ticker/session rewards, subtracting
+$5 per distinct blocked request. Drawdown is diagnostic only. An outstanding order is
 charged at most once, not on every waiting clock. Partial fills and rank loss
 alone carry no penalty. Flat exit/reduce requests are inventory-blocked requests
 and are counted explicitly. Validation cannot select parents or tune fitness.
