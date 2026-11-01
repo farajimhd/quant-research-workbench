@@ -62,7 +62,14 @@ class Global(Evolution):
                 compile_cache_root=str(Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v61/compiler')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
             cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
             cfg['neural_tile']=self.job.get('neural_tile',64)
-            cfg['gpu_execution_gate']=self.job['campaign'] if not self.job.get('profile_ungated',False) else None
+            # Retain the six bounded founder plans across sessions instead of
+            # evicting four and rebuilding every network pack on the next day.
+            # Later generations normally need only one main plan plus mutants.
+            cfg['plan_limit']=max(2,self.job['initial_multiplier'])
+            # Independent CUDA streams already preserve each session's order.
+            # A host mutex otherwise holds the other lane idle during producer
+            # waits. Retain gated mode solely for bounded comparison runs.
+            cfg['gpu_execution_gate']=self.job['campaign'] if self.job.get('profile_gated',False) else None
             cfg['execution_diagnostics']=bool(self.job.get('execution_diagnostics',False))
             self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
         return self.split_lanes[role]

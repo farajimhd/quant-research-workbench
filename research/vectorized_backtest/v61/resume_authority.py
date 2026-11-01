@@ -8,7 +8,7 @@ def global_predecessor(job):
     transition=job.get('resume_transition',{});path=Path(transition.get('predecessor_job',''))
     if not path.is_file() or sha(path)!=transition.get('predecessor_job_sha256'):raise ValueError('Global predecessor changed')
     old=json.loads(path.read_bytes())
-    mutable={'source_sha256','code','commit','resume_transition','result_cache_transition'}
+    mutable={'source_sha256','code','commit','deployment','resume_transition','result_cache_transition'}
     def semantics(value):
         value=json.loads(json.dumps({k:v for k,v in value.items() if k not in mutable}))
         value['machines']['workstation']['code']=None

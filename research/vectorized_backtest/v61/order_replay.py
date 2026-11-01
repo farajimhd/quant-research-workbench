@@ -158,6 +158,12 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 restore();graph=torch.cuda.CUDAGraph();clock=time.perf_counter()
                 from .capture_lifecycle import defer_cyclic_collection
                 with defer_cyclic_collection(),torch.cuda.graph(graph,stream=stream):
+                    if tail_mode:
+                        # Preserve the old 32-clock stopping boundary on-device.
+                        # Extra queued graphs must not mark tiny closed-position
+                        # residues against later prices (even roundoff matters).
+                        live=((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()
+                        index.copy_(torch.where(live,index,total+1))
                     for _ in range(block):tick()
                 restore()
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
