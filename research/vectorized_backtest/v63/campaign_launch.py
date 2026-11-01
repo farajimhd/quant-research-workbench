@@ -12,6 +12,7 @@ def prepare_entries(job_path):
     for node,m in job['machines'].items():
         code=Path(m['code']);entry=root/('entry-'+node+job.get('entry_suffix','')+'.py')
         source=("import os,sys,json,hashlib,runpy,time,traceback,platform\nfrom pathlib import Path\nos.environ['PYTHONDONTWRITEBYTECODE']='1'\n"
+          +"os.environ.update(NUMBA_NUM_THREADS='4',POLARS_MAX_THREADS='4',OMP_NUM_THREADS='4',MKL_NUM_THREADS='4',OPENBLAS_NUM_THREADS='4')\n"
           +"root=Path("+repr(str(root))+");code=Path("+repr(str(code))+")\nos.chdir(code);sys.path.insert(0,str(code))\n"
           +"if platform.node().lower()!="+repr(m['hostname'].lower())+":raise ValueError('Wrong execution host')\n"
           +"log=open(root/"+repr(node+'-run.log')+",'a',buffering=1);sys.stdout=log;sys.stderr=log\nos.environ['NUMBA_CACHE_DIR']=str(root/'numba-cache')\n"

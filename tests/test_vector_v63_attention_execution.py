@@ -246,3 +246,32 @@ def test_lag_reuse_follows_ticker_identity_across_rank_changes(monkeypatch):
     torch.testing.assert_close(values[:,:,-1],expected.float(),rtol=0,atol=0)
     assert not valid[0,:,-1].any() and valid[1:,:,-1].all()
     assert calls==[(False,20),(True,6)]  # Five boundary values and one newcomer.
+
+
+def test_time_tiled_graph_matches_original_kernel_exactly():
+    import torch,pytest
+    from dataclasses import replace
+    if not torch.cuda.is_available():pytest.skip('CUDA required')
+    from research.vectorized_backtest.v63.runtime import configure_caches
+    configure_caches('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v63/unit-compiler')
+    from research.vectorized_backtest.v63.genome import sample,random_network
+    from research.vectorized_backtest.v63.network import NetworkPlan
+    from research.vectorized_backtest.v63.network_cuda import market_batch
+    rng=np.random.default_rng(825);members=sample(rng,24)
+    for i in range(8):
+        members[i]=replace(members[i],networks={s:random_network(rng,s,7) for s in members[i].networks}).validate()
+    members.extend(members[:2])  # Also exercise shared graph representatives.
+    plan=NetworkPlan(members,'cuda');plan.prepare(len(members),5)
+    try:
+        for t in (1,17,33):
+            c=len(plan.columns);extra=len(plan.cross_columns) if plan.uses_cross else 0
+            torch.manual_seed(71)
+            values=torch.rand((t,5,3*c+extra),device='cuda')*2-1
+            valid=torch.rand((t,5,c+extra),device='cuda')>.1
+            membership=torch.rand((t,5),device='cuda')>.2
+            work=torch.empty((t,plan.total_nodes,5),device='cuda');known=torch.empty_like(work,dtype=torch.bool)
+            entries=torch.arange(5,device='cuda',dtype=torch.int32)[None].expand(t,-1)
+            plan.cuda_time_tiled=False;a=market_batch(plan,values,valid,membership,work,known,entries)
+            plan.cuda_time_tiled=True;b=market_batch(plan,values,valid,membership,work,known,entries)
+            for x,y in zip(a,b):torch.testing.assert_close(x,y,rtol=0,atol=0)
+    finally:plan.close()

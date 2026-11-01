@@ -79,6 +79,9 @@ class Worker:
             cache=(require_runtime(Path(config['compile_cache_root'])/'cache'/f'lane-{lane}')
                    if config.get('compile_cache_root') else shared_compiler_cache(config['source_sha256']))
             configure_caches(cache,recompile_limit=128)
+        from .compact_execution import warmup
+        self.native_pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='v63-native-prepare')
+        self.native_ready=self.native_pool.submit(warmup)
 
     def emit(self,day,**values):
         event=dict(day=day,lane=self.lane,pid=os.getpid(),updated_epoch=time(),**(self.batch_progress|values))
@@ -270,6 +273,7 @@ class Worker:
                     if execution.order_mode!='immediate':item.execution_order_root=root/'execution-orders'/str(offset)
                     if execution.order_mode!='immediate' and c.get('execution_diagnostics'):item.execution_diagnostic_root=root/'execution-diagnostic'/str(offset)
                     gate_wait=self.execution_gate.wait_seconds if self.execution_gate is not None else 0.
+                    prime_start=perf_counter();prime_seconds=self.native_ready.result();prime_wait=perf_counter()-prime_start
                     result=self.replay([item],members,[gates],execution=execution,backend=c['backend'],listing_width=replay_width,
                         episode_capacity=c.get('episode_capacity',65536),trace=c.get('trace_validation',False) or c.get('split','training')=='training',
                         progress=replay_progress,**gate_options)[0]
@@ -287,6 +291,7 @@ class Worker:
                         load_seconds=load_seconds if offset==0 else 0.,cleanup_seconds=cleanup_seconds if offset==0 else 0.,worker_pre_replay_seconds=worker_pre_replay_seconds if offset==0 else 0.,host_prefetched=prefetched,result_cache_prefetched=cache_prefetched,transfer_prefetched=transfer_prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
                     timing['replay_started_epoch']=replay_start
+                    timing.update(native_preparation_seconds=prime_seconds,native_preparation_wait_seconds=prime_wait)
                     timing.update(getattr(plan.plan,'last_replay_profile',{}))
                     timing['since_previous_replay_seconds']=None if previous_finished is None else replay_start-previous_finished
                     self.previous_replay_finished=timing['finished_epoch']
@@ -347,6 +352,7 @@ class Worker:
         return replay_cohort(*args,**kwargs)
 
     def close(self):
+        if hasattr(self,'native_pool'):self.native_pool.shutdown(wait=True,cancel_futures=True)
         if getattr(self,'execution_gate',None):self.execution_gate.close();self.execution_gate=None
         if self.population_preparer and self.owns_population_preparer:self.population_preparer.close()
         self.resident_results=None

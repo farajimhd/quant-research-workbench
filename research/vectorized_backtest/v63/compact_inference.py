@@ -18,7 +18,7 @@ class Inference:
         self.work=torch.empty((self.width,self.base.total_nodes,TOP_K),device=data.device)
         self.known=torch.empty_like(self.work,dtype=torch.bool)
         # Identity slots make every action graph evaluate only the same five tickers.
-        self.entry=torch.arange(TOP_K,device=data.device,dtype=torch.int32)[None].expand(self.width,-1)
+        self.entry=torch.arange(TOP_K,device=data.device,dtype=torch.int32)[None].expand(self.width,-1).contiguous()
         if self.base.uses_cross:
             from types import SimpleNamespace
             base=self.base;columns=base.cross_columns;lookup={s:i for i,s in enumerate(columns)}

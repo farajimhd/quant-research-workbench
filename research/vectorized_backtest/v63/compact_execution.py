@@ -183,3 +183,18 @@ def state(candidates,listings):
     return (p,np.zeros((candidates,listings,O_WIDTH)),books,
             np.zeros((candidates,listings),np.int32),np.full((candidates,listings),-1,np.int32),
             np.zeros(candidates,np.int32),np.zeros((candidates,18)),np.zeros((candidates,D_WIDTH),np.int64))
+
+
+def warmup():
+    """Compile native accounting while the worker loads its first market session."""
+    from time import perf_counter
+    from numba import set_num_threads
+    started=perf_counter();set_num_threads(4)
+    slots=np.arange(5,dtype=np.int32)[None];shape=(1,1,5)
+    quotes=tuple(np.ones((1,5),dtype=bool if i==6 else np.float64) for i in range(7))
+    advance(0,slots,np.zeros(shape,np.int16),np.ones((*shape,3)),np.ones((*shape,5)),
+        np.zeros(shape,np.int64),np.zeros(shape,bool),quotes,*state(1,5),1000.,200.,0.,0.,0.,1)
+    from .price_references import confirmed_selected
+    source=np.ones((3,5));rows,columns=np.nonzero(np.isfinite(source))
+    confirmed_selected(source,np.tile(slots,(3,1)),rows,columns,1,1,True)
+    return perf_counter()-started

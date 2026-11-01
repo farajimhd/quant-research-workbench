@@ -12,10 +12,18 @@ def main():
     p.add_argument('--source-job',required=True);p.add_argument('--output',required=True)
     p.add_argument('--count',type=int,default=1024);p.add_argument('--days',nargs='+',default=['2026-08-13'])
     p.add_argument('--population',type=Path)
+    p.add_argument('--reference-kernel',action='store_true',help='Corrected original GPU layout for bounded comparisons only')
     args=p.parse_args()
     from .runtime import configure_caches,require_runtime
     root=require_runtime(args.output);configure_caches(root/'compiler')
     import torch
+    if args.reference_kernel:
+        from . import network_cuda
+        original=network_cuda.market_batch
+        def reference_kernel(plan,*values):
+            plan.cuda_time_tiled=False
+            return original(plan,*values)
+        network_cuda.market_batch=reference_kernel
     from .full_common import config,aggregate
     from .session_lanes import Worker
     from .genome import sample,Individual
@@ -47,7 +55,7 @@ def main():
                      traded=int(np.count_nonzero(panel['closed_positions'])),profitable=int(np.count_nonzero(panel['net_pnl']>0)),
                      median_net=float(np.median(panel['net_pnl'])),best_score=float(np.max(panel['score'])),
                      blocked_requests=int(np.sum(panel['blocked_requests'])))
-            reports.append(row);write_json(root/'report.json',dict(source_sha256=source_hash(),sessions=reports))
+            reports.append(row);write_json(root/'report.json',dict(source_sha256=source_hash(),reference_kernel=args.reference_kernel,sessions=reports))
             print(json.dumps(row),flush=True)
     finally:worker.close()
 

@@ -39,8 +39,8 @@ def replay(item,members,plan,execution,progress=None):
     def execute(start,slots,packet,book):
         set_num_threads(4)
         started=time.perf_counter()
-        result=advance(start,slots,*packet,book,*buffers,execution.entry_dollars,execution.add_dollars,
-                       execution.fee_per_share,execution.minimum_order_fee,execution.cost_bps/10000.,total-1)
+        result=advance(start,slots,*packet,book,*buffers,float(execution.entry_dollars),float(execution.add_dollars),
+                       float(execution.fee_per_share),float(execution.minimum_order_fee),float(execution.cost_bps)/10000.,total-1)
         return result,time.perf_counter()-started
     def collect():
         nonlocal future
