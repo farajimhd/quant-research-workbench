@@ -10,6 +10,12 @@ from .authority import MAXIMUM_ADDS
 
 
 @njit(inline='always')
+def applicable_signals(signals,held):
+    """Flat inventory cannot submit exit/reduce orders; inference stays stateless."""
+    return signals if held else signals & ~(2 | 8)
+
+
+@njit(inline='always')
 def may_request_add(filled_add_orders):
     return filled_add_orders < MAXIMUM_ADDS
 

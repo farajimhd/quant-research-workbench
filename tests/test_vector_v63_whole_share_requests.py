@@ -53,6 +53,25 @@ def test_reduction_rounds_down_and_exit_clears_integer_remainder():
     assert buffers[0][0,0,0]==0
 
 
+def test_flat_management_signals_are_not_orders_or_penalties():
+    buffers,orders,episodes=replay([2,8,10]*20,cuts=(7,31))
+    assert not orders and not episodes
+    assert buffers[-1][0,0]==buffers[-1][0,1]==0
+
+
+def test_flat_exit_does_not_cancel_pending_entry_and_held_exit_still_works():
+    buffers,orders,episodes=replay([1,2,0,2],liquidity=[.5,.5,10000.,10000.])
+    assert [r[1] for r in orders]==[1,4]
+    assert orders[0][3]==100 and len(episodes)==1
+    assert buffers[-1][0,1]==1  # Actual liquidity block still charged once.
+
+
+def test_simultaneous_flat_entry_and_exit_allows_entry_then_held_exit():
+    buffers,orders,episodes=replay([3,2,2,8])
+    assert [r[1] for r in orders]==[1,4]
+    assert len(episodes)==1 and buffers[-1][0,1]==0
+
+
 @pytest.mark.parametrize('ratio',[0.,.01,.75,1.])
 def test_add_is_fixed_200_dollars_independent_of_network_size(ratio):
     _,orders,_=replay([1,4,2],price=3.,ratio=ratio)

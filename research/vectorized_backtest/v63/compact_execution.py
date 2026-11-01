@@ -5,7 +5,7 @@ Requests already contain prices. Each candidate has an independent quote book.
 """
 import numpy as np
 from numba import njit,prange
-from .request_guard import may_request_add,entry_quantity,whole_quantity
+from .request_guard import may_request_add,entry_quantity,whole_quantity,applicable_signals
 
 # Position: quantity, average, stop, target, realized, episode baseline,
 # entry clock, last-flat clock, last equity, peak, drawdown, last mark, branch.
@@ -45,6 +45,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                 mark,bid,ask,stamp,bid_size,ask_size,valid=quotes[tick,u]
             q=p[u,0];held=q>1e-12;kind=int(o[u,0])
             sig=0 if slot<0 or terminal else signals[tick,candidate,slot]
+            sig=applicable_signals(sig,held)
             if slot>=0:d[12]+=abstain[tick,candidate,slot]
             fresh=valid>0 and np.isfinite(bid) and np.isfinite(ask) and bid>0 and ask>=bid
             if stamp>book[u,0]:
@@ -84,8 +85,6 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                         new_kind=1;limit=prices[tick,candidate,slot,0]
                         stop=prices[tick,candidate,slot,2];target=prices[tick,candidate,slot,3]
                         qty=entry_quantity(entry_dollars,limit)
-                    elif not held and (sig&(2|8))!=0:
-                        d[0]+=1;d[1]+=1;d[7]+=1
                 if new_kind!=0:
                     # Requests and inventory use whole shares, never display-only rounding.
                     qty=whole_quantity(qty)

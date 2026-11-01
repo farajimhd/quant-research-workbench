@@ -34,8 +34,10 @@ the replay fails visibly and publishes no fitness.
 Fitness retains the existing logarithmic ticker/session rewards, subtracting
 $5 per distinct blocked request. Drawdown is diagnostic only. An outstanding order is
 charged at most once, not on every waiting clock. Partial fills and rank loss
-alone carry no penalty. Flat exit/reduce requests are inventory-blocked requests
-and are counted explicitly. Validation cannot select parents or tune fitness.
+alone carry no penalty. The strategy request adapter suppresses exit/reduce
+signals while flat before submission, without neural position feedback. They
+cannot cancel an unfilled entry or accrue blocked-order penalties. Validation
+cannot select parents or tune fitness.
 
 GPU inference overlaps native CPU execution through a bounded pipeline. Order
 pages are journaled asynchronously; publication backpressure is measured.
