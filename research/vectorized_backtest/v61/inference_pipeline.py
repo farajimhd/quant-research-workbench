@@ -92,6 +92,16 @@ class Pipeline:
         self.producer=threading.Thread(target=produce,name='market-inference-producer',daemon=True)
         self.producer.start();self.profile['inference_independent_producer']=True
 
+    def await_ready(self,begin):
+        """CPU readiness only; the GPU event still protects packet consumption."""
+        started=time.perf_counter()
+        with self.condition:
+            if self.producer is not None:
+                self.condition.wait_for(lambda:begin in self.submitted or self.error is not None or self.stop.is_set())
+                if self.error is not None:raise self.error
+                if self.stop.is_set():raise InterruptedError('Inference producer stopped')
+        self.profile['inference_pre_gate_wait_seconds']=self.profile.get('inference_pre_gate_wait_seconds',0.)+time.perf_counter()-started
+
     def stage(self,begin,consume=True):
         started=time.perf_counter()
         with self.condition:

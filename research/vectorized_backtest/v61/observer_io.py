@@ -70,7 +70,8 @@ class ObserverIO:
 
 
 def read_json(path):
-    return json.loads(Path(path).read_bytes())
+    from .status_snapshot import expand
+    return expand(path,json.loads(Path(path).read_bytes()))
 
 
 def load_complete(job,root,generation):

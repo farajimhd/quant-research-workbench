@@ -35,6 +35,8 @@ def session_pool(root):
 class Evolution(Controller):
     def __init__(self,job,node,root,workers,stop_roots):
         self.job=job;self.node=node;self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True);self.workers=workers;self.stop_roots=stop_roots
+        from .status_snapshot import StatusWriter
+        self.status_writer=StatusWriter(self.root)
         self.owner=dict(pid=os.getpid(),creation_time=psutil.Process().create_time());self.status='running';self.stage='Starting';self.view={};self.lock=threading.RLock()
         self.worker=SimpleNamespace(config={'output':str(self.root/'replays')},resident_results=None);self.lanes=None;self.lane_key=None;self.direct=None;self.events=queue.Queue(maxsize=1);self.halt=threading.Event()
     def publish(self,**values):
@@ -47,7 +49,7 @@ class Evolution(Controller):
                 if (self.view.get('publication_pending_generation') or 0)<=self.sealed_generation:self.view['publication_pending_generation']=None
             for attempt in range(6):
                 try:
-                    write_json(self.root/'full-status.json',dict(status=self.status,stage=self.stage,node=self.node,owner=self.owner,updated_epoch=time.time(),total_generations=self.job['phase2_generations'],**self.view));break
+                    write_json(self.root/'full-status.json',self.status_writer.compact(dict(status=self.status,stage=self.stage,node=self.node,owner=self.owner,updated_epoch=time.time(),total_generations=self.job['phase2_generations'],**self.view)));break
                 except PermissionError:
                     if attempt==5:raise
                     time.sleep(.02*2**attempt)
