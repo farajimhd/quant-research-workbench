@@ -51,6 +51,23 @@ on the workstation. It re-evaluates only saved candidate 27011, reconciles signa
 counts to sealed receipts, and records current ask, buy limit, swing, and exact
 failure category per signal. It does not run evolution or alter receipts.
 
+All 36 sessions matched the sealed leader's signal counts exactly:
+
+| Split | Signals | Missing swing | Swing at/above ask | Valid stop |
+| --- | ---: | ---: | ---: | ---: |
+| Training | 271 | 259 | 10 | 2 |
+| Validation | 127 | 82 | 45 | 0 |
+
+There were no additional below-ask/above-limit cases for this leader. One of the
+two valid training signals arrived while an order was pending; the other became
+the August 13 position. Those are distinct from swing feasibility failures.
+
+An isolated full execution check of July 31 and August 13 preserved the legacy
+candidate's saved financial/admission results exactly. Explicitly constructed
+and routed copies had zero stop abstentions and matching results. The July 31
+copy made two trades totaling -105.9705; the August 13 copy made two totaling
+1628.6376. These are bounded correctness results, not profitability acceptance.
+
 Focused tests cover all construction routes, full population replacement,
 legacy restore, missing/nonpositive/above-ask/above-limit swings, preserved valid
 swings, and CPU/CUDA order parity. This fixes entry feasibility; it does not

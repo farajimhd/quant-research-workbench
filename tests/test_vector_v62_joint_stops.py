@@ -108,7 +108,7 @@ def test_real_order_transition_uses_candidate_rule_and_preserves_legacy():
 def test_real_cuda_order_transition_exact_parity():
     from research.vectorized_backtest.v62.orders import transition
     from research.vectorized_backtest.v62.order_transition import transition as cuda
-    # Both modes, including pending unfilled entries, must agree exactly.
+    # Both legacy and newly constructed modes must agree exactly.
     for mode in (3,BOUNDED_SWING+3):
         args=transition_args('cuda');args['policy'][...,8]=mode
         expected=transition(**args)
@@ -118,3 +118,21 @@ def test_real_cuda_order_transition_exact_parity():
                     args['entry_dollars'],args['add_dollars'],args['fee_per_share'],
                     args['minimum_order_fee'],args['cost'],args['minimum_order_dollars'])
         for a,b in zip(actual,expected):torch.testing.assert_close(a,b,rtol=0,atol=0,equal_nan=True)
+
+
+def test_pending_order_keeps_submitted_stop_and_cancels_if_price_crosses_it():
+    from research.vectorized_backtest.v62.orders import transition
+    args=transition_args();args['capacity'].zero_()
+    pending=transition(**args)
+    assert (pending[0][...,0]==0).all() and (pending[1][...,0]==1).all()
+    # A new swing cannot silently change an already-submitted stop.
+    args=transition_args();args.update(position=pending[0],orders=pending[1])
+    args['swing'].fill_(8.)
+    filled=transition(**args)
+    torch.testing.assert_close(filled[0][...,2],pending[1][...,9],rtol=0,atol=0)
+    # A lower fill price below the original stop cancels the unfilled order.
+    args=transition_args();args.update(position=pending[0],orders=pending[1])
+    args['ask'].fill_(8.);args['bid'].fill_(7.99);args['previous'].fill_(8.)
+    cancelled=transition(**args)
+    assert (cancelled[0][...,0]==0).all()
+    assert (cancelled[1][...,15]==1).all()
