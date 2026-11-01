@@ -1,3 +1,7 @@
+# V61 source provenance
+
+V61 is self-contained, copied from V60 at `1ef2df3c9`. Package imports are local to V61. The cost function, execution engine and market inference retain V60 semantics. V61 changes founder construction, local growth, subtree exchange and size-diverse breeding. The inherited V60 provenance is retained below for traceability.
+
 # V60 source provenance
 
 Initial source baseline: `518e7c2bb`; V59 audit baseline: `99fb181db`.

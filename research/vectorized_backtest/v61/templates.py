@@ -11,7 +11,7 @@ ALLOCATIONS = dict(macd_signal=384, macd_zero=192, ema_cross=256,
     trend_pullback=320, vwap_reclaim=256, vwap_recovery=192, rsi_recovery=320,
     high_breakout=256, compression_breakout=192, support_bounce=256,
     relative_strength=192, activity_surge=128, candle_agreement=128)
-FAMILIES = (*ALLOCATIONS, 'random')
+FAMILIES = (*ALLOCATIONS, 'random', 'simple', 'combination')
 from .authority import BY_NAME
 INDEX = {name:handle.id for name,handle in BY_NAME.items()}
 

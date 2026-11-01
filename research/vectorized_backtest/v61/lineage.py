@@ -302,7 +302,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
                         method=('entry_routing','reciprocal_veto','entry_management_exchange','subgraph_exchange')[(slot+generation)%10] if (slot+generation)%10<4 else None
                         if method:
                             from .strategy_mix import cross as strategy_cross
-                            child,operator=strategy_cross(population[first],population[second],method,attempt,attempt+generation)
+                            child,operator=strategy_cross(population[first],population[second],method,attempt+slot,attempt+generation+slot)
                         else:
                             child,operator=whole_cross(population[first],population[second],whole_mode,stages=(STAGES[(slot+generation)%len(STAGES)],)) if whole else cross(Proposal(root_key,(generation,len(children),'cross',attempt),plan),population[first],population[second])
                     except (ValueError,RuntimeError) as exc:

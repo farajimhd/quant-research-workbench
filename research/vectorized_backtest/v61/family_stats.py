@@ -11,7 +11,8 @@ def annotate(record,parents,*,family='random'):
             contributions=[a+b for a,b in zip(contributions,parent['family_contributions'])]
     else:contributions[FAMILIES.index(family)]=1
     record['family_contributions']=contributions
-    record['template_ancestry']=sum(contributions[:-1]);record['random_ancestry']=contributions[-1]
+    record['template_ancestry']=sum(v for k,v in zip(FAMILIES,contributions) if k not in ('random','simple','combination'))
+    record['random_ancestry']=sum(v for k,v in zip(FAMILIES,contributions) if k in ('random','simple','combination'))
     # Serial and existing mutation/crossover suffix preserve unique identity.
     label=record['label'].split('-')
     record['label']='-'.join([label[0],f"T{record['template_ancestry']:03d}",f"R{record['random_ancestry']:03d}",*label[1:]])

@@ -47,3 +47,12 @@ def test_objective_unchanged():
     from research.vectorized_backtest.v61.robust_score import reward as new
     x=np.array([-10000.,-1,0,10,2000,5000,50000])
     np.testing.assert_array_equal(old(x,2000),new(x,2000))
+
+
+def test_new_founder_families_have_ancestry_slots():
+    from research.vectorized_backtest.v61.family_stats import annotate
+    from research.vectorized_backtest.v61.templates import FAMILIES
+    for family in ('simple','combination'):
+        row={'label':'G001-000001-fresh'};annotate(row,[],family=family)
+        assert row['template_ancestry']==0 and row['random_ancestry']==1
+        assert family in FAMILIES
