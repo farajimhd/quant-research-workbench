@@ -275,3 +275,26 @@ def test_time_tiled_graph_matches_original_kernel_exactly():
             plan.cuda_time_tiled=True;b=market_batch(plan,values,valid,membership,work,known,entries)
             for x,y in zip(a,b):torch.testing.assert_close(x,y,rtol=0,atol=0)
     finally:plan.close()
+
+
+def test_candidate_detail_keeps_sealed_validation_while_live_is_partial():
+    from pathlib import Path
+    from research.vectorized_backtest.v63.campaign_progress import Model
+    model=Model.__new__(Model)
+    model.selected=dict(serial=7,generation=24);model.day=None;model.aggregate_mode=False
+    model.report=lambda:dict(generation=24);model.target=lambda:Path('unused')
+    model.read=lambda path:{}
+    panel={name:[1.] for name in ('score','net_pnl','gross_losses','drawdown')}
+    def snapshot(sessions):
+        return dict(generation=24,panels={s:dict(ids=[7],panel=panel) for s in sessions})
+    model.live_data=snapshot(['training:a'])
+    model.global_data=snapshot(['training:a','training:b','validation:c'])
+    assert [r['session'] for r in model.candidate_sessions()]==['training:a','training:b','validation:c']
+
+
+def test_observer_summary_preserves_request_penalty_fields():
+    from research.vectorized_backtest.v63.evolution_report import summarize
+    panel={k:[0.] for k in ('score','net_pnl','gross_losses','drawdown','closed_positions')}
+    panel.update(eligible=[True],blocked_requests=[3],blocked_penalty=[15.])
+    row=summarize([7],panel,[dict(serial=7)])['candidates'][0]
+    assert row['blocked_requests']==3 and row['blocked_penalty']==15.

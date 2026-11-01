@@ -23,7 +23,7 @@ def summarize(ids,panel,records,retained=None,generation=0):
             source_sessions=r.get('source_sessions',[]),parents=r.get('parents',[]),operation=r.get('operation'),nodes=r.get('node_count'),branch_count=r.get('branch_count',1),
             mix=r.get('blind_mix'),eligible=bool(panel['eligible'][i]),retained=None if retained is None else int(serial) in retained,
             **{k:float(panel[k][i]) for k in FIELDS})
-        row.update({k:float(panel[k][i]) for k in ('ticker_component','session_component','uncapped_score','profitable_sessions','session_targets_met','best_session_net','net_excluding_best_session') if k in panel})
+        row.update({k:float(panel[k][i]) for k in ('ticker_component','session_component','uncapped_score','profitable_sessions','session_targets_met','best_session_net','net_excluding_best_session','blocked_requests','blocked_penalty') if k in panel})
         row.update({k:int(panel[k][i]) for k in panel if k.startswith('admission_')})
         if 'parent_eligible' in panel:row['parent_eligible']=bool(panel['parent_eligible'][i])
         comparisons=r.get('parent_objectives',[])
