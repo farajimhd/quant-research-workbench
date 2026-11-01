@@ -40,9 +40,10 @@ class Pipeline:
         started=time.perf_counter()
         with torch.cuda.stream(self.stream),torch.inference_mode():
             infer(0);self.stream.synchronize()
+            from .capture_lifecycle import defer_cyclic_collection
             for slot in range(2):
                 graph=torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph,stream=self.stream):infer(slot)
+                with defer_cyclic_collection(),torch.cuda.graph(graph,stream=self.stream):infer(slot)
                 self.graphs.append(graph)
         profile['inference_setup_seconds']=time.perf_counter()-started
         profile['inference_time_batch']=self.engine.width

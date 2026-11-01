@@ -5,7 +5,9 @@ import torch
 
 
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
-def test_order_scatter_and_pack_use_64_bit_row_offsets():
+def test_order_scatter_and_pack_use_64_bit_row_offsets(tmp_path):
+    from research.vectorized_backtest.v61.compiler_runtime import configure_caches
+    configure_caches(tmp_path/'compiler')
     from research.vectorized_backtest.v61.order_scatter import append_pair
     from research.vectorized_backtest.v61.ledger_pack import pack
     if torch.cuda.mem_get_info()[0]<24*2**30:pytest.skip('Wide-address fixture requires 24 GiB free')

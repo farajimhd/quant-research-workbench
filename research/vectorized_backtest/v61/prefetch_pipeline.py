@@ -35,7 +35,10 @@ def prepare_next(item,cache_path,config):
         size=sum((v.numel()*v.element_size()+255)//256*256 for g in groups for v in g.values())
         required=(config.get('host_reserve_gib',128.)+config.get('host_admission_gib',32.))*2**30
         if config.get('prefetch_transfer',False) and psutil.virtual_memory().available>=required+size:
-            arena=torch.empty(size,dtype=torch.uint8,pin_memory=True);offset=0;staged=[]
+            from .capture_lifecycle import cuda_host_allocation
+            with cuda_host_allocation:
+                arena=torch.empty(size,dtype=torch.uint8,pin_memory=True)
+            offset=0;staged=[]
             for group in groups:
                 values={}
                 for key,value in group.items():
