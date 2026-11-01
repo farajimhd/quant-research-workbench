@@ -13,4 +13,4 @@ def test_compact_reduction_exact_canonical_order():
             ids=torch.randperm(len(CATALOG),device='cuda')[:columns]
             oracle=torch.zeros((*values.shape[:-1],len(CATALOG)),device='cuda').index_copy(-1,ids,values).sum(-2).index_select(-1,ids)
             actual=column_sum(values,ids)
-            torch.testing.assert_close(actual,oracle,rtol=0,atol=0)
+            torch.testing.assert_close(actual,oracle,rtol=0,atol=0,msg=f"rows={rows} clocks={clocks} columns={columns}")
