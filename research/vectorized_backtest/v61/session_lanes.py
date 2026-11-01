@@ -367,7 +367,16 @@ def initialize(config,events,lane):
 
 def evaluate(*args):
     try:
-        result=_worker.run(*args)
+        profiler=None
+        if _worker.config.get('execution_diagnostics'):
+            import cProfile
+            profiler=cProfile.Profile();profiler.enable()
+        try:result=_worker.run(*args)
+        finally:
+            if profiler is not None:
+                profiler.disable()
+                path=Path(_worker.config['output'])/'cpu-profile'/f'{args[3]}-{args[0]}.prof'
+                path.parent.mkdir(parents=True,exist_ok=True);profiler.dump_stats(str(path))
         if getattr(_worker,'defer_publication',False):result['writes']=_worker.deferred_writes
         return result
     except Exception as error:

@@ -70,6 +70,7 @@ _PROGRAMS=OrderedDict()
 
 
 def program(arguments):
+    if __import__('os').environ.get('V61_FINANCIAL_DIRECT')=='1':return financial_tick
     from research.vectorized_backtest.v61.compile_lifecycle import scoped_compile
     def key(x):
         return (tuple(x.shape),x.stride(),x.dtype,x.device) if isinstance(x,torch.Tensor) else x
