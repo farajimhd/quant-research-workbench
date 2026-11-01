@@ -31,9 +31,9 @@ def comparable(metrics):
 def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--job',type=Path,required=True);p.add_argument('--checkpoint',type=Path,required=True)
-    p.add_argument('--output',type=Path,required=True);p.add_argument('--workers',type=int,choices=(2,4,6),required=True)
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--workers',type=int,choices=(2,4,6,8),required=True)
     p.add_argument('--days',nargs='+',default=['2026-07-30','2026-07-31','2026-08-13','2026-08-18'])
-    p.add_argument('--block',type=int,choices=(256,512,1024),required=True)
+    p.add_argument('--block',type=int,choices=(128,256,512,1024),required=True)
     p.add_argument('--mode',choices=('synchronous','events'),required=True)
     p.add_argument('--reference',type=Path)
     a=p.parse_args()

@@ -15,7 +15,7 @@ class Inference:
         self.prices=PricePlan(self.base.members,data,self.slots_cpu)
         free=torch.cuda.mem_get_info(data.device)[0]
         requested=getattr(plan,'replay_time_block',256)
-        if requested not in (256,512,1024):raise ValueError('Unsupported independent-clock block')
+        if requested not in (128,256,512,1024):raise ValueError('Unsupported independent-clock block')
         self.width=max(1,min(requested,int(free*.05)//max(1,self.base.total_nodes*TOP_K*5)))
         self.work=torch.empty((self.width,self.base.total_nodes,TOP_K),device=data.device)
         self.known=torch.empty_like(self.work,dtype=torch.bool)

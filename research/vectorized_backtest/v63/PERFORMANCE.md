@@ -3,8 +3,8 @@
 Performance settings do not change genomes, the objective, market inputs, price
 programs, or execution accounting. The default remains two workers, 256 clocks,
 and synchronous transfers. Optional `replay_tuning` accepts `time_block` of
-256, 512, or 1024 and `transfer_mode` of `synchronous` or `events`.
-The workstation worker metadata must agree with `global_session_workers` (2, 4, or 6).
+128, 256, 512, or 1024 and `transfer_mode` of `synchronous` or `events`.
+The workstation worker metadata must agree with `global_session_workers` (2, 4, 6, or 8).
 
 Event transfers use a dedicated CUDA copy stream and two pinned host buffers.
 A buffer is reused only after its ordered CPU execution completes. One execution
