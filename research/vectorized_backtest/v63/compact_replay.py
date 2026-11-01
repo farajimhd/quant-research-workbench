@@ -115,8 +115,11 @@ def replay(item,members,plan,execution,progress=None):
             tail_future=tail_pool.submit(tail.load,page+1) if page+1<len(tail.receipt['pages']) else None
             packed=tuple(book[k] for k in ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid'))
             start_clock=int(book['clocks'][0]-item.arrays['clocks'][0])
-            for begin in range(0,len(packed[0]),engine.width):
-                size=min(engine.width,len(packed[0])-begin)
+            # Tail diagnostics historically include the remainder of the final
+            # 256-clock liquidation packet. GPU batching must not change that
+            # accounting horizon (or inactivity_fraction) when tuning inference.
+            for begin in range(0,len(packed[0]),256):
+                size=min(256,len(packed[0])-begin)
                 slots=np.full((size,5),-1,np.int32)
                 packet=(np.zeros((size,b,5),np.int16),np.zeros((size,b,5,3)),np.zeros((size,b,5,5)),
                         np.zeros((size,b,5),np.int64),np.zeros((size,b,5),bool))
