@@ -163,17 +163,14 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                 profile['graph_capture_seconds']=profile.get('graph_capture_seconds',0.)+time.perf_counter()-clock
             torch.cuda.current_stream(device).wait_stream(stream)
         if pipeline is not None:pipeline.start()
-        chunk=block if tail_mode else max(block,(512//block)*block)
+        from .replay_schedule import chunk_clocks
+        chunk=chunk_clocks(block,u,records.capacity,episodes.capacity,tail=tail_mode)
+        profile['tail_chunk_clocks' if tail_mode else 'decision_chunk_clocks']=chunk
+        profile.setdefault('journal_retries',0)
         def execute(count,start_clock):
-            # Checkpoint only live state/counters, not the large append-only
-            # ledgers. If a journal page fills, replay smaller chunks exactly.
-            mutable=[position,orders,book,aggregate,opened,ticker_state,index,episodes.counts,records.counts]
-            if not tail_mode:mutable.append(admission)
-            mutable.extend([ratios,plan.feedback,plan.previous_clock,plan.buffer_phase])
-            if hasattr(plan,'base'):mutable.extend([plan.base.feedback,plan.base.ratios])
-            if not tail_mode and hasattr(plan,'branch_index'):mutable.extend([plan.owner,policy,limits,columns])
+            # Capacity is proven before submission. No rollback copies and no
+            # recomputation of already consumed market inference are necessary.
             with gate.turn() if gate is not None else nullcontext():
-                checkpoint=[x.clone() for x in mutable]
                 for step_index in range(count):
                     if pipeline is not None:
                         begin=start_clock+step_index*block
@@ -181,13 +178,9 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
                     if use_cuda:graph.replay()
                     else:tick()
                 if device.type=='cuda':torch.cuda.current_stream(device).synchronize()
-            if episodes.fits() and records.drain():
-                if not episodes.drain(checked=True):raise RuntimeError('Position page changed after readiness check')
-                return
-            for target,value in zip(mutable,checkpoint):target.copy_(value)
-            if count==1:raise RuntimeError('One graph exceeded its proven order-journal event bound')
-            if pipeline is not None:pipeline.rewind(start_clock)
-            first=count//2;execute(first,start_clock);execute(count-first,start_clock+first*(block if use_cuda else 1))
+            if not episodes.fits() or not records.drain():
+                raise RuntimeError('Replay exceeded its proven journal bound; no result published')
+            if not episodes.drain(checked=True):raise RuntimeError('Position page changed after readiness check')
         profiled=False
         for begin in range(0,ticks,chunk):
             count=len(range(begin,min(ticks,begin+chunk),block if use_cuda else 1))
@@ -207,8 +200,6 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
             done=min(ticks,begin+chunk)
             if progress:progress(done,ticks)
             if tail_mode and not bool(((position[...,0]>1.e-12)|(orders[...,0]!=0)).any()):break
-        # Recursive execute owns a cell referencing itself and the CUDA graph.
-        # Break that cycle at the page boundary rather than waiting for GC.
         del execute
         if pipeline is not None:pipeline.close()
 

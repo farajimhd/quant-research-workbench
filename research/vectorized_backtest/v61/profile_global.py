@@ -32,6 +32,7 @@ def main():
     parser.add_argument('--mixed',action='store_true',help='Equal template/random sample; no outcome-based selection')
     parser.add_argument('--diagnostics',action='store_true',help='Bounded GPU trace and CPU reproduction profile; not a timing acceptance run')
     parser.add_argument('--ungated',action='store_true',help='Diagnostic comparison of independent CUDA contexts without host mutex')
+    parser.add_argument('--days',nargs=2,default=['2026-08-13','2026-08-18'],help='Two training sessions for a bounded comparison')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
     seedpath=args.output/'founders.json'
@@ -54,7 +55,7 @@ def main():
         if len(indices)!=args.count:raise ValueError('Use a divisor of 6144 for a stratified cohort')
         members=[members[i] for i in indices]
     else:indices=list(range(args.offset,args.offset+args.count));members=members[args.offset:args.offset+args.count]
-    days=['2026-08-13','2026-08-18']
+    days=args.days
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
