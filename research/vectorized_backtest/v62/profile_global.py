@@ -113,6 +113,7 @@ def main():
         report['publication_final_wait_seconds']=publication_wait_seconds
         report['probe_preparation_seconds']=probe_preparation_seconds
         report['instrumented']=args.diagnostics
+        report['financial_direct']=os.environ.get('V62_FINANCIAL_DIRECT')=='1'
         import numpy as np
         report['quality']=[]
         for day,metrics in zip(days,published):

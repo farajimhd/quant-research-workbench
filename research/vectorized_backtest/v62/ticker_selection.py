@@ -19,17 +19,20 @@ def ticker_scores(metrics,item):
     return result
 
 def specialist_pools(ordered,valid,active,ids):
-    rows=[{} for _ in ids]
+    n=len(ids)
+    if any(len(s['ticker_score'])!=n for s in ordered):raise ValueError('Ticker score alignment changed')
+    names=sorted({str(k) for s in ordered for row in s['ticker_score'] for k in row})
+    lookup={k:i for i,k in enumerate(names)};totals=np.zeros((n,len(names)),np.float64);present=np.zeros_like(totals,dtype=bool)
     for session in ordered:
-        if len(session['ticker_score'])!=len(ids):raise ValueError('Ticker score alignment changed')
-        for i,values in enumerate(session['ticker_score']):
-            for ticker,score in values.items():
-                if not np.isfinite(score):raise ValueError('Nonfinite ticker score')
-                key=str(ticker);rows[i][key]=rows[i].get(key,0.)+score
-    pools={}
-    for i,row in enumerate(rows):
-        if not valid[i] or not active[i]:continue
-        for ticker,score in row.items():
-            if not np.isfinite(score):raise ValueError('Nonfinite ticker score')
-            pools.setdefault(str(ticker),[]).append((i,float(score)))
-    return {k:[i for i,v in sorted(pools[k],key=lambda x:(-x[1],ids[x[0]]))] for k in sorted(pools)}
+        records=[(i,lookup[str(k)],v) for i,row in enumerate(session['ticker_score']) for k,v in row.items()]
+        if not records:continue
+        rows,columns,values=map(np.asarray,zip(*records));rows=rows.astype(np.int64);columns=columns.astype(np.int64)
+        if not np.isfinite(values).all():raise ValueError('Nonfinite ticker score')
+        # add.at retains session/record addition order, including aliased keys.
+        np.add.at(totals,(rows,columns),values);present[rows,columns]=True
+    mask=np.asarray(valid,bool)&np.asarray(active,bool);pools={}
+    for column,name in enumerate(names):
+        rows=np.flatnonzero(mask&present[:,column]);scores=totals[rows,column]
+        if not np.isfinite(scores).all():raise ValueError('Nonfinite ticker score')
+        if len(rows):pools[name]=rows[np.lexsort((np.asarray(ids)[rows],-scores))].tolist()
+    return pools

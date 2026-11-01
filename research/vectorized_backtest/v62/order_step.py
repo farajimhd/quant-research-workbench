@@ -17,8 +17,11 @@ def step(p:torch.Tensor,o:torch.Tensor,book:torch.Tensor,opened:torch.Tensor,tic
          entry:float,addition:float,fee:float,minimum_fee:float,cost:float,minimum:float,diagnostic:torch.Tensor
          )->tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]:
     s,b,u,_=p.shape;tiles=triton.cdiv(u,128)
-    if any(not x.is_contiguous() for x in (p,o,book,opened,ticker)):
+    if any(not x.is_contiguous() for x in (book,opened,ticker)):
         raise ValueError('Contiguous execution state required')
+    for x in (p,o):
+        if x.stride(1)!=u*x.stride(2) or x.stride(0)!=b*x.stride(1):
+            raise ValueError('Packed candidate/listing execution state required')
     vectors=[x.expand(s,b,u) for x in (signals,previous,membership,swing,bid,ask,valid)]+[snapshot.expand(s,b,u,3)]
     policy=policy.expand(s,b,u,11);mark=mark.expand(s,b,u)
     complete=torch.empty((s,b,u),device=p.device,dtype=torch.bool)
@@ -29,6 +32,7 @@ def step(p:torch.Tensor,o:torch.Tensor,book:torch.Tensor,opened:torch.Tensor,tic
     order_fill_kernel[(s*b,tiles)](p,o,vectors[0],ratios,policy,*vectors[1:],clock,terminal,p,o,complete,record,
         u,b,tuple(x.stride() for x in vectors),policy.stride(),ratios.stride(),entry,addition,fee,minimum_fee,cost,minimum,128,
         True,book,mark,opened,ticker,active,closed,profit,entries,partial,mark.stride(),tiles,diagnostic if diagnostic is not None and diagnostic.numel() else None,
+        P_ROW=p.stride(2),P_FIELD=p.stride(3),O_ROW=o.stride(2),O_FIELD=o.stride(3),
         num_warps=4,enable_fp_fusion=False)
     aggregate_kernel[(s*b,)](partial,aggregate,out,tiles,b,aggregate.stride(),triton.next_power_of_2(tiles),num_warps=4,enable_fp_fusion=False)
     return out,closed,profit,entries,complete,record

@@ -4,7 +4,24 @@ import pytest
 
 
 class TestReplayJournals:
-    def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False,fast_orders=False,record_capacity=None,episode_capacity=32):
+    @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
+    def test_field_major_publication_preserves_profit_reduction(self):
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v62.evaluator import _export_result
+        torch.manual_seed(812)
+        position=torch.randn((1,32,137,9),device='cuda',dtype=torch.float64)*10000
+        position[...,0]=0
+        packed=position.permute(3,0,1,2).contiguous().permute(1,2,3,0)
+        aggregate=torch.zeros((1,32,16),device='cuda',dtype=torch.float64)
+        ticker=torch.zeros((1,32,137,2),device='cuda',dtype=torch.float64)
+        episodes=SimpleNamespace(export=lambda:[{}])
+        a=_export_result(position,aggregate,episodes,99,ticker)[0]
+        b=_export_result(packed,aggregate,episodes,99,ticker)[0]
+        for key in a:
+            if isinstance(a[key],torch.Tensor):torch.testing.assert_close(a[key],b[key],rtol=0,atol=0)
+            else:assert a[key]==b[key]
+
+    def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False,fast_orders=False,record_capacity=None,episode_capacity=32,field_major=False):
         from types import SimpleNamespace
         from unittest.mock import patch
         import numpy as np
@@ -14,6 +31,7 @@ class TestReplayJournals:
         shape=(1,candidates,2)
         def zeros(*dims):return torch.zeros(dims,dtype=torch.float64,device=device)
         position=zeros(*shape,9);aggregate=zeros(1,candidates,16);aggregate[...,8]=float('inf')
+        if field_major:position=zeros(9,*shape).permute(1,2,3,0)
         opened=zeros(*shape);ticker=zeros(*shape,2)
         policy=torch.tensor([.05,.5,.5,.05,0.,0.,2.,0.,0.,0.,0.],dtype=torch.float64,device=device)[None,None,None].expand(1,candidates,1,11)
         total=20 if fast_orders else 4
@@ -66,6 +84,7 @@ class TestReplayJournals:
         cpu=self.run_path('cpu','eager')
         first=self.run_path('cuda','compile')
         second=self.run_path('cuda','compile')
-        for expected,actual in ((cpu,first),(first,second)):
+        field_major=self.run_path('cuda','compile',field_major=True)
+        for expected,actual in ((cpu,first),(first,second),(first,field_major)):
             for a,b in zip(expected[:2],actual[:2]):torch.testing.assert_close(a,b,rtol=0,atol=0)
             assert expected[2:]==actual[2:]

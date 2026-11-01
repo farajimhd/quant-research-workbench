@@ -11,12 +11,14 @@ from research.vectorized_backtest.v62.publication import write_json
 from research.vectorized_backtest.v62.distributed_assets import sha
 
 
-def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,probe,objective):
+def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,probe,objective,*,stop_after_generation=None):
     if valid and c.job.get('version')!='v62-global-v1':raise ValueError('The direct pilot cannot open validation sessions')
     lane=Lane();c.publication_lane=lane;c.worker.defer_publication=True
     snapshot=Snapshot(members);last=None;completed=state['completed'];c.sealed_generation=max(0,completed)
+    limit=c.job['phase2_generations'] if stop_after_generation is None else stop_after_generation
+    if not completed < limit <= c.job['phase2_generations']:raise ValueError('Invalid qualification generation bound')
     try:
-        for generation in range(completed+1,c.job['phase2_generations']+1):
+        for generation in range(completed+1,limit+1):
             started=time.perf_counter();lane.check()
             if last is not None and last.done():c.sealed_generation=last.result()['generation']
             folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True)
@@ -83,9 +85,9 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
                       publication_pending_generation=generation,reproduction_stage='Complete; publishing asynchronously')
             members,ids,snapshot=successor,newids,next_snapshot
             del packet,ordered,result,receipts
-        last.result();c.sealed_generation=c.job['phase2_generations']
+        last.result();c.sealed_generation=limit
         c.publish(completed_generations=c.sealed_generation,publication_pending_generation=None)
-        write_json(root/'complete.json',dict(status='complete',checkpoint_sha256=sha(root/'checkpoint.json'),completed=c.sealed_generation,
+        write_json(root/('complete.json' if limit==c.job['phase2_generations'] else 'qualification-complete.json'),dict(status='complete',checkpoint_sha256=sha(root/'checkpoint.json'),completed=c.sealed_generation,
                     training_sessions=len(train),validation_sessions=len(valid),validation_independent=True))
     finally:
         try:lane.close()

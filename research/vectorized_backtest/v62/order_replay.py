@@ -70,12 +70,13 @@ _PROGRAMS=OrderedDict()
 
 
 def program(arguments):
+    if __import__('os').environ.get('V62_FINANCIAL_DIRECT')=='1':return financial_tick
     from research.vectorized_backtest.v62.compile_lifecycle import scoped_compile
     def key(x):
         return (tuple(x.shape),x.stride(),x.dtype,x.device) if isinstance(x,torch.Tensor) else x
     identity=tuple(key(x) for x in arguments)
     if identity not in _PROGRAMS:
-        if len(_PROGRAMS)>=16:_PROGRAMS.popitem(last=False)
+        if len(_PROGRAMS)>=128:_PROGRAMS.popitem(last=False)
         _PROGRAMS[identity]=scoped_compile(financial_tick,fullgraph=True,dynamic=False)
     _PROGRAMS.move_to_end(identity)
     return _PROGRAMS[identity]
@@ -94,7 +95,9 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     from .order_tail import Tail
     from torch.nn.functional import pad
     device=position.device;u=position.shape[-2];b=position.shape[1]
-    orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
+    if device.type=='cuda':
+        orders=torch.zeros((ORDER_WIDTH,*position.shape[:-1]),dtype=position.dtype,device=device).permute(1,2,3,0)
+    else:orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
     book=torch.zeros((*position.shape[:-1],3),dtype=position.dtype,device=device)
     book[...,0]=-1.  # The first quote has not consumed any liquidity.
     episodes.streaming=True
@@ -103,7 +106,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         from .order_journal import Journal
         from dataclasses import asdict
         journal=Journal(item.execution_order_root,b,dict(data=item.identity,execution=asdict(execution)))
-    journal_capacity=max(8192,2*block*u) if record_capacity is None else record_capacity
+    journal_capacity=max(8192,2*getattr(plan,'journal_blocks',1)*block*u) if record_capacity is None else record_capacity
     if record_capacity is not None:block=min(block,max(1,record_capacity//(2*u)))
     if journal_capacity<2*block*u:raise ValueError('Journal must hold cancellations and fills from one graph')
     records=OrderRecords(b,u,device,capacity=journal_capacity,sink=journal)
@@ -131,7 +134,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         pipeline=None
         if use_cuda and not tail_mode and hasattr(plan,'members') and __import__('os').environ.get('V60_INFERENCE_PIPELINE','1')=='1':
             from .inference_pipeline import Pipeline
-            pipeline=Pipeline(plan,item,total,block,signals,policy,columns,profile)
+            pipeline=Pipeline(plan,item,total,block,signals,policy,columns,profile,packet_blocks=getattr(plan,'journal_blocks',1))
             pipelines.append(pipeline)
         def tick():
             if pipeline is not None:pipeline.provide(index.clamp_max(total))
@@ -176,6 +179,8 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         def execute(count,start_clock):
             # Capacity is proven before submission. No rollback copies and no
             # recomputation of already consumed market inference are necessary.
+            # Wait for the first signal packet before monopolizing the GPU gate.
+            if pipeline is not None:pipeline.await_ready(start_clock)
             with gate.turn() if gate is not None else nullcontext():
                 for step_index in range(count):
                     if pipeline is not None:pipeline.stage(start_clock+step_index*block)

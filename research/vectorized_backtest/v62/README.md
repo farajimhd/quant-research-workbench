@@ -1,6 +1,6 @@
 # V62: minimal founders with bottom-up growth
 
-Self-contained copy of V61 at `da6a21929`. Prepared for review; no V62 campaign has been launched. Leave the active V61 run unchanged until its next generations are reviewed.
+Self-contained copy of V61 at `da6a21929`, with the replay, reproduction and publication optimizations qualified through `7dc3f8c2d`. V62 starts a separate fresh global campaign; it never resumes V61 genomes or fitness.
 
 ## Fresh construction
 
@@ -16,4 +16,4 @@ The existing progress panel and generation telemetry are retained. A smaller sta
 
 ## Validation and launch status
 
-CPU checks cover full 6144-founder construction with a synthetic training-only probe, uniqueness, replacement and prefetched-immigrant bounds, growth beyond two nodes, identity insertion parity, dispatch and replay scheduling. These checks do not measure market replay speed or candidate profitability. Workstation profiling and a campaign launch remain deferred until review of V61 results. Use the local `run_train` entry point with a separately prepared, source-bound V62 job when authorized; never resume a V61 checkpoint as V62.
+CPU checks cover full 6144-founder construction with a synthetic training-only probe, uniqueness, replacement and prefetched-immigrant bounds, growth beyond two nodes, identity insertion parity, dispatch and replay scheduling. These checks do not measure market replay speed or candidate profitability. The V61 optimization path passed an isolated complete 24-training/12-validation generation before being ported. Profile fresh V62 genomes on the workstation before launching; retain exact financial parity evidence and distinguish cold compilation, replay, liquidation and publication time. Runtime reports remain outside source. Use the local `run_train` entry point with a separately prepared, source-bound V62 job when authorized; never resume a V61 checkpoint as V62.

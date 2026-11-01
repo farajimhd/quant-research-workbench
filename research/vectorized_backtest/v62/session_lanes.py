@@ -213,14 +213,17 @@ class Worker:
                     self.staging.activate([(day,item)],device)
                     self.uploads+=1
             load_seconds=perf_counter()-started
+            cleanup_started=perf_counter()
             # One active session plus one pageable CPU session. Upload remains
             # demand-only; no speculative CUDA allocation or pinning occurs.
             if c.get('host_prefetch',False) and next_day is not None and next_day not in self.host:
                 for old_day in list(self.host):
                     if old_day!=day:
                         old=self.host.pop(old_day);old.close();del old
-                gc.collect()
+                # Refcount disposal is deterministic; avoid a process-wide GC
+                # scan on the GPU admission path. Split retirement collects cycles.
                 self.prefetch.start(next_day,self.read_ahead)
+            cleanup_seconds=perf_counter()-cleanup_started
             from .publication_lane import Buffer
             deferred=getattr(self,'defer_publication',False)
             with (Buffer() if deferred else Publisher()) as publisher,ThreadPoolExecutor(max_workers=1,thread_name_prefix='v57-results') as results_pool:
@@ -255,6 +258,7 @@ class Worker:
                             rule_tiles=e['tiles'],total_rule_tiles=e['total_tiles']))
                     if device.type=='cuda':torch.cuda.synchronize(device)
                     rule_seconds=perf_counter()-batch_start;replay_start=time();replay_clock=perf_counter()
+                    worker_pre_replay_seconds=perf_counter()-started
                     previous_finished=getattr(self,'previous_replay_finished',None)
                     self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
                     def replay_progress(done,total):
@@ -280,7 +284,7 @@ class Worker:
                     timing=dict(day=day,offset=offset,candidates=actual,padded_candidates=len(members),
                         market_cached=market_cached,worker_load_count=self.loads,worker_upload_count=self.uploads,
                         configured_batch_size=c['batch_size'],maximum_replay_batch_size=ceiling,
-                        load_seconds=load_seconds if offset==0 else 0.,host_prefetched=prefetched,result_cache_prefetched=cache_prefetched,transfer_prefetched=transfer_prefetched,rule_seconds=rule_seconds,
+                        load_seconds=load_seconds if offset==0 else 0.,cleanup_seconds=cleanup_seconds if offset==0 else 0.,worker_pre_replay_seconds=worker_pre_replay_seconds if offset==0 else 0.,host_prefetched=prefetched,result_cache_prefetched=cache_prefetched,transfer_prefetched=transfer_prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
                     timing['replay_started_epoch']=replay_start
                     timing.update(getattr(plan.plan,'last_replay_profile',{}))
@@ -363,7 +367,16 @@ def initialize(config,events,lane):
 
 def evaluate(*args):
     try:
-        result=_worker.run(*args)
+        profiler=None
+        if _worker.config.get('execution_diagnostics'):
+            import cProfile
+            profiler=cProfile.Profile();profiler.enable()
+        try:result=_worker.run(*args)
+        finally:
+            if profiler is not None:
+                profiler.disable()
+                path=Path(_worker.config['output'])/'cpu-profile'/f'{args[3]}-{args[0]}.prof'
+                path.parent.mkdir(parents=True,exist_ok=True);profiler.dump_stats(str(path))
         if getattr(_worker,'defer_publication',False):result['writes']=_worker.deferred_writes
         return result
     except Exception as error:
@@ -471,7 +484,10 @@ class SessionLanes:
     def release_plans(self):
         if self.config.get('shared_replay'):
             raise ValueError('V60 uses two independent persistent replay lanes')
-        for pool in self.pools:pool.submit(release_plans).result()
+        # Independent worker cleanup must overlap rather than serialize two
+        # garbage-collection/cache-release pauses at every split boundary.
+        futures=[pool.submit(release_plans) for pool in self.pools]
+        for future in futures:future.result()
 
     def __exit__(self,*args):
         if self.config.get('shared_replay'):

@@ -56,8 +56,8 @@ def project(plan,data,indices,absolute_only=False):
 
 class Inference:
     """Bounded workspace for independent clocks; optional market-only routing."""
-    def __init__(self,plan,data,u):
-        self.plan=plan;self.data=data;self.u=u
+    def __init__(self,plan,data,u,*,compact_routing=False):
+        self.plan=plan;self.data=data;self.u=u;self.compact_routing=compact_routing
         self.base=plan.base if hasattr(plan,'base') else plan
         base=self.base;self.b=len(base.members)
         # Compact only neural entry evaluation. Cross-sectional normalization
@@ -135,4 +135,5 @@ class Inference:
         selected=p.branch_index[None].expand(len(indices),-1,-1).gather(2,owner)
         time=torch.arange(len(indices),device=data.device)[:,None,None]
         ticker=torch.arange(self.u,device=data.device)[None,None,:]
+        if self.compact_routing:return signals[time,selected,ticker],ratios[time,selected,ticker],None,None,owner
         return signals[time,selected,ticker],ratios[time,selected,ticker],p.policies[selected],p.leaf_columns[selected],owner

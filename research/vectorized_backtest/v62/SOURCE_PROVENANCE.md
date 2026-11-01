@@ -1,6 +1,6 @@
 # V62 source provenance
 
-Self-contained copy of V61 at `da6a21929`. V62 changes only fresh initialization to 1-2 nodes per action, constructor checks, corresponding profile cohort selection, and version identities. Evolution, objective, execution and panel behavior are inherited unchanged. No V61 runtime imports are required.
+Self-contained copy of V61 at `da6a21929`. V62 changes only fresh initialization to 1-2 nodes per action, constructor checks, corresponding profile cohort selection, and version identities. Evolution, objective, execution and panel behavior are inherited unchanged. Performance and capture-safety changes from V61 `da6a21929..7dc3f8c2d` are copied locally after full-generation qualification: immutable status payloads, bounded packet/drain batching, exact reduction geometry, field-contiguous state, 64-bit ledger addressing, vectorized specialist/species preparation and guarded CUDA capture. V62 retains its own minimal-founder sampler and evenly spaced benchmark cohort. No V61 runtime imports are required.
 
 # V61 source provenance
 

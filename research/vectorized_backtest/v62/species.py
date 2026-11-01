@@ -71,6 +71,7 @@ class Species:
         previous={r['id']:r for r in self.state['records']};representatives={i:r['representative'] for i,r in previous.items()};groups={};labels=[None]*len(population);capped=0
         from research.vectorized_backtest.v62.species_distance import DistanceIndex
         distance_index=DistanceIndex(representatives)
+        distance_index.prepare_population(descriptors)
         for i in np.argsort(ids,kind='stable'):
             if not eligible[int(i)]:continue
             distances=distance_index.distances(descriptors[int(i)]);best=min(distances,default=(2,None))

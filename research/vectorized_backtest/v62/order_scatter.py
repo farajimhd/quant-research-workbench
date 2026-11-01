@@ -6,7 +6,7 @@ import triton.language as tl
 @triton.jit
 def order_append_kernel(COMPLETE,RECORD,COUNTS,OUT,U:tl.constexpr,CAP:tl.constexpr,
            CS:tl.constexpr,RS:tl.constexpr,OS:tl.constexpr,BLOCK:tl.constexpr):
-    row=tl.program_id(0);j=tl.arange(0,BLOCK)
+    row=tl.program_id(0).to(tl.int64);j=tl.arange(0,BLOCK)
     yes=tl.load(COMPLETE+row*CS[1]+j*CS[2],j<U,False)
     prefix=tl.cumsum(yes.to(tl.int32),0)-1
     old=tl.load(COUNTS+row);offset=old+prefix
@@ -29,7 +29,7 @@ def append(ledger,complete,record):
 def order_pair_kernel(COMPLETE,RECORD,COUNTS,OUT,U:tl.constexpr,CAP:tl.constexpr,
                       CS:tl.constexpr,RS:tl.constexpr,OS:tl.constexpr,BLOCK:tl.constexpr):
     """Cancellation rows precede completion rows, exactly as the two old calls."""
-    row=tl.program_id(0);j=tl.arange(0,BLOCK)
+    row=tl.program_id(0).to(tl.int64);j=tl.arange(0,BLOCK)
     address=RECORD+row*RS[1]+j*RS[2]
     cancel=tl.load(address+16*RS[3],j<U,0.)>0
     complete=tl.load(COMPLETE+row*CS[1]+j*CS[2],j<U,False)

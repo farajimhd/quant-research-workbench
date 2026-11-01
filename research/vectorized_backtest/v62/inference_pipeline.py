@@ -5,18 +5,24 @@ from .market_inference import Inference
 
 
 class Pipeline:
-    def __init__(self,plan,data,total,block,signals,policy,columns,profile):
+    def __init__(self,plan,data,total,block,signals,policy,columns,profile,*,packet_blocks=1):
+        self.routed=hasattr(plan,'base');b,u=signals.shape[1:]
+        maximum=1
+        for multiplier in (16,8,4,2):
+            bytes_needed=3*block*multiplier*b*u*(34 if self.routed else 26)
+            if multiplier<=packet_blocks and bytes_needed<torch.cuda.mem_get_info(data.device)[0]*.20:
+                maximum=multiplier;break
+        block*=maximum
         self.plan=plan;self.total=total;self.block=block;self.signals=signals
         self.policy=policy;self.columns=columns;self.profile=profile
-        self.engine=Inference(plan,data,signals.shape[-1])
+        self.engine=Inference(plan,data,signals.shape[-1],compact_routing=True)
         self.stream=torch.cuda.Stream(device=data.device)
         self.stream.wait_stream(torch.cuda.current_stream())
         b,u=signals.shape[1:];self.routed=hasattr(plan,'base')
         def packet():
             return [torch.empty((block,b,u),device=data.device,dtype=torch.int16),
                     torch.empty((block,b,u,3),device=data.device,dtype=torch.float64),
-                    torch.empty((block,b,u,11),device=data.device,dtype=torch.float64) if self.routed else None,
-                    torch.empty((block,b,u),device=data.device,dtype=columns.dtype) if self.routed else None,
+                    None,None,
                     torch.empty((block,b,u),device=data.device,dtype=torch.int64) if self.routed else None]
         self.active=packet();self.slots=[packet(),packet()]
         self.starts=[torch.zeros((),device=data.device,dtype=torch.int64) for _ in range(2)]
@@ -34,9 +40,10 @@ class Pipeline:
         started=time.perf_counter()
         with torch.cuda.stream(self.stream),torch.inference_mode():
             infer(0);self.stream.synchronize()
+            from .capture_lifecycle import defer_cyclic_collection
             for slot in range(2):
                 graph=torch.cuda.CUDAGraph()
-                with torch.cuda.graph(graph,stream=self.stream):infer(slot)
+                with defer_cyclic_collection(),torch.cuda.graph(graph,stream=self.stream):infer(slot)
                 self.graphs.append(graph)
         profile['inference_setup_seconds']=time.perf_counter()-started
         profile['inference_time_batch']=self.engine.width
@@ -92,7 +99,19 @@ class Pipeline:
         self.producer=threading.Thread(target=produce,name='market-inference-producer',daemon=True)
         self.producer.start();self.profile['inference_independent_producer']=True
 
+    def await_ready(self,begin):
+        """CPU readiness only; the GPU event still protects packet consumption."""
+        if begin%self.block:return
+        started=time.perf_counter()
+        with self.condition:
+            if self.producer is not None:
+                self.condition.wait_for(lambda:begin in self.submitted or self.error is not None or self.stop.is_set())
+                if self.error is not None:raise self.error
+                if self.stop.is_set():raise InterruptedError('Inference producer stopped')
+        self.profile['inference_pre_gate_wait_seconds']=self.profile.get('inference_pre_gate_wait_seconds',0.)+time.perf_counter()-started
+
     def stage(self,begin,consume=True):
+        if begin%self.block:return
         started=time.perf_counter()
         with self.condition:
             if self.producer is not None:
@@ -117,13 +136,8 @@ class Pipeline:
         if independent:self.start(begin+2*self.block)
 
     def provide(self,index):
-        row=(index%self.block).reshape(1)
-        self.signals.copy_(self.active[0].index_select(0,row))
-        self.plan.ratios.copy_(self.active[1].index_select(0,row))
-        if self.routed:
-            self.policy.copy_(self.active[2].index_select(0,row))
-            self.columns.copy_(self.active[3].index_select(0,row)[0])
-            self.plan.owner.copy_(self.active[4].index_select(0,row)[0])
+        from .inference_packet import consume
+        consume(self,index)
 
     def close(self):
         self._stop_producer()
