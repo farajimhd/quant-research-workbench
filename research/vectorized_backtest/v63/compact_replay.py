@@ -27,8 +27,10 @@ def replay(item,members,plan,execution,progress=None):
                  price_reference_count=len(engine.prices.names),inference_time_batch=engine.width,
                  preparation_seconds=time.perf_counter()-began,inference_seconds=0.,execution_seconds=0.,
                  transfer_seconds=0.,execution_wait_seconds=0.,inference_execution_overlap=True)
-    quotes=np.stack([item.host_tensors[k].numpy() for k in
-                     ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid')],-1)
+    # Views only. The execution kernel fetches the dynamic active ticker set;
+    # never materialize another [time, full ticker union, seven fields] tensor.
+    quotes=tuple(item.host_tensors[k].numpy() for k in
+                     ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid'))
     tail=Tail(item.execution_tail,item)
     # Finite execution-only pages already exist; never acquire or extend them.
     pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='v63-execution')
@@ -65,7 +67,7 @@ def replay(item,members,plan,execution,progress=None):
                 start=time.perf_counter();host=tuple(v.cpu().numpy() for v in packet)
                 profile['transfer_seconds']+=time.perf_counter()-start
                 collect()
-                future=pool.submit(execute,begin,engine.slots_cpu[begin:end],host,quotes[begin:end])
+                future=pool.submit(execute,begin,engine.slots_cpu[begin:end],host,tuple(v[begin:end] for v in quotes))
                 if progress:progress(begin,total)
         collect()
         profile['decision_seconds']=time.perf_counter()-began
@@ -75,14 +77,14 @@ def replay(item,members,plan,execution,progress=None):
             if progress:progress(total,total)
             book=tail_future.result()
             tail_future=pool.submit(tail.load,page+1) if page+1<len(tail.receipt['pages']) else None
-            packed=np.stack([book[k] for k in ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid')],-1)
+            packed=tuple(book[k] for k in ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid'))
             start_clock=int(book['clocks'][0]-item.arrays['clocks'][0])
-            for begin in range(0,len(packed),engine.width):
-                size=min(engine.width,len(packed)-begin)
+            for begin in range(0,len(packed[0]),engine.width):
+                size=min(engine.width,len(packed[0])-begin)
                 slots=np.full((size,5),-1,np.int32)
                 packet=(np.zeros((size,b,5),np.int16),np.zeros((size,b,5,3)),np.zeros((size,b,5,5)),
                         np.zeros((size,b,5),np.int64),np.zeros((size,b,5),bool))
-                future=pool.submit(execute,start_clock+begin,slots,packet,packed[begin:begin+size]);collect()
+                future=pool.submit(execute,start_clock+begin,slots,packet,tuple(v[begin:begin+size] for v in packed));collect()
                 if not np.any((buffers[0][:,:,0]>1e-12)|(buffers[1][:,:,0]!=0)):break
         p,o,book,active,lookup,counts,stats,diag=buffers
         if not np.isfinite(p).all() or not np.isfinite(o).all():raise RuntimeError('Nonfinite execution state')

@@ -37,7 +37,11 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
             for k in range(5):
                 if slots[tick,k]==u:slot=k
             # Only this dynamic ticker is loaded from the execution-only bank.
-            mark,bid,ask,stamp,bid_size,ask_size,valid=quotes[tick,u]
+            if isinstance(quotes,tuple):
+                mark=quotes[0][tick,u];bid=quotes[1][tick,u];ask=quotes[2][tick,u]
+                stamp=quotes[3][tick,u];bid_size=quotes[4][tick,u];ask_size=quotes[5][tick,u];valid=quotes[6][tick,u]
+            else:
+                mark,bid,ask,stamp,bid_size,ask_size,valid=quotes[tick,u]
             q=p[u,0];held=q>1e-12;kind=int(o[u,0])
             sig=0 if slot<0 or terminal else signals[tick,candidate,slot]
             if slot>=0:d[12]+=abstain[tick,candidate,slot]
@@ -52,7 +56,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
             if rank_loss and o[u,13]==0:
                 d[9]+=1;o[u,13]=clock+1
             if lifecycle and held:o[u,12]=1.
-            if (kind==1 or kind==2) and (flatten or slot<0):
+            if (kind==1 or kind==2) and (flatten or slot<0 or (held and (sig&8)!=0)):
                 records.append((float(u),float(kind),o[u,2],o[u,3],o[u,4],o[u,5],o[u,6],o[u,7],float(clock)))
                 d[11]+=1;o[u,0]=0.;kind=0
             # A candidate's explicit stop update is applied verbatim if valid.

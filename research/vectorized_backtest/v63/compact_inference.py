@@ -19,16 +19,40 @@ class Inference:
         self.known=torch.empty_like(self.work,dtype=torch.bool)
         # Identity slots make every action graph evaluate only the same five tickers.
         self.entry=torch.arange(TOP_K,device=data.device,dtype=torch.int32)[None].expand(self.width,-1)
+        if self.base.uses_cross:
+            from types import SimpleNamespace
+            base=self.base;columns=base.cross_columns;lookup={s:i for i,s in enumerate(columns)}
+            quotes=[base.columns[int(i)] for i in base.quote_columns.cpu().tolist()]
+            selected=[i for i,s in enumerate(quotes) if s in lookup]
+            self.lag_projection=SimpleNamespace(columns=columns,lookup=lookup,
+                logarithmic=base.logarithmic.index_select(0,base.cross_indices),
+                quote_columns=torch.tensor([lookup[quotes[i]] for i in selected],device=data.device,dtype=torch.long),
+                quote_selection=base.quote_selection.index_select(0,torch.tensor(selected,device=data.device,dtype=torch.long)))
 
-    def __call__(self,indices):
-        from .network_cuda import market_batch
+    def materialize(self,indices):
         slots=self.slots.index_select(0,indices)
         values,valid=project(self.base,self.data,indices,slots=slots)
         if self.base.uses_cross:
-            # Resolve the PREVIOUS values for the SAME ticker; rank slots move.
-            lag,lm=project(self.base,self.data,(indices-1).clamp_min(0),True,slots=slots)
-            values=torch.cat((values,lag.index_select(-1,self.base.cross_indices)),-1)
-            valid=torch.cat((valid,lm.index_select(-1,self.base.cross_indices)&(indices[:,None,None]>0)),-1)
+            # Reuse absolute values already computed in this block, matching
+            # ticker identity across moving ranks. Fetch only newcomers/boundary.
+            matches=(slots[1:,:,None]==slots[:-1,None,:])&(slots[1:,:,None]>=0)
+            found=matches.any(-1);prior=matches.int().argmax(-1)
+            current=values[...,:len(self.base.columns)].index_select(-1,self.base.cross_indices)
+            known=valid.index_select(-1,self.base.cross_indices)
+            lag=torch.empty_like(current);lm=torch.empty_like(known)
+            lag[1:]=current[:-1].gather(1,prior[...,None].expand(-1,-1,current.shape[-1]))
+            lm[1:]=known[:-1].gather(1,prior[...,None].expand(-1,-1,current.shape[-1]))
+            missing=torch.cat((torch.ones_like(slots[:1],dtype=torch.bool),~found),0)
+            time,slot=missing.nonzero(as_tuple=True)
+            boundary,bm=project(self.lag_projection,self.data,(indices[time]-1).clamp_min(0),True,slots=slots[time,slot,None])
+            lag[time,slot]=boundary[:,0];lm[time,slot]=bm[:,0]
+            values=torch.cat((values,lag),-1)
+            valid=torch.cat((valid,lm&(indices[:,None,None]>0)),-1)
+        return values,valid,slots
+
+    def __call__(self,indices):
+        from .network_cuda import market_batch
+        values,valid,slots=self.materialize(indices)
         signals,ratios=market_batch(self.base,values,valid,slots>=0,self.work,self.known,self.entry[:len(indices)])
         prices,guard=self.prices(indices)
         abstain=((signals&1)!=0)&~guard

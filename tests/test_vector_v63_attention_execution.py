@@ -53,6 +53,34 @@ def test_wait_penalty_is_once():
     assert buffers[0][0,0,13]==1
 
 
+def test_invalid_initial_stop_is_not_replaced_and_is_penalized():
+    buffers,orders,episodes=run([[0,1,2,3,4]],[[1,0,0,0,0]],prices=[10.,10.,11.,12.,9.5])
+    assert buffers[0][0,0,0]==0 and not episodes[0]
+    assert buffers[-1][0,1]==buffers[-1][0,3]==1
+
+
+def test_reentry_waits_three_seconds_after_full_exit():
+    buffers,orders,episodes=run([[0,1,2,3,4]]*5,
+        [[1,0,0,0,0],[2,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0],[1,0,0,0,0]])
+    buys=[r for r in orders[0] if r[1]==1]
+    assert [r[6] for r in buys]==[0.,4.]
+    assert len(episodes[0])==1
+
+
+def test_quote_liquidity_is_consumed_once_and_sells_are_inventory_bounded():
+    n=4;slots=np.tile(np.arange(5),(n,1)).astype(np.int32)
+    signals=np.zeros((n,1,5),np.int16);signals[0,0,0]=1;signals[2:,0,0]=8
+    quotes=np.tile([10.,10.,10.,1.,3.,3.,1.],(n,5,1))
+    quotes[3,:,3]=2  # No new displayed capacity during the first three clocks.
+    ratios=np.ones((n,1,5,3));ratios[:,:,0,2]=10.
+    prices=np.tile([10.,10.,9.,12.,9.5],(n,1,5,1));buffers=state(1,5)
+    records,episodes=advance(0,slots,signals,ratios,prices,np.zeros((n,1,5),np.int64),
+        np.zeros((n,1,5),bool),quotes,*buffers,100.,20.,0.,0.,0.,999)
+    assert buffers[0][0,0,0]==0
+    assert sum(r[3] for r in records[0] if r[1] in (3,4))==3.
+    assert len(episodes[0])==1
+
+
 def test_duplicate_reasons_one_penalty():
     reasons=np.ones((2,6),bool)
     charged,cost=assess(reasons,np.array([False,True]))
@@ -91,7 +119,8 @@ def test_compiled_execution_matches_scalar_oracle():
     owners=np.zeros((n,2,5),np.int64);abstain=np.zeros((n,2,5),bool)
     quotes=np.tile([10.,10.,10.,1.,3.,3.,1.],(n,6,1));quotes[:,:,3]=np.arange(n)[:,None]+1
     a=state(2,6);b=tuple(x.copy() for x in a)
-    compiled=advance(0,slots,signals,ratios,prices,owners,abstain,quotes,*a,100.,20.,.005,1.,0.,n-1)
+    views=tuple(quotes[:,:,i].astype(bool) if i==6 else quotes[:,:,i] for i in range(7))
+    compiled=advance(0,slots,signals,ratios,prices,owners,abstain,views,*a,100.,20.,.005,1.,0.,n-1)
     oracle=[_one.py_func(i,0,slots,signals,ratios,prices,owners,abstain,quotes,*b,100.,20.,.005,1.,0.,n-1) for i in range(2)]
     for x,y in zip(a,b):np.testing.assert_array_equal(x,y)
     for i in range(2):assert compiled[0][i]==oracle[i][0] and compiled[1][i]==oracle[i][1]
@@ -195,3 +224,25 @@ def test_fused_price_kernel_matches_torch_exactly():
     plan=SimpleNamespace(bank=bank.cuda(),a=a.cuda(),b=b.cuda(),op=op.cuda(),weight=w.cuda(),offset=offset.cuda(),volatility=vol.cuda(),vol_index=6,names=list(range(7)))
     actual=evaluate(plan,indices.cuda()).cpu()
     torch.testing.assert_close(actual,expected,rtol=0,atol=0,equal_nan=True)
+
+
+def test_lag_reuse_follows_ticker_identity_across_rank_changes(monkeypatch):
+    import torch
+    from types import SimpleNamespace
+    from research.vectorized_backtest.v63 import compact_inference as module
+    calls=[]
+    def projection(plan,data,indices,absolute_only=False,slots=None):
+        c=len(plan.columns);x=(indices[:,None]*100+slots).float()[...,None].expand(-1,-1,c)
+        calls.append((absolute_only,x.shape[0]*x.shape[1]))
+        return (x if absolute_only else torch.cat((x,x*0,torch.ones_like(x)),-1)),torch.ones_like(x,dtype=torch.bool)
+    monkeypatch.setattr(module,'project',projection)
+    engine=module.Inference.__new__(module.Inference)
+    engine.base=SimpleNamespace(columns=[0,1],uses_cross=True,cross_indices=torch.tensor([0]))
+    engine.lag_projection=SimpleNamespace(columns=[0]);engine.data=None
+    engine.slots=torch.tensor([[0,1,2,3,4],[4,0,1,2,3],[5,4,0,1,2],[5,4,0,1,2]])
+    indices=torch.arange(4)
+    values,valid,slots=engine.materialize(indices)
+    expected=(indices-1).clamp_min(0)[:,None]*100+slots
+    torch.testing.assert_close(values[:,:,-1],expected.float(),rtol=0,atol=0)
+    assert not valid[0,:,-1].any() and valid[1:,:,-1].all()
+    assert calls==[(False,20),(True,6)]  # Five boundary values and one newcomer.

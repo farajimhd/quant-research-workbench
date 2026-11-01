@@ -731,7 +731,7 @@ def render(model,width,height):
         if not model.day and detail_data and detail_data['generation']==generation:
             panels=detail_data['panels'];first=next(iter(panels.values()),None)
             if first:data=dict(ids=first['ids'],sessions={k:v['panel'] for k,v in panels.items()})
-        lines.append(f"Branches: {r.get('branch_count',1)} | A-first arbitration; selected branch persists while held")
+        lines.append(f"Branches: {r.get('branch_count',1)} | Market-only A-first arbitration on each candle; no position feedback")
         parent_eligible=r.get('parent_eligible')
         validation_scope='validation' in r.get('metric_scope','') or model.validation
         lines.append('Parent eligibility: validation is display-only' if validation_scope else
@@ -758,7 +758,7 @@ def render(model,width,height):
         columns=('Serial','Global score $','Global net $','DD sum $','Nodes') if compact else ('Serial','Global score $','Global net $','Loss $','DD sum $','Worst DD $','Win %','Trades','Nodes','Origins','Technique')
         other='Val' if model.aggregate_role=='training' else 'Train'
         columns=(*columns,'Blocked','Penalty $','Rank exits','Ticker reward','Session reward','Profit days',other+' score $',other+' net $',other+' DD $',other+' days')
-        for h in columns:table.add_column(h,justify='right',no_wrap=True)
+        for h in columns:table.add_column(h,justify='right',no_wrap=True,width=24 if h=='Technique' else 8 if h in ('Serial','Nodes','Origins','Trades','Win %','Profit days','Rank exits') else 12,overflow='ellipsis')
         for i,r in enumerate(rows[start:start+limit],start):
             cells=[str(r['serial']),number(r['score']),number(r['net_pnl'])]
             if compact:cells.extend([number(r['drawdown']),str(r.get('nodes','-'))])
