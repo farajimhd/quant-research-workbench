@@ -484,7 +484,10 @@ class SessionLanes:
     def release_plans(self):
         if self.config.get('shared_replay'):
             raise ValueError('V60 uses two independent persistent replay lanes')
-        for pool in self.pools:pool.submit(release_plans).result()
+        # Independent worker cleanup must overlap rather than serialize two
+        # garbage-collection/cache-release pauses at every split boundary.
+        futures=[pool.submit(release_plans) for pool in self.pools]
+        for future in futures:future.result()
 
     def __exit__(self,*args):
         if self.config.get('shared_replay'):
