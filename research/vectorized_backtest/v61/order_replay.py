@@ -176,22 +176,12 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         def execute(count,start_clock):
             # Capacity is proven before submission. No rollback copies and no
             # recomputation of already consumed market inference are necessary.
-            if pipeline is not None and gate is not None:
+            with gate.turn() if gate is not None else nullcontext():
                 for step_index in range(count):
-                    ready_started=time.perf_counter()
-                    pipeline.stage(start_clock+step_index*block)
-                    torch.cuda.current_stream(device).synchronize()
-                    profile['inference_ready_wait_seconds']=profile.get('inference_ready_wait_seconds',0.)+time.perf_counter()-ready_started
-                    with gate.turn():
-                        graph.replay()
-                        torch.cuda.current_stream(device).synchronize()
-            else:
-                with gate.turn() if gate is not None else nullcontext():
-                    for step_index in range(count):
-                        if pipeline is not None:pipeline.stage(start_clock+step_index*block)
-                        if use_cuda:graph.replay()
-                        else:tick()
-                    if device.type=='cuda':torch.cuda.current_stream(device).synchronize()
+                    if pipeline is not None:pipeline.stage(start_clock+step_index*block)
+                    if use_cuda:graph.replay()
+                    else:tick()
+                if device.type=='cuda':torch.cuda.current_stream(device).synchronize()
             if not episodes.fits() or not records.drain():
                 raise RuntimeError('Replay exceeded its proven journal bound; no result published')
             if not episodes.drain(checked=True):raise RuntimeError('Position page changed after readiness check')
