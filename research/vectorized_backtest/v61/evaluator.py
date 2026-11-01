@@ -273,6 +273,9 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
 
 
 def _export_result(position,aggregate,episodes,t,ticker_state):
+    # Restore the canonical reduction layout once at publication. A contiguous
+    # field changes CUDA's summation tree even when every position is identical.
+    position=position.contiguous()
     episode_results=episodes.export();q=position[0,...,0];realized=position[0,...,7].sum(-1)
     held=(q>1e-12).cpu().numpy()
     open_cash=(position[0,...,7]-position[0,...,8]).detach().cpu().numpy()
