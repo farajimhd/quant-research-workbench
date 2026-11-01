@@ -6,9 +6,13 @@ from research.vectorized_backtest.v63.distributed_assets import sha
 from research.vectorized_backtest.v63.publication import write_json
 
 VERSION='v63-global-v1'
+STRATEGY_CONTRACT=dict(top_k=5,price_program='explicit-prices-v1',rank_loss_exit=True,
+    position_feedback=False,blocked_request_penalty=5.,reentry_wait_seconds=3,
+    feature_data='existing-shards-only; derived references in memory')
 
 
 def check(job):
+    if job.get('strategy_contract')!=STRATEGY_CONTRACT:raise ValueError('V63 strategy/execution contract differs')
     if job['version']!=VERSION or job['source_sha256']!=source_hash():raise ValueError('Global source identity differs')
     if set(job['machines'])!={'workstation'} or job['campaign_stage']!='fresh-global':raise ValueError('Fresh workstation global ownership required')
     if (job['population'],job['initial_multiplier'],job['seed'],job['phase2_generations'],job['mutation_probe_size'])!=(1024,6,2021,200,32):raise ValueError('Global campaign dimensions changed')
@@ -68,6 +72,7 @@ def prepare(source,root,code,*,deployment=None,reuse_training_probe=False):
         machines={'workstation':dict(original['machines']['workstation'],code=str(code),days=dict(training=train,validation=valid),session_days=[],session_workers=2)})
     from .orders import VERSION as ORDER_VERSION
     job.update(fresh_initial_replay='v63-fresh-founders-v1',execution_tail=original['execution_tail'])
+    job['strategy_contract']=dict(STRATEGY_CONTRACT)
     job['execution'].update(order_mode=ORDER_VERSION,maximum_quote_age_seconds=None)
     from .calibration_probe import prepare as prepare_probe
     if reuse_training_probe:

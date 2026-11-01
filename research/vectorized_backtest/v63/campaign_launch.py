@@ -8,7 +8,7 @@ from research.vectorized_backtest.v63.distributed_assets import sha
 from research.vectorized_backtest.v63.publication import write_json
 
 def prepare_entries(job_path):
-    job_path=Path(job_path);job=json.loads(job_path.read_bytes());check_job(job);root=Path(job['campaign']);commands={};manifest_sha=sha(Path(job['machines']['laptop']['code'])/'deployment.json')
+    job_path=Path(job_path);job=json.loads(job_path.read_bytes());check_job(job);root=Path(job['campaign']);commands={};manifest_sha=sha(Path(job['machines']['workstation']['code'])/'deployment.json')
     for node,m in job['machines'].items():
         code=Path(m['code']);entry=root/('entry-'+node+job.get('entry_suffix','')+'.py')
         source=("import os,sys,json,hashlib,runpy,time,traceback,platform\nfrom pathlib import Path\nos.environ['PYTHONDONTWRITEBYTECODE']='1'\n"
@@ -44,9 +44,9 @@ def main():
         m=j['machines'][a.node]
         if platform.node().lower()!=m['hostname'].lower():raise ValueError('Wrong host')
         from .scheduled_launch import install
-        task='Codex-V60-full-'+Path(j['campaign']).name+j.get('entry_suffix','')+'-'+a.node
+        task='Codex-V63-full-'+Path(j['campaign']).name+j.get('entry_suffix','')+'-'+a.node
         background=Path(m['python']).with_name('pythonw.exe')
         if not background.is_file():raise ValueError('Background Python runtime unavailable')
-        print(install(task,str(background),Path(j['campaign'])/('entry-'+a.node+j.get('entry_suffix','')+'.py'),m['code'],[],Path(m['code'])/'research/vectorized_backtest/v62/scheduled_launch.py'));return
+        print(install(task,str(background),Path(j['campaign'])/('entry-'+a.node+j.get('entry_suffix','')+'.py'),m['code'],[],Path(m['code'])/'research/vectorized_backtest/v63/scheduled_launch.py'));return
     print(json.dumps(prepare_entries(a.job),indent=2))
 if __name__=='__main__':main()

@@ -30,14 +30,16 @@ def feasible_policy(policy):
     """One construction authority; explicit programs, no execution fallback."""
     from dataclasses import replace
     from .price_program import Prices,Expression
+    from .policy import Policy
     program=policy.price_program
     if program is None:
         program=Prices(stop=Expression('ask',offset=-policy.stop_fraction),
                        target=Expression('ask',offset=policy.target_fraction),
                        update=Expression('close',offset=-policy.trail_fraction)).payload()
     Prices.restore(program).validate()
-    return replace(policy,price_program=program,entry_stop_rule=ENTRY_STOP_RULE,
-                   swing_left=0,swing_right=0,buy_limit_offset=max(policy.buy_limit_offset,-policy.stop_fraction+STOP_MARGIN))
+    # Legacy scalar fields are ABI placeholders, not alternative trading genes.
+    # Canonicalize them so inactive fields cannot create fictitious diversity.
+    return Policy(price_program=program,entry_stop_rule=ENTRY_STOP_RULE)
 
 
 def construct(member):

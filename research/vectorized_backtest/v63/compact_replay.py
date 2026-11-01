@@ -11,7 +11,10 @@ def replay(item,members,plan,execution,progress=None):
     from .order_tail import Tail
     from numba import set_num_threads
     began=time.perf_counter();b=len(members);u=len(item.listing_ids);total=item.clocks
+    item.execution_phase='Prepare selected market references'
+    if progress:progress(0,total)
     engine=Inference(plan,item)
+    item.execution_phase='Market inference + execution'
     buffers=state(b,u)
     ledger=[[] for _ in range(b)];episodes=[[] for _ in range(b)]
     journal=None
@@ -68,6 +71,8 @@ def replay(item,members,plan,execution,progress=None):
         profile['decision_seconds']=time.perf_counter()-began
         for page in range(len(tail.receipt['pages'])):
             if not np.any((buffers[0][:,:,0]>1e-12)|(buffers[1][:,:,0]!=0)):break
+            item.execution_phase='Complete outstanding liquidations'
+            if progress:progress(total,total)
             book=tail_future.result()
             tail_future=pool.submit(tail.load,page+1) if page+1<len(tail.receipt['pages']) else None
             packed=np.stack([book[k] for k in ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid')],-1)

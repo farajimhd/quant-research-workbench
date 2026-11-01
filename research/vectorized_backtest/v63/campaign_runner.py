@@ -153,6 +153,10 @@ def session_unit(job,node,day):
     return dict(day=day,skipped=False,retried=retried)
 
 def run(job,node):
+    if job.get('version')=='v63-global-v1':
+        if node!='workstation':raise ValueError('V63 runs on the workstation')
+        from .global_runner import run as run_global
+        return run_global(job)
     check_job(job);root=Path(job['campaign']);root.mkdir(parents=True,exist_ok=True);bus=exchange(job,node);bus.mkdir(parents=True,exist_ok=True)
     stops=[root,bus];node_root=root/'nodes'/node;node_root.mkdir(parents=True,exist_ok=True)
     with owned_run(node_root,version='v57-full-node-v1'):

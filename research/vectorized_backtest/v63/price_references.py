@@ -105,12 +105,16 @@ class PricePlan:
     def __call__(self,indices):
         import torch
         bank=self.bank.index_select(0,indices)
-        a=bank[:,:,self.a].permute(0,2,1,3);b=bank[:,:,self.b].permute(0,2,1,3)
-        op=self.op[None,:,None];w=self.weight[None,:,None]
-        out=torch.where(op==0,a,torch.where(op==1,torch.minimum(a,b),torch.where(op==2,torch.maximum(a,b),
-            torch.where(op==3,w*a+(1-w)*b,torch.where(torch.isfinite(a)&(a>0),a,b)))))
-        out=out*(1+self.offset[None,:,None])
-        if self.vol_index is not None:out=out+bank[:,:,self.vol_index][:,None,:,None]*self.volatility[None,:,None]
+        if bank.is_cuda:
+            from .price_cuda import evaluate
+            out=evaluate(self,indices)
+        else:
+            a=bank[:,:,self.a].permute(0,2,1,3);b=bank[:,:,self.b].permute(0,2,1,3)
+            op=self.op[None,:,None];w=self.weight[None,:,None]
+            out=torch.where(op==0,a,torch.where(op==1,torch.minimum(a,b),torch.where(op==2,torch.maximum(a,b),
+                torch.where(op==3,w*a+(1-w)*b,torch.where(torch.isfinite(a)&(a>0),a,b)))))
+            out=out*(1+self.offset[None,:,None])
+            if self.vol_index is not None:out=out+bank[:,:,self.vol_index][:,None,:,None]*self.volatility[None,:,None]
         buy,sell,stop,target,update=out.unbind(-1)
         guard=torch.isfinite(buy)&torch.isfinite(stop)&torch.isfinite(target)&(buy>0)&(stop>0)&(stop<buy)&(stop<bank[:,:,self.ask_index][:,None])&(target>buy)
         return out,guard

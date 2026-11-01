@@ -10,7 +10,7 @@ from numba import njit,prange
 # entry clock, last-flat clock, last equity, peak, drawdown, last mark, branch.
 P_WIDTH=14
 # Order: kind, remaining, requested, filled, notional, fee, submitted, first,
-# limit, initial stop, target, penalty charged, liquidation latch.
+# limit, initial stop, target, penalty charged, liquidation latch, rank-loss start+1.
 O_WIDTH=14
 # Diagnostics: submitted, blocked, price, stop, limit, quote, liquidity,
 # inventory, partial fills, rank exits, rank exit seconds, cancelled, abstained.
@@ -44,7 +44,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
             fresh=valid>0 and np.isfinite(bid) and np.isfinite(ask) and bid>0 and ask>=bid
             if stamp>book[u,0]:
                 book[u,0]=stamp;book[u,1]=max(0.,ask_size);book[u,2]=max(0.,bid_size)
-            rank_loss=slot<0 and held
+            rank_loss=slot<0 and held and not terminal
             stopped=held and np.isfinite(mark) and mark<=p[u,2]
             targeted=held and np.isfinite(mark) and mark>=p[u,3]
             lifecycle=rank_loss or terminal or stopped or targeted or o[u,12]>0

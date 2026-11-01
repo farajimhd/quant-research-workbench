@@ -171,3 +171,27 @@ def test_scoped_identity_matches_canonical_identity():
     for network in payload['networks'].values():
         for node in network['nodes']:node.pop('uid',None);node.pop('slot',None)
     with identity_scope():assert program_key(member)==digest(payload)
+
+
+def test_fused_price_kernel_matches_torch_exactly():
+    import torch,pytest
+    from types import SimpleNamespace
+    if not torch.cuda.is_available():pytest.skip('CUDA required')
+    from research.vectorized_backtest.v63.runtime import configure_caches
+    configure_caches('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v63/unit-compiler')
+    from research.vectorized_backtest.v63.price_cuda import evaluate
+    generator=torch.Generator().manual_seed(12)
+    bank=torch.rand((11,5,7),generator=generator,dtype=torch.float64)*50
+    bank[3,1,0]=float('nan');bank[2,4,1]=float('inf')
+    a=torch.randint(7,(9,5),generator=generator);b=torch.randint(7,(9,5),generator=generator)
+    op=torch.arange(5).expand(9,-1).contiguous()
+    w=torch.rand((9,5),generator=generator);offset=torch.rand((9,5),generator=generator)*.3
+    vol=torch.rand((9,5),generator=generator);indices=torch.tensor([0,2,3,7,10])
+    sampled=bank[indices];av=sampled[:,:,a].permute(0,2,1,3);bv=sampled[:,:,b].permute(0,2,1,3)
+    code=op[None,:,None];weight=w[None,:,None]
+    expected=torch.where(code==0,av,torch.where(code==1,torch.minimum(av,bv),torch.where(code==2,torch.maximum(av,bv),
+        torch.where(code==3,weight*av+(1-weight)*bv,torch.where(torch.isfinite(av)&(av>0),av,bv)))))
+    expected=expected*(1+offset[None,:,None])+sampled[:,:,6][:,None,:,None]*vol[None,:,None]
+    plan=SimpleNamespace(bank=bank.cuda(),a=a.cuda(),b=b.cuda(),op=op.cuda(),weight=w.cuda(),offset=offset.cuda(),volatility=vol.cuda(),vol_index=6,names=list(range(7)))
+    actual=evaluate(plan,indices.cuda()).cpu()
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0,equal_nan=True)
