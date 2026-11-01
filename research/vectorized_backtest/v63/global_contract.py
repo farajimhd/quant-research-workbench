@@ -8,7 +8,7 @@ from research.vectorized_backtest.v63.publication import write_json
 VERSION='v63-global-v1'
 STRATEGY_CONTRACT=dict(top_k=5,price_program='explicit-prices-v1',rank_loss_exit=True,
     position_feedback=False,blocked_request_penalty=5.,reentry_wait_seconds=3,
-    entry_sizing='fixed-1000-floor-shares',whole_shares=True,maximum_filled_add_orders=5,
+    entry_sizing='fixed-1000-floor-shares',add_sizing='fixed-200-floor-shares',whole_shares=True,maximum_filled_add_orders=5,
     feature_data='existing-shards-only; derived references in memory')
 
 

@@ -53,6 +53,13 @@ def test_reduction_rounds_down_and_exit_clears_integer_remainder():
     assert buffers[0][0,0,0]==0
 
 
+@pytest.mark.parametrize('ratio',[0.,.01,.75,1.])
+def test_add_is_fixed_200_dollars_independent_of_network_size(ratio):
+    _,orders,_=replay([1,4,2],price=3.,ratio=ratio)
+    assert orders[1][1]==2 and orders[1][2]==orders[1][3]==66
+    assert orders[1][4]==198.
+
+
 def test_sub_share_liquidity_is_blocked_once_without_fractional_fill():
     buffers,orders,_=replay([1,0,0,2],liquidity=[.5,.5,10000.,10000.])
     assert buffers[-1][0,1]==1 and buffers[-1][0,6]==1
@@ -66,5 +73,6 @@ def test_authority_canonicalizes_add_cap_and_execution_rejects_old_contract():
     from research.vectorized_backtest.v63.evaluator import Execution
     assert feasible_policy(replace(Policy(),maximum_adds=20)).maximum_adds==5
     with pytest.raises(ValueError):Execution(entry_dollars=500).validate()
+    with pytest.raises(ValueError):Execution(add_dollars=100).validate()
     with pytest.raises(ValueError):Execution(order_mode='explicit-top5-limit-v1').validate()
     assert Execution().validate().entry_dollars==1000

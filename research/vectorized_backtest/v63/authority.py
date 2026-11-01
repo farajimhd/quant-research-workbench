@@ -24,6 +24,7 @@ ENTRY_STOP_RULE = 'explicit-prices-v1'
 STOP_MARGIN = 1e-6
 MAXIMUM_ADDS = 5
 FIXED_ENTRY_DOLLARS = 1000.
+FIXED_ADD_DOLLARS = 200.
 # Packed slot 8 was a swing window (0 or 1..60). Keep the 11-field ABI.
 BOUNDED_SWING = 100
 

@@ -64,7 +64,7 @@ def main():
         with SessionLanes(cfg,a.workers,observer) as lanes:
             results=lanes.generation(days,members,1,token)
             observer.writer.close()
-            elapsed=time.perf_counter()-started
+        elapsed=time.perf_counter()-started
     finally:
         observer.writer.close()
     rows=[]

@@ -78,7 +78,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                     elif held and (sig&4)!=0:
                         if may_request_add(p[u,14]):
                             new_kind=2;limit=prices[tick,candidate,slot,0]
-                            if limit>0:qty=add_dollars*ratios[tick,candidate,slot,1]/limit
+                            qty=entry_quantity(add_dollars,limit)
                         else:d[13]+=1
                     elif not held and (sig&1)!=0 and (sig&2)==0 and (p[u,7]<0 or clock-p[u,7]>=3):
                         new_kind=1;limit=prices[tick,candidate,slot,0]

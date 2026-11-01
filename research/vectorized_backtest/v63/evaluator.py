@@ -29,8 +29,8 @@ class Execution:
         if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds is not None:raise ValueError('Quote age policy differs from the execution contract')
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
             raise ValueError('Invalid assumed-fill sizing/cost')
-        from .authority import FIXED_ENTRY_DOLLARS
-        if self.entry_dollars!=FIXED_ENTRY_DOLLARS or self.add_dollars>200:raise ValueError('Entry is fixed at $1000; add cap is $200')
+        from .authority import FIXED_ENTRY_DOLLARS,FIXED_ADD_DOLLARS
+        if self.entry_dollars!=FIXED_ENTRY_DOLLARS or self.add_dollars!=FIXED_ADD_DOLLARS:raise ValueError('Entry is fixed at $1000; adds are fixed at $200')
         if type(self.risk_protection) is not bool:raise ValueError('Invalid legacy diagnostic flag')
         return self
 

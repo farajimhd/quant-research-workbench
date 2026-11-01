@@ -7,8 +7,9 @@ The order contract is `explicit-top5-whole-share-v2`; the cost formula is unchan
 - Entry quantity is `floor(1000 / candidate_buy_limit)`. The neural entry-sizing
   multiplier is ignored. Fills may cost less due to price improvement or partial
   liquidity; fees are separate. Prices above the budget cannot buy one share.
-- Every requested and filled quantity is a whole share. Add and reduction sizing
-  retain their prior sizing rules, rounded down; exit sells remaining inventory.
+- Adds use `floor(200 / candidate_buy_limit)`, independent of neural sizing.
+- Every requested and filled quantity is a whole share. Reduction fractions
+  retain their prior sizing rule, rounded down; exit sells remaining inventory.
   Internal floating-point storage does not permit fractional holdings.
 - The central construction authority canonicalizes the add limit to five for
   sampling/crossover/mutation policies, including routed strategies.
