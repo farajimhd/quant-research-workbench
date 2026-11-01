@@ -9,7 +9,7 @@ def clock_timestamp(clocks,index,order_mode):
     if int(index)!=index or index<0:raise ValueError('Invalid position clock')
     index=int(index)
     if index<len(clocks):return int(clocks[index])
-    if order_mode not in ('explicit-top5-limit-v1','persistent-quote-size-orders-v2','strategy-managed-quote-orders-v3'):
+    if order_mode not in ('explicit-top5-whole-share-v2','explicit-top5-limit-v1','persistent-quote-size-orders-v2','strategy-managed-quote-orders-v3'):
         raise ValueError('Position clock exceeds replay')
     return int(clocks[0])+index
 

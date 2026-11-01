@@ -22,6 +22,8 @@ MAX_FAN_IN = 16
 SWING_WINDOWS = (1, 2, 3, 4, 5, 10, 15, 20, 30, 45, 60)
 ENTRY_STOP_RULE = 'explicit-prices-v1'
 STOP_MARGIN = 1e-6
+MAXIMUM_ADDS = 5
+FIXED_ENTRY_DOLLARS = 1000.
 # Packed slot 8 was a swing window (0 or 1..60). Keep the 11-field ABI.
 BOUNDED_SWING = 100
 
@@ -39,7 +41,7 @@ def feasible_policy(policy):
     Prices.restore(program).validate()
     # Legacy scalar fields are ABI placeholders, not alternative trading genes.
     # Canonicalize them so inactive fields cannot create fictitious diversity.
-    return Policy(price_program=program,entry_stop_rule=ENTRY_STOP_RULE)
+    return Policy(price_program=program,entry_stop_rule=ENTRY_STOP_RULE,maximum_adds=MAXIMUM_ADDS)
 
 
 def construct(member):

@@ -3,7 +3,9 @@
 V63 starts 6,144 fresh founders with 1–2 reachable nodes per action (5–10 total),
 then evolves populations of 1,024. Evolved limits remain 1,024 total/per-action
 nodes. The global campaign uses 24 training and 12 display-only validation
-sessions, 200 generations and two workstation lanes.
+sessions, 200 generations and six workstation lanes with 256-clock event-based
+transfers. See WHOLE_SHARE_REQUESTS.md for fixed entry sizing and the five-add
+strategy request boundary.
 
 Inference consumes the first five entries of the existing saved ranking at each
 clock. All resolutions use the same five listing identities. Materialized model
@@ -44,5 +46,6 @@ drill-downs remain separate from live status.
 Qualification must cover exact numerical/order parity for implementation-only
 optimizations, fresh-node and creation boundaries, two concurrent sessions,
 reproduction concurrent with validation, publication, checkpoint/resume and
-panel data loading. The target is 35 seconds per 1,024-candidate replay; cold
+panel data loading. The target is total elapsed time divided by completed
+1,024-candidate sessions below 35 seconds, including overhead; cold
 load, compilation, preparation and publication times must also be reported.

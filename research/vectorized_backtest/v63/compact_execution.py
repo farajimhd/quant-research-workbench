@@ -5,16 +5,17 @@ Requests already contain prices. Each candidate has an independent quote book.
 """
 import numpy as np
 from numba import njit,prange
+from .request_guard import may_request_add,entry_quantity,whole_quantity
 
 # Position: quantity, average, stop, target, realized, episode baseline,
 # entry clock, last-flat clock, last equity, peak, drawdown, last mark, branch.
-P_WIDTH=14
+P_WIDTH=15  # Last column: strategy adapter's filled-add count for this episode.
 # Order: kind, remaining, requested, filled, notional, fee, submitted, first,
 # limit, initial stop, target, penalty charged, liquidation latch, rank-loss start+1.
 O_WIDTH=14
 # Diagnostics: submitted, blocked, price, stop, limit, quote, liquidity,
 # inventory, partial fills, rank exits, rank exit seconds, cancelled, abstained.
-D_WIDTH=13
+D_WIDTH=14  # Last column records strategy-side add-limit suppression, not rejected orders.
 
 
 @njit(nogil=True)
@@ -75,15 +76,19 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                     if held and (sig&8)!=0:
                         new_kind=3;qty=q*ratios[tick,candidate,slot,2];limit=prices[tick,candidate,slot,1]
                     elif held and (sig&4)!=0:
-                        new_kind=2;limit=prices[tick,candidate,slot,0]
-                        if limit>0:qty=add_dollars*ratios[tick,candidate,slot,1]/limit
+                        if may_request_add(p[u,14]):
+                            new_kind=2;limit=prices[tick,candidate,slot,0]
+                            if limit>0:qty=add_dollars*ratios[tick,candidate,slot,1]/limit
+                        else:d[13]+=1
                     elif not held and (sig&1)!=0 and (sig&2)==0 and (p[u,7]<0 or clock-p[u,7]>=3):
                         new_kind=1;limit=prices[tick,candidate,slot,0]
                         stop=prices[tick,candidate,slot,2];target=prices[tick,candidate,slot,3]
-                        if limit>0:qty=entry_dollars*ratios[tick,candidate,slot,0]/limit
+                        qty=entry_quantity(entry_dollars,limit)
                     elif not held and (sig&(2|8))!=0:
                         d[0]+=1;d[1]+=1;d[7]+=1
                 if new_kind!=0:
+                    # Requests and inventory use whole shares, never display-only rounding.
+                    qty=whole_quantity(qty)
                     d[0]+=1
                     invalid=not np.isfinite(limit) or limit<=0 or not np.isfinite(qty) or qty<=1e-12
                     invalid_stop=new_kind==1 and (not np.isfinite(stop) or stop<=0 or stop>=limit or (fresh and stop>=ask) or not np.isfinite(target) or target<=limit)
@@ -107,20 +112,21 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                 marketable=fresh and (ask<=o[u,8] if buy else bid>=o[u,8])
                 capacity=book[u,1] if buy else book[u,2]
                 inventory=buy or q>1e-12
-                blocked=not fresh or not marketable or capacity<=1e-12 or not inventory
+                blocked=not fresh or not marketable or capacity<1. or not inventory
                 if blocked and o[u,11]==0 and o[u,3]<=1e-12:
                     d[1]+=1;o[u,11]=1
                     if not fresh:d[5]+=1
                     elif not marketable:d[4]+=1
                     elif not inventory:d[7]+=1
                     else:d[6]+=1
-                quantity=min(o[u,1],capacity) if marketable and inventory else 0.
+                quantity=np.floor(min(o[u,1],capacity)) if marketable and inventory else 0.
                 if not buy:quantity=min(quantity,q)
                 if quantity>1e-12:
                     price=ask if buy else bid;value=quantity*price
                     first=o[u,3]<=1e-12
                     if first:o[u,7]=clock
                     if kind==1 and first:
+                        p[u,14]=0.
                         p[u,5]=p[u,4];p[u,6]=clock;p[u,2]=o[u,9];p[u,3]=o[u,10]
                         p[u,12]=owners[tick,candidate,slot] if slot>=0 else 0
                     total_fee=max(minimum_fee,(o[u,3]+quantity)*fee_per_share)
@@ -132,7 +138,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                     p[u,4]-=delta_fee+value*cost
                     o[u,1]=max(0.,o[u,1]-quantity);o[u,3]+=quantity;o[u,4]+=value;o[u,5]=total_fee
                     s[4]+=1;s[11]+=value
-                    if kind==2 and first:s[5]+=1
+                    if kind==2 and first:s[5]+=1;p[u,14]+=1
                     if kind==3 and first:s[6]+=1
                     if o[u,1]>1e-12:d[8]+=1
                     if held and p[u,0]<=1e-12:
@@ -140,7 +146,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                         episodes.append((profit,float(u),p[u,12],p[u,6],float(clock)))
                         s[8]=profit if s[9]==0 else min(s[8],profit)
                         s[9]+=1;s[10]+=profit>0
-                        p[u,7]=clock;p[u,1]=0.
+                        p[u,7]=clock;p[u,1]=0.;p[u,14]=0.
                     if o[u,1]<=1e-12 or (not buy and p[u,0]<=1e-12):
                         records.append((float(u),float(kind),o[u,2],o[u,3],o[u,4],o[u,5],o[u,6],o[u,7],float(clock)))
                         if o[u,13]>0:d[10]+=clock-(o[u,13]-1)

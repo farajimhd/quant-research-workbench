@@ -17,19 +17,20 @@ class Execution:
     minimum_order_dollars:float=0.
     price_mode:str='bid-ask'
     maximum_quote_age_seconds:float|None=None
-    order_mode:str='explicit-top5-limit-v1'
+    order_mode:str='explicit-top5-whole-share-v2'
     @property
     def admission_distance(self):return self.maximum_stop_distance if self.risk_limits_enabled else 1.
     @property
     def admission_budget(self):return self.maximum_position_risk if self.risk_limits_enabled else float("inf")
     def validate(self):
-        if self.order_mode!='explicit-top5-limit-v1':raise ValueError('V60 supports only minimal close/limit execution')
+        if self.order_mode!='explicit-top5-whole-share-v2':raise ValueError('Whole-share execution requires fresh replay results')
         if self.risk_limits_enabled:raise ValueError('V60 has no risk-admission caps')
         if type(self.risk_limits_enabled) is not bool:raise ValueError("Invalid risk admission switch")
         if self.price_mode!='bid-ask' or self.maximum_quote_age_seconds is not None:raise ValueError('Quote age policy differs from the execution contract')
         if any(not math.isfinite(v) or v<0 for v in (self.entry_dollars,self.add_dollars,self.cost_bps,self.fee_per_share,self.minimum_order_fee)) or min(self.entry_dollars,self.add_dollars)<=0 or not math.isfinite(self.minimum_order_dollars) or self.minimum_order_dollars<0:
             raise ValueError('Invalid assumed-fill sizing/cost')
-        if self.entry_dollars>1000 or self.add_dollars>200:raise ValueError('Entry/add caps are $1000/$200')
+        from .authority import FIXED_ENTRY_DOLLARS
+        if self.entry_dollars!=FIXED_ENTRY_DOLLARS or self.add_dollars>200:raise ValueError('Entry is fixed at $1000; add cap is $200')
         if type(self.risk_protection) is not bool:raise ValueError('Invalid legacy diagnostic flag')
         return self
 

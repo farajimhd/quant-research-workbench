@@ -7,7 +7,7 @@ All operations are tensor expressions so the same oracle can be CUDA compiled.
 """
 import torch
 
-VERSION = 'explicit-top5-limit-v1'
+VERSION = 'explicit-top5-whole-share-v2'
 # kind, remaining, requested dollars, requested qty, filled qty, notional, fee,
 # submitted clock, first fill, initial stop, flatten requested, target reduction,
 # submitted order count, completed order count, fill count, cancellations, last amendment clock

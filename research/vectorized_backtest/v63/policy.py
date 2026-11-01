@@ -1,6 +1,6 @@
 from dataclasses import dataclass,asdict
 import math
-from .authority import SWING_WINDOWS
+from .authority import SWING_WINDOWS,MAXIMUM_ADDS
 
 @dataclass(frozen=True)
 class Policy:
@@ -10,7 +10,7 @@ class Policy:
     trail_fraction:float=.03
     add_minimum_profit:float=.01
     reduce_minimum_profit:float=.02
-    maximum_adds:int=2
+    maximum_adds:int=MAXIMUM_ADDS
     cooldown:int=30
     swing_left:int=0
     swing_right:int=0
@@ -36,7 +36,7 @@ class Policy:
         if min(self.stop_fraction,self.target_fraction,self.reduce_fraction,self.trail_fraction)<=0:raise ValueError('Positive position fractions required')
         if (self.swing_left==0 or self.entry_stop_rule==ENTRY_STOP_RULE) and self.stop_fraction+self.buy_limit_offset<STOP_MARGIN-1e-12:
             raise ValueError('Fixed stop and buy limit violate joint construction authority')
-        if type(self.maximum_adds) is not int or not 0<=self.maximum_adds<=20 or type(self.cooldown) is not int or not 1<=self.cooldown<=300:
+        if type(self.maximum_adds) is not int or not 0<=self.maximum_adds<=MAXIMUM_ADDS or type(self.cooldown) is not int or not 1<=self.cooldown<=300:
             raise ValueError('Invalid bounded adds/cooldown')
         if (self.swing_left,self.swing_right)!=(0,0) and (self.swing_left not in SWING_WINDOWS or self.swing_right not in SWING_WINDOWS):
             raise ValueError('Unsupported persisted swing pair')
@@ -48,6 +48,6 @@ def random_policy_gene(rng,name):
         from .price_sampling import sample_prices
         return sample_prices(rng).payload()
     if name in ('buy_limit_offset','sell_limit_offset'):return float(rng.uniform(-.01,.01))
-    if name=='maximum_adds':return int(rng.integers(21))
+    if name=='maximum_adds':return int(rng.integers(MAXIMUM_ADDS+1))
     if name=='cooldown':return int(rng.integers(1,301))
     return fraction(rng,name)

@@ -8,6 +8,7 @@ from research.vectorized_backtest.v63.publication import write_json
 VERSION='v63-global-v1'
 STRATEGY_CONTRACT=dict(top_k=5,price_program='explicit-prices-v1',rank_loss_exit=True,
     position_feedback=False,blocked_request_penalty=5.,reentry_wait_seconds=3,
+    entry_sizing='fixed-1000-floor-shares',whole_shares=True,maximum_filled_add_orders=5,
     feature_data='existing-shards-only; derived references in memory')
 
 
@@ -69,10 +70,11 @@ def prepare(source,root,code,*,deployment=None,reuse_training_probe=False):
     job.update(version=VERSION,campaign_stage='fresh-global',score_version='log-profit-target-blocked-request-v2',concentration_coefficient=.1,ticker_target=2000.,session_target=5000.,source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
         code=str(code),commit=json.loads(Path(deployment or code/'deployment.json').read_bytes())['commit'],campaign=str(root),transport=str(root/'asset-bus'),
         training_days=train,validation_days=valid,initialization_probe=str(probe),initialization_probe_sha256=sha(probe),population=1024,initial_multiplier=6,seed=2021,
-        phase2_generations=200,mutation_probe_size=32,global_session_workers=2,global_node='workstation',batch_size=1024,
+        phase2_generations=200,mutation_probe_size=32,global_session_workers=6,global_node='workstation',batch_size=1024,
+        replay_tuning=dict(time_block=256,transfer_mode='events'),
         objective=dict(drawdown_weight=1.,loss_weight=0.),execution=dict(original['execution'],risk_limits_enabled=False),selection=dict(original['selection'],profit_fresh_fraction=0.),
         selection_risk_caps=False,ticker_parent_fraction=.25,validation_schedule='concurrent-training-only-v1',
-        machines={'workstation':dict(original['machines']['workstation'],hostname='DESKTOP-SAAI85T',code=str(code),days=dict(training=train,validation=valid),session_days=[],session_workers=2)})
+        machines={'workstation':dict(original['machines']['workstation'],hostname='DESKTOP-SAAI85T',code=str(code),days=dict(training=train,validation=valid),session_days=[],session_workers=6)})
     from .orders import VERSION as ORDER_VERSION
     job.update(fresh_initial_replay='v63-fresh-founders-v1',execution_tail=original['execution_tail'])
     job['strategy_contract']=dict(STRATEGY_CONTRACT)
