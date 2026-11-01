@@ -13,6 +13,12 @@ REFERENCES = ('ask', 'bid', 'close') + tuple(
           for side in ('low', 'high') for left in SWINGS for right in SWINGS)
 
 
+def entry_guard(buy,stop,target,ask,*,xp=np):
+    from .authority import FIXED_ENTRY_DOLLARS
+    return (xp.isfinite(buy)&xp.isfinite(stop)&xp.isfinite(target)&xp.isfinite(ask)&
+            (buy>0)&(buy<=FIXED_ENTRY_DOLLARS)&(stop>0)&(stop<buy)&(stop<ask)&(target>buy))
+
+
 @dataclass(frozen=True)
 class Expression:
     reference: str = 'ask'
@@ -38,17 +44,19 @@ class Expression:
 
     def evaluate(self, values, *, xp=np):
         a = values[self.reference]
+        # Replay packs coefficients as float32, then applies them to float64 prices.
+        weight=np.float32(self.weight);other=np.float32(1)-weight
         if self.operation == 'reference':
             result = a
         else:
             b = values[self.other]
             if self.operation == 'min': result = xp.minimum(a,b)
             elif self.operation == 'max': result = xp.maximum(a,b)
-            elif self.operation == 'blend': result = self.weight*a+(1-self.weight)*b
+            elif self.operation == 'blend': result = weight*a+other*b
             else: result = xp.where(xp.isfinite(a)&(a>0),a,b)
-        result = result*(1+self.offset)
+        result = result*np.float32(np.float32(1)+np.float32(self.offset))
         if self.volatility_offset:
-            result = result+self.volatility_offset*values['volatility']
+            result = result+np.float32(self.volatility_offset)*values['volatility']
         return result
 
 
@@ -81,6 +89,5 @@ class Prices:
     def evaluate(self, values, *, xp=np):
         buy,sell,stop,target,update=(x.evaluate(values,xp=xp) for x in vars(self).values())
         # Guards belong to the candidate; never replace or clamp a missing stop.
-        available=xp.isfinite(buy)&xp.isfinite(stop)&xp.isfinite(target)
-        entry=available&(buy>0)&(stop>0)&(stop<buy)&(stop<values['ask'])&(target>buy)
+        entry=entry_guard(buy,stop,target,values['ask'],xp=xp)
         return (buy,sell,stop,target,update),entry

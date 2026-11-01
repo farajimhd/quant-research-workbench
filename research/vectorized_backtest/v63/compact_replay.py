@@ -148,6 +148,8 @@ def replay(item,members,plan,execution,progress=None):
                                     'blocked_liquidity','blocked_inventory','partial_fills','rank_loss_exits','rank_exit_wait_seconds','cancellations','price_abstentions')):
             metrics['admission_'+name]=diag[:,column].tolist()
         metrics['strategy_add_limit_suppressed']=diag[:,13].tolist()
+        metrics['admission_abstain_price_size']=diag[:,14].tolist()
+        metrics['admission_abstain_stop_update']=diag[:,15].tolist()
         profile.update(total_replay_seconds=time.perf_counter()-began,
                        native_signatures_added=len(advance.signatures)-native_signatures_before,
                        average_execution_tickers_per_candidate=float(stats[:,17].sum()/max(1,stats[:,15].sum())),

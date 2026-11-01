@@ -73,6 +73,27 @@ class References:
         self.cache[name]=result
         return result
 
+    def selected(self,name,ticks):
+        """Bounded calibration projection; no full rolling-window temporary."""
+        if name=='volatility':return self.selected('rolling.high.5',ticks)-self.selected('rolling.low.5',ticks)
+        if name.startswith(('candle.','previous.','rolling.')):
+            kind,side,seconds=name.split('.');seconds=int(seconds)
+            slots=self.slots[ticks];safe=slots.clip(0);end=np.asarray(ticks)
+            if kind!='rolling':
+                clocks=np.asarray(self.data.arrays['clocks'])
+                end=((clocks[ticks]+1)//seconds)*seconds-1-clocks[0]
+                if kind=='previous':end-=seconds
+            ix=end[:,None,None]-np.arange(seconds)
+            v=self.extremes(side)[ix.clip(0),safe[...,None]]
+            valid=(ix>=0)&np.isfinite(v)
+            filled=np.where(valid,v,np.inf if side=='low' else -np.inf)
+            result=filled.min(-1) if side=='low' else filled.max(-1)
+            return np.where((slots>=0)&(ix>=0).all(-1)&valid.any(-1),result,np.nan)
+        # Confirmed swings must scan their causal past, never just probe windows.
+        result=self.values(name)[ticks].copy()
+        self.cache.pop(name,None)
+        return result
+
     def extremes(self,side):
         key='_raw_'+side
         if key not in self.cache:
@@ -116,5 +137,6 @@ class PricePlan:
             out=out*(1+self.offset[None,:,None])
             if self.vol_index is not None:out=out+bank[:,:,self.vol_index][:,None,:,None]*self.volatility[None,:,None]
         buy,sell,stop,target,update=out.unbind(-1)
-        guard=torch.isfinite(buy)&torch.isfinite(stop)&torch.isfinite(target)&(buy>0)&(stop>0)&(stop<buy)&(stop<bank[:,:,self.ask_index][:,None])&(target>buy)
+        from .price_program import entry_guard
+        guard=entry_guard(buy,stop,target,bank[:,:,self.ask_index][:,None],xp=torch)
         return out,guard

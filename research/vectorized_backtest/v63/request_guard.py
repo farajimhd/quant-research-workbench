@@ -28,3 +28,8 @@ def entry_quantity(dollars,limit):
 @njit(inline='always')
 def whole_quantity(value):
     return np.floor(value) if np.isfinite(value) else value
+
+
+@njit(inline='always')
+def valid_request_size(limit,quantity):
+    return np.isfinite(limit) and limit>0 and np.isfinite(quantity) and quantity>=1

@@ -28,6 +28,21 @@ def test_entry_is_fixed_dollars_and_whole_shares_independent_of_network_size(rat
     assert orders[0][4]==999.
 
 
+def test_zero_share_entry_and_add_are_never_submitted():
+    buffers,orders,_=replay([1,0],price=1001.)
+    assert not orders and buffers[-1][0,0]==0 and buffers[-1][0,1]==0
+    assert buffers[-1][0,14]==1
+    buffers,orders,_=replay([1,4,2],price=250.)
+    assert [r[1] for r in orders]==[1,4]
+    assert buffers[-1][0,1]==0 and buffers[-1][0,14]==1
+
+
+def test_zero_share_reduce_is_not_submitted():
+    buffers,orders,_=replay([1,8,2],price=900.,ratio=.25)
+    assert [r[1] for r in orders]==[1,4]
+    assert buffers[-1][0,1]==0 and buffers[-1][0,14]==1
+
+
 def test_five_filled_adds_reset_only_after_close_and_survive_block_boundaries():
     signals=[1]+[4]*6+[2,0,0,1]+[4]*6+[2]
     a,orders,episodes=replay(signals,cuts=(3,12))

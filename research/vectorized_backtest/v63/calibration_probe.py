@@ -35,7 +35,9 @@ def load(path,training,stamp):
     spec=json.loads(Path(path).read_bytes())
     if spec['version']!=VERSION or spec['training_sha256']!=hashlib.sha256(Path(training).read_bytes()).hexdigest():
         raise ValueError('Calibration recipe identity changed')
-    cfg=spec['config'];rows=[]
+    from .price_references import References
+    from .price_program import REFERENCES
+    cfg=spec['config'];rows=[];price_rows=[]
     for day in spec['days']:
         item=SessionData(Path(cfg['inputs'])/day,Path(cfg['history'])/day,device='cpu',
             maximum_quote_age_seconds=None,execution_tail=Path(cfg['execution_tail'])/'training'/day,
@@ -52,12 +54,15 @@ def load(path,training,stamp):
             lag,lm=project(plan,item,(indices-1).clamp_min(0),True,slots=slots)
             take=lambda k:item.host_tensors[k][indices].gather(1,slots.clamp_min(0)).numpy()
             x=np.pad(v.numpy(),((0,0),(0,0),(0,18)))
+            refs=References(item,selected_columns(item.arrays['top_indices'],item.listing_ids))
+            price_rows.append({name:refs.selected(name,ticks) for name in (*REFERENCES,'volatility')})
             rows.append(dict(lag_absolute=lag.numpy(),lag_known=(lm&(indices[:,None,None]>0)).numpy(),inputs=x,known=m.numpy(),eligible=(slots.numpy()>=0),held_states=np.zeros((64,5,18),np.float32),
                              ask=take('ask'),bid=take('bid'),quote_valid=take('quote_valid'),ask_size=take('ask_size')))
         finally:
             if plan:plan.close()
             item.close()
     result={k:np.stack([r[k] for r in rows]) for k in rows[0]}
+    result['price_references']={k:np.stack([r[k] for r in price_rows]) for k in price_rows[0]}
     result['metadata']=dict(spec,projected_policy=True,segment_starts=[0,16,32,48])
     result['sha256']=hashlib.sha256(Path(path).read_bytes()).hexdigest()
     return result

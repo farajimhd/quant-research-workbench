@@ -17,15 +17,18 @@ BLOCK_FIELDS=tuple(('admission_blocked_'+key,label) for key,label in (
     ('price','Price'),('stop','Stop'),('limit','Limit'),('quote','Quote'),('liquidity','Liq'),('inventory','Inv')))
 
 
-def blocked_ranking_table(rows,selection,start,limit,width):
+def blocked_ranking_table(rows,selection,start,limit,width,other=None):
     """Only saved summary fields; no replay or ledger reads on the UI thread."""
     table=Table(expand=True,padding=(0,0))
     fields=[('serial','Serial' if width>=100 else 'ID',6 if width>=100 else 5),('score','Score $',13 if width>=100 else 12)]
     if width>=100:fields.append(('net_pnl','Net $',12))
+    if other:
+        fields.extend([('opposite_score',other+' score $',12),('opposite_net',other+' net $',12),('opposite_drawdown',other+' DD $',12),('opposite_coverage',other+' days',5)])
     fields.extend([('blocked_requests','Blocked' if width>=100 else 'Blocks',7 if width>=100 else 6),('blocked_penalty','Penalty $',12 if width>=100 else 10)])
     fields.extend((key,label,6 if width>=100 else 5) for key,label in BLOCK_FIELDS)
+    if width>=140:fields.append(('admission_price_abstentions','Abstain',9))
     for key,label,size in fields:table.add_column(label,width=size,no_wrap=True,overflow='ellipsis',justify='right')
-    counts={'serial','blocked_requests',*(key for key,_ in BLOCK_FIELDS)}
+    counts={'serial','blocked_requests','opposite_coverage','admission_price_abstentions',*(key for key,_ in BLOCK_FIELDS)}
     for index,row in enumerate(rows[start:start+limit],start):
         cells=[('-' if row.get(key) is None else (str(int(row[key])) if width<100 else f'{int(row[key]):,}') if key in counts else number(row[key])) for key,_,_ in fields]
         table.add_row(*cells,style=SELECTED if index==selection else None)
@@ -780,7 +783,8 @@ def render(model,width,height):
         from rich.console import Group
         table=Group(Text('\n'.join(lines)),table);caption='Arrows: select session | Enter: positions | Esc: back | L: lineage | - = unavailable'
     elif model.view in ('ranking','global_ranking','candidates','founders') and getattr(model,'candidate_columns','blocks')=='blocks':
-        rows=model.rows();table=blocked_ranking_table(rows,model.selection,start,limit,width-4)
+        rows=model.rows();other=('Val' if model.aggregate_role=='training' else 'Train') if model.aggregate_mode else None
+        table=blocked_ranking_table(rows,model.selection,start,limit,width-4,other)
         scope=('GLOBAL '+model.aggregate_role.upper()) if model.aggregate_mode else str(model.global_role or ('validation' if model.validation else 'training'))+' '+str(model.global_day or model.day or '')
         coverage=''
         if model.aggregate_mode:

@@ -5,7 +5,7 @@ Requests already contain prices. Each candidate has an independent quote book.
 """
 import numpy as np
 from numba import njit,prange
-from .request_guard import may_request_add,entry_quantity,whole_quantity,applicable_signals
+from .request_guard import may_request_add,entry_quantity,whole_quantity,applicable_signals,valid_request_size
 
 # Position: quantity, average, stop, target, realized, episode baseline,
 # entry clock, last-flat clock, last equity, peak, drawdown, last mark, branch.
@@ -15,7 +15,7 @@ P_WIDTH=15  # Last column: strategy adapter's filled-add count for this episode.
 O_WIDTH=14
 # Diagnostics: submitted, blocked, price, stop, limit, quote, liquidity,
 # inventory, partial fills, rank exits, rank exit seconds, cancelled, abstained.
-D_WIDTH=14  # Last column records strategy-side add-limit suppression, not rejected orders.
+D_WIDTH=16  # Add limit, invalid price/size and stop update suppressions are strategy-side.
 
 
 @njit(nogil=True)
@@ -64,9 +64,9 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
             # A candidate's explicit stop update is applied verbatim if valid.
             if held and (sig&16)!=0 and slot>=0:
                 update=prices[tick,candidate,slot,4]
-                d[0]+=1
-                if np.isfinite(update) and update>0 and np.isfinite(mark) and update<mark:p[u,2]=update
-                else:d[1]+=1;d[3]+=1
+                if np.isfinite(update) and update>0 and np.isfinite(mark) and update<mark:
+                    d[0]+=1;p[u,2]=update
+                else:d[15]+=1
             if kind==0:
                 new_kind=0;qty=0.;limit=0.;stop=0.;target=0.
                 if held and flatten:
@@ -88,6 +88,10 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                 if new_kind!=0:
                     # Requests and inventory use whole shares, never display-only rounding.
                     qty=whole_quantity(qty)
+                    # Candidate request boundary precedes submission and accounting.
+                    if not valid_request_size(limit,qty):
+                        d[14]+=1;new_kind=0
+                if new_kind!=0:
                     d[0]+=1
                     invalid=not np.isfinite(limit) or limit<=0 or not np.isfinite(qty) or qty<=1e-12
                     invalid_stop=new_kind==1 and (not np.isfinite(stop) or stop<=0 or stop>=limit or (fresh and stop>=ask) or not np.isfinite(target) or target<=limit)

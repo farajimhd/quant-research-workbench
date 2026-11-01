@@ -11,6 +11,24 @@ from research.vectorized_backtest.v63.features import CATALOG
 PROBE_VERSION='v42-training-activation-probe-v1'
 RATE_WEIGHTS=(.30,.30,.20,.20)
 
+
+def activation_threshold(observed,target):
+    """Choose an attainable strict cutoff, including discrete/tied outputs."""
+    observed=np.asarray(observed,np.float32)
+    if not len(observed) or not np.isfinite(observed).all() or np.ptp(observed)<=1e-4:
+        raise ValueError('No varying finite activation observations')
+    values,counts=np.unique(observed,return_counts=True)
+    # A cutoff halfway between distinct values avoids CPU/GPU endpoint rounding.
+    rates=(len(observed)-np.cumsum(counts)[:-1])/len(observed)
+    usable=np.flatnonzero(np.diff(values)>2e-6)
+    if not len(usable):raise ValueError('No numerically separated activation cutoff')
+    index=int(usable[np.argmin(np.abs(rates[usable]-target))])
+    threshold=np.float32((float(values[index])+float(values[index+1]))*.5)
+    threshold=np.maximum(np.float32(-.999999),np.minimum(np.float32(.999999),threshold))
+    rate=float(np.mean(observed>threshold))
+    if not 0<rate<1:raise ValueError('Unattainable activation threshold')
+    return float(threshold),rate
+
 def load_probe(path,training):
     from research.vectorized_backtest.v63.probe_reader import load_probe as load
     if Path(path).suffix=='.json':
@@ -121,21 +139,25 @@ def _calibrate(rng,members,probe):
             if stage=='entry' and route==3:route=int(rng.choice(3))
             if route!=3:
                 target=float(np.exp(rng.uniform(np.log(.001),np.log(.05)))) if route==0 else float(rng.uniform(*((.05,.30) if route==1 else (.30,.95))))
+                realized=None
                 for attempt in range(16):
                     values,valid,_,_=observe(net,probe,stage)
                     mask=valid & (boundary if stage=='entry' else True)
                     observed=values[mask]
-                    if len(observed) and np.ptp(observed)>1e-4:break
+                    try:
+                        threshold,realized=activation_threshold(observed,target)
+                        break
+                    except ValueError:pass
                     if attempt==15:raise ValueError('Activation construction exhausted: '+stage)
                     # Preserve the allocated neuron count; no performance selection.
                     net=random_network(rng,stage,len(net.nodes));attempts+=1
                 if not failed:
-                    threshold=float(np.clip(np.quantile(observed,1-target),-.999999,.999999))
                     net=replace(net,threshold=threshold)
             nets[stage]=net
             records.append(dict(candidate=i,stage=stage,route=route,target_rate=target,
                 repair_attempts=attempts,unresolved_constant=failed,
                 boundary_opportunities=int(boundary.sum()) if stage=='entry' else None,
+                realized_rate=realized if route!=3 else None,
                 joint_boundary_probe='ask' in probe,policy_repaired=policy_repaired))
         out.append(replace(member,networks=nets).validate())
     return out,dict(seconds=perf_counter()-started,probe_sha256=probe['sha256'],records=records,
@@ -156,9 +178,12 @@ def calibrate_policy(member,probe):
 def entry_boundary(member,probe):
     """The flat-entry stop/book boundary; no financial-result filtering."""
     if 'ask' not in probe:return probe['eligible']
-    # Prices are evaluated independently by the candidate program at replay.
-    # Activation calibration uses availability only, never old execution gates.
-    return probe['eligible'] & probe['quote_valid']
+    from .price_program import Prices
+    if 'price_references' not in probe:raise ValueError('Actual price references required for joint calibration')
+    prices,guard=Prices.restore(member.policy.price_program).evaluate(probe['price_references'])
+    # Marketability and whole-share liquidity are part of the joint opportunity,
+    # not a change to the cost or an execution fallback.
+    return probe['eligible'] & probe['quote_valid'] & guard & (prices[0]>=probe['ask']) & (probe['ask_size']>=1)
 
 
 def policy_families(rng,members):
