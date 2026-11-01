@@ -7,13 +7,13 @@ from .genome import STAGES
 POLICY_FIELDS=('stop_fraction','target_fraction','reduce_fraction','trail_fraction','add_minimum_profit','reduce_minimum_profit','maximum_adds','cooldown','swing_left','buy_limit_offset','sell_limit_offset')
 
 class RoutingPlan:
-    def __init__(self,members,device):
+    def __init__(self,members,device,*,feature_columns=None):
         self.members=members;self.device=torch.device(device);flat=[];parents=[];indices=[]
         for i,m in enumerate(members):
             ids=[]
             for leaf in leaves(m):ids.append(len(flat));flat.append(leaf);parents.append(i)
             indices.append(ids)
-        self.leaves=flat;self.base=NetworkPlan(flat,device)
+        self.leaves=flat;self.base=NetworkPlan(flat,device,feature_columns=feature_columns)
         self.parent_index=torch.tensor(parents,device=device)
         width=max(map(len,indices))
         self.branch_index=torch.tensor([v+[v[0]]*(width-len(v)) for v in indices],device=device)

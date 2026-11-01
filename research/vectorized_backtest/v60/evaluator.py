@@ -156,7 +156,7 @@ class PopulationPrograms:
         from .network import NetworkPlan
         if any(m.routing for m in members):
             from .routing_plan import RoutingPlan
-            self.plan=RoutingPlan(members,device)
+            self.plan=RoutingPlan(members,device,feature_columns=packed['feature_columns'] if packed is not None else None)
         else:self.plan=NetworkPlan(members,device,packed=packed)
     def evaluate(self,data,**kwargs):return self.plan
     def close(self):self.plan.close()

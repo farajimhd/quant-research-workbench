@@ -91,11 +91,11 @@ class Inference:
             self.lag_projection=SimpleNamespace(columns=columns,lookup=lookup,
                 logarithmic=base.logarithmic.index_select(0,base.cross_indices),
                 quote_columns=torch.tensor([lookup[quote_canonical[i]] for i in selected],device=data.device,dtype=torch.long),
-                quote_selection=torch.tensor(selected,device=data.device,dtype=torch.long))
+                quote_selection=base.quote_selection.index_select(0,torch.tensor(selected,device=data.device,dtype=torch.long)))
 
 
-    def __call__(self,indices):
-        from .network_cuda import market_batch
+    def materialize(self,indices):
+        """Build shared population inputs once for an independent candle block."""
         base=self.base;data=self.data
         values,valid=project(base,data,indices)
         if base.uses_cross:
@@ -104,6 +104,12 @@ class Inference:
             lm=torch.cat((boundary_valid,valid[:-1].index_select(-1,base.cross_indices)),0)
             values=torch.cat((values,lag),-1)
             valid=torch.cat((valid,lm&(indices[:,None,None]>0)),-1)
+        return values,valid
+
+    def __call__(self,indices):
+        from .network_cuda import market_batch
+        base=self.base;data=self.data
+        values,valid=self.materialize(indices)
         membership=data.tensors['membership'].index_select(0,indices)
         extra=self.u-values.shape[1]
         if extra:

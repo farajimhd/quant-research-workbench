@@ -12,25 +12,26 @@ def outcome_values(before,after,price,signals,ratios,feedback):
 
 class NetworkPlan:
     builds=hits=evictions=capture_seconds=0
-    def __init__(self,members,device,*,packed=None):
+    def __init__(self,members,device,*,packed=None,feature_columns=None):
         self.members=members;self.device=torch.device(device);self.owner_indices=None
         self.uses_cross=any(n.op=='cross' for m in members for net in m.networks.values() for n in net.nodes)
         self.cuda_block=int(os.environ.get('V42_NEURAL_BLOCK','128'))
         if self.cuda_block not in (32,64,128,256):raise ValueError('Unsupported neural CUDA tile')
-        # Fixed catalog layout makes normalization independent of cohort membership.
-        from .feature_layout import COLUMNS,remap_sources
-        self.columns=list(COLUMNS)
-        self.reduction_columns=torch.tensor(self.columns,device=device,dtype=torch.long)
-        self.lookup={s:i for i,s in enumerate(self.columns)};c=len(self.columns)
+        # One generation dependency layout reused across session plans.
+        from .feature_layout import remap_sources
         from .network_pack import pack_networks
         packed=pack_networks(members) if packed is None else packed
+        self.columns=list(packed['feature_columns'] if feature_columns is None else feature_columns)
+        self.feature_layout_seconds=packed['feature_layout_seconds']
+        self.reduction_columns=torch.tensor(self.columns,device=device,dtype=torch.long)
+        self.lookup={s:i for i,s in enumerate(self.columns)};c=len(self.columns)
         from .entry_sharing import representatives,action_representatives
         action_reps=np.asarray(action_representatives(members),dtype=np.int32)
         if os.environ.get('V60_UNSHARED_SCRATCH')!='1':
             from .network_pack import shared_storage
             packed=shared_storage(packed,action_reps)
         self.total_nodes=packed['total_nodes'];self.offsets_cpu=packed['offsets_cpu'];self.kernel_nodes=packed['kernel_nodes']
-        values=list(packed['values']);values[0]=remap_sources(values[0],packed['edge_counts'])
+        values=list(packed['values']);values[0]=remap_sources(values[0],packed['edge_counts'],self.columns)
         self.sources,self.weights,self.bias,self.counts,self.offsets,self.threshold,self.size_source,self.size_weight,self.size_bias=[torch.as_tensor(x,device=device) for x in values]
         self.operations=torch.as_tensor(packed['operations'],device=device)
         self.edge_counts=torch.as_tensor(packed['edge_counts'],device=device)
@@ -52,8 +53,10 @@ class NetworkPlan:
         self.cuda_management_order=torch.as_tensor(unique_order[unique_order%5!=0],device=device)
         self.logarithmic=torch.tensor([CATALOG[s].unit not in ('ratio','bool') for s in self.columns],device=device)
         names={f.name:i for i,f in enumerate(CATALOG)}
-        self.quote_columns=torch.tensor([self.lookup[names[n]] for n in ('market.bid_relative','market.ask_relative',
-            'market.spread_fraction','market.bid','market.ask','market.spread')],device=device)
+        quote_ids=[names[n] for n in ('market.bid_relative','market.ask_relative',
+            'market.spread_fraction','market.bid','market.ask','market.spread')]
+        self.quote_selection=torch.tensor([i for i,s in enumerate(quote_ids) if s in self.lookup],device=device,dtype=torch.long)
+        self.quote_columns=torch.tensor([self.lookup[s] for s in quote_ids if s in self.lookup],device=device,dtype=torch.long)
         self.cross_columns=sorted({source for m in members for net in m.networks.values() for n in net.nodes if n.op=='cross' for source in n.sources})
         self.cross_lookup={source:i for i,source in enumerate(self.cross_columns)}
         self.cross_indices=torch.tensor([self.lookup[s] for s in self.cross_columns],device=device,dtype=torch.long)
@@ -117,6 +120,7 @@ class NetworkPlan:
         denominator=torch.where(reference,mark,1.)
         quotes=torch.stack((bid/denominator-1,ask/denominator-1,(ask-bid)/denominator,bid,ask,ask-bid),-1).to(v.dtype)
         quote_masks=torch.stack((quoted&reference,)*3+(quoted,)*3,-1)
+        quotes=quotes.index_select(-1,self.quote_selection);quote_masks=quote_masks.index_select(-1,self.quote_selection)
         v=v.index_copy(1,self.quote_columns,torch.where(quote_masks,quotes,0.))
         valid=valid.index_copy(1,self.quote_columns,quote_masks)
         # All statistics use only this causal clock's available cross-section.

@@ -24,6 +24,10 @@ def shared_storage(packed,representatives):
         edge_counts=packed['edge_counts'][rows],total_nodes=len(rows),offsets_cpu=mapped)
 
 def pack_networks(members):
+    from time import perf_counter
+    from .feature_layout import required_columns
+    started=perf_counter();feature_columns=required_columns(members)
+    layout_seconds=perf_counter()-started
     nets=[m.networks[s] for m in members for s in STAGES]
     counts=np.array([len(n.nodes) for n in nets],np.int32);offsets=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)
     total_nodes=int(counts.sum());offsets_cpu=offsets;kernel_nodes=1<<(int(counts.max())-1).bit_length()
@@ -43,7 +47,7 @@ def pack_networks(members):
     weights[rows,columns]=np.fromiter(chain.from_iterable(n.weights for n in nodes),np.float32,count=len(rows))
     values=(sources,weights,bias,counts,offsets,threshold,size_source,size_weight,size_bias)
     operations={op:i for i,op in enumerate(OPS)}
-    return dict(values=values,operations=np.fromiter((operations[n.op] for n in nodes),np.int32,count=total_nodes),
+    return dict(feature_columns=feature_columns,feature_layout_seconds=layout_seconds,values=values,operations=np.fromiter((operations[n.op] for n in nodes),np.int32,count=total_nodes),
         edge_counts=edge_counts,total_nodes=total_nodes,kernel_nodes=kernel_nodes,offsets_cpu=offsets_cpu)
 
 
@@ -57,7 +61,7 @@ def select_packed(packed, selection):
     total=int(counts.sum())
     # Each source index is network-local. Only packed row offsets change.
     rows=np.repeat(values[4][nets].astype(np.int64)-offsets,counts)+np.arange(total)
-    return dict(values=(values[0][rows],values[1][rows],values[2][rows],counts,offsets,
+    return dict(feature_columns=packed["feature_columns"],feature_layout_seconds=packed["feature_layout_seconds"],values=(values[0][rows],values[1][rows],values[2][rows],counts,offsets,
                        *(v[nets] for v in values[5:])),
         operations=packed['operations'][rows],edge_counts=packed['edge_counts'][rows],
         total_nodes=total,kernel_nodes=1<<(int(counts.max())-1).bit_length(),offsets_cpu=offsets)
@@ -66,6 +70,6 @@ def select_packed(packed, selection):
 def concatenate_packed(first,second):
     values=[np.concatenate((a,b)) for a,b in zip(first['values'],second['values'])]
     counts=values[3];values[4]=np.cumsum(np.r_[0,counts[:-1]]).astype(np.int32)
-    return dict(values=tuple(values),operations=np.concatenate((first['operations'],second['operations'])),
+    return dict(feature_columns=tuple(sorted(set(first["feature_columns"])|set(second["feature_columns"]))),feature_layout_seconds=first["feature_layout_seconds"]+second["feature_layout_seconds"],values=tuple(values),operations=np.concatenate((first['operations'],second['operations'])),
         edge_counts=np.concatenate((first['edge_counts'],second['edge_counts'])),total_nodes=int(counts.sum()),
         kernel_nodes=max(first['kernel_nodes'],second['kernel_nodes']),offsets_cpu=values[4])

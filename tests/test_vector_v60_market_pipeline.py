@@ -218,3 +218,28 @@ def test_pipelined_financial_replay_matches_sequential_signals(monkeypatch,journ
     assert before[2]==after[2]
     assert before[2]['admission_entry_first_fills'][0]>0
     assert before[3]==after[3]
+
+
+@pytest.mark.parametrize('device',['cpu','cuda'])
+def test_population_feature_union_matches_full_catalog_outputs(device):
+    if device=='cuda' and os.environ.get('V60_TEST_CUDA')!='1':pytest.skip('opt-in GPU')
+    from research.vectorized_backtest.v60.genome import sample
+    from research.vectorized_backtest.v60.feature_layout import COLUMNS,required_columns
+    from research.vectorized_backtest.v60.network import NetworkPlan
+    from research.vectorized_backtest.v60.network_pack import pack_networks,select_packed
+    members=sample(np.random.default_rng(221),3)
+    packed=pack_networks(members);columns=required_columns(members)
+    assert 0<len(columns)<len(COLUMNS)
+    assert select_packed(packed,[0])['feature_columns']==columns
+    compact=NetworkPlan(members,device,packed=packed)
+    full=NetworkPlan(members,device,feature_columns=COLUMNS)
+    item=market_fixture(device,9,137)
+    pos=torch.zeros((1,3,137,9),device=device,dtype=torch.float64)
+    try:
+        for i in range(9):
+            index=torch.tensor(i,device=device)
+            actual=compact.signals(item,index,pos,pos[...,0],pos[...,0]).clone()
+            expected=full.signals(item,index,pos,pos[...,0],pos[...,0]).clone()
+            torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+            torch.testing.assert_close(compact.ratios,full.ratios,rtol=0,atol=0)
+    finally:compact.close();full.close()

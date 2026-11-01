@@ -16,13 +16,13 @@ def test_compact_projection_equals_permitted_legacy_channels(device):
     plan=NetworkPlan(sample(np.random.default_rng(2),1),device)
     old=copy(plan);old.columns=list(range(len(CATALOG)));old.lookup={i:i for i in old.columns}
     old.logarithmic=torch.tensor([f.unit not in ('ratio','bool') for f in CATALOG],device=device)
-    old.quote_columns=torch.tensor([plan.columns[i] for i in plan.quote_columns.cpu().tolist()],device=device)
+    old.quote_columns=torch.tensor([plan.columns[i] for i in plan.quote_columns.cpu().tolist()],device=device,dtype=torch.long)
     item=market_fixture(device,listings=137);i=torch.tensor(3,device=device)
     original,known=old.project(item,i);actual,valid=plan.project(item,i)
     selected=torch.tensor([c+k*len(CATALOG) for k in range(3) for c in plan.columns],device=device)
     torch.testing.assert_close(actual,original.index_select(-1,selected),rtol=0,atol=0)
     torch.testing.assert_close(valid,known[:,plan.columns],rtol=0,atol=0)
-    assert actual.shape[-1]==2502 and not set(plan.columns)&set(BLOCKED)
+    assert actual.shape[-1]==3*len(plan.columns) and len(plan.columns)<834 and not set(plan.columns)&set(BLOCKED)
     plan.close()
 
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
