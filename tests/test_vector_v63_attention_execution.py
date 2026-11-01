@@ -134,3 +134,40 @@ def test_candle_extremes_use_existing_observations_and_completed_windows():
     assert (low[4:9]==1.).all()
     assert (low[9]==6.).all()
     assert (refs.values('previous.low.5')[9]==1.).all()
+
+
+def test_sparse_swing_matches_dense_reference_with_missing_bars_and_rank_changes():
+    from research.vectorized_backtest.v63.price_references import confirmed_selected
+    rng=np.random.default_rng(47)
+    source=rng.integers(1,10,(140,9)).astype(float)
+    source[rng.random(source.shape)<.12]=np.nan
+    slots=np.stack([rng.choice(9,5,replace=False) for _ in range(140)])
+    slots[0,0]=-1
+    rows,columns=np.nonzero(np.isfinite(source))
+    for left,right in ((1,1),(3,4),(5,10),(60,60)):
+        width=left+right+1
+        for low in (True,False):
+            expected=np.full_like(source,np.nan)
+            for col in range(9):
+                x=source[:,col];windows=np.lib.stride_tricks.sliding_window_view(x,width)
+                extreme=(np.min if low else np.max)(windows,axis=1)
+                ok=np.isfinite(windows).all(1)&(windows[:,left]==extreme)
+                at=np.arange(width-1,len(x));confirmed=np.full(len(x),-1)
+                confirmed[at[ok]]=at[ok]-right
+                prior=np.r_[-1,np.maximum.accumulate(confirmed)[:-1]]
+                expected[:,col]=np.where(prior>=0,x[prior.clip(0)],np.nan)
+            result=confirmed_selected(source,slots,rows,columns,left,right,low)
+            wanted=expected[np.arange(len(slots))[:,None],slots.clip(0)]
+            wanted[slots<0]=np.nan
+            np.testing.assert_array_equal(result,wanted)
+
+
+def test_scoped_identity_matches_canonical_identity():
+    from research.vectorized_backtest.v63.genome import sample
+    from research.vectorized_backtest.v63.identity_cache import identity_scope,program_key
+    from research.vectorized_backtest.v63.identity import digest
+    member=sample(np.random.default_rng(7),1)[0]
+    payload=member.payload()
+    for network in payload['networks'].values():
+        for node in network['nodes']:node.pop('uid',None);node.pop('slot',None)
+    with identity_scope():assert program_key(member)==digest(payload)

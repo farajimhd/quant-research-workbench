@@ -14,6 +14,11 @@ def replay(item,members,plan,execution,progress=None):
     engine=Inference(plan,item)
     buffers=state(b,u)
     ledger=[[] for _ in range(b)];episodes=[[] for _ in range(b)]
+    journal=None
+    if hasattr(item,'execution_order_root'):
+        from dataclasses import asdict
+        from .order_journal import Journal
+        journal=Journal(item.execution_order_root,b,dict(data=item.identity,execution=asdict(execution)))
     profile=dict(inference_position_feedback=False,inference_network_recurrence=False,
                  inference_listing_slots=5,model_base_features=len(engine.base.columns),
                  price_reference_count=len(engine.prices.names),inference_time_batch=engine.width,
@@ -37,7 +42,14 @@ def replay(item,members,plan,execution,progress=None):
         if future is None:return
         start=time.perf_counter();(records,closed),elapsed=future.result()
         profile['execution_wait_seconds']+=time.perf_counter()-start;profile['execution_seconds']+=elapsed
-        for i in range(b):ledger[i].extend(records[i]);episodes[i].extend(closed[i])
+        if journal is not None:
+            sizes=np.asarray([len(row) for row in records],np.int64)
+            if sizes.sum():
+                packed=np.concatenate([np.asarray(row,np.float64).reshape(-1,9) for row in records])
+                journal.submit(np.arange(b),sizes,packed)
+        for i in range(b):
+            if journal is None:ledger[i].extend(records[i])
+            episodes[i].extend(closed[i])
         future=None
     try:
         with torch.inference_mode():
@@ -72,12 +84,15 @@ def replay(item,members,plan,execution,progress=None):
         if np.any((p[:,:,0]>1e-12)|(o[:,:,0]!=0)):
             raise RuntimeError('Existing quote coverage exhausted with outstanding positions/orders; no score published')
         metrics={}
+        if journal is not None:
+            ledger=journal.finish()
+            profile['order_publication_backpressure_seconds']=journal.wait_seconds
         names={0:'net_pnl',1:'drawdown',2:'capital_dollar_seconds',3:'stop_risk_dollar_seconds',
                4:'filled_batches',5:'add_count',6:'reduce_count',8:'worst_position_pnl',9:'closed_positions',
                10:'winning_positions',11:'turnover',12:'maximum_position_risk',13:'maximum_stop_distance'}
         for column,name in names.items():metrics[name]=stats[:,column].tolist()
         metrics['net_pnl']=p[:,:,4].sum(1).tolist()
-        metrics.update(terminal_valid=[True]*b,unliquidated_positions=[0]*b,inactivity_fraction=[0.]*b,
+        metrics.update(terminal_valid=[True]*b,unliquidated_positions=[0]*b,inactivity_fraction=(stats[:,14]/np.maximum(1,stats[:,15])).tolist(),
                        risk_rejected_entries=[0]*b,risk_rejected_adds=[0]*b,ticker_drawdown=p[:,:,10].tolist(),
                        open_episode_listings=[[] for _ in range(b)],open_episode_realized=[[] for _ in range(b)],
                        ticker_blocked_requests=p[:,:,13].tolist(),execution_orders=ledger,cancelled_orders=diag[:,11].tolist(),blocked_requests=diag[:,1].tolist())
@@ -87,10 +102,11 @@ def replay(item,members,plan,execution,progress=None):
                                     'blocked_liquidity','blocked_inventory','partial_fills','rank_loss_exits','rank_exit_wait_seconds','cancellations','price_abstentions')):
             metrics['admission_'+name]=diag[:,column].tolist()
         profile.update(total_replay_seconds=time.perf_counter()-began,
-                       average_execution_tickers_per_candidate=float(stats[:,17].sum()/max(1,total*b)),
+                       average_execution_tickers_per_candidate=float(stats[:,17].sum()/max(1,stats[:,15].sum())),
                        full_union_tickers=u)
         plan.last_replay_profile=profile
         if progress:progress(total,total)
         return [metrics]
     finally:
         pool.shutdown(wait=True,cancel_futures=True)
+        if journal is not None:journal.close()

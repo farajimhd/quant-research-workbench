@@ -11,7 +11,7 @@ from numba import njit,prange
 P_WIDTH=14
 # Order: kind, remaining, requested, filled, notional, fee, submitted, first,
 # limit, initial stop, target, penalty charged, liquidation latch.
-O_WIDTH=13
+O_WIDTH=14
 # Diagnostics: submitted, blocked, price, stop, limit, quote, liquidity,
 # inventory, partial fills, rank exits, rank exit seconds, cancelled, abstained.
 D_WIDTH=13
@@ -26,7 +26,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
     p=positions[candidate];o=orders[candidate];book=books[candidate]
     d=diagnostics[candidate];s=stats[candidate];count=counts[candidate]
     for tick in range(len(slots)):
-        clock=start+tick;terminal=clock>=terminal_at
+        clock=start+tick;terminal=clock>=terminal_at;any_held=False
         for k in range(5):
             ticker=slots[tick,k]
             if ticker>=0 and lookup[candidate,ticker]<0:
@@ -49,7 +49,8 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
             targeted=held and np.isfinite(mark) and mark>=p[u,3]
             lifecycle=rank_loss or terminal or stopped or targeted or o[u,12]>0
             flatten=lifecycle or (sig&2)!=0
-            if rank_loss and o[u,12]==0:d[9]+=1
+            if rank_loss and o[u,13]==0:
+                d[9]+=1;o[u,13]=clock+1
             if lifecycle and held:o[u,12]=1.
             if (kind==1 or kind==2) and (flatten or slot<0):
                 records.append((float(u),float(kind),o[u,2],o[u,3],o[u,4],o[u,5],o[u,6],o[u,7],float(clock)))
@@ -87,10 +88,10 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                         if invalid:d[2]+=1
                         if invalid_stop:d[3]+=1
                     else:
-                        latch=o[u,12]
+                        latch=o[u,12];rank_started=o[u,13]
                         for j in range(O_WIDTH):o[u,j]=0.
                         o[u,0]=new_kind;o[u,1]=qty;o[u,2]=qty;o[u,6]=clock;o[u,7]=-1
-                        o[u,8]=limit;o[u,9]=stop;o[u,10]=target;o[u,12]=latch;kind=new_kind
+                        o[u,8]=limit;o[u,9]=stop;o[u,10]=target;o[u,12]=latch;o[u,13]=rank_started;kind=new_kind
             if kind==1 and o[u,3]<=1e-12 and fresh and o[u,9]>=ask:
                 if o[u,11]==0:d[1]+=1;d[3]+=1
                 records.append((float(u),float(kind),o[u,2],o[u,3],o[u,4],o[u,5],o[u,6],o[u,7],float(clock)))
@@ -133,25 +134,29 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                     if held and p[u,0]<=1e-12:
                         profit=p[u,4]-p[u,5]
                         episodes.append((profit,float(u),p[u,12],p[u,6],float(clock)))
-                        s[9]+=1;s[10]+=profit>0;s[8]=min(s[8],profit)
+                        s[8]=profit if s[9]==0 else min(s[8],profit)
+                        s[9]+=1;s[10]+=profit>0
                         p[u,7]=clock;p[u,1]=0.
                     if o[u,1]<=1e-12 or (not buy and p[u,0]<=1e-12):
                         records.append((float(u),float(kind),o[u,2],o[u,3],o[u,4],o[u,5],o[u,6],o[u,7],float(clock)))
-                        if o[u,12]>0:d[10]+=clock-o[u,6]
+                        if o[u,13]>0:d[10]+=clock-(o[u,13]-1)
                         o[u,0]=0
-                        if p[u,0]<=1e-12:o[u,12]=0
+                        if p[u,0]<=1e-12:o[u,12]=0;o[u,13]=0
             if np.isfinite(mark) and mark>0:p[u,11]=mark
             equity=p[u,4]+p[u,0]*(p[u,11]-p[u,1])
             s[0]+=equity-p[u,8];p[u,8]=equity;p[u,9]=max(p[u,9],equity);p[u,10]=max(p[u,10],p[u,9]-equity)
             s[2]+=p[u,0]*p[u,11];risk=p[u,0]*max(0.,p[u,1]-p[u,2]);s[3]+=risk;s[12]=max(s[12],risk)
             if p[u,0]>1e-12 and p[u,1]>0:s[13]=max(s[13],max(0.,1-p[u,2]/p[u,1]))
             p[u,13]+=d[1]-prior_blocked
+            any_held=any_held or p[u,0]>1e-12
             if slot<0 and p[u,0]<=1e-12 and o[u,0]==0:
                 count-=1;other=active[candidate,count];active[candidate,index]=other
                 lookup[candidate,other]=index;lookup[candidate,u]=-1
             else:index+=1
         s[16]=max(s[16],s[0]);s[1]=max(s[1],s[16]-s[0])
         s[17]+=count
+        s[14]+=not any_held
+        s[15]+=1
     counts[candidate]=count
     return records,episodes
 

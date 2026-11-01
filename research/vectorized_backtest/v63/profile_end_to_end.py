@@ -11,13 +11,14 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--source-job',required=True);p.add_argument('--output',required=True)
     p.add_argument('--count',type=int,default=1024);p.add_argument('--days',nargs='+',default=['2026-08-13'])
+    p.add_argument('--population',type=Path)
     args=p.parse_args()
     from .runtime import configure_caches,require_runtime
     root=require_runtime(args.output);configure_caches(root/'compiler')
     import torch
     from .full_common import config,aggregate
     from .session_lanes import Worker
-    from .genome import sample
+    from .genome import sample,Individual
     from .identity import digest,source_hash
     from .publication import write_json
     from .orders import VERSION
@@ -28,8 +29,11 @@ def main():
                gpu_execution_gate=None,stop_roots=[],boundary_stop=str(root),reuse_results=False,
                immutable_population_cache=False,indexed_results=True,host_prefetch=False,host_reserve_gib=0.,
                host_admission_gib=0.,lane_memory_bytes=int(torch.cuda.mem_get_info()[0]*.80))
-    members=sample(np.random.default_rng(2021),args.count,stratified=True,structural=True)
+    members=([Individual.restore(v) for v in json.loads(args.population.read_bytes())] if args.population else
+             sample(np.random.default_rng(2021),args.count,stratified=True,structural=True))
+    if len(members)!=args.count:raise ValueError('Benchmark population count differs')
     payload=[m.payload() for m in members]
+    write_json(root/'population.json',payload)
     worker=Worker(cfg,queue.Queue(),0);reports=[]
     try:
         for day in args.days:

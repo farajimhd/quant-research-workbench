@@ -1,6 +1,33 @@
 """Demand-only price references derived in RAM from the existing certified shard."""
 import numpy as np
+from numba import njit
 from .price_program import REFERENCES
+
+
+@njit(nogil=True)
+def confirmed_selected(source,slots,rows,columns,left,right,is_low):
+    """Visit observations only; emit the prior confirmed price for ranked slots."""
+    t,u=source.shape
+    latest=np.full(u,np.nan);last_tick=np.full(u,-2,np.int64)
+    consecutive=np.zeros(u,np.int64);out=np.full(slots.shape,np.nan)
+    cursor=0;width=left+right+1
+    for clock in range(t):
+        # Confirmation becomes visible on the next clock, never retrospectively.
+        for k in range(slots.shape[1]):
+            col=slots[clock,k]
+            if col>=0:out[clock,k]=latest[col]
+        while cursor<len(rows) and rows[cursor]==clock:
+            col=columns[cursor];cursor+=1
+            consecutive[col]=consecutive[col]+1 if last_tick[col]==clock-1 else 1
+            last_tick[col]=clock
+            if consecutive[col]<width:continue
+            pivot=source[clock-right,col];ok=True
+            for j in range(width):
+                value=source[clock-j,col]
+                if (is_low and value<pivot) or (not is_low and value>pivot):
+                    ok=False;break
+            if ok:latest[col]=pivot
+    return out
 
 
 class References:
@@ -23,20 +50,11 @@ class References:
             parts=name.split('.');side=parts[1]
             source=self.extremes(side)
             if parts[0]=='swing':
-                left,right=map(int,parts[2:]);width=left+right+1
-                out=np.full_like(source,np.nan)
-                # Bounded per-column sliding views; no duplication of source bars.
-                for column in range(source.shape[1]):
-                    x=source[:,column]
-                    if len(x)<width:continue
-                    windows=np.lib.stride_tricks.sliding_window_view(x,width)
-                    extreme=np.min(windows,axis=-1) if side=='low' else np.max(windows,axis=-1)
-                    ok=np.isfinite(windows).all(-1)&(windows[:,left]==extreme)
-                    at=np.arange(width-1,len(x))
-                    confirmed=np.full(len(x),-1,np.int64);confirmed[at[ok]]=at[ok]-right
-                    prior=np.r_[-1,np.maximum.accumulate(confirmed)[:-1]]
-                    out[:,column]=np.where(prior>=0,x[prior.clip(0)],np.nan)
-                result=out[self.times,safe]
+                left,right=map(int,parts[2:])
+                key='_observations_'+side
+                if key not in self.cache:self.cache[key]=np.nonzero(np.isfinite(source))
+                rows,columns=self.cache[key]
+                result=confirmed_selected(source,slots,rows,columns,left,right,side=='low')
             else:
                 seconds=int(parts[2]);end=np.broadcast_to(self.times,slots.shape)
                 if parts[0] in ('candle','previous'):
