@@ -253,6 +253,8 @@ class Worker:
                         plan.plan.cuda_block=c.get('neural_tile',plan.plan.cuda_block)
                         self.plans[batch_key]=plan
                     plan=self.plans[batch_key];self.plans.move_to_end(batch_key)
+                    plan.plan.replay_time_block=c.get('replay_time_block',256)
+                    plan.plan.replay_transfer_mode=c.get('replay_transfer_mode','synchronous')
                     prior={k:getattr(plan.plan,k,0) for k in ('builds','hits','evictions','capture_seconds')}
                     self.emit(day,stage='Evaluate rules',candidate_offset=offset,rule_tiles=0,total_rule_tiles=0,
                               completed_seconds=0,total_seconds=item.clocks-1,replay_started=None)

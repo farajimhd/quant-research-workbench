@@ -1,5 +1,6 @@
 """Bounded GPU inference / native CPU execution pipeline for five-slot requests."""
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
@@ -34,8 +35,13 @@ def replay(item,members,plan,execution,progress=None):
                      ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid'))
     tail=Tail(item.execution_tail,item)
     # Finite execution-only pages already exist; never acquire or extend them.
-    pool=ThreadPoolExecutor(max_workers=2,thread_name_prefix='v63-execution')
-    tail_future=pool.submit(tail.load,0) if tail.receipt['pages'] else None
+    pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='v63-execution')
+    tail_pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='v63-tail')
+    tail_future=tail_pool.submit(tail.load,0) if tail.receipt['pages'] else None
+    asynchronous=getattr(plan,'replay_transfer_mode','synchronous')=='events'
+    copy_stream=torch.cuda.Stream(device=item.device) if asynchronous else None
+    pending=deque();slots=[None,None]
+    profile.update(transfer_mode='events' if asynchronous else 'synchronous',inference_gpu_seconds=0.)
     future=None
     def execute(start,slots,packet,book):
         set_num_threads(4)
@@ -57,19 +63,48 @@ def replay(item,members,plan,execution,progress=None):
             if journal is None:ledger[i].extend(records[i])
             episodes[i].extend(closed[i])
         future=None
+    def execute_ready(ready,start,selected,host,book,keepalive):
+        # Retain GPU outputs until DMA completes; one worker serializes accounting.
+        ready.synchronize()
+        return execute(start,selected,tuple(v.numpy() for v in host),book)
+    def collect_pending():
+        nonlocal future
+        future,timing=pending.popleft();collect()
+        first,inferred,copied=timing
+        profile['inference_gpu_seconds']+=first.elapsed_time(inferred)/1000.
+        profile['transfer_seconds']+=inferred.elapsed_time(copied)/1000.
     try:
         with torch.inference_mode():
             for begin in range(0,total,engine.width):
+                if asynchronous and len(pending)==2:collect_pending()
                 end=min(total,begin+engine.width)
                 indices=torch.arange(begin,end,device=item.device)
-                start=time.perf_counter();packet=engine(indices)
-                torch.cuda.synchronize(item.device)
-                profile['inference_seconds']+=time.perf_counter()-start
-                start=time.perf_counter();host=tuple(v.cpu().numpy() for v in packet)
-                profile['transfer_seconds']+=time.perf_counter()-start
-                collect()
-                future=pool.submit(execute,begin,engine.slots_cpu[begin:end],host,tuple(v[begin:end] for v in quotes))
+                start=time.perf_counter()
+                if asynchronous:
+                    first=torch.cuda.Event(enable_timing=True);inferred=torch.cuda.Event(enable_timing=True)
+                    copied=torch.cuda.Event(enable_timing=True);first.record()
+                packet=engine(indices)
+                if asynchronous:
+                    inferred.record();slot=(begin//engine.width)%2
+                    if slots[slot] is None:
+                        slots[slot]=tuple(torch.empty_like(v,device='cpu',pin_memory=True) for v in packet)
+                    host=tuple(v[:end-begin] for v in slots[slot])
+                    with torch.cuda.stream(copy_stream):
+                        copy_stream.wait_event(inferred)
+                        for dest,source in zip(host,packet):dest.copy_(source,non_blocking=True)
+                        copied.record()
+                    pending.append((pool.submit(execute_ready,copied,begin,engine.slots_cpu[begin:end],host,
+                        tuple(v[begin:end] for v in quotes),packet),(first,inferred,copied)))
+                    profile['inference_seconds']+=time.perf_counter()-start
+                else:
+                    torch.cuda.synchronize(item.device)
+                    profile['inference_seconds']+=time.perf_counter()-start
+                    start=time.perf_counter();host=tuple(v.cpu().numpy() for v in packet)
+                    profile['transfer_seconds']+=time.perf_counter()-start
+                    collect()
+                    future=pool.submit(execute,begin,engine.slots_cpu[begin:end],host,tuple(v[begin:end] for v in quotes))
                 if progress:progress(begin,total)
+        while pending:collect_pending()
         collect()
         profile['decision_seconds']=time.perf_counter()-began
         for page in range(len(tail.receipt['pages'])):
@@ -77,7 +112,7 @@ def replay(item,members,plan,execution,progress=None):
             item.execution_phase='Complete outstanding liquidations'
             if progress:progress(total,total)
             book=tail_future.result()
-            tail_future=pool.submit(tail.load,page+1) if page+1<len(tail.receipt['pages']) else None
+            tail_future=tail_pool.submit(tail.load,page+1) if page+1<len(tail.receipt['pages']) else None
             packed=tuple(book[k] for k in ('mark','bid','ask','quote_us','bid_size','ask_size','quote_valid'))
             start_clock=int(book['clocks'][0]-item.arrays['clocks'][0])
             for begin in range(0,len(packed[0]),engine.width):
@@ -118,4 +153,6 @@ def replay(item,members,plan,execution,progress=None):
         return [metrics]
     finally:
         pool.shutdown(wait=True,cancel_futures=True)
+        tail_pool.shutdown(wait=True,cancel_futures=True)
+        if copy_stream is not None:copy_stream.synchronize()
         if journal is not None:journal.close()

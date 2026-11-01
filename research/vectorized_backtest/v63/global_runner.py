@@ -59,7 +59,11 @@ class Global(Evolution):
             cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
                 # Inductor/Triton keys bind graphs and kernels. UI/publication
                 # source changes must not discard those content-addressed caches.
-                compile_cache_root=str(Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v63/compiler')/role),defer_publication=True,total_gpu_workers=2,indexed_results=True)
+                compile_cache_root=str(Path('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v63/compiler')/role),defer_publication=True,total_gpu_workers=self.workers,indexed_results=True,
+                replay_width_workers=2)
+            from .performance import tuning
+            options=tuning(self.job)
+            cfg.update(replay_time_block=options['time_block'],replay_transfer_mode=options['transfer_mode'])
             cfg['maximum_replay_batch_size']=self.job.get('replay_maximum_batch',1024)
             cfg['neural_tile']=self.job.get('neural_tile',64)
             # Retain the six bounded founder plans across sessions instead of

@@ -16,7 +16,9 @@ def check(job):
     if job['version']!=VERSION or job['source_sha256']!=source_hash():raise ValueError('Global source identity differs')
     if set(job['machines'])!={'workstation'} or job['campaign_stage']!='fresh-global':raise ValueError('Fresh workstation global ownership required')
     if (job['population'],job['initial_multiplier'],job['seed'],job['phase2_generations'],job['mutation_probe_size'])!=(1024,6,2021,200,32):raise ValueError('Global campaign dimensions changed')
-    if job['global_session_workers']!=2:raise ValueError('Two concurrent replay lanes required')
+    from .performance import configuration
+    performance=configuration(job)
+    if job['machines']['workstation']['session_workers']!=performance['session_workers']:raise ValueError('Replay worker metadata differs')
     if job['machines']['workstation'].get('hostname')!='DESKTOP-SAAI85T':raise ValueError('Pinned workstation hostname required')
     if job.get('neural_tile',64)!=64:raise ValueError('Global campaigns require the parity-verified 64-lane neural tile')
     for key in ('training','validation','source_job','initialization_probe'):
