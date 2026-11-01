@@ -197,10 +197,6 @@ class Worker:
         missing=[i for i,k in enumerate(keys) if k not in cached]
         from .replay_batches import plan_batches
         ceiling=c.get('maximum_replay_batch_size',c['batch_size'])
-        if device.type=='cuda':
-            fixed=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
-            larger=fixed+ceiling*(c.get('episode_capacity',65536)+replay_width)*32
-            if larger>c['lane_memory_bytes']:ceiling=c['batch_size']
         batches=plan_batches(population,missing,replay_width,c['batch_size'],ceiling)
         self.batch_progress=dict(completed_local_batches=0,total_local_batches=len(batches),total_candidates=len(population),
             reused_candidates=len(population)-len(missing),evaluated_candidates=len(missing),completed_candidates=len(population)-len(missing),
@@ -209,9 +205,13 @@ class Worker:
         try:
             if missing:
                 if device.type=='cuda':
-                    required=item.bytes+item.resident_features.bytes+(2+c['capture_gib'])*1024**3
-                    required+=max(map(len,batches))*(c.get('episode_capacity',65536)+replay_width)*32
-                    if required>c['lane_memory_bytes']:raise MemoryError('Independent session exceeds admitted GPU memory budget')
+                    from .performance import memory_budget
+                    budget=memory_budget(item,population,batches,c.get('replay_time_block',256))
+                    from .publication import write_json
+                    write_json(Path(c['output'])/'memory-admission'/f'{generation}-{day}.json',
+                        dict(budget,lane_memory_bytes=c['lane_memory_bytes']))
+                    if budget['required_bytes']>c['lane_memory_bytes']:
+                        raise MemoryError(f"Compact replay needs {budget['required_bytes']} bytes; lane admits {c['lane_memory_bytes']}")
                 if not c.get('retain_session_residency') or item.device!=device:
                     self.staging.activate([(day,item)],device)
                     self.uploads+=1
