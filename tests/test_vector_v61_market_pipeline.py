@@ -148,25 +148,38 @@ def test_routed_batch_ignores_execution_and_matches_current_market_arbitration()
             torch.testing.assert_close(batch[1][i],plan.ratios[0],rtol=0,atol=0)
             torch.testing.assert_close(batch[2][i],policy[0],rtol=0,atol=0)
             torch.testing.assert_close(batch[4][i],plan.owner,rtol=0,atol=0)
+        from research.vectorized_backtest.v61.inference_pipeline import Pipeline
+        signals=torch.empty((1,1,7),device='cuda',dtype=torch.int16)
+        pipe=Pipeline(plan,item,4,4,signals,policy,columns,{},packet_blocks=4)
+        try:
+            pipe.stage(0)
+            for i in range(4):
+                pipe.provide(indices[i])
+                torch.testing.assert_close(signals[0],batch[0][i],rtol=0,atol=0)
+                torch.testing.assert_close(policy[0],batch[2][i],rtol=0,atol=0)
+                torch.testing.assert_close(columns,batch[3][i],rtol=0,atol=0)
+                torch.testing.assert_close(plan.owner,batch[4][i],rtol=0,atol=0)
+        finally:pipe.close()
     finally:plan.close()
 
 
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
 @pytest.mark.parametrize('independent',[False,True])
-def test_double_buffer_packets_equal_independent_inference(independent):
+@pytest.mark.parametrize('packet_blocks',[1,4])
+def test_double_buffer_packets_equal_independent_inference(independent,packet_blocks):
     from research.vectorized_backtest.v61.genome import sample
     from research.vectorized_backtest.v61.network import NetworkPlan
     from research.vectorized_backtest.v61.inference_pipeline import Pipeline
     item=market_fixture('cuda');members=sample(np.random.default_rng(7),3)
     plan=NetworkPlan(members,'cuda');plan.prepare(3,7)
     signals=torch.empty((1,3,7),device='cuda',dtype=torch.int16)
-    pipe=Pipeline(plan,item,16,4,signals,None,None,{})
+    pipe=Pipeline(plan,item,16,4,signals,None,None,{},packet_blocks=packet_blocks)
     if independent:pipe.start()
     p=torch.zeros((1,3,7,9),device='cuda',dtype=torch.float64);opened=p[...,0].clone()
     try:
-        for begin in range(0,17,4):
-            pipe.stage(begin);pipe.submit(begin+4);pipe.submit(begin+8)
-            for i in range(begin,min(begin+4,17)):
+        for begin in range(0,17,pipe.block):
+            pipe.stage(begin);pipe.submit(begin+pipe.block);pipe.submit(begin+2*pipe.block)
+            for i in range(begin,min(begin+pipe.block,17)):
                 index=torch.tensor(i,device='cuda');pipe.provide(index)
                 observed=signals.clone();ratios=plan.ratios.clone()
                 expected=plan.signals(item,index,p,opened,p[:,:1,:,0])

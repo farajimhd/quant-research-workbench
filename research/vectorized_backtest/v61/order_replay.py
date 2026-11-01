@@ -132,7 +132,7 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
         pipeline=None
         if use_cuda and not tail_mode and hasattr(plan,'members') and __import__('os').environ.get('V60_INFERENCE_PIPELINE','1')=='1':
             from .inference_pipeline import Pipeline
-            pipeline=Pipeline(plan,item,total,block,signals,policy,columns,profile)
+            pipeline=Pipeline(plan,item,total,block,signals,policy,columns,profile,packet_blocks=getattr(plan,'journal_blocks',1))
             pipelines.append(pipeline)
         def tick():
             if pipeline is not None:pipeline.provide(index.clamp_max(total))
