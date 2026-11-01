@@ -8,7 +8,7 @@ def append_kernel(CLOSED,PNL,ENTRY,EXIT,PROFITS,LISTINGS,COUNTS,ENTRIES,EXITS,OW
                   U:tl.constexpr,CAPACITY:tl.constexpr,WIDTH:tl.constexpr,
                   CS:tl.constexpr,PS:tl.constexpr,ES:tl.constexpr,OUT:tl.constexpr,
                   B:tl.constexpr,TRACE:tl.constexpr,BLOCK:tl.constexpr):
-    row=tl.program_id(0);session=row//B;candidate=row%B;j=tl.arange(0,BLOCK)
+    row=tl.program_id(0).to(tl.int64);session=row//B;candidate=row%B;j=tl.arange(0,BLOCK)
     closed=tl.load(CLOSED+session*CS[0]+candidate*CS[1]+j*CS[2],j<U,False)
     prefix=tl.cumsum(closed.to(tl.int32),0)-1
     old=tl.load(COUNTS+row);index=old+prefix;retain=closed&(index<CAPACITY)
