@@ -184,12 +184,12 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
     from .swing_projection import entry_swings
     plan.journal_blocks=1
     if execution.order_mode!='immediate':
-        # Up to four graph packets per ledger drain where admitted memory permits it.
+        # Up to 512 clocks per ledger drain where admitted memory permits it.
         # Reserve at most 30% of currently free memory for both ledgers; retain
         # the original single-packet path on smaller devices.
         if device.type=='cuda':
             free=torch.cuda.mem_get_info(device)[0]
-            for blocks in (4,2):
+            for blocks in (16,8,4,2):
                 ledger_bytes=blocks*replay_block*u*b*(2*72+(40 if trace else 24))
                 if ledger_bytes < free*.30:
                     plan.journal_blocks=blocks;break

@@ -8,7 +8,7 @@ class Pipeline:
     def __init__(self,plan,data,total,block,signals,policy,columns,profile,*,packet_blocks=1):
         self.routed=hasattr(plan,'base');b,u=signals.shape[1:]
         maximum=1
-        for multiplier in (4,2):
+        for multiplier in (16,8,4,2):
             bytes_needed=3*block*multiplier*b*u*(34 if self.routed else 26)
             if multiplier<=packet_blocks and bytes_needed<torch.cuda.mem_get_info(data.device)[0]*.20:
                 maximum=multiplier;break
@@ -135,15 +135,8 @@ class Pipeline:
         if independent:self.start(begin+2*self.block)
 
     def provide(self,index):
-        row=(index%self.block).reshape(1)
-        self.signals.copy_(self.active[0].index_select(0,row))
-        self.plan.ratios.copy_(self.active[1].index_select(0,row))
-        if self.routed:
-            owner=self.active[4].index_select(0,row)[0]
-            selected=self.plan.branch_index.gather(1,owner)
-            self.policy.copy_(self.plan.policies[selected][None])
-            self.columns.copy_(self.plan.leaf_columns[selected])
-            self.plan.owner.copy_(owner)
+        from .inference_packet import consume
+        consume(self,index)
 
     def close(self):
         self._stop_producer()

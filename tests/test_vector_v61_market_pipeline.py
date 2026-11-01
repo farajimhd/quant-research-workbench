@@ -165,7 +165,7 @@ def test_routed_batch_ignores_execution_and_matches_current_market_arbitration()
 
 @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
 @pytest.mark.parametrize('independent',[False,True])
-@pytest.mark.parametrize('packet_blocks',[1,4])
+@pytest.mark.parametrize('packet_blocks',[1,4,16])
 def test_double_buffer_packets_equal_independent_inference(independent,packet_blocks):
     from research.vectorized_backtest.v61.genome import sample
     from research.vectorized_backtest.v61.network import NetworkPlan
