@@ -17,6 +17,7 @@ def check(job):
     if set(job['machines'])!={'workstation'} or job['campaign_stage']!='fresh-global':raise ValueError('Fresh workstation global ownership required')
     if (job['population'],job['initial_multiplier'],job['seed'],job['phase2_generations'],job['mutation_probe_size'])!=(1024,6,2021,200,32):raise ValueError('Global campaign dimensions changed')
     if job['global_session_workers']!=2:raise ValueError('Two concurrent replay lanes required')
+    if job['machines']['workstation'].get('hostname')!='DESKTOP-SAAI85T':raise ValueError('Pinned workstation hostname required')
     if job.get('neural_tile',64)!=64:raise ValueError('Global campaigns require the parity-verified 64-lane neural tile')
     for key in ('training','validation','source_job','initialization_probe'):
         if sha(job[key])!=job[key+'_sha256']:raise ValueError(key+' changed')
@@ -69,7 +70,7 @@ def prepare(source,root,code,*,deployment=None,reuse_training_probe=False):
         phase2_generations=200,mutation_probe_size=32,global_session_workers=2,global_node='workstation',batch_size=1024,
         objective=dict(drawdown_weight=1.,loss_weight=0.),execution=dict(original['execution'],risk_limits_enabled=False),selection=dict(original['selection'],profit_fresh_fraction=0.),
         selection_risk_caps=False,ticker_parent_fraction=.25,validation_schedule='concurrent-training-only-v1',
-        machines={'workstation':dict(original['machines']['workstation'],code=str(code),days=dict(training=train,validation=valid),session_days=[],session_workers=2)})
+        machines={'workstation':dict(original['machines']['workstation'],hostname='DESKTOP-SAAI85T',code=str(code),days=dict(training=train,validation=valid),session_days=[],session_workers=2)})
     from .orders import VERSION as ORDER_VERSION
     job.update(fresh_initial_replay='v63-fresh-founders-v1',execution_tail=original['execution_tail'])
     job['strategy_contract']=dict(STRATEGY_CONTRACT)
