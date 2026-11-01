@@ -27,6 +27,11 @@ def activation_threshold(observed,target):
     threshold=np.maximum(np.float32(-.999999),np.minimum(np.float32(.999999),threshold))
     rate=float(np.mean(observed>threshold))
     if not 0<rate<1:raise ValueError('Unattainable activation threshold')
+    # Tied/discrete outputs can make the nearest cutoff radically unlike the
+    # requested behavior. Repair the graph rather than silently changing it.
+    tolerance=max(1./len(observed),min(.02,.25*target))
+    if abs(rate-target)>tolerance:
+        raise ValueError('Activation rate outside construction tolerance')
     return float(threshold),rate
 
 def load_probe(path,training):
@@ -134,6 +139,7 @@ def _calibrate(rng,members,probe):
         nets={}
         member,policy_repaired=calibrate_policy(member,probe)
         boundary=entry_boundary(member,probe)
+        boundaries=action_boundaries(member,probe)
         for stage,net in member.networks.items():
             route=int(rng.choice(4,p=RATE_WEIGHTS));attempts=0;failed=False;target=None
             if stage=='entry' and route==3:route=int(rng.choice(3))
@@ -142,7 +148,7 @@ def _calibrate(rng,members,probe):
                 realized=None
                 for attempt in range(16):
                     values,valid,_,_=observe(net,probe,stage)
-                    mask=valid & (boundary if stage=='entry' else True)
+                    mask=valid & boundaries.get(stage,True)
                     observed=values[mask]
                     try:
                         threshold,realized=activation_threshold(observed,target)
@@ -184,6 +190,20 @@ def entry_boundary(member,probe):
     # Marketability and whole-share liquidity are part of the joint opportunity,
     # not a change to the cost or an execution fallback.
     return probe['eligible'] & probe['quote_valid'] & guard & (prices[0]>=probe['ask']) & (probe['ask_size']>=1)
+
+
+def action_boundaries(member,probe):
+    """Market-only feasibility; no inventory, fills or financial feedback."""
+    if 'price_references' not in probe:return {'entry':entry_boundary(member,probe)}
+    from .price_program import Prices
+    from .authority import FIXED_ADD_DOLLARS
+    prices,_=Prices.restore(member.policy.price_program).evaluate(probe['price_references'])
+    buy,sell,_,_,update=prices
+    eligible=probe['eligible']
+    sell_ok=eligible & np.isfinite(sell) & (sell>0)
+    return dict(entry=entry_boundary(member,probe),exit=sell_ok,reduce=sell_ok,
+                add=eligible & np.isfinite(buy) & (buy>0) & (buy<=FIXED_ADD_DOLLARS),
+                trail=eligible & np.isfinite(update) & (update>0) & (update<probe['price_references']['close']))
 
 
 def policy_families(rng,members):

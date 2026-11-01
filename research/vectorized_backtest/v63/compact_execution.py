@@ -5,7 +5,7 @@ Requests already contain prices. Each candidate has an independent quote book.
 """
 import numpy as np
 from numba import njit,prange
-from .request_guard import may_request_add,entry_quantity,whole_quantity,applicable_signals,valid_request_size
+from .request_guard import may_request_add,entry_quantity,whole_quantity,applicable_signals,valid_request_size,reduction_quantity
 
 # Position: quantity, average, stop, target, realized, episode baseline,
 # entry clock, last-flat clock, last equity, peak, drawdown, last mark, branch.
@@ -15,7 +15,7 @@ P_WIDTH=15  # Last column: strategy adapter's filled-add count for this episode.
 O_WIDTH=14
 # Diagnostics: submitted, blocked, price, stop, limit, quote, liquidity,
 # inventory, partial fills, rank exits, rank exit seconds, cancelled, abstained.
-D_WIDTH=16  # Add limit, invalid price/size and stop update suppressions are strategy-side.
+D_WIDTH=22  # Additional cause counters reconcile to the two suppression totals.
 
 
 @njit(nogil=True)
@@ -66,7 +66,10 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                 update=prices[tick,candidate,slot,4]
                 if np.isfinite(update) and update>0 and np.isfinite(mark) and update<mark:
                     d[0]+=1;p[u,2]=update
-                else:d[15]+=1
+                else:
+                    d[15]+=1
+                    if not np.isfinite(update) or update<=0:d[20]+=1
+                    else:d[21]+=1
             if kind==0:
                 new_kind=0;qty=0.;limit=0.;stop=0.;target=0.
                 if held and flatten:
@@ -75,7 +78,7 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                     limit=max(bid,1e-300) if lifecycle else prices[tick,candidate,slot,1]
                 elif slot>=0 and not terminal:
                     if held and (sig&8)!=0:
-                        new_kind=3;qty=q*ratios[tick,candidate,slot,2];limit=prices[tick,candidate,slot,1]
+                        new_kind=3;qty=reduction_quantity(q,ratios[tick,candidate,slot,2]);limit=prices[tick,candidate,slot,1]
                     elif held and (sig&4)!=0:
                         if may_request_add(p[u,14]):
                             new_kind=2;limit=prices[tick,candidate,slot,0]
@@ -90,6 +93,10 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                     qty=whole_quantity(qty)
                     # Candidate request boundary precedes submission and accounting.
                     if not valid_request_size(limit,qty):
+                        if not np.isfinite(limit) or limit<=0:d[16]+=1
+                        elif new_kind==1:d[17]+=1
+                        elif new_kind==2:d[18]+=1
+                        else:d[19]+=1
                         d[14]+=1;new_kind=0
                 if new_kind!=0:
                     d[0]+=1

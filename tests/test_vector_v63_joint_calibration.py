@@ -5,15 +5,34 @@ from research.vectorized_backtest.v63.calibration import activation_threshold,en
 from research.vectorized_backtest.v63.price_program import Prices,Expression,entry_guard
 
 
-def test_discrete_quantile_does_not_disable_entry():
+def test_discrete_quantile_cannot_silently_change_activation_target():
     values=np.array([.7260595]*20+[.82288384]*80,np.float32)
-    threshold,rate=activation_threshold(values,.29)
+    with pytest.raises(ValueError,match='tolerance'):activation_threshold(values,.29)
+    threshold,rate=activation_threshold(values,.8)
     assert values.min()<threshold<values.max()
     assert rate==.8
 
 
+@pytest.mark.parametrize('target',[.001,.01,.15,.5,.9])
+def test_continuous_activation_preserves_requested_rate(target):
+    values=np.linspace(-.9,.9,10000,dtype=np.float32)
+    _,rate=activation_threshold(values,target)
+    assert abs(rate-target)<=.0001
+
+
 def test_constant_output_is_replaced_instead_of_accepted():
     with pytest.raises(ValueError):activation_threshold(np.ones(100),.2)
+
+
+def test_management_calibration_uses_its_own_market_price_boundary():
+    from research.vectorized_backtest.v63.calibration import action_boundaries
+    member=SimpleNamespace(policy=SimpleNamespace(price_program=Prices(update=Expression('rolling.low.5')).payload()))
+    ask=np.array([10.,250.,10.,10.])
+    probe=dict(eligible=np.ones(4,bool),quote_valid=np.ones(4,bool),ask=ask,ask_size=np.ones(4),
+               price_references={'ask':ask,'bid':ask-.01,'close':ask,'rolling.low.5':np.array([9.,200.,11.,np.nan])})
+    bounds=action_boundaries(member,probe)
+    assert bounds['add'].tolist()==[True,False,True,True]
+    assert bounds['trail'].tolist()==[True,True,False,False]
 
 
 def test_joint_boundary_requires_actual_prices_and_whole_share_opportunity():

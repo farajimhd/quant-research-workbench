@@ -150,6 +150,9 @@ def replay(item,members,plan,execution,progress=None):
         metrics['strategy_add_limit_suppressed']=diag[:,13].tolist()
         metrics['admission_abstain_price_size']=diag[:,14].tolist()
         metrics['admission_abstain_stop_update']=diag[:,15].tolist()
+        for column,name in enumerate(('price_unavailable','entry_unaffordable','add_unaffordable',
+                                      'reduce_size','stop_unavailable','stop_relation'),16):
+            metrics['admission_abstain_'+name]=diag[:,column].tolist()
         profile.update(total_replay_seconds=time.perf_counter()-began,
                        native_signatures_added=len(advance.signatures)-native_signatures_before,
                        average_execution_tickers_per_candidate=float(stats[:,17].sum()/max(1,stats[:,15].sum())),

@@ -31,5 +31,12 @@ def whole_quantity(value):
 
 
 @njit(inline='always')
+def reduction_quantity(held,ratio):
+    """A positive reduction maps to an executable whole-share request."""
+    if not np.isfinite(ratio) or ratio<=0 or held<1:return 0.
+    return min(np.floor(held),max(1.,np.floor(held*min(1.,ratio))))
+
+
+@njit(inline='always')
 def valid_request_size(limit,quantity):
     return np.isfinite(limit) and limit>0 and np.isfinite(quantity) and quantity>=1

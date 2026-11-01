@@ -37,10 +37,20 @@ def test_zero_share_entry_and_add_are_never_submitted():
     assert buffers[-1][0,1]==0 and buffers[-1][0,14]==1
 
 
-def test_zero_share_reduce_is_not_submitted():
+def test_positive_reduce_closes_a_single_whole_share():
     buffers,orders,_=replay([1,8,2],price=900.,ratio=.25)
-    assert [r[1] for r in orders]==[1,4]
-    assert buffers[-1][0,1]==0 and buffers[-1][0,14]==1
+    assert [r[1] for r in orders]==[1,3]
+    assert orders[1][3]==1
+    assert buffers[-1][0,1]==0 and buffers[-1][0,14]==0
+
+
+def test_suppression_causes_reconcile_and_zero_ratio_stays_noop():
+    buffers,_,_=replay([1,8,2],price=900.,ratio=0.)
+    d=buffers[-1][0]
+    assert d[19]==1 and d[14]==sum(d[16:20])
+    buffers,_,_=replay([1,4,2],price=250.)
+    d=buffers[-1][0]
+    assert d[18]==1 and d[14]==sum(d[16:20])
 
 
 def test_five_filled_adds_reset_only_after_close_and_survive_block_boundaries():
