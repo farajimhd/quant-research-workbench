@@ -11,6 +11,7 @@ def replay(item,members,plan,execution,progress=None):
     from .order_tail import Tail
     from numba import set_num_threads
     began=time.perf_counter();b=len(members);u=len(item.listing_ids);total=item.clocks
+    native_signatures_before=len(advance.signatures)
     item.execution_phase='Prepare selected market references'
     if progress:progress(0,total)
     engine=Inference(plan,item)
@@ -109,6 +110,7 @@ def replay(item,members,plan,execution,progress=None):
                                     'blocked_liquidity','blocked_inventory','partial_fills','rank_loss_exits','rank_exit_wait_seconds','cancellations','price_abstentions')):
             metrics['admission_'+name]=diag[:,column].tolist()
         profile.update(total_replay_seconds=time.perf_counter()-began,
+                       native_signatures_added=len(advance.signatures)-native_signatures_before,
                        average_execution_tickers_per_candidate=float(stats[:,17].sum()/max(1,stats[:,15].sum())),
                        full_union_tickers=u)
         plan.last_replay_profile=profile

@@ -44,7 +44,8 @@ class Tail:
         age=clocks[:,None]-stamp/1e6
         valid=(book_valid>0)&np.isfinite(bid)&np.isfinite(ask)&(bid>0)&(ask>=bid)&(stamp>0)&(age>=0)
         return dict(mark=np.ascontiguousarray(mark),bid=np.ascontiguousarray(bid),ask=np.ascontiguousarray(ask),
-                    quote_valid=valid,clocks=clocks,quote_us=stamp,bid_size=bid_size,ask_size=ask_size)
+                    quote_valid=valid,clocks=clocks,quote_us=np.ascontiguousarray(stamp),
+                    bid_size=np.ascontiguousarray(bid_size),ask_size=np.ascontiguousarray(ask_size))
 
 
 def decision_quotes(root,item):
