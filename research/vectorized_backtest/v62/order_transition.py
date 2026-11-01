@@ -3,6 +3,8 @@ import torch
 import triton
 import triton.language as tl
 from .order_liquidity_cuda import fill
+from .entry_boundary_cuda import entry_stop
+from .authority import BOUNDED_SWING
 
 
 @triton.jit
@@ -10,7 +12,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
            U:tl.constexpr,B:tl.constexpr,VS:tl.constexpr,PS:tl.constexpr,RS:tl.constexpr,
            ED:tl.constexpr,AD:tl.constexpr,FEE:tl.constexpr,MINFEE:tl.constexpr,COST:tl.constexpr,MINIMUM:tl.constexpr,BLOCK:tl.constexpr,
            FUSED:tl.constexpr=False,BOOK=None,MARK=None,OPENED=None,TICKER=None,ACTIVE=None,
-           CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0,DIAG=None,P_ROW:tl.constexpr=9,P_FIELD:tl.constexpr=1,O_ROW:tl.constexpr=17,O_FIELD:tl.constexpr=1):
+           CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0,DIAG=None,P_ROW:tl.constexpr=9,P_FIELD:tl.constexpr=1,O_ROW:tl.constexpr=17,O_FIELD:tl.constexpr=1,STOP_BOUND:tl.constexpr=BOUNDED_SWING):
     row=tl.program_id(0);i=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=i<U
     at=row*U+i;pp=P+at*P_ROW;op=O+at*O_ROW
     q=tl.load(pp,live,0.);avg=tl.load(pp+1*P_FIELD,live,0.);stop=tl.load(pp+2*P_FIELD,live,0.)
@@ -44,13 +46,13 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     pol=POL+session*PS[0]+candidate*PS[1]+i*PS[2]
     sf=tl.load(pol,live,0.);tf=tl.load(pol+PS[3],live,0.);rf=tl.load(pol+2*PS[3],live,0.)
     trail=tl.load(pol+3*PS[3],live,0.);addmin=tl.load(pol+4*PS[3],live,0.);redmin=tl.load(pol+5*PS[3],live,0.)
-    maxadds=tl.load(pol+6*PS[3],live,0.);cooldown=tl.load(pol+7*PS[3],live,0.);swingmode=tl.load(pol+8*PS[3],live,0.)>0
+    maxadds=tl.load(pol+6*PS[3],live,0.);cooldown=tl.load(pol+7*PS[3],live,0.);stopmode=tl.load(pol+8*PS[3],live,0.);swingmode=stopmode>0
     ratios=R+session*RS[0]+candidate*RS[1]+i*RS[2]
     r0=tl.load(ratios,live,0.);r1=tl.load(ratios+RS[3],live,0.);r2=tl.load(ratios+2*RS[3],live,0.)
     r0=tl.where((r0>=0)&(r0<=1),r0,0.);r1=tl.where((r1>=0)&(r1<=1),r1,0.);r2=tl.where((r2>=0)&(r2<=1),r2,0.)
     finite=(prev>0)&(tl.abs(prev)<float('inf'));stopped=(q>1.e-12)&finite&(prev<=stop)
     fresh=valid&(bid>0)&(ask>=bid)&(tl.abs(ask)<float('inf'))&(tl.abs(bid)<float('inf'))
-    proposed_stop=tl.where(kind==1,initial,tl.where(swingmode,swing,ask*(1-sf)))
+    proposed_stop=tl.where(kind==1,initial,entry_stop(ask,swing,sf,tl.load(pol+9*PS[3],live,0.),stopmode))
     feasible=fresh&(tl.abs(proposed_stop)<float('inf'))&(proposed_stop>0)&(proposed_stop<ask)&(proposed_stop<ask*(1+tl.load(pol+9*PS[3],live,0.)))
     pending_buy=(kind==1)|(kind==2)
     cancelled=(pending_buy&(terminal|stopped|((sig&2)!=0)|((sig&8)!=0)))|((kind==1)&(filled==0)&fresh&~feasible)
@@ -83,7 +85,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     entry_new=~busy&~held&~terminal&~cancelled&member&((sig&1)!=0)&((sig&2)==0)&feasible
     entry_new=entry_new&((last<=0)|((clock-last)>=3))
     ea=ED*r0;aa=AD*r1
-    entry_new=entry_new&(ea>0)&(ea>=MINIMUM)&(~swingmode|((swing>0)&(tl.abs(swing)<float('inf'))&valid&(tl.abs(ask)<float('inf'))&(swing<ask)))
+    entry_new=entry_new&(ea>0)&(ea>=MINIMUM)&(~swingmode|(stopmode>=STOP_BOUND)|((swing>0)&(tl.abs(swing)<float('inf'))&valid&(tl.abs(ask)<float('inf'))&(swing<ask)))
     add_new=add_new&(aa>0)&(aa>=MINIMUM)
     new_kind=tl.where(exit_new,4,tl.where(reduce_new,3,tl.where(add_new,2,tl.where(entry_new,1,0))))
     new=new_kind!=0;kind=tl.where(new,new_kind,kind)

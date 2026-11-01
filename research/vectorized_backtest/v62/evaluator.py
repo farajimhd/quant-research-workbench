@@ -77,9 +77,9 @@ def step(position,aggregate,price,previous,observed,membership,signals,swing,pol
     add_now=held&~exit_now&~reduce_now&tradable&managed&((signals&4)!=0)&(profit>=policy[...,4])&(adds<policy[...,6])
     entry_now=~held&~terminal&tradable&membership&((signals&1)!=0)
     add_now=add_now&(add_dollars>0)&(add_dollars>=minimum_order_dollars)
-    initial=buy_price*(1-policy[...,0])
+    from .authority import entry_stop
+    initial=entry_stop(buy_price,swing,policy[...,0],policy[...,9],policy[...,8],xp=torch)
     swing_mode=policy[...,8]>0
-    initial=torch.where(swing_mode,swing,initial)
     entry_now=entry_now&(entry_dollars>0)&(entry_dollars>=minimum_order_dollars)
     entry_now&=torch.isfinite(initial)&(initial>0)&(initial<buy_price)
     rejected_entry=torch.zeros_like(entry_now);rejected_add=torch.zeros_like(add_now)
@@ -206,7 +206,8 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         position=torch.zeros((9,1,b,u),dtype=torch.float64,device=device).permute(1,2,3,0)
     else:position=torch.zeros((1,b,u,9),dtype=torch.float64,device=device)
     aggregate=torch.zeros((1,b,16),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
-    policy=torch.tensor([[getattr(m.policy,k) for k in ('stop_fraction','target_fraction','reduce_fraction','trail_fraction','add_minimum_profit','reduce_minimum_profit','maximum_adds','cooldown','swing_left','buy_limit_offset','sell_limit_offset')] for m in members],dtype=torch.float64,device=device)[None,:,None]
+    from .authority import policy_values
+    policy=torch.tensor([policy_values(m.policy) for m in members],dtype=torch.float64,device=device)[None,:,None]
     ticker_state=torch.zeros((1,b,u,2),dtype=torch.float64,device=device)
     opened=torch.zeros((1,b,u),dtype=torch.float64,device=device)
     prices=pad(item.tensors['mark'][:t],(0,u-len(item.listing_ids)),value=float('nan'))[:,None,None]

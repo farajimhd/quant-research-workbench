@@ -16,7 +16,7 @@ def policies(rng,members):
     buy=axis();sell=-.01+.02*axis();cooldown=1+np.minimum(299,(axis()*300).astype(int))
     out=[]
     for i,m in enumerate(members):
-        lower=max(-.01,-stop[i]+1e-6) if not m.policy.swing_left else -.01
+        lower=max(-.01,-stop[i]+1e-6)
         p=replace(m.policy,stop_fraction=float(stop[i]),target_fraction=float(target[i]),
             buy_limit_offset=float(lower+buy[i]*(.01-lower)),sell_limit_offset=float(sell[i]),cooldown=int(cooldown[i]))
         out.append(replace(m,policy=feasible_policy(p)).validate())

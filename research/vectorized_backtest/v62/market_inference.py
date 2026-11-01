@@ -126,7 +126,8 @@ class Inference:
             ask=torch.nn.functional.pad(ask,(0,extra));quoted=torch.nn.functional.pad(quoted,(0,extra),value=False)
             ids=torch.nn.functional.pad(ids,(0,extra))
         swing=data.tensors['v60_entry_swing_values'][ids[:,None,:],p.leaf_columns[None,:,None]]
-        stop=torch.where(p.policies[None,:,8,None]>0,swing,ask[:,None,:]*(1-p.policies[None,:,0,None]))
+        from .authority import entry_stop
+        stop=entry_stop(ask[:,None,:],swing,p.policies[None,:,0,None],p.policies[None,:,9,None],p.policies[None,:,8,None],xp=torch)
         limit=ask[:,None,:]*(1+p.policies[None,:,9,None])
         admissible=quoted[:,None,:]&membership[:,None,:]&torch.isfinite(stop)&(stop>0)&(stop<ask[:,None,:])&(stop<limit)&(ratios[...,0]>0)
         branches=signals[:,p.branch_index]

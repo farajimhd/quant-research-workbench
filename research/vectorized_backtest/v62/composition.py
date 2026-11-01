@@ -60,7 +60,8 @@ def mutation(rng,parent,count,crossover_child=False):
     if parent.routing:
         root=proposal(rng,'route-mutation',parent);branches=list(parent.routing)
         index=root.pick(len(branches),'branch');branches[index],edits=mutation(root,branches[index],count,crossover_child)
-        return replace(branches[0],routing=tuple(branches)).validate(),[dict(e,branch=index) for e in edits]
+        from .authority import construct
+        return construct(replace(branches[0],routing=tuple(branches))),[dict(e,branch=index) for e in edits]
     if not 1<=count<=5:raise ValueError('1..5 distinct edits required')
 
     root=proposal(rng,'standalone-mutation',parent);child=parent;edits=[];used=set()
@@ -107,7 +108,7 @@ def mutation(rng,parent,count,crossover_child=False):
 
                     elif field=='policy':
 
-                        names=[f.name for f in fields(Policy) if not f.name.startswith('swing_')]+['swing'];name=names[rng.pick(len(names),'policy-gene')];key=('policy',name)
+                        names=[f.name for f in fields(Policy) if not f.name.startswith('swing_') and f.name!='entry_stop_rule']+['swing'];name=names[rng.pick(len(names),'policy-gene')];key=('policy',name)
 
                         if name=='swing':
 

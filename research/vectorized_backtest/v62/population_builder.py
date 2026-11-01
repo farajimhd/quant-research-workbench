@@ -1,7 +1,7 @@
 """Addressable slot construction; failed proposals never become replay slots."""
 from collections import Counter
 import numpy as np
-from .authority import dependency_certificate
+from .authority import dependency_certificate,construct
 
 
 def canonical_key(member):
@@ -33,7 +33,7 @@ def build(size, producer, fallback, *, seed, generation=0, initial=(), attempts=
             rng = np.random.default_rng(np.random.SeedSequence([seed, generation, slot, attempt]))
             fresh = attempt >= attempts
             try:
-                member = (fallback if fresh else producer)(rng, slot, attempt)
+                member = construct((fallback if fresh else producer)(rng, slot, attempt))
                 member.validate(); dependency_certificate(member)
                 key = canonical_key(member)
                 if key in seen:

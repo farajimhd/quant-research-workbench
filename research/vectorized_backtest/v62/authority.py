@@ -14,12 +14,16 @@ import numpy as np
 
 _SOURCE = Path(__file__).with_name('feature_registry.json').read_bytes()
 _DOCUMENT = json.loads(_SOURCE)
-VERSION = _DOCUMENT['version']+'-market-only-v4'
+VERSION = _DOCUMENT['version']+'-market-only-v4-joint-stop-v1'
 REGISTRY_SHA256 = hashlib.sha256(_SOURCE).hexdigest()
 MAX_NODES = 1024
 MAX_TOTAL_NODES = 1024
 MAX_FAN_IN = 16
 SWING_WINDOWS = (1, 2, 3, 4, 5, 10, 15, 20, 30, 45, 60)
+ENTRY_STOP_RULE = 'bounded-swing-v1'
+STOP_MARGIN = 1e-6
+# Packed slot 8 was a swing window (0 or 1..60). Keep the 11-field ABI.
+BOUNDED_SWING = 100
 
 
 def feasible_policy(policy):
@@ -27,14 +31,46 @@ def feasible_policy(policy):
 
     Fixed stop = ask*(1-stop_fraction), buy limit = ask*(1+offset).
     Keep the stop strictly below both, with float32-safe relative separation.
-    Swing prices remain causal observations and must be checked per candle.
+    New candidates own an explicit bounded-swing expression, including a fixed
+    stop fallback before a swing exists. Restoring evidence does not call this.
     """
     from dataclasses import replace
-    if policy.swing_left == 0:
-        lower = -policy.stop_fraction + 1e-6
-        if policy.buy_limit_offset < lower:
-            policy = replace(policy, buy_limit_offset=lower)
-    return policy
+    lower = -policy.stop_fraction + STOP_MARGIN
+    return replace(policy, buy_limit_offset=max(policy.buy_limit_offset, lower),
+                   entry_stop_rule=ENTRY_STOP_RULE)
+
+
+def construct(member):
+    """Finish every producer through one joint authority, including routes."""
+    from dataclasses import replace
+    branches=tuple(construct(m) for m in member.routing) if member.routing else None
+    return replace(member,policy=feasible_policy(member.policy),routing=branches).validate()
+
+
+POLICY_FIELDS=('stop_fraction','target_fraction','reduce_fraction','trail_fraction',
+               'add_minimum_profit','reduce_minimum_profit','maximum_adds','cooldown',
+               'swing_left','buy_limit_offset','sell_limit_offset')
+
+
+def policy_values(policy):
+    values=[getattr(policy,k) for k in POLICY_FIELDS]
+    if policy.swing_left and policy.entry_stop_rule==ENTRY_STOP_RULE:
+        values[8]+=BOUNDED_SWING
+    return values
+
+
+def entry_stop(ask,swing,fraction,offset,mode,*,xp):
+    """Candidate price expression; only current market/history, no account state.
+
+    Existing strict genomes retain missing/invalid swing abstention. For newly
+    constructed genomes, a missing/nonpositive swing uses the candidate's own
+    fixed fraction, and an over-high swing is clamped below ask AND buy limit.
+    """
+    fixed=ask*(1-fraction)
+    preferred=xp.where(xp.isfinite(swing)&(swing>0),swing,fixed)
+    ceiling=xp.minimum(ask,ask*(1+offset))*(1-STOP_MARGIN)
+    bounded=xp.minimum(preferred,ceiling)
+    return xp.where(mode>=BOUNDED_SWING,bounded,xp.where(mode>0,swing,fixed))
 
 
 @dataclass(frozen=True)

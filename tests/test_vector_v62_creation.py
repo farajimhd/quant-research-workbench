@@ -111,7 +111,9 @@ def test_capacity_and_execution_are_unchanged():
         assert getattr(new,name)==getattr(old,name)
     from pathlib import Path
     root=Path(__file__).resolve().parents[1]/'research'/'vectorized_backtest'
-    for name in ('robust_score.py','orders.py','order_replay.py','network.py','growth.py','lineage.py'):
+    # Entry-stop construction is now versioned in V62; score/execution sizing
+    # and the surrounding replay machinery retain the inherited contract.
+    for name in ('robust_score.py','order_replay.py','network.py','growth.py','lineage.py'):
         assert (root/'v62'/name).read_text()==(root/'v61'/name).read_text().replace('v61','v62').replace('V61','V62')
 
 

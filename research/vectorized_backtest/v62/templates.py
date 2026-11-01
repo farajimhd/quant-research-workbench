@@ -172,7 +172,8 @@ def build(family,index):
         n=g.all(profit,g.compare('enriched.return.5s'));networks['trail']=g.finish(n)
     policy=Policy(stop_fraction=stop,target_fraction=target,reduce_fraction=reduce,maximum_adds=maximum_adds,
         swing_left=swing[0],swing_right=swing[1],trail_fraction=(.005,.01,.02,.04)[management%4])
-    return Individual(networks,policy,{}).validate()
+    from .authority import construct
+    return construct(Individual(networks,policy,{}))
 
 
 def sample_templates():

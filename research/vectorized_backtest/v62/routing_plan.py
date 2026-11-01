@@ -4,7 +4,7 @@ from .strategy_mix import leaves
 from .network import NetworkPlan
 from .genome import STAGES
 
-POLICY_FIELDS=('stop_fraction','target_fraction','reduce_fraction','trail_fraction','add_minimum_profit','reduce_minimum_profit','maximum_adds','cooldown','swing_left','buy_limit_offset','sell_limit_offset')
+from .authority import POLICY_FIELDS,policy_values,entry_stop
 
 class RoutingPlan:
     def __init__(self,members,device,*,feature_columns=None):
@@ -18,7 +18,7 @@ class RoutingPlan:
         width=max(map(len,indices))
         self.branch_index=torch.tensor([v+[v[0]]*(width-len(v)) for v in indices],device=device)
         self.branch_valid=torch.tensor([[True]*len(v)+[False]*(width-len(v)) for v in indices],device=device)
-        self.policies=torch.tensor([[getattr(m.policy,k) for k in POLICY_FIELDS] for m in flat],device=device,dtype=torch.float64)
+        self.policies=torch.tensor([policy_values(m.policy) for m in flat],device=device,dtype=torch.float64)
         self.ages=torch.tensor([[m.minimum_age.get(k,0) for k in STAGES] for m in flat],device=device,dtype=torch.float64)
         self.workspace_shape=None
     def __getattr__(self,name):return getattr(self.base,name)
@@ -59,7 +59,7 @@ class RoutingPlan:
         if len(ids)<u:ids=torch.nn.functional.pad(ids,(0,u-len(ids)),value=0)
         swing=bank[ids[None,:],self.leaf_columns[:,None]]
         policy=self.policies
-        stop=torch.where(policy[:,8,None]>0,swing,ask[None,:]*(1-policy[:,0,None]))
+        stop=entry_stop(ask[None,:],swing,policy[:,0,None],policy[:,9,None],policy[:,8,None],xp=torch)
         limit=ask[None,:]*(1+policy[:,9,None])
         admissible=valid&member&torch.isfinite(stop)&(stop>0)&(stop<ask)&(stop<limit)
         admissible=admissible&(self.base.ratios[0,...,0]>0)

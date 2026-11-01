@@ -141,33 +141,25 @@ def _calibrate(rng,members,probe):
 
 
 def calibrate_policy(member,probe):
-    """Find a supported swing pair with causal opportunities, without fitness."""
-    from .authority import SWING_WINDOWS,feasible_policy
+    """Apply construction before activation fitting; never require a lucky pivot."""
+    from .authority import feasible_policy
     policy=feasible_policy(member.policy)
+    changed=policy!=member.policy
     member=replace(member,policy=policy)
-    if entry_boundary(member,probe).any():return member,False
-    if policy.swing_left and 'swings' in probe:
-        ask=probe['ask'][...,None];stop=probe['swings']
-        ready=(probe['eligible']&probe['quote_valid']&(probe['bid']>0)&(probe['bid']<=probe['ask']))[...,None]
-        good=ready&np.isfinite(stop)&(stop>0)&(stop<ask)&(stop<ask*(1+policy.buy_limit_offset))
-        choices=np.flatnonzero(good.any(axis=tuple(range(good.ndim-1))))
-        if len(choices):
-            # Nearest supported history pair, stable and independent of profit.
-            old=SWING_WINDOWS.index(policy.swing_left)*len(SWING_WINDOWS)+SWING_WINDOWS.index(policy.swing_right)
-            chosen=int(choices[np.argmin(abs(choices-old))]);left,right=divmod(chosen,len(SWING_WINDOWS))
-            return replace(member,policy=replace(policy,swing_left=SWING_WINDOWS[left],swing_right=SWING_WINDOWS[right])),True
-    raise ValueError('No causal entry boundary opportunity in training probe')
+    if entry_boundary(member,probe).any():return member,changed
+    raise ValueError('No causal quoted entry opportunity in training probe')
 
 
 def entry_boundary(member,probe):
     """The flat-entry stop/book boundary; no financial-result filtering."""
     if 'ask' not in probe:return probe['eligible']
-    from .authority import SWING_WINDOWS
+    from .authority import SWING_WINDOWS,entry_stop,policy_values
     p=member.policy;ask=probe['ask'];bid=probe['bid']
     if p.swing_left:
         column=SWING_WINDOWS.index(p.swing_left)*len(SWING_WINDOWS)+SWING_WINDOWS.index(p.swing_right)
-        stop=probe['swings'][...,column]
-    else:stop=ask*(1-p.stop_fraction)
+        swing=probe['swings'][...,column]
+    else:swing=np.full_like(ask,np.nan)
+    stop=entry_stop(ask,swing,p.stop_fraction,p.buy_limit_offset,policy_values(p)[8],xp=np)
     return (probe['eligible']&probe['quote_valid']&np.isfinite(ask)&np.isfinite(bid)&(bid>0)&(ask>=bid)&
             np.isfinite(stop)&(stop>0)&(stop<ask)&(stop<ask*(1+p.buy_limit_offset)))
 

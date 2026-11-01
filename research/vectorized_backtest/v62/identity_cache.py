@@ -47,6 +47,6 @@ def program_key(member):
     # Mutable policy/age mappings are serialized afresh on every call. Match
     # the exact legacy sorted-key JSON, including its floating-point spelling.
     version='v60-market-only-routing-v4'
-    value='{"minimum_age":'+dumps(member.minimum_age)+',"networks":{'+','.join(fragments)+'},"policy":'+dumps(asdict(member.policy))+',"version":'+dumps(version)+'}'
+    value='{"minimum_age":'+dumps(member.minimum_age)+',"networks":{'+','.join(fragments)+'},"policy":'+dumps(member.policy.payload())+',"version":'+dumps(version)+'}'
     if member.case_owner is not None:value='{"case_owner":'+dumps(member.case_owner)+','+value[1:]
     return sha256(value.encode()).hexdigest()

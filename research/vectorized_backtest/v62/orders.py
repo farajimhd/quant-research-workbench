@@ -36,7 +36,8 @@ fields are never derived from a later bar than the current execution clock.
     finite=torch.isfinite(previous)&(previous>0)
     stopped=held&finite&(previous<=stop)
     fresh=quote_valid&torch.isfinite(bid)&torch.isfinite(ask)&(bid>0)&(ask>=bid)
-    proposed_stop=torch.where(kind==ENTRY,initial,torch.where(policy[...,8]>0,swing,ask*(1-policy[...,0])))
+    from .authority import entry_stop,BOUNDED_SWING
+    proposed_stop=torch.where(kind==ENTRY,initial,entry_stop(ask,swing,policy[...,0],policy[...,9],policy[...,8],xp=torch))
     feasible=fresh&torch.isfinite(proposed_stop)&(proposed_stop>0)&(proposed_stop<ask)&(proposed_stop<ask*(1+policy[...,9]))
     pending_buy=(kind==ENTRY)|(kind==ADD)
     cancelled=(pending_buy & (terminal|stopped|((signals&2)!=0)|((signals&8)!=0))) | ((kind==ENTRY)&(filled==0)&fresh&~feasible)
@@ -76,7 +77,7 @@ fields are never derived from a later bar than the current execution clock.
     entry_new = entry_new & (entry_amount > 0) & (entry_amount >= minimum_order_dollars)
     add_new = add_new & (add_amount > 0) & (add_amount >= minimum_order_dollars)
     # An invalid initial stop cannot define an accepted entry request.
-    entry_new = entry_new & ((policy[...,8] <= 0) | (torch.isfinite(swing) & (swing > 0) &
+    entry_new = entry_new & ((policy[...,8] <= 0) | (policy[...,8]>=BOUNDED_SWING) | (torch.isfinite(swing) & (swing > 0) &
         quote_valid & torch.isfinite(ask) & (swing < ask)))
     new_kind = torch.where(exit_new, EXIT, torch.where(reduce_new, REDUCE,
                     torch.where(add_new, ADD, torch.where(entry_new, ENTRY, 0))))

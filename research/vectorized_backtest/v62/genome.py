@@ -297,7 +297,7 @@ class Individual:
         return self
 
     def payload(self):
-        value=dict(version='v62-bottom-up-routing-v1',networks={s:n.payload() for s,n in self.networks.items()},policy=asdict(self.policy),minimum_age=self.minimum_age)
+        value=dict(version='v62-bottom-up-routing-v1',networks={s:n.payload() for s,n in self.networks.items()},policy=self.policy.payload(),minimum_age=self.minimum_age)
         if self.routing:value['routing']=[m.payload() for m in self.routing]
         if self.case_owner is not None:value['case_owner']=self.case_owner
         return value
@@ -322,7 +322,7 @@ def sample(rng,count,*,stratified=False,structural=False):
 
     for j in range(count):
 
-        swing=bool(rng.integers(2));policy=Policy(**{n:random_policy_gene(rng,n) for n in Policy.__dataclass_fields__ if not n.startswith('swing_')},
+        swing=bool(rng.integers(2));policy=Policy(**{n:random_policy_gene(rng,n) for n in Policy.__dataclass_fields__ if not n.startswith('swing_') and n!='entry_stop_rule'},
 
             swing_left=int(rng.choice(SWING_WINDOWS)) if swing else 0,swing_right=int(rng.choice(SWING_WINDOWS)) if swing else 0)
 

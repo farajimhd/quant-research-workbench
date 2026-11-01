@@ -19,8 +19,9 @@ def validate(member):
     if any(m.case_owner!=member.case_owner for m in member.routing):raise ValueError('Routed owner mismatch')
 
 def route(a,b):
+    from .authority import construct
     branches=leaves(a)+leaves(b)
-    return replace(branches[0],routing=branches).validate()
+    return construct(replace(branches[0],routing=branches))
 
 def cross(a,b,mode,branch_a=0,branch_b=0):
     if mode=='entry_routing':
@@ -49,7 +50,8 @@ def cross(a,b,mode,branch_a=0,branch_b=0):
             nets['entry']=prune(combined)
             child=Individual(nets,a.policy,{**a.minimum_age,'entry':0},a.case_owner).validate()
         else:raise ValueError('Unknown strategy combination')
-    return child,dict(actions=[dict(stage='strategy',mode=mode)],branch_a=branch_a,branch_b=branch_b,
+    from .authority import construct
+    return construct(child),dict(actions=[dict(stage='strategy',mode=mode)],branch_a=branch_a,branch_b=branch_b,
         arbitration='first feasible current-market entry branch; independent of execution',branch_count=len(leaves(child)))
 
 def count(member):

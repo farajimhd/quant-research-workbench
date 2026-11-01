@@ -63,7 +63,8 @@ def cross(a,b,mode,stages=None):
     for s in stages:
         nets[s]=network(a.networks[s],b.networks[s],mode,a.minimum_age.get(s,0),b.minimum_age.get(s,0))
         ages[s]=max(a.minimum_age.get(s,0),b.minimum_age.get(s,0)) if mode=='xnor' else 0
-    child=Individual(nets,a.policy,ages,a.case_owner).validate()
+    from .authority import construct
+    child=construct(Individual(nets,a.policy,ages,a.case_owner))
     return child,dict(actions=[dict(stage=s,mode='whole:'+mode,whole=True) for s in stages],
         base_parent=0,policy_field='base-parent',whole_network=True,
         node_counts=[sum(len(n.nodes) for n in p.networks.values()) for p in (a,b,child)])
