@@ -10,6 +10,16 @@ def transform_projected(values,columns=None):
     import torch
     columns=list(range(len(CATALOG))) if columns is None else columns
     c=len(columns);out=values.clone()
+    if values.ndim==3:
+        # Preserve scalar-clock CUDA rounding only for the two share channels.
+        # Compact extraction avoids cloning the full feature bank per candle.
+        shares=[i for i in SHARES if i in columns]
+        indices=[bank*c+columns.index(i) for bank in range(3) for i in shares]
+        if shares:
+            compact=torch.stack([values[...,i] for i in indices],-1)
+            transformed=torch.stack([transform_projected(row,shares) for row in compact])
+            for j,i in enumerate(indices):out[...,i]=transformed[...,j]
+        return out
     for canonical in SHARES:
         if canonical not in columns:continue
         i=columns.index(canonical)

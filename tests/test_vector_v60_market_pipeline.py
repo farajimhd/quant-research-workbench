@@ -25,7 +25,7 @@ def market_fixture(device='cpu',ticks=17,listings=7):
 
 
 @pytest.mark.parametrize('device',['cpu','cuda'])
-@pytest.mark.parametrize('listings',[7,137,513])
+@pytest.mark.parametrize('listings',[7,137,513,549])
 def test_batched_market_projection_does_not_mix_candles(device,listings):
     if device=='cuda' and os.environ.get('V60_TEST_CUDA')!='1':pytest.skip('opt-in GPU')
     from research.vectorized_backtest.v60.genome import sample
@@ -41,6 +41,22 @@ def test_batched_market_projection_does_not_mix_candles(device,listings):
     expected_absolute=torch.stack([plan.project_absolute(item,i)[0] for i in indices])
     torch.testing.assert_close(absolute,expected_absolute,rtol=0,atol=0)
     plan.close()
+
+
+@pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
+def test_share_buckets_preserve_scalar_reduction_rounding():
+    from research.vectorized_backtest.v60.feature_policy import transform_projected,SHARES
+    from research.vectorized_backtest.v60.feature_layout import COLUMNS
+    c=len(COLUMNS);torch.manual_seed(71)
+    values=torch.rand((27,549,3*c),device='cuda')*.8
+    values[...,2*c:]=(torch.rand((27,549,c),device='cuda')>.1).float()
+    for canonical in SHARES:
+        if canonical in COLUMNS:
+            i=COLUMNS.index(canonical)
+            shares=torch.randint(4,11,(27,549),device='cuda').float()*__import__('math').log(10.)
+            values[...,i]=(shares.log1p()/4).tanh()
+    expected=torch.stack([transform_projected(row,COLUMNS) for row in values])
+    torch.testing.assert_close(transform_projected(values,COLUMNS),expected,rtol=0,atol=0)
 
 
 def test_constructors_forbid_all_position_inputs_and_ages():
