@@ -10,20 +10,20 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
            U:tl.constexpr,B:tl.constexpr,VS:tl.constexpr,PS:tl.constexpr,RS:tl.constexpr,
            ED:tl.constexpr,AD:tl.constexpr,FEE:tl.constexpr,MINFEE:tl.constexpr,COST:tl.constexpr,MINIMUM:tl.constexpr,BLOCK:tl.constexpr,
            FUSED:tl.constexpr=False,BOOK=None,MARK=None,OPENED=None,TICKER=None,ACTIVE=None,
-           CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0,DIAG=None):
+           CLOSED=None,PROFIT=None,ENTRIES=None,PART=None,MS:tl.constexpr=None,TILES:tl.constexpr=0,DIAG=None,P_ROW:tl.constexpr=9,P_FIELD:tl.constexpr=1,O_ROW:tl.constexpr=17,O_FIELD:tl.constexpr=1):
     row=tl.program_id(0);i=tl.program_id(1)*BLOCK+tl.arange(0,BLOCK);live=i<U
-    at=row*U+i;pp=P+at*9;op=O+at*17
-    q=tl.load(pp,live,0.);avg=tl.load(pp+1,live,0.);stop=tl.load(pp+2,live,0.)
-    target=tl.load(pp+3,live,0.);water=tl.load(pp+4,live,0.);adds=tl.load(pp+5,live,0.)
-    last=tl.load(pp+6,live,0.);realized=tl.load(pp+7,live,0.);episode=tl.load(pp+8,live,0.)
+    at=row*U+i;pp=P+at*P_ROW;op=O+at*O_ROW
+    q=tl.load(pp,live,0.);avg=tl.load(pp+1*P_FIELD,live,0.);stop=tl.load(pp+2*P_FIELD,live,0.)
+    target=tl.load(pp+3*P_FIELD,live,0.);water=tl.load(pp+4*P_FIELD,live,0.);adds=tl.load(pp+5*P_FIELD,live,0.)
+    last=tl.load(pp+6*P_FIELD,live,0.);realized=tl.load(pp+7*P_FIELD,live,0.);episode=tl.load(pp+8*P_FIELD,live,0.)
     old_episode=episode
-    kind=tl.load(op,live,0.);remaining=tl.load(op+1,live,0.);dollars=tl.load(op+2,live,0.)
-    requested=tl.load(op+3,live,0.);filled=tl.load(op+4,live,0.);notional=tl.load(op+5,live,0.)
-    fees=tl.load(op+6,live,0.);submitted=tl.load(op+7,live,0.);first=tl.load(op+8,live,0.)
-    initial=tl.load(op+9,live,0.);flatten=tl.load(op+10,live,0.)>0;target_order=tl.load(op+11,live,0.)
-    submitted_count=tl.load(op+12,live,0.);completed_count=tl.load(op+13,live,0.)
-    fill_count=tl.load(op+14,live,0.);cancelled_stops=tl.load(op+15,live,0.)
-    order_limit=tl.load(op+16,live,0.)
+    kind=tl.load(op,live,0.);remaining=tl.load(op+1*O_FIELD,live,0.);dollars=tl.load(op+2*O_FIELD,live,0.)
+    requested=tl.load(op+3*O_FIELD,live,0.);filled=tl.load(op+4*O_FIELD,live,0.);notional=tl.load(op+5*O_FIELD,live,0.)
+    fees=tl.load(op+6*O_FIELD,live,0.);submitted=tl.load(op+7*O_FIELD,live,0.);first=tl.load(op+8*O_FIELD,live,0.)
+    initial=tl.load(op+9*O_FIELD,live,0.);flatten=tl.load(op+10*O_FIELD,live,0.)>0;target_order=tl.load(op+11*O_FIELD,live,0.)
+    submitted_count=tl.load(op+12*O_FIELD,live,0.);completed_count=tl.load(op+13*O_FIELD,live,0.)
+    fill_count=tl.load(op+14*O_FIELD,live,0.);cancelled_stops=tl.load(op+15*O_FIELD,live,0.)
+    order_limit=tl.load(op+16*O_FIELD,live,0.)
     session=row//B;candidate=row%B
     sig=tl.load(S+session*VS[0][0]+candidate*VS[0][1]+i*VS[0][2],live,0)
     sig=tl.where(q>1.e-12,sig,sig&1)
@@ -136,7 +136,7 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
         risk=new_q*tl.maximum(new_avg-stop,0.);distance=tl.full((BLOCK,),0.,tl.float64)
         if tl.sum((new_q>0).to(tl.int32),0)>0:distance=tl.where(new_q>0,tl.maximum(new_avg-stop,0.)/tl.maximum(new_avg,1.e-12),0.)
         # Match the separate accounting oracle's subtraction and reduction order.
-        old_filled=tl.load(op+4,live,0.);old_notional=tl.load(op+5,live,0.)
+        old_filled=tl.load(op+4*O_FIELD,live,0.);old_notional=tl.load(op+5*O_FIELD,live,0.)
         delta_qty=tl.where(new,new_filled,new_filled-old_filled)
         delta_value=tl.where(new,new_notional,new_notional-old_notional)
         first_actual=executed&(new_filled==delta_qty)
@@ -172,15 +172,15 @@ def order_fill_kernel(P,O,S,R,POL,PRE,MEM,SW,BID,ASK,V,CAP,CLOCK,TERM,PO,OO,DONE
     completed_count+=complete.to(tl.float64);fill_count+=executed.to(tl.float64)
     kind=tl.where(complete,0.,kind)
     flatten=tl.where((new_q<=1.e-12)&(kind==0),False,flatten)
-    output=PO+at*9
-    tl.store(output,new_q,live);tl.store(output+1,new_avg,live);tl.store(output+2,stop,live);tl.store(output+3,target,live)
-    tl.store(output+4,water,live);tl.store(output+5,adds,live);tl.store(output+6,last,live);tl.store(output+7,realized,live);tl.store(output+8,episode,live)
-    out=OO+at*17
-    tl.store(out,kind,live);tl.store(out+1,remaining,live);tl.store(out+2,dollars,live);tl.store(out+3,requested,live)
-    tl.store(out+4,new_filled,live);tl.store(out+5,new_notional,live);tl.store(out+6,new_fees,live);tl.store(out+7,submitted,live)
-    tl.store(out+8,first,live);tl.store(out+9,initial,live);tl.store(out+10,flatten.to(tl.float64),live);tl.store(out+11,target_order,live)
-    tl.store(out+12,submitted_count,live);tl.store(out+13,completed_count,live);tl.store(out+14,fill_count,live);tl.store(out+15,cancelled_stops,live)
-    tl.store(out+16,order_limit,live)
+    output=PO+at*P_ROW
+    tl.store(output,new_q,live);tl.store(output+1*P_FIELD,new_avg,live);tl.store(output+2*P_FIELD,stop,live);tl.store(output+3*P_FIELD,target,live)
+    tl.store(output+4*P_FIELD,water,live);tl.store(output+5*P_FIELD,adds,live);tl.store(output+6*P_FIELD,last,live);tl.store(output+7*P_FIELD,realized,live);tl.store(output+8*P_FIELD,episode,live)
+    out=OO+at*O_ROW
+    tl.store(out,kind,live);tl.store(out+1*O_FIELD,remaining,live);tl.store(out+2*O_FIELD,dollars,live);tl.store(out+3*O_FIELD,requested,live)
+    tl.store(out+4*O_FIELD,new_filled,live);tl.store(out+5*O_FIELD,new_notional,live);tl.store(out+6*O_FIELD,new_fees,live);tl.store(out+7*O_FIELD,submitted,live)
+    tl.store(out+8*O_FIELD,first,live);tl.store(out+9*O_FIELD,initial,live);tl.store(out+10*O_FIELD,flatten.to(tl.float64),live);tl.store(out+11*O_FIELD,target_order,live)
+    tl.store(out+12*O_FIELD,submitted_count,live);tl.store(out+13*O_FIELD,completed_count,live);tl.store(out+14*O_FIELD,fill_count,live);tl.store(out+15*O_FIELD,cancelled_stops,live)
+    tl.store(out+16*O_FIELD,order_limit,live)
 
 
 @torch.library.custom_op('vector_v60::persistent_orders',mutates_args=())

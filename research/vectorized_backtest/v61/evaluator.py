@@ -202,7 +202,9 @@ def replay_cohort(data,members,gates,*,execution=Execution(),backend='eager',pro
         if required>available*.8:raise MemoryError('Neural replay exceeds physical GPU headroom')
     episodes=Episodes(1,b,episode_capacity,device,max_listings=u,trace=trace)
     plan.prepare(b,u);plan.reset()
-    position=torch.zeros((1,b,u,9),dtype=torch.float64,device=device)
+    if device.type=='cuda' and execution.order_mode!='immediate':
+        position=torch.zeros((9,1,b,u),dtype=torch.float64,device=device).permute(1,2,3,0)
+    else:position=torch.zeros((1,b,u,9),dtype=torch.float64,device=device)
     aggregate=torch.zeros((1,b,16),dtype=torch.float64,device=device);aggregate[...,8]=float('inf')
     policy=torch.tensor([[getattr(m.policy,k) for k in ('stop_fraction','target_fraction','reduce_fraction','trail_fraction','add_minimum_profit','reduce_minimum_profit','maximum_adds','cooldown','swing_left','buy_limit_offset','sell_limit_offset')] for m in members],dtype=torch.float64,device=device)[None,:,None]
     ticker_state=torch.zeros((1,b,u,2),dtype=torch.float64,device=device)

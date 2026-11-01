@@ -95,7 +95,9 @@ def replay(*,item,plan,position,aggregate,opened,policy,prices,observed,membersh
     from .order_tail import Tail
     from torch.nn.functional import pad
     device=position.device;u=position.shape[-2];b=position.shape[1]
-    orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
+    if device.type=='cuda':
+        orders=torch.zeros((ORDER_WIDTH,*position.shape[:-1]),dtype=position.dtype,device=device).permute(1,2,3,0)
+    else:orders=torch.zeros((*position.shape[:-1],ORDER_WIDTH),dtype=position.dtype,device=device)
     book=torch.zeros((*position.shape[:-1],3),dtype=position.dtype,device=device)
     book[...,0]=-1.  # The first quote has not consumed any liquidity.
     episodes.streaming=True
