@@ -4,6 +4,23 @@ import pytest
 
 
 class TestReplayJournals:
+    @pytest.mark.skipif(os.environ.get('V60_TEST_CUDA')!='1',reason='opt-in GPU')
+    def test_field_major_publication_preserves_profit_reduction(self):
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v61.evaluator import _export_result
+        torch.manual_seed(812)
+        position=torch.randn((1,32,137,9),device='cuda',dtype=torch.float64)*10000
+        position[...,0]=0
+        packed=position.permute(3,0,1,2).contiguous().permute(1,2,3,0)
+        aggregate=torch.zeros((1,32,16),device='cuda',dtype=torch.float64)
+        ticker=torch.zeros((1,32,137,2),device='cuda',dtype=torch.float64)
+        episodes=SimpleNamespace(export=lambda:[{}])
+        a=_export_result(position,aggregate,episodes,99,ticker)[0]
+        b=_export_result(packed,aggregate,episodes,99,ticker)[0]
+        for key in a:
+            if isinstance(a[key],torch.Tensor):torch.testing.assert_close(a[key],b[key],rtol=0,atol=0)
+            else:assert a[key]==b[key]
+
     def run_path(self,device,backend,candidates=2,active_only=False,repeated_quote=False,fast_orders=False,record_capacity=None,episode_capacity=32,field_major=False):
         from types import SimpleNamespace
         from unittest.mock import patch
