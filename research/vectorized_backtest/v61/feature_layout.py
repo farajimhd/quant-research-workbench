@@ -17,6 +17,18 @@ def column_sum(values,columns):
     """
     import torch
     if values.shape[-1]==len(CATALOG):return values.sum(-2)
+    if values.is_cuda and values.dtype==torch.float32 and values.shape[-2]<4096:
+        # Match ATen's canonical strided reduction: >=512 outputs preserve the
+        # block geometry; an odd row pitch forces scalar (not vectorized) loads.
+        # Below 4096 rows there is no multi-CTA reduction for this layout.
+        # Only the requested columns are returned. Unknown shapes use the oracle.
+        width=max(512,values.shape[-1]);pitch=width|1
+        shape=values.shape[:-1]+(width,)
+        strides=[1]*len(shape);strides[-2]=pitch
+        for i in range(len(shape)-3,-1,-1):strides[i]=strides[i+1]*shape[i+1]
+        scratch=torch.empty_strided(shape,tuple(strides),device=values.device,dtype=values.dtype)
+        scratch.zero_();scratch[...,:values.shape[-1]].copy_(values)
+        return scratch.sum(-2)[...,:values.shape[-1]]
     scratch=torch.zeros((*values.shape[:-1],len(CATALOG)),device=values.device,dtype=values.dtype)
     return scratch.index_copy(-1,columns,values).sum(-2).index_select(-1,columns)
 
