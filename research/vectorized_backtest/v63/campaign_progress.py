@@ -13,6 +13,24 @@ from research.vectorized_backtest.v63.distributed_assets import remote
 
 def number(value):return '-' if value is None else f'{value:,.2f}'
 SELECTED='bold bright_yellow on blue'
+BLOCK_FIELDS=tuple(('admission_blocked_'+key,label) for key,label in (
+    ('price','Price'),('stop','Stop'),('limit','Limit'),('quote','Quote'),('liquidity','Liq'),('inventory','Inv')))
+
+
+def blocked_ranking_table(rows,selection,start,limit,width):
+    """Only saved summary fields; no replay or ledger reads on the UI thread."""
+    table=Table(expand=True,padding=(0,0))
+    fields=[('serial','Serial' if width>=100 else 'ID',6 if width>=100 else 5),('score','Score $',13 if width>=100 else 12)]
+    if width>=100:fields.append(('net_pnl','Net $',12))
+    fields.extend([('blocked_requests','Blocked' if width>=100 else 'Blocks',7 if width>=100 else 6),('blocked_penalty','Penalty $',12 if width>=100 else 10)])
+    fields.extend((key,label,6 if width>=100 else 5) for key,label in BLOCK_FIELDS)
+    for key,label,size in fields:table.add_column(label,width=size,no_wrap=True,overflow='ellipsis',justify='right')
+    counts={'serial','blocked_requests',*(key for key,_ in BLOCK_FIELDS)}
+    for index,row in enumerate(rows[start:start+limit],start):
+        cells=[('-' if row.get(key) is None else (str(int(row[key])) if width<100 else f'{int(row[key]):,}') if key in counts else number(row[key])) for key,_,_ in fields]
+        table.add_row(*cells,style=SELECTED if index==selection else None)
+    if not rows:table.add_row('Pending',*['-']*(len(fields)-1))
+    return table
 
 def active_generation(root,state):
     """Publication may lag replay; never infer the live cohort from seals alone."""
@@ -546,7 +564,11 @@ class Model:
             if self.selected:self.remember();self.view='lineage';self.detail_page=0
             return
         if key=='v':self.view='reproduction';self.selection=0;return
-        if key=='c':self.summary_mode='timing' if self.summary_mode=='combined' else 'combined';return
+        if key=='c':
+            if self.view in ('ranking','global_ranking','candidates','founders'):
+                self.candidate_columns='financial' if getattr(self,'candidate_columns','blocks')=='blocks' else 'blocks'
+            else:self.summary_mode='timing' if self.summary_mode=='combined' else 'combined'
+            return
         if key=='d':self.remember();self.view='timings';self.selection=0;return
         if key in ('h','\x1b'):self.aggregate_mode=False;self.view='overview';self.day=None;self.global_day=None;self.selection=0;self.filter=None;self.navigation=[];return
         if key=='g':self.full_mode=False;self.full_data=None;self.initial_mode=False;self.aggregate_mode=False;self.day=None;self.global_day=None;self.view='global_sessions';self.selection=0;self.filter=None;return
@@ -558,7 +580,7 @@ class Model:
             if not self.aggregate_mode:self.validation=not self.validation
             return
         if key=='s':
-            fields=['net_pnl','entry_clocks','exit_clocks','duration','listing_id','position'] if self.view=='positions' else ['score','net_pnl','gross_losses','drawdown','nodes'];self.sort=fields[(fields.index(self.sort)+1)%len(fields)] if self.sort in fields else fields[0];self.selection=0;return
+            fields=['net_pnl','entry_clocks','exit_clocks','duration','listing_id','position'] if self.view=='positions' else ['score','net_pnl','gross_losses','drawdown','nodes','blocked_requests','blocked_penalty',*(key for key,_ in BLOCK_FIELDS)];self.sort=fields[(fields.index(self.sort)+1)%len(fields)] if self.sort in fields else fields[0];self.selection=0;return
         if key=='r':self.reverse=not self.reverse;return
         if key=='u' and self.selected and self.selected.get('founder_index') is not None:
             self.filter=('descendant',self.selected['founder_index']);self.view='candidates';self.selection=0;return
@@ -757,6 +779,13 @@ def render(model,width,height):
         if not sessions:table.add_row('Per-session detail unavailable','-','-','-','-')
         from rich.console import Group
         table=Group(Text('\n'.join(lines)),table);caption='Arrows: select session | Enter: positions | Esc: back | L: lineage | - = unavailable'
+    elif model.view in ('ranking','global_ranking','candidates','founders') and getattr(model,'candidate_columns','blocks')=='blocks':
+        rows=model.rows();table=blocked_ranking_table(rows,model.selection,start,limit,width-4)
+        scope=('GLOBAL '+model.aggregate_role.upper()) if model.aggregate_mode else str(model.global_role or ('validation' if model.validation else 'training'))+' '+str(model.global_day or model.day or '')
+        coverage=''
+        if model.aggregate_mode:
+            report=model.report();coverage=f" | {report.get('coverage',0)}/{report.get('total',24)} sessions"
+        caption=f"{scope}{coverage} | {len(rows)} candidates | sort {model.sort} | C: financial columns | Liq=liquidity, Inv=inventory | reasons may overlap"
     elif model.aggregate_mode:
         rows=model.rows();report=model.report();compact=width<120
         columns=('Serial','Global score $','Global net $','DD sum $','Nodes') if compact else ('Serial','Global score $','Global net $','Loss $','DD sum $','Worst DD $','Win %','Trades','Nodes','Origins','Technique')
