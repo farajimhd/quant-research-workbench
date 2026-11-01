@@ -1,4 +1,4 @@
-"""Read-only V60 global-pilot progress and sealed financial rankings."""
+"""Read-only V61 global-pilot progress and sealed financial rankings."""
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,time
@@ -23,7 +23,7 @@ def render(status,width,height,sort='score',reverse=False,eligible=True,page=0,v
     if full and status.get('current_day'):stage=f"{status.get('evaluation_split','training')} {status['current_day']} | {stage}"
     objective=status.get('objective',dict(loss_weight=0.,drawdown_weight=0.))
     cost=f"Score = net profit - {objective['loss_weight']:g}*gross losses - {objective['drawdown_weight']:g}*equity DD"
-    layout['head'].update(Text(f"V60 | {scope} | {status.get('status','starting').upper()}\n{cost}\n{stage}",style='cyan'))
+    layout['head'].update(Text(f"V61 | {scope} | {status.get('status','starting').upper()}\n{cost}\n{stage}",style='cyan'))
     bars=Progress(TextColumn('{task.description}'),BarColumn(bar_width=None,complete_style='cyan',finished_style='green'),TaskProgressColumn(),TextColumn('{task.fields[count]}'),expand=True)
     done=status.get('completed_generations',0);target=status.get('total_generations',50);bars.add_task('Sealed generations',total=target,completed=done,count=f'{done}/{target}')
     clocks=progress.get('completed_seconds',0);total=progress.get('total_seconds',0) or max(clocks,1)

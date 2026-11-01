@@ -98,7 +98,7 @@ class Model:
         self.archive=Archive(self.bus,job.get('training_days',[]),self.observer_stop,job.get('global_restart',False))
         self.day=None;self.view='overview';self.selection=0;self.sort='score';self.reverse=False;self.filter=None;self.selected=None;self.validation=False;self.detail_page=0;self.snapshot_cache=None
         self.navigation=[]
-        if job.get('version')=='v60-global-v1':self.view='global_sessions'
+        if job.get('version')=='v61-global-v1':self.view='global_sessions'
         self.position_rows=[];self.position_error=None;self.position_thread=None;self.position_session=None;self.position_request=None;self.position_lock=threading.Lock()
         self.replay_samples={};self.replay_sample_scope=None
         self.aggregate_role='training';self.aggregate_mode=False;self.origin_catalog={};self.live_data=None;self.live_thread=None;self.live_error=None;self.live_attempt=0.
@@ -136,7 +136,7 @@ class Model:
         return path if node=='laptop' else remote(path,self.job['workstation_share'])
     def global_root(self):
         if self.job.get('version')=='v60-pilot-v2':return self.root
-        if self.job.get('version')=='v60-global-v1' and __import__('socket').gethostname().upper()=='DESKTOP-SAAI85T':return self.root/'phase-2'
+        if self.job.get('version')=='v61-global-v1' and __import__('socket').gethostname().upper()=='DESKTOP-SAAI85T':return self.root/'phase-2'
         return remote(self.root/'phase-2',self.job['workstation_share'])
     def target(self):return self.session_root(self.day) if self.day else self.global_root()
     def session_state(self,day):
@@ -271,7 +271,7 @@ class Model:
             if len(self.reports)>26:self.reports.pop(next(iter(self.reports)))
         return self.reports[key]
     def snapshot(self):
-        if self.job.get('version')=='v60-global-v1':return ({'workstation':self.status() or {}},[],(self.root/'STOP').exists())
+        if self.job.get('version')=='v61-global-v1':return ({'workstation':self.status() or {}},[],(self.root/'STOP').exists())
         if self.snapshot_cache and time.monotonic()-self.snapshot_cache[0]<1:return self.snapshot_cache[1]
         nodes={n:self.read(self.bus/(n+'-status.json')) for n in self.job['machines']};sessions=[]
         if self.job.get('version')=='v60-pilot-v2':
@@ -514,7 +514,7 @@ class Model:
             self.remember();self.initial_mode=True;self.aggregate_mode=True;self.aggregate_role='training';self.day=None;self.global_day=None
             self.view='ranking';self.selection=0;self.filter=None;self.selected=None;return
         if key in ('a','g','h') or (self.view=='global_splits' and key in ('1','2','t','v','\r','\n')):self.initial_mode=False
-        if self.job.get('version')=='v60-global-v1' and key in ('h','\x1b'):key='g'
+        if self.job.get('version')=='v61-global-v1' and key in ('h','\x1b'):key='g'
         if self.view=='positions' and key in ('a','g','h','o','f','m','i','p','e','1','2','d'):self.sort='score'
         if key=='a' and not self.day:
             self.remember();self.aggregate_mode=False;self.global_day=None;self.view='global_splits';self.selection=0;self.filter=None;self.selected=None;return
@@ -576,9 +576,9 @@ def render(model,width,height):
         return quality_render(model,width,height)
     head_size=9 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
-    title=f"V60 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
-    if model.job.get('version')=='v60-pilot-v2':title=f"V60 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
-    if model.job.get('version')=='v60-global-v1':title=f"V60 WORKSTATION | GLOBAL ONLY | {model.job['phase2_generations']} generations | {len(model.job['training_days'])} train / {len(model.job['validation_days'])} validation"
+    title=f"V61 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
+    if model.job.get('version')=='v60-pilot-v2':title=f"V61 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
+    if model.job.get('version')=='v61-global-v1':title=f"V61 WORKSTATION | GLOBAL ONLY | {model.job['phase2_generations']} generations | {len(model.job['training_days'])} train / {len(model.job['validation_days'])} validation"
     note='Score: 0.5 ticker($2000) + 0.5 session($5000), log excess 0.1, minus full DD | risk caps OFF | validation display-only'
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
@@ -790,17 +790,17 @@ def render(model,width,height):
         if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
         p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
     if getattr(model,'initial_mode',False):
-        header=Text(f'V60 INITIAL FOUNDERS | 6,144 founders | generation {model.initial.generation}\nTraining results under this campaign execution contract | G: live run | A: global paths',style='bright_cyan')
+        header=Text(f'V61 INITIAL FOUNDERS | 6,144 founders | generation {model.initial.generation}\nTraining results under this campaign execution contract | G: live run | A: global paths',style='bright_cyan')
         if model.initial.error:header.append('\n'+model.initial.error,style='bright_red')
         elif model.view=='detail':header.append(f'\nSession details: {len(model.initial.sessions)}/24 loaded in background')
     if getattr(model,'full_mode',False):
         report=model.full_report();generation=report.get('generation',0)
-        header=Text(f'V60 FULL RESULTS | Completed generation {generation or "loading"} | {len(model.job["training_days"])} training + {len(model.job["validation_days"])} validation sessions\nRanked by training score; validation display-only | Snapshot stays fixed while browsing | A: choose path',style='bright_cyan')
+        header=Text(f'V61 FULL RESULTS | Completed generation {generation or "loading"} | {len(model.job["training_days"])} training + {len(model.job["validation_days"])} validation sessions\nRanked by training score; validation display-only | Snapshot stays fixed while browsing | A: choose path',style='bright_cyan')
         if not model.full_data:header.append('\nLoading complete saved results in background; live partial results are excluded.',style='bright_yellow')
         if model.global_error:header.append('\n'+model.global_error,style='bright_red')
     layout['head'].update(header)
     names={'global_splits':'ALL GLOBAL > TRAINING / VALIDATION','ranking':'ALL GLOBAL '+model.aggregate_role.upper()+' CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
-    if getattr(model,'initial_mode',False):caption='INITIAL FOUNDERS | V60 training scores | '+caption
+    if getattr(model,'initial_mode',False):caption='INITIAL FOUNDERS | V61 training scores | '+caption
     if getattr(model,'full_mode',False):caption='FULL RESULTS | latest complete snapshot | '+caption
     layout['body'].update(Panel(table,title=('INITIAL FOUNDERS > '+model.view.upper()) if getattr(model,'initial_mode',False) else names.get(model.view,model.view.upper()),subtitle=caption,padding=0))
     if width<120:

@@ -47,7 +47,7 @@ def prepare(job):
         plan=None
         try:
             if item.receipt.get('validation_opened'):raise ValueError('Validation cannot calibrate candidates')
-            plan=NetworkPlan(sample(np.random.default_rng(0),1),'cpu')
+            plan=NetworkPlan(sample(np.random.default_rng(0),1),'cpu',feature_columns=COLUMNS)
             member=item.tensors['membership'].numpy();ready=member&item.tensors['quote_valid'].numpy()
             starts=np.linspace(0,max(0,len(member)-WINDOW),4,dtype=int)
             ticks=[int(t) for start in starts for t in range(start,start+WINDOW)]

@@ -12,7 +12,7 @@ from research.vectorized_backtest.v61.distributed_assets import sha
 
 
 def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,probe,objective):
-    if valid and c.job.get('version')!='v60-global-v1':raise ValueError('The direct pilot cannot open validation sessions')
+    if valid and c.job.get('version')!='v61-global-v1':raise ValueError('The direct pilot cannot open validation sessions')
     lane=Lane();c.publication_lane=lane;c.worker.defer_publication=True
     snapshot=Snapshot(members);last=None;completed=state['completed'];c.sealed_generation=max(0,completed)
     try:

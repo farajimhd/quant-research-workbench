@@ -51,7 +51,7 @@ def check(job):
     if metadata['validation_opened'] or not set(metadata['days']).issubset(train) or len(metadata['days'])<2:raise ValueError('Training-only multi-session calibration required')
 
 
-def prepare(source,root,code):
+def prepare(source,root,code,*,deployment=None,reuse_training_probe=False):
     from research.vectorized_backtest.v61.runtime import require_runtime
     from research.vectorized_backtest.v61.probes import global_probe
     root=require_runtime(root);code=Path(code);original=json.loads(Path(source).read_bytes())
@@ -60,7 +60,7 @@ def prepare(source,root,code):
     probe=Path(original['initialization_probe'])
     job={k:original[k] for k in ('training','training_sha256','validation','validation_sha256','assets','asset_sha256','workstation_share')}
     job.update(version=VERSION,campaign_stage='fresh-global',score_version='log-profit-target-v1',concentration_coefficient=.1,ticker_target=2000.,session_target=5000.,source_sha256=source_hash(),source_job=str(source),source_job_sha256=sha(source),
-        code=str(code),commit=json.loads((code/'deployment.json').read_bytes())['commit'],campaign=str(root),transport=str(root/'asset-bus'),
+        code=str(code),commit=json.loads(Path(deployment or code/'deployment.json').read_bytes())['commit'],campaign=str(root),transport=str(root/'asset-bus'),
         training_days=train,validation_days=valid,initialization_probe=str(probe),initialization_probe_sha256=sha(probe),population=1024,initial_multiplier=6,seed=2021,
         phase2_generations=200,mutation_probe_size=32,global_session_workers=2,global_node='workstation',batch_size=1024,
         objective=dict(drawdown_weight=1.,loss_weight=0.),execution=dict(original['execution'],risk_limits_enabled=False),selection=dict(original['selection'],profit_fresh_fraction=0.),
@@ -70,7 +70,16 @@ def prepare(source,root,code):
     job.update(fresh_initial_replay='v61-fresh-founders-v1',execution_tail=original['execution_tail'])
     job['execution'].update(order_mode=ORDER_VERSION,maximum_quote_age_seconds=None)
     from .calibration_probe import prepare as prepare_probe
-    probe=prepare_probe(job)
+    if reuse_training_probe:
+        from .calibration import load_probe
+        from .authority import REGISTRY_SHA256
+        from .feature_layout import COLUMNS
+        metadata=load_probe(probe,job['training'])['metadata']
+        if metadata['registry']!=REGISTRY_SHA256 or metadata['feature_columns']!=list(COLUMNS) or metadata['assets']!=job['asset_sha256'] or metadata['execution_tail']!=job['execution_tail']:
+            raise ValueError('Training probe market/feature authority differs')
+        job['training_probe_reused']=True
+    else:probe=prepare_probe(job)
     job.update(initialization_probe=str(probe),initialization_probe_sha256=sha(probe))
+    if deployment is not None:job['deployment']=str(deployment)
     check(job);write_json(root/'global-job.json',job)
     return job

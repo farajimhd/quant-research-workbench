@@ -19,7 +19,7 @@ def global_predecessor(job):
 def predecessor(job):
     transition=job.get('resume_transition')
     if not transition:return None
-    if job.get('version')=='v60-global-v1':return global_predecessor(job)
+    if job.get('version')=='v61-global-v1':return global_predecessor(job)
     path=Path(transition['predecessor_job'])
     if sha(path)!=transition['predecessor_job_sha256']:raise ValueError('Predecessor job changed')
     old=json.loads(path.read_bytes())
@@ -46,7 +46,7 @@ def lineage_jobs(job):
 
 def accept_checkpoint(job,path,saved,expected):
     if saved['contract']==expected:return
-    if job.get('version')=='v60-global-v1':
+    if job.get('version')=='v61-global-v1':
         global_predecessor(job)
         bound=job['resume_transition'].get('global_checkpoint',{})
         if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Global checkpoint differs from bound receipt')

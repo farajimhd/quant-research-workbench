@@ -8,7 +8,7 @@ from research.vectorized_backtest.v61.distributed_assets import sha
 
 
 def check_job(job):
-    if job.get('version')!='v60-global-v1':raise ValueError('V60 is global-only')
+    if job.get('version')!='v61-global-v1':raise ValueError('V61 is global-only')
     from .global_contract import check
     return check(job)
 
