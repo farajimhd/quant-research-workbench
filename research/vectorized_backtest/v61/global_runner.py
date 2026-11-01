@@ -66,10 +66,9 @@ class Global(Evolution):
             # evicting four and rebuilding every network pack on the next day.
             # Later generations normally need only one main plan plus mutants.
             cfg['plan_limit']=max(2,self.job['initial_multiplier'])
-            # Independent CUDA streams already preserve each session's order.
-            # A host mutex otherwise holds the other lane idle during producer
-            # waits. Retain gated mode solely for bounded comparison runs.
-            cfg['gpu_execution_gate']=self.job['campaign'] if self.job.get('profile_gated',False) else None
+            # Short execution turns measured faster than competing financial
+            # streams. Inference readiness is awaited outside those turns.
+            cfg['gpu_execution_gate']=self.job['campaign'] if self.job.get('profile_gated',True) else None
             cfg['execution_diagnostics']=bool(self.job.get('execution_diagnostics',False))
             self.split_lanes[role]=SessionLanes(cfg,self.workers,self).__enter__()
         return self.split_lanes[role]
