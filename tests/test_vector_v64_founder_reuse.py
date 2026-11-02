@@ -49,3 +49,23 @@ def test_v63_genome_schema_and_program_identity_are_preserved():
         payload=old.payload(); restored=Individual.restore(payload)
         assert digest(restored.payload())==digest(payload)
         assert program_key(restored)==old_key(old)
+
+
+def test_profile_worker_verifies_only_selected_sessions(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from research.vectorized_backtest.v64 import global_runner,session_lanes,performance
+    marker=tmp_path/'data-ready/workstation/training/selected.json'
+    marker.parent.mkdir(parents=True)
+    marker.write_text(json.dumps(dict(asset_sha256='assets',files=[dict(path='bank',size=1,mtime_ns=1)])))
+    job=dict(campaign=str(tmp_path),training_days=['selected'],asset_sha256='assets',initial_multiplier=6,
+             assets={'training':{'selected':[dict(path='bank',sha256='hash')],'unselected':[]}})
+    controller=SimpleNamespace(job=job,root=tmp_path,split_lanes={},workers=6,stop_roots=[tmp_path])
+    monkeypatch.setattr(global_runner,'config',lambda *a:{})
+    monkeypatch.setattr(performance,'tuning',lambda job:dict(time_block=256,transfer_mode='events'))
+    class Lanes:
+        def __init__(self,cfg,*args):self.cfg=cfg
+        def __enter__(self):return self
+    monkeypatch.setattr(session_lanes,'SessionLanes',Lanes)
+    lanes=global_runner.Global.get_lanes(controller,'training')
+    assert set(lanes.cfg['verified_file_hashes'])=={'selected'}
+
