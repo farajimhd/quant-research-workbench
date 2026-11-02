@@ -65,7 +65,6 @@ def test_profile_worker_verifies_only_selected_sessions(tmp_path,monkeypatch):
     class Lanes:
         def __init__(self,cfg,*args):self.cfg=cfg
         def __enter__(self):return self
-    monkeypatch.setattr(session_lanes,'SessionLanes',Lanes)
+    monkeypatch.setattr(global_runner,'SessionLanes',Lanes)
     lanes=global_runner.Global.get_lanes(controller,'training')
     assert set(lanes.cfg['verified_file_hashes'])=={'selected'}
-
