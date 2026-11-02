@@ -15,6 +15,12 @@ from .shard_math import scalar_features, rolling_sum
 from .shard_features import materialize
 
 
+def listing_records(names):
+    """Reporting keys are source symbols, not invented security identifiers."""
+    return [None]+[dict(listing_id='ARTE:'+t,ticker=t,
+        identity='source ticker; approved_retrospective') for t in sorted(names)]
+
+
 class SessionData(Lifecycle):
     def __init__(self, root, history=None, *, device='cpu', maximum_gib=4.,
                  manifest=None, feature_ticks=None, **kwargs):
@@ -61,7 +67,8 @@ class SessionData(Lifecycle):
             features=np.zeros((p,len(BASE)),np.float32),feature_valid=np.zeros((p,len(BASE)),bool))
         self.bank=dict(source_rows=source,ids=source.clip(0),values=np.full((p,len(HISTORY)),np.nan,np.float32))
         self.receipt=dict(validation_opened=Path(manifest).stem=='validation',
-            listing_ids=self.listing_ids.tolist(),tickers=list(self.tickers))
+            listing_ids=self.listing_ids.tolist(),tickers=list(self.tickers),
+            listings=listing_records(names))
         self.identity=dict(input_sha256=sha(manifest),history_sha256=session.source['hash'],
             shard_day=session.day,scanner_sha256=sha(session.root/'scanner'/session.day/'complete.json'),
             execution_tail_sha256=session.manifest['shard_seals'][session.day])

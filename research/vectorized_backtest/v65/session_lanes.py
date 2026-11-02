@@ -114,7 +114,8 @@ class Worker:
         return item
 
     def read_ahead(self,day):
-        item=self.host.get(day)
+        # Transfer ownership to prefetch; cancellation may safely close it.
+        item=self.host.pop(day,None)
         if item is None:item=self.read_host(day)
         return prepare_next(item,Path(self.config['output'])/'result-cache'/(day+'.json'),self.config)
 
@@ -125,7 +126,7 @@ class Worker:
         for plan in self.plans.values():plan.close()
         plan=None
         self.plans.clear();self.staging.close();self.staging=TransferStaging()
-        for item in self.host.values():item.close()
+        for item in list(self.host.values()):item.close()
         item=None
         self.host.clear();self.resident_results=None
         gc.collect()
@@ -158,7 +159,7 @@ class Worker:
     def retire_device_sessions(self,day,device):
         """One GPU session per lane; pageable prefetch and genome plans survive."""
         if device.type!='cuda':return
-        for old_day,old in self.host.items():
+        for old_day,old in list(self.host.items()):
             if old_day!=day:
                 if hasattr(old,'resident_features'):old.resident_features.deactivate()
                 old.deactivate()
@@ -393,7 +394,7 @@ class Worker:
             self.loader.shutdown(wait=True,cancel_futures=True);self.staging.close()
             for plan in self.plans.values():plan.close()
             self.plans.clear()
-            for item in self.host.values():item.close()
+            for item in list(self.host.values()):item.close()
             self.host.clear()
 
 
@@ -443,7 +444,7 @@ def release_plans():
     _worker.plans.clear()
     # The inactive split must not retain its market banks on the GPU while
     # the other split admits two replay lanes. Keep pageable host residency.
-    for item in _worker.host.values():
+    for item in list(_worker.host.values()):
         if hasattr(item,'resident_features'):item.resident_features.deactivate()
         item.deactivate()
     _worker.staging.close();_worker.staging=TransferStaging()

@@ -96,3 +96,13 @@ def test_prefetch_reuses_pageable_session_without_rebuilding(monkeypatch,tmp_pat
     worker.read_host=lambda day:pytest.fail('Cached session was rebuilt')
     monkeypatch.setattr(session_lanes,'prepare_next',lambda data,path,config:data)
     assert worker.read_ahead('2026-01-05') is item
+    assert '2026-01-05' not in worker.host
+
+
+def test_shard_ticker_cashflows_reconcile_using_global_symbol_labels():
+    from research.vectorized_backtest.v65.shard_data import listing_records
+    from research.vectorized_backtest.v65.financial import ticker_totals
+    item=SimpleNamespace(listing_ids=np.array([1,3]),receipt={'listings':listing_records(['CCC','AAA','BBB'])})
+    metrics=dict(net_pnl=[7.],episode_listings=[[0,1]],episode_profits=[[10.,-4.]],
+                 open_episode_listings=[[1]],open_episode_realized=[[1.]])
+    assert ticker_totals(metrics,item)==[{'ARTE:AAA':10.,'ARTE:CCC':-3.}]
