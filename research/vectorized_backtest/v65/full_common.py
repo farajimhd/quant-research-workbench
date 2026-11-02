@@ -20,7 +20,7 @@ def config(job,node,role='training'):
         feature_cache=m.get('feature_cache'),input_receipts=m['receipts'],indicator_receipts=m['indicator_receipts'],enriched_receipts=m['enriched_receipts'],
         authorization='v57-training',source_sha256=job['source_sha256'],training_manifest=job['training'],objective=job['objective'],execution=job['execution'],
         selection=job['selection'],execution_tail=job.get('execution_tail'),execution_diagnostics=job.get('execution_diagnostics',False),backend='compile',device='cuda',batch_size=job['batch_size'],maximum_replay_batch_size=1024,episode_capacity=65536,maximum_data_gib=4.,maximum_gate_gib=8.,
-        capture_gib=machine['capture_gib'],host_reserve_gib=machine['reserve_gib'],host_admission_gib=machine['admission_gib'],host_prefetch=True,prefetch_transfer=node=='workstation',shared_replay=False,
+        capture_gib=machine['capture_gib'],host_reserve_gib=machine['reserve_gib'],host_admission_gib=machine['admission_gib'],host_prefetch=True,host_prepare_workers=3,host_prefetch_depth=6,prefetch_transfer=node=='workstation',shared_replay=False,
         immutable_population_cache=True,plan_limit=1,maximum_host_sessions=min(32,max(2,(len(m["days"])+machine["session_workers"]-1)//machine["session_workers"])),retain_session_residency=True,reuse_results=True,trace_validation=True,
         result_cache_transition=job.get('result_cache_transition',{}),split=role,neural_tile=64 if node=='workstation' else 32,gpu_execution_gate=job['campaign'] if node=='workstation' and job.get('version')=='v60-full-v2' else None)
 

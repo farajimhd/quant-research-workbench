@@ -32,7 +32,8 @@ def main():
     parser.add_argument('--mixed',action='store_true',help='Evenly spaced fresh-founder sample; no outcome-based selection')
     parser.add_argument('--diagnostics',action='store_true',help='Bounded GPU trace and CPU reproduction profile; not a timing acceptance run')
     parser.add_argument('--ungated',action='store_true',help='Diagnostic comparison of independent CUDA contexts without host mutex')
-    parser.add_argument('--days',nargs=2,default=['2026-01-05','2026-07-06'],help='Two training sessions for a bounded comparison')
+    parser.add_argument('--days',nargs='+',default=['2026-01-05','2026-07-06'],help='Bounded training sessions for comparison')
+    parser.add_argument('--repeat-warm',action='store_true',help='Replay identical genomes from retained RAM, without result reuse')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
     seedpath=args.output/'founders.json'
@@ -55,6 +56,7 @@ def main():
         members=[members[i] for i in indices]
     else:indices=list(range(args.offset,args.offset+args.count));members=members[args.offset:args.offset+args.count]
     days=args.days
+    if not 2<=len(days)<=24 or len(set(days))!=len(days):raise ValueError('Profile requires 2 to 24 unique sessions')
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
@@ -77,6 +79,16 @@ def main():
     try:
         panels,refs=c.evaluate('training',days,members,1)
         returned=time.perf_counter();reproduction_seconds=None
+        cold_return_seconds=returned-started
+        warm_return_seconds=None
+        if args.repeat_warm:
+            for future in c.publication_lane.pending:future.result()
+            lanes=c.get_lanes('training')
+            futures=[pool.submit(disable_result_reuse) for pool in lanes.pools]
+            for future in futures:future.result()
+            warm_started=time.perf_counter()
+            c.evaluate('training',days,members,2)
+            warm_return_seconds=time.perf_counter()-warm_started
         if args.reproduce:
             import numpy as np
             from .local_runner import CompactPedigree
@@ -112,6 +124,13 @@ def main():
                     two_session_return_seconds=returned-started,two_session_published_seconds=time.perf_counter()-started,sessions=rows,
                     metrics_sha256=digest([financial_evidence(p) for p in published]),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
+        report['cold_return_seconds']=cold_return_seconds
+        report['warm_return_seconds']=warm_return_seconds
+        if args.repeat_warm:
+            warm=[json.loads((c.root/'replays/training/generation-0002'/day/'receipt.json').read_bytes())['metrics'] for day in days]
+            report['warm_exact_financial_parity']=digest([financial_evidence(p) for p in warm])==digest([financial_evidence(p) for p in published])
+            report['warm_timings']=[json.loads((c.root/'replays/training/generation-0002'/day/'timings.json').read_bytes()) for day in days]
+            if not report['warm_exact_financial_parity']:raise ValueError('Warm replay financial parity failed')
         report['publication_final_wait_seconds']=publication_wait_seconds
         report['probe_preparation_seconds']=probe_preparation_seconds
         report['instrumented']=args.diagnostics
@@ -147,6 +166,12 @@ def main():
         c.halt.set();thread.join(5)
         try:c.close_lanes()
         finally:c.publication_lane.close()
+
+
+def disable_result_reuse():
+    from . import session_lanes
+    session_lanes._worker.config['reuse_results']=False
+    session_lanes._worker.resident_results=None
 
 
 if __name__=='__main__':main()

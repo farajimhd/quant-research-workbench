@@ -22,7 +22,7 @@ from .data import SessionData
 from .evaluator import Execution, PopulationPrograms, replay_cohort
 from .genome import Individual
 from research.vectorized_backtest.v65.io_pipeline import Publisher, prepare_host
-from .prefetch_pipeline import TransferStaging,NextSessionPrefetch,prepare_next,read_results,fingerprint
+from .prefetch_pipeline import TransferStaging,prepare_next,read_results,fingerprint
 from .runtime_path import require_runtime
 from research.vectorized_backtest.v65.compiler_runtime import configure_caches
 
@@ -61,8 +61,10 @@ class Worker:
         self.staging=TransferStaging();self.loader=ThreadPoolExecutor(max_workers=1)
         from collections import OrderedDict
         self.plans=OrderedDict();self.plan_generation=None;self.plan_limit=config.get("plan_limit",2)
-        self.prefetch=NextSessionPrefetch(self.loader,reserve_gib=config.get('host_reserve_gib',128.),
+        from .session_prefetch import SessionPrefetch
+        self.prefetch=SessionPrefetch(self.read_host,workers=config.get('host_prepare_workers',3),capacity=config.get('host_prefetch_depth',6),reserve_gib=config.get('host_reserve_gib',128.),
             admission_gib=config.get('host_admission_gib',32.),report=self.prefetch_report)
+        self.load_count_lock=threading.Lock()
         self.loads=0;self.uploads=0
         self.resident_results=None
         self.execution_gate=None
@@ -96,7 +98,7 @@ class Worker:
     def read_host(self,day):
         """Construct a separate CPU session; only the demand thread owns the LRU."""
         c=self.config
-        self.loads+=1
+        with self.load_count_lock:self.loads+=1
         from .runtime import seed_verified_hashes
         seed_verified_hashes(c.get('verified_file_hashes',{}).get(day,{}))
         item=prepare_host(SessionData(Path(c['inputs'])/day,Path(c['history'])/day,manifest=c['shard_manifest'],
@@ -122,7 +124,7 @@ class Worker:
     def release_inactive_sessions(self):
         """Only between completed replays; evict recomputable data, not results."""
         before=__import__('psutil').virtual_memory().available
-        self.prefetch.close()
+        self.prefetch.clear()
         for plan in self.plans.values():plan.close()
         plan=None
         self.plans.clear();self.staging.close();self.staging=TransferStaging()
@@ -182,7 +184,8 @@ class Worker:
             if self.population_preparer is None or self.population_preparer.token!=token:raise ValueError('Missing immutable worker population')
             payload=self.population_preparer.payload
         prepared=self.population_preparer.submit(payload,token) if self.population_preparer else None
-        self.prefetch.release_under_pressure()
+        lookahead=[next_day] if isinstance(next_day,str) else list(next_day or ())
+        self.prefetch.schedule([day]+(lookahead if c.get('host_prefetch',False) else []),self.host)
         item=self.prefetch.take(day)
         prefetched=item is not None
         if prefetched:self.host[day]=item;self.host.move_to_end(day)
@@ -240,15 +243,13 @@ class Worker:
                     self.uploads+=1
             load_seconds=perf_counter()-started
             cleanup_started=perf_counter()
-            # One active session plus one pageable CPU session. Upload remains
-            # demand-only; no speculative CUDA allocation or pinning occurs.
-            if c.get('host_prefetch',False) and next_day is not None and next_day not in self.host:
-                for old_day in list(self.host):
-                    if old_day!=day:
-                        old=self.host.pop(old_day);old.close();del old
-                # Refcount disposal is deterministic; avoid a process-wide GC
-                # scan on the GPU admission path. Split retirement collects cycles.
-                self.prefetch.start(next_day,self.read_ahead)
+            # Keep previously prepared sessions for subsequent generations.
+            # CPU futures own only their bounded lookahead; only this owner
+            # mutates the LRU or activates CUDA tensors.
+            while len(self.host)>self.maximum_host_sessions:
+                oldest=next(k for k in self.host if k!=day)
+                self.host.pop(oldest).close()
+            if c.get('host_prefetch',False):self.prefetch.schedule(lookahead,self.host)
             cleanup_seconds=perf_counter()-cleanup_started
             from .publication_lane import Buffer
             deferred=getattr(self,'defer_publication',False)
@@ -292,9 +293,8 @@ class Worker:
                     self.emit(day,stage='Replay positions',candidate_offset=offset,replay_started=replay_start)
                     def replay_progress(done,total):
                         self.check_stop()
-                        self.prefetch.release_under_pressure()
-                        if c.get('host_prefetch',False):self.prefetch.reconsider(next_day,self.read_ahead)
-                        self.emit(day,stage=getattr(item,'execution_phase','Replay positions'),candidate_offset=offset,completed_seconds=done,total_seconds=total)
+                        if c.get('host_prefetch',False):self.prefetch.schedule(lookahead,self.host)
+                        self.emit(day,stage=getattr(item,'execution_phase','Replay positions'),candidate_offset=offset,completed_seconds=done,total_seconds=total,**self.prefetch.stats())
                     gate_options={'execution_gate':self.execution_gate} if self.execution_gate is not None else {}
                     if execution.order_mode!='immediate':item.execution_order_root=root/'execution-orders'/str(offset)
                     if execution.order_mode!='immediate' and c.get('execution_diagnostics'):item.execution_diagnostic_root=root/'execution-diagnostic'/str(offset)
@@ -425,10 +425,10 @@ def evaluate(*args):
         raise RuntimeError(traceback.format_exc()) from None
 def cleanup():_worker.close()
 
-def preload(day,payload,token):
+def preload(days,payload,token):
     """CPU-only demand preparation while the other split owns GPU replay."""
     _worker.population_preparer.submit(payload,token)
-    _worker.prefetch.start(day,_worker.read_ahead)
+    _worker.prefetch.schedule(days,_worker.host)
 
 def evaluate_preloaded(day,next_day,payload,generation,token,width,parent_token,extra):
     if _worker.population_preparer.token==parent_token:
@@ -503,10 +503,26 @@ class SessionLanes:
             raise ValueError('V60 uses two independent persistent replay lanes')
         from .session_pipeline import SessionProgress,independent_sessions
         self.independent_progress=SessionProgress(self.panel,days,len(population),generation,self.config.get('split','training'))
+        dispatched=[False]*self.workers
+        bound=getattr(self.panel,'job',{}).get('resume_transition',{}).get('completed_replays',{})
+        role=self.config.get('split','training')
+        can_restore=lambda day:output_override is None and not prepared_population and f'{role}/{generation}/{day}' in bound
         def submit(lane,index,day,next_day):
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
+            if can_restore(day):
+                from concurrent.futures import Future
+                from .completed_replays import restore
+                from .controller_metrics import compact
+                began=perf_counter()
+                panels,refs=restore(self.panel.job,self.config['output'],role,[day],generation,token,len(population))
+                result=dict(day=day,metrics=compact(panels[0]),ref=refs[day],restored=True,
+                            timings=[],wall_seconds=perf_counter()-began,clocks=19799)
+                future=Future();future.set_result(result);return future
+            assigned=days[lane::self.workers]
+            next_day=[d for d in assigned[index+1:] if not can_restore(d)][:self.config.get('host_prefetch_depth',6)]
             # The generation's immutable population crosses IPC once per lane.
-            request=payload if (index==0 and getattr(self,'preloaded_token',None)!=token) or not self.config.get('immutable_population_cache') else None
+            first=not dispatched[lane];dispatched[lane]=True
+            request=payload if (first and getattr(self,'preloaded_token',None)!=token) or not self.config.get('immutable_population_cache') else None
             if index==0 and prepared_population and getattr(self,'preloaded_token',None)==prepared_population['main_token']:
                 return self.pools[lane].submit(evaluate_preloaded,day,next_day,payload,generation,token,fixed_widths[day],prepared_population['main_token'],prepared_population['extra'])
             if output_override is not None:return self.pools[lane].submit(evaluate_scoped,day,next_day,request,generation,token,fixed_widths[day],str(output_override),isolate_results)
@@ -520,7 +536,7 @@ class SessionLanes:
 
     def preload(self,days,snapshot):
         self.preloaded_token=snapshot.token
-        self.preload_futures=[pool.submit(preload,day,snapshot.payload,snapshot.token) for pool,day in zip(self.pools,days[:self.workers])]
+        self.preload_futures=[pool.submit(preload,days[lane::self.workers][:self.config.get('host_prefetch_depth',6)],snapshot.payload,snapshot.token) for lane,pool in enumerate(self.pools) if lane<len(days)]
 
     def release_plans(self):
         if self.config.get('shared_replay'):

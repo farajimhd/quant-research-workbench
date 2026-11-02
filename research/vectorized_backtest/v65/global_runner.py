@@ -25,6 +25,11 @@ class Global(Evolution):
         if errors:raise errors[0]
 
     def session_result(self,day,result,role,generation):
+        if result.get('restored'):
+            # Explicitly bound receipts remain immutable; publication only links
+            # their hashes into the new generation seal, without rewriting them.
+            self.published_receipts.append(result['ref']['receipt'])
+            return
         writes=result.pop('writes')
         path=str(self.root/'replays'/role/f'generation-{generation:04d}'/day/'receipt.json')
         receipt=next(value for name,value in writes if name==path)

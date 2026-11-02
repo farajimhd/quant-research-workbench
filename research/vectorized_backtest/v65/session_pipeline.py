@@ -34,7 +34,7 @@ class SessionProgress:
         callback=getattr(self.panel,'session_result',None)
         if callback is not None:callback(day,result,self.role,self.generation)
         with self.lock:
-            self.rows[day].update(status='complete',stage='Session complete',completed_candidates=self.population,
+            self.rows[day].update(status='complete',stage='Reused sealed replay' if result.get('restored') else 'Session complete',restored=result.get('restored',False),completed_candidates=self.population,
                 completed_local_batches=len(result['timings']),completed_seconds=result['clocks'],total_seconds=result['clocks'],
                 worker_seconds=result['wall_seconds'],session_seconds=time()-self.rows[day]['session_started_epoch'],finished_epoch=time());self.publish()
 
