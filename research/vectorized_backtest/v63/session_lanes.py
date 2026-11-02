@@ -97,6 +97,8 @@ class Worker:
         """Construct a separate CPU session; only the demand thread owns the LRU."""
         c=self.config
         self.loads+=1
+        from .runtime import seed_verified_hashes
+        seed_verified_hashes(c.get('verified_file_hashes',{}).get(day,{}))
         item=prepare_host(SessionData(Path(c['inputs'])/day,Path(c['history'])/day,
             device='cpu',maximum_gib=c['maximum_data_gib'],maximum_quote_age_seconds=c['execution']['maximum_quote_age_seconds'],
             execution_tail=Path(c['execution_tail'])/c.get('split','training')/day if c.get('execution_tail') else None,

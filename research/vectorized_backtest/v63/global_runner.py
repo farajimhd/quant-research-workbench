@@ -56,6 +56,17 @@ class Global(Evolution):
     def get_lanes(self,role):
         if role not in self.split_lanes:
             cfg=config(self.job,'workstation',role)
+            # run() already verified every asset through ensure_day. Pass its
+            # unchanged-file receipts to readers instead of hashing each large
+            # bank again in all six processes.
+            verified={}
+            for day,assets in self.job['assets'][role].items():
+                marker=Path(self.job['campaign'])/'data-ready/workstation'/role/(day+'.json')
+                receipt=json.loads(marker.read_bytes())
+                if receipt['asset_sha256']!=self.job['asset_sha256']:raise ValueError('Asset verification authority changed')
+                expected={str(Path(x['path'])):x['sha256'] for x in assets}
+                verified[day]={x['path']:dict(x,sha256=expected[str(Path(x['path']))]) for x in receipt['files']}
+            cfg['verified_file_hashes']=verified
             cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
                 # Inductor/Triton keys bind graphs and kernels. UI/publication
                 # source changes must not discard those content-addressed caches.

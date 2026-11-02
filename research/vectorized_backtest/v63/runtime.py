@@ -10,6 +10,21 @@ from threading import RLock
 _verified_hashes=OrderedDict()
 _hash_lock=RLock()
 
+
+def seed_verified_hashes(records):
+    """Reuse controller-verified immutable assets under its stat-bound receipt.
+
+    Changed files are deliberately not admitted: file_hash will read and check
+    them normally against the original source certificate.
+    """
+    for name,record in records.items():
+        path=Path(name);s=path.stat()
+        if (s.st_size,s.st_mtime_ns)!=(record['size'],record['mtime_ns']):continue
+        key=(str(path.absolute()),s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+        with _hash_lock:
+            _verified_hashes[key]=record['sha256']
+            while len(_verified_hashes)>2048:_verified_hashes.popitem(last=False)
+
 ROOT = Path("D:/TradingML/runtimes")
 DEFAULT = ROOT / "vectorized_backtest" / "torch_backtest_v63"
 
