@@ -58,3 +58,15 @@ Then profile with `python -B -m research.vectorized_backtest.v65.profile_global
 --job <new-job> --output <profile-runtime> --count 1024 --reproduce`, and launch
 with `python -B -m research.vectorized_backtest.v65.run_train --job <new-job>`.
 Set PYTHONDONTWRITEBYTECODE=1. Deployment must be committed, pushed, and hash-verified.
+# Resident RAM and concurrency qualification
+
+`host_loading={"resident":true,"workers":2,"depth":6}` prepares each replay
+lane's assigned sessions in a bounded CPU queue before replay and retains them
+for subsequent generations. The existing RAM reserve remains enforced; deferred
+sessions are reported and use demand loading. CUDA upload remains owned by the
+replay lane. Worker counts 6, 8, 12 and 16 are supported for measured comparisons.
+`profile_global --days ... --repeat-warm` accepts up to all 150 training sessions,
+reports preparation separately, and checks exact cold/warm financial evidence.
+Changing concurrency on resume requires a pinned `scheduling_change` describing
+both configurations; candidates, RNG, completed receipts and financial semantics
+remain unchanged. A higher worker count is not assumed faster.

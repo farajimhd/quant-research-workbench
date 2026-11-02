@@ -56,7 +56,7 @@ def main():
         members=[members[i] for i in indices]
     else:indices=list(range(args.offset,args.offset+args.count));members=members[args.offset:args.offset+args.count]
     days=args.days
-    if not 2<=len(days)<=24 or len(set(days))!=len(days):raise ValueError('Profile requires 2 to 24 unique sessions')
+    if not 2<=len(days)<=150 or len(set(days))!=len(days):raise ValueError('Profile requires 2 to 150 unique sessions')
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
@@ -80,6 +80,9 @@ def main():
         panels,refs=c.evaluate('training',days,members,1)
         returned=time.perf_counter();reproduction_seconds=None
         cold_return_seconds=returned-started
+        lanes=c.get_lanes('training')
+        resident_preparation_seconds=getattr(lanes,'resident_preparation_seconds',0.)
+        resident_preparation=getattr(lanes,'resident_preparation',[])
         warm_return_seconds=None
         if args.repeat_warm:
             for future in c.publication_lane.pending:future.result()
@@ -125,6 +128,9 @@ def main():
                     metrics_sha256=digest([financial_evidence(p) for p in published]),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
         report['cold_return_seconds']=cold_return_seconds
+        report['workers']=job['global_session_workers']
+        report['resident_preparation_seconds']=resident_preparation_seconds
+        report['resident_preparation']=resident_preparation
         report['warm_return_seconds']=warm_return_seconds
         if args.repeat_warm:
             warm=[json.loads((c.root/'replays/training/generation-0002'/day/'receipt.json').read_bytes())['metrics'] for day in days]

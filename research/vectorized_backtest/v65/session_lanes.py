@@ -430,6 +430,32 @@ def preload(days,payload,token):
     _worker.population_preparer.submit(payload,token)
     _worker.prefetch.schedule(days,_worker.host)
 
+
+def prime_sessions(days):
+    """Bounded CPU preparation; keep complete sessions across generations.
+
+    Admission may defer under external RAM pressure. Demand loading remains
+    available, and no financial result or authoritative input is discarded.
+    """
+    worker=_worker;began=perf_counter();ready=0;deferred=[]
+    if len(days)>worker.maximum_host_sessions:
+        raise ValueError('Resident preparation exceeds assigned cache capacity')
+    for index,day in enumerate(days):
+        worker.check_stop()
+        worker.prefetch.schedule(days[index:],worker.host)
+        if day not in worker.host:
+            worker.emit(day,stage='Prepare resident RAM',prepared_sessions=ready,assigned_sessions=len(days))
+            item=worker.prefetch.take(day)
+            if item is None:
+                deferred.append(day);continue
+            worker.host[day]=item
+        ready+=1
+    result=dict(pid=os.getpid(),lane=worker.lane,ready=ready,deferred=deferred,
+                seconds=perf_counter()-began,available_bytes=__import__('psutil').virtual_memory().available)
+    from .publication import write_json
+    write_json(Path(worker.config['output'])/'resident-preparation'/f'{worker.lane}.json',result)
+    return result
+
 def evaluate_preloaded(day,next_day,payload,generation,token,width,parent_token,extra):
     if _worker.population_preparer.token==parent_token:
         _worker.population_preparer.append_members(parent_token,payload,[Individual.restore(p) for p in extra],token)
@@ -507,6 +533,12 @@ class SessionLanes:
         bound=getattr(self.panel,'job',{}).get('resume_transition',{}).get('completed_replays',{})
         role=self.config.get('split','training')
         can_restore=lambda day:output_override is None and not prepared_population and f'{role}/{generation}/{day}' in bound
+        if self.config.get('host_resident_prepare'):
+            began=perf_counter()
+            futures=[pool.submit(prime_sessions,[d for d in days[lane::self.workers] if not can_restore(d)])
+                     for lane,pool in enumerate(self.pools)]
+            self.resident_preparation=[future.result() for future in futures]
+            self.resident_preparation_seconds=perf_counter()-began
         def submit(lane,index,day,next_day):
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             if can_restore(day):

@@ -10,6 +10,38 @@ class Item:
     def close(self):self.closed=True
 
 
+def test_resident_preparation_keeps_all_assigned_sessions_and_reuses_them(tmp_path,monkeypatch):
+    from collections import OrderedDict
+    from research.vectorized_backtest.v65 import session_lanes as lanes
+    calls=[]
+    queue=SessionPrefetch(lambda d:(calls.append(d) or Item()),workers=2,capacity=3,
+        reserve_gib=0,admission_gib=1,snapshot=lambda:SimpleNamespace(available=100*2**30))
+    worker=SimpleNamespace(host=OrderedDict(),maximum_host_sessions=12,prefetch=queue,
+        check_stop=lambda:None,emit=lambda *a,**k:None,lane=0,config={'output':str(tmp_path)})
+    monkeypatch.setattr(lanes,'_worker',worker)
+    days=[str(i) for i in range(12)]
+    try:
+        result=lanes.prime_sessions(days)
+        assert result['ready']==12 and not result['deferred']
+        assert set(worker.host)==set(days) and len(calls)==12
+        lanes.prime_sessions(days)
+        assert len(calls)==12 and all(not item.closed for item in worker.host.values())
+        with pytest.raises(ValueError,match='capacity'):lanes.prime_sessions(days+['overflow'])
+    finally:queue.close()
+
+
+def test_resident_preparation_reports_memory_deferral_without_demand_allocation(tmp_path,monkeypatch):
+    from research.vectorized_backtest.v65 import session_lanes as lanes
+    queue=SessionPrefetch(lambda d:pytest.fail('Unsafe allocation'),workers=1,capacity=2,
+        reserve_gib=128,admission_gib=32,snapshot=lambda:SimpleNamespace(available=100*2**30))
+    monkeypatch.setattr(lanes,'_worker',SimpleNamespace(host={},maximum_host_sessions=3,prefetch=queue,
+        check_stop=lambda:None,emit=lambda *a,**k:None,lane=0,config={'output':str(tmp_path)}))
+    try:
+        result=lanes.prime_sessions(['a','b','c'])
+        assert result['ready']==0 and result['deferred']==['a','b','c']
+    finally:queue.close()
+
+
 def test_prepares_three_sessions_concurrently_with_bounded_lookahead():
     gate=Event();entered=Event();lock=Lock();active=0;peak=0;calls=[]
     def load(day):

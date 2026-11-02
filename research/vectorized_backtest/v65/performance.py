@@ -13,8 +13,18 @@ def tuning(job):
 
 def configuration(job):
     workers=job.get('global_session_workers',2)
-    if workers not in (2,4,6,8):raise ValueError('Replay workers must be two, four, six, or eight')
+    if workers not in (2,4,6,8,12,16):raise ValueError('Unsupported bounded replay worker count')
     return dict(session_workers=workers,**tuning(job))
+
+
+def loading(job):
+    value=dict(resident=False,workers=3,depth=6)
+    value.update(job.get('host_loading',{}))
+    if set(value)!={'resident','workers','depth'} or type(value['resident']) is not bool:
+        raise ValueError('Invalid host loading configuration')
+    if not 1<=value['workers']<=value['depth']<=8:
+        raise ValueError('Unbounded host preparation')
+    return value
 
 
 def memory_budget(item,population,batches,block):

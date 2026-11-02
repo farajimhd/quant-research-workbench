@@ -3,7 +3,7 @@ from research.vectorized_backtest.v65.performance import configuration
 from research.vectorized_backtest.v65.profile_throughput import comparable
 
 
-@pytest.mark.parametrize('workers',[2,4,6,8])
+@pytest.mark.parametrize('workers',[2,4,6,8,12,16])
 @pytest.mark.parametrize('block',[128,256,512,1024])
 def test_bounded_execution_settings(workers,block):
     assert configuration(dict(global_session_workers=workers,replay_tuning=dict(time_block=block,transfer_mode='events')))==dict(

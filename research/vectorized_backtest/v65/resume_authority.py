@@ -21,10 +21,18 @@ def global_predecessor(job):
     if not path.is_file() or sha(path)!=transition.get('predecessor_job_sha256'):raise ValueError('Global predecessor changed')
     old=json.loads(path.read_bytes())
     mutable={'source_sha256','code','commit','deployment','resume_transition','result_cache_transition'}
+    scheduling=transition.get('scheduling_change')
+    if scheduling:
+        from .performance import configuration,loading
+        before=dict(replay=configuration(old),host=loading(old))
+        after=dict(replay=configuration(job),host=loading(job))
+        if scheduling!=dict(before=before,after=after):raise ValueError('Scheduling transition differs from pinned jobs')
+        mutable.update(('global_session_workers','host_loading','replay_tuning'))
     if initial_score_transition(job,old):mutable.update(('objective','score_version'))
     def semantics(value):
         value=json.loads(json.dumps({k:v for k,v in value.items() if k not in mutable}))
         value['machines']['workstation']['code']=None
+        if scheduling:value['machines']['workstation']['session_workers']=None
         return value
     if semantics(job)!=semantics(old):raise ValueError('Global continuation changed campaign semantics')
     return old
