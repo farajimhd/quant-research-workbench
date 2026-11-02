@@ -4,6 +4,11 @@ import json
 import os
 from hashlib import sha256
 from pathlib import Path
+from collections import OrderedDict
+from threading import RLock
+
+_verified_hashes=OrderedDict()
+_hash_lock=RLock()
 
 ROOT = Path("D:/TradingML/runtimes")
 DEFAULT = ROOT / "vectorized_backtest" / "torch_backtest_v63"
@@ -115,11 +120,25 @@ def write_json(path, value):
 
 
 def file_hash(path):
+    path=Path(path)
+    stat=path.stat()
+    key=(str(path.absolute()),stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+    with _hash_lock:
+        if key in _verified_hashes:
+            _verified_hashes.move_to_end(key)
+            return _verified_hashes[key]
     h = sha256()
     with Path(path).open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(block)
-    return h.hexdigest()
+    after=path.stat()
+    if (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)!=key[1:]:
+        raise ValueError('File changed during integrity verification: '+str(path))
+    value=h.hexdigest()
+    with _hash_lock:
+        _verified_hashes[key]=value
+        while len(_verified_hashes)>2048:_verified_hashes.popitem(last=False)
+    return value
 
 
 def code_hash():

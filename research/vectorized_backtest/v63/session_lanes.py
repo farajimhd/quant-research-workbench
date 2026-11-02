@@ -137,7 +137,9 @@ class Worker:
             # Evict before allocation, rather than temporarily retaining a third
             # complete session. Plans own any still-live device references.
             while len(self.host)>=self.maximum_host_sessions:self.host.popitem(last=False)
-            gc.collect()
+            # Dropping the LRU reference releases acyclic session arrays.
+            # A full-process collection here scans all live result/genome graphs
+            # and stalls the loader and preparation threads under the GIL.
             from research.vectorized_backtest.v63.host_memory import wait_for_headroom
             wait_for_headroom(c['output'],lambda **v:self.emit(day,**v),
                 reserve_gib=c.get('host_reserve_gib',128. if torch.device(c['device']).type=='cuda' else 0.),
@@ -180,6 +182,8 @@ class Worker:
         prefetched=item is not None
         if prefetched:self.host[day]=item;self.host.move_to_end(day)
         else:item=self.loader.submit(self.load,day).result()
+        market_load_seconds=perf_counter()-started
+        self.emit(day,stage='Prepare population',market_load_seconds=market_load_seconds)
         device=torch.device(c['device'])
         if prepared is None:population=[Individual.restore(v) for v in payload];packed_population=None;prepared_keys=None
         else:population,prepared_keys,packed_population,_=prepared.result()
@@ -196,9 +200,10 @@ class Worker:
             if prior_identity!=identity:raise ValueError('Resident result cache contract changed')
             cached=dict(cached)
         elif cache_path.exists() and c.get('reuse_results',True):
+            self.emit(day,stage='Read prior results',market_load_seconds=market_load_seconds)
             ahead=getattr(item,'prefetched_results',None)
             cache_prefetched=bool(ahead and ahead[0]==str(cache_path) and ahead[1]==fingerprint(cache_path))
-            record=ahead[2] if cache_prefetched else read_results(cache_path)[1]
+            record=ahead[2] if cache_prefetched else read_results(cache_path,keys)[1]
             item.prefetched_results=None
             if record['identity']!=identity:
                 # Only an exact, archived cache receipt may cross the explicitly
@@ -225,6 +230,7 @@ class Worker:
                     if budget['required_bytes']>c['lane_memory_bytes']:
                         raise MemoryError(f"Compact replay needs {budget['required_bytes']} bytes; lane admits {c['lane_memory_bytes']}")
                 if not c.get('retain_session_residency') or item.device!=device:
+                    self.emit(day,stage='Upload session',market_load_seconds=market_load_seconds)
                     self.staging.activate([(day,item)],device)
                     self.uploads+=1
             load_seconds=perf_counter()-started
@@ -256,6 +262,7 @@ class Worker:
                         for value in self.plans.values():value.close()
                         self.plans.clear();self.plan_generation=generation
                     if batch_key not in self.plans:
+                        self.emit(day,stage='Pack networks',candidate_offset=offset,market_load_seconds=market_load_seconds)
                         if len(self.plans)>=self.plan_limit:
                             _,old=self.plans.popitem(last=False);old.close()
                         if packed_population is None:plan=PopulationPrograms(members,device)
@@ -305,7 +312,8 @@ class Worker:
                         load_seconds=load_seconds if offset==0 else 0.,cleanup_seconds=cleanup_seconds if offset==0 else 0.,worker_pre_replay_seconds=worker_pre_replay_seconds if offset==0 else 0.,host_prefetched=prefetched,result_cache_prefetched=cache_prefetched,transfer_prefetched=transfer_prefetched,rule_seconds=rule_seconds,
                         replay_seconds=perf_counter()-replay_clock,gpu_gate_wait_seconds=self.execution_gate.wait_seconds-gate_wait if self.execution_gate is not None else 0.,pid=os.getpid(),finished_epoch=time())
                     timing['replay_started_epoch']=replay_start
-                    timing.update(native_preparation_seconds=prime_seconds,native_preparation_wait_seconds=prime_wait)
+                    timing.update(native_preparation_seconds=prime_seconds,native_preparation_wait_seconds=prime_wait,
+                                  market_load_seconds=market_load_seconds if offset==0 else 0.)
                     timing.update(getattr(plan.plan,'last_replay_profile',{}))
                     timing['since_previous_replay_seconds']=None if previous_finished is None else replay_start-previous_finished
                     self.previous_replay_finished=timing['finished_epoch']
