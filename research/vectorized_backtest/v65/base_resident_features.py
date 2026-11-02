@@ -32,7 +32,11 @@ class ResidentFeatures:
             arrays['log_' + name] = np.log1p(data.market[name]).astype(np.float32)
         # SessionData already owns the current-clock swing projection. Do not
         # construct or transfer a second, differently gated history bank here.
-        self.host = {k: torch.from_numpy(np.array(v, copy=True)) for k, v in arrays.items()}
+        # Shared ARTE sessions own immutable in-memory arrays. Retaining their
+        # storage avoids a second history/base bank for every cached session.
+        # Legacy mmap-backed callers keep their original independent copies.
+        share=hasattr(data,'shard_values')
+        self.host = {k: torch.from_numpy(v if share else np.array(v, copy=True)) for k, v in arrays.items()}
         self.bytes = sum(v.numel() * v.element_size() for v in self.host.values())
         self.tensors = self.host
         self.device = torch.device('cpu')

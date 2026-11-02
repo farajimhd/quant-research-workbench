@@ -15,13 +15,13 @@ class ResidentFeatures(OriginalResident):
             self.tensors=self.host
         values=getattr(data,'indicator_values',None)
         if values is not None:
-            self.host['indicators']=torch.from_numpy(np.array(values,copy=True))
+            self.host['indicators']=torch.from_numpy(values if hasattr(data,'shard_values') else np.array(values,copy=True))
             self.bytes+=self.host['indicators'].numel()*4
             self.tensors=self.host
 
         enriched=getattr(data,'enriched_values',None)
         if enriched is not None:
-            self.host['enriched']=torch.from_numpy(np.array(enriched,copy=True))
+            self.host['enriched']=torch.from_numpy(enriched if hasattr(data,'shard_values') else np.array(enriched,copy=True))
             self.bytes+=self.host['enriched'].numel()*4
             self.tensors=self.host
 

@@ -20,6 +20,8 @@ priors only: ordinary mutation and crossover can change every graph and threshol
 Six persistent replay lanes each prepare up to six upcoming CPU sessions with
 three loader threads, subject to host admission. Prepared sessions remain in
 pageable RAM across generations. Only replay owners allocate/upload CUDA data.
+ARTE resident tensors share their immutable NumPy storage instead of retaining
+duplicate history, indicator and context banks for every cached session.
 Repeated swing-window reductions share exact intermediate results. Use
 `profile_global --repeat-warm --days <2 to 24 training dates>` to verify retained
 RAM residency and exact cold/warm financial parity without result-cache reuse.

@@ -53,3 +53,25 @@ def test_session_rotation_releases_only_obsolete_device_residency(monkeypatch):
     worker.retire_device_sessions('active',torch.device('cuda'))
     assert calls==['old features','old','release cache']
     assert set(worker.host)=={'old','active'} and 'retained' in worker.plans
+
+
+def test_arte_resident_banks_share_immutable_storage_without_changing_legacy_ownership():
+    import numpy as np
+    from types import SimpleNamespace
+    from research.vectorized_backtest.v65.resident_features import ResidentFeatures
+    arrays=dict(features=np.ones((2,3),np.float32),feature_valid=np.ones((2,3),bool),
+                clocks=np.array([1,2]),market_keys=np.array([1,2]))
+    bank=dict(values=np.ones((2,332),np.float32),source_rows=np.array([[0],[1]]),ids=np.array([[0],[1]]))
+    market={k:np.ones(2,np.float64) for k in ('mark','bid','ask','quote_us','volume','notional','trade_count')}
+    market['feature_row']=np.array([0,1])
+    item=SimpleNamespace(arrays=arrays,bank=bank,market=market,indicator_values=np.ones((2,5),np.float32),
+        enriched_values=np.ones((2,4),np.float32),shard_values=np.ones((2,8),np.float32))
+    resident=ResidentFeatures(item)
+    for name,value in [('base',arrays['features']),('history',bank['values']),
+                       ('indicators',item.indicator_values),('enriched',item.enriched_values),('shards',item.shard_values)]:
+        assert np.shares_memory(resident.host[name].numpy(),value)
+        assert np.array_equal(resident.host[name].numpy(),value)
+    del item.shard_values
+    legacy=ResidentFeatures(item)
+    assert not np.shares_memory(legacy.host['base'].numpy(),arrays['features'])
+    assert not np.shares_memory(legacy.host['indicators'].numpy(),item.indicator_values)
