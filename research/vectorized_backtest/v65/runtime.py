@@ -6,6 +6,7 @@ from hashlib import sha256
 from pathlib import Path
 from collections import OrderedDict
 from threading import RLock
+from .file_version import change_version
 
 _verified_hashes=OrderedDict()
 _hash_lock=RLock()
@@ -20,7 +21,9 @@ def seed_verified_hashes(records):
     for name,record in records.items():
         path=Path(name);s=path.stat()
         if (s.st_size,s.st_mtime_ns)!=(record['size'],record['mtime_ns']):continue
-        key=(str(path.absolute()),s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns)
+        version=change_version(path)
+        if version is None or list(version)!=record.get('change_version'):continue
+        key=(str(path.absolute()),s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_ctime_ns,version)
         with _hash_lock:
             _verified_hashes[key]=record['sha256']
             while len(_verified_hashes)>2048:_verified_hashes.popitem(last=False)
@@ -137,9 +140,10 @@ def write_json(path, value):
 def file_hash(path):
     path=Path(path)
     stat=path.stat()
-    key=(str(path.absolute()),stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+    version=change_version(path)
+    key=(str(path.absolute()),stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns,version)
     with _hash_lock:
-        if key in _verified_hashes:
+        if version is not None and key in _verified_hashes:
             _verified_hashes.move_to_end(key)
             return _verified_hashes[key]
     h = sha256()
@@ -147,11 +151,11 @@ def file_hash(path):
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             h.update(block)
     after=path.stat()
-    if (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns)!=key[1:]:
+    if (after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns,change_version(path))!=key[1:]:
         raise ValueError('File changed during integrity verification: '+str(path))
     value=h.hexdigest()
     with _hash_lock:
-        _verified_hashes[key]=value
+        if version is not None:_verified_hashes[key]=value
         while len(_verified_hashes)>2048:_verified_hashes.popitem(last=False)
     return value
 

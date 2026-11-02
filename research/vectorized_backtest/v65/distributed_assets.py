@@ -2,6 +2,7 @@
 import hashlib,json,os,shutil,time,threading
 from pathlib import Path
 from .publication import write_json
+from .file_version import change_version
 
 CHUNK=16*1024**2
 _locks={}
@@ -38,7 +39,13 @@ def _ensure_day(job,node,role,day):
     if marker.exists():
         saved=json.loads(marker.read_bytes())
         if saved['asset_sha256']!=job['asset_sha256']:raise ValueError('Asset inventory changed')
-        if all(Path(x['path']).exists() and Path(x['path']).stat().st_size==x['size'] and Path(x['path']).stat().st_mtime_ns==x['mtime_ns'] for x in saved['files']):return 0.
+        def unchanged(record):
+            path=Path(record['path'])
+            if not path.exists():return False
+            stat=path.stat();version=change_version(path)
+            return (stat.st_size==record['size'] and stat.st_mtime_ns==record['mtime_ns']
+                    and version is not None and list(version)==record.get('change_version'))
+        if all(unchanged(x) for x in saved['files']):return 0.
     records=[]
     missing=sum(x['size'] for x in items if not Path(x['path']).exists())
     if shutil.disk_usage(Path(job['campaign']).anchor).free<missing+64*2**30:raise MemoryError('64 GiB campaign disk reserve required before staging')
@@ -46,10 +53,13 @@ def _ensure_day(job,node,role,day):
         bus=Path(job['transport']) if node=='workstation' else remote(job['transport'],job['workstation_share'])
         if (bus/'STOP').exists():raise InterruptedError('Stopped during disk staging')
         target=Path(item['path'])
+        before_version=change_version(target) if target.exists() else None
         if node=='workstation':
             if sha(target)!=item['sha256']:raise ValueError('Certified workstation artifact changed')
         else:copy_verified(remote(target,job['workstation_share']),target,item['sha256'])
-        stat=target.stat();records.append(dict(path=str(target),size=stat.st_size,mtime_ns=stat.st_mtime_ns))
+        stat=target.stat();version=change_version(target)
+        if node=='workstation' and before_version!=version:raise ValueError('Asset changed during verification')
+        records.append(dict(path=str(target),size=stat.st_size,mtime_ns=stat.st_mtime_ns,change_version=list(version) if version else None))
     marker.parent.mkdir(parents=True,exist_ok=True);write_json(marker,dict(asset_sha256=job['asset_sha256'],files=records))
     return time.perf_counter()-start
 
