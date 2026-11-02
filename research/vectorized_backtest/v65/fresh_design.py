@@ -10,12 +10,15 @@ from math import tanh
 from time import perf_counter
 import numpy as np
 
-VERSION='mixed-probe-diversity-v1'
+VERSION='mixed-selective-probe-diversity-v2'
 FAMILIES=('ema_cross','macd_signal','vwap_reclaim','rsi_recovery',
           'high_breakout','candle_agreement','relative_strength','activity_surge')
 SETTINGS=dict(version=VERSION,population=1024,initial_proposals=2048,maximum_proposals=6144,
     maximum_template_fraction=.375,maximum_per_template_family=48,
     maximum_identical_request_patterns=2,immigrant_template_probability=.375,
+    random_entry_rate_ranges=[[.001,.01],[.01,.03],[.03,.10]],random_entry_rate_weights=[.6,.3,.1],
+    random_exit_rate_ranges=[[.002,.03],[.03,.10],[.10,.30]],random_management_inactive_probability=.6,
+    random_management_active_rate_ranges=[[.001,.01],[.01,.05]],
     selection='balanced templates then farthest training-probe action patterns',
     fitness_selection=False,validation_feedback=False)
 _BITS=np.array([int(i).bit_count() for i in range(256)],np.uint8)
@@ -131,7 +134,7 @@ def initialize(rng,size,probe):
         def build(index):
             local=np.random.default_rng(int(seeds[index]));family='random' if index<1280 else FAMILIES[(index-1280)%len(FAMILIES)]
             try:
-                if family=='random':member=_calibrate(local,[random[index]],probe)[0][0]
+                if family=='random':member=_calibrate(local,[random[index]],probe,selective=True)[0][0]
                 else:member=template(local,family)
                 validate_fresh(member);pattern,rate=request_pattern(member,probe)
                 return member,family,pattern,rate,None

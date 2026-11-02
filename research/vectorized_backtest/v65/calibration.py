@@ -104,7 +104,7 @@ def observe(net,probe,stage='entry',*,reference=False):
         outputs.append(values[-1]);valid.append(masks[-1])
     return np.stack(outputs,1),np.stack(valid,1),saturated,max(1,total)
 
-def calibrate(rng,members,probe):
+def calibrate(rng,members,probe,*,selective=False):
     """Fill every slot; failed proposals never enter the replay population."""
     from .genome import sample
     from concurrent.futures import ThreadPoolExecutor
@@ -114,7 +114,7 @@ def calibrate(rng,members,probe):
         slot,member=item;local=np.random.default_rng(int(seeds[slot]));rejected=[]
         for attempt in range(16):
             try:
-                accepted,report=_calibrate(local,[member],probe)
+                accepted,report=_calibrate(local,[member],probe,selective=selective)
                 break
             except ValueError as exc:
                 rejected.append(dict(slot=slot,attempt=attempt,reason=str(exc)))
@@ -133,7 +133,7 @@ def calibrate(rng,members,probe):
         unresolved_constant=0,validation_feedback=False)
 
 
-def _calibrate(rng,members,probe):
+def _calibrate(rng,members,probe,*,selective=False):
     started=perf_counter();records=[];out=[]
     for i,member in enumerate(members):
         nets={}
@@ -141,10 +141,24 @@ def _calibrate(rng,members,probe):
         boundary=entry_boundary(member,probe)
         boundaries=action_boundaries(member,probe)
         for stage,net in member.networks.items():
-            route=int(rng.choice(4,p=RATE_WEIGHTS));attempts=0;failed=False;target=None
+            latent=selective and stage in ('add','reduce','trail') and rng.random()<.6
+            if latent:
+                # An initially inactive but market-dependent management head.
+                # This is a mutable starting point, never an execution rule.
+                last=net.nodes[-1]
+                last=replace(last,op='tanh',bias=-2.,weights=tuple(float(w)*.05 for w in last.weights))
+                net=replace(net,nodes=(*net.nodes[:-1],last),threshold=.99)
+                route=3
+            elif selective:
+                route=int(rng.choice(3,p=(.6,.3,.1) if stage=='entry' else (.4,.4,.2) if stage=='exit' else (.6,.4,0.)))
+            else:route=int(rng.choice(4,p=RATE_WEIGHTS))
+            attempts=0;failed=False;target=None
             if stage=='entry' and route==3:route=int(rng.choice(3))
             if route!=3:
-                target=float(np.exp(rng.uniform(np.log(.001),np.log(.05)))) if route==0 else float(rng.uniform(*((.05,.30) if route==1 else (.30,.95))))
+                if selective:
+                    ranges=((.001,.01),(.01,.03),(.03,.10)) if stage=='entry' else ((.002,.03),(.03,.10),(.10,.30)) if stage=='exit' else ((.001,.01),(.01,.05),(.01,.05))
+                    low,high=ranges[route];target=float(np.exp(rng.uniform(np.log(low),np.log(high))))
+                else:target=float(np.exp(rng.uniform(np.log(.001),np.log(.05)))) if route==0 else float(rng.uniform(*((.05,.30) if route==1 else (.30,.95))))
                 realized=None
                 for attempt in range(16):
                     values,valid,_,_=observe(net,probe,stage)
@@ -163,7 +177,8 @@ def _calibrate(rng,members,probe):
             records.append(dict(candidate=i,stage=stage,route=route,target_rate=target,
                 repair_attempts=attempts,unresolved_constant=failed,
                 boundary_opportunities=int(boundary.sum()) if stage=='entry' else None,
-                realized_rate=realized if route!=3 else None,
+                realized_rate=realized if route!=3 else 0. if latent else None,
+                selective_construction=selective,initially_inactive=latent,
                 joint_boundary_probe='ask' in probe,policy_repaired=policy_repaired))
         out.append(replace(member,networks=nets).validate())
     return out,dict(seconds=perf_counter()-started,probe_sha256=probe['sha256'],records=records,

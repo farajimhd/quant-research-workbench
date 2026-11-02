@@ -39,7 +39,7 @@ def probe():
     from research.vectorized_backtest.v65.config import STATES
     shape=(2,8,2);rng=np.random.default_rng(8)
     values=rng.uniform(-.8,.8,(*shape,INPUTS)).astype(np.float32)
-    return dict(inputs=values,known=np.ones((*shape,len(CATALOG)),bool),
+    return dict(sha256='synthetic-training-probe',inputs=values,known=np.ones((*shape,len(CATALOG)),bool),
         lag_absolute=-values[...,:len(CATALOG)],lag_known=np.ones((*shape,len(CATALOG)),bool),
         held_states=np.zeros((*shape,len(STATES)),np.float32),eligible=np.ones(shape,bool),
         quote_valid=np.ones(shape,bool),ask=np.full(shape,10.),ask_size=np.ones(shape),
@@ -75,3 +75,21 @@ def test_disk_admission_accounts_for_two_overlapping_generations_and_growth():
     assert not admission(127*gib)['admitted']
     assert admission(200*gib,40*gib)['required_bytes']==184*gib
     assert not admission(180*gib,40*gib)['admitted']
+
+
+def test_selective_priors_are_calibration_only_and_latent_heads_still_have_market_dependencies():
+    from research.vectorized_backtest.v65.calibration import _calibrate,observe
+    from research.vectorized_backtest.v65.genome import sample
+    from research.vectorized_backtest.v65.authority import dependency_certificate
+    rng=np.random.default_rng(101);p=probe()
+    policy=template(rng,'ema_cross').policy
+    members=[replace(m,policy=policy) for m in sample(rng,16)]
+    members,report=_calibrate(rng,members,p,selective=True)
+    entries=[r for r in report['records'] if r['stage']=='entry']
+    assert all(.001<=r['target_rate']<=.10 for r in entries)
+    latent=[r for r in report['records'] if r['initially_inactive']]
+    assert latent
+    for r in latent:
+        member=members[r['candidate']];dependency_certificate(member)
+        net=member.networks[r['stage']];values,known,_,_=observe(net,p,r['stage'])
+        assert not (known&(values>net.threshold)).any()

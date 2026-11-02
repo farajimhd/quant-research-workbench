@@ -12,6 +12,10 @@ at most two identical probe request patterns. This is coverage screening, not
 profit selection: only the selected 1,024 candidates undergo full-session replay.
 Later fresh immigrants use the same template/random proposal mixture, with
 source families recorded in the pedigree. No template receives a survival quota.
+Random entry priors span 0.1–10% activation on feasible training-probe observations,
+weighted toward the lower end. Each random management head starts inactive with
+60% probability; active add/reduce/trail heads target 0.1–5%. These are construction
+priors only: ordinary mutation and crossover can change every graph and threshold.
 
 Six persistent replay lanes each prepare up to six upcoming CPU sessions with
 three loader threads, subject to host admission. Prepared sessions remain in
