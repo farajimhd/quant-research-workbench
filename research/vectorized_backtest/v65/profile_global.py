@@ -44,8 +44,9 @@ def main():
             raise ValueError('Pinned V60 diagnostic genomes required')
         seedpath=args.founders
     if not seedpath.exists():
-        print('Initializing 1024 fresh founders from training-only calibration',flush=True)
-        state=global_seed({},job,load_probe(job['initialization_probe'],job['training']))
+        print(f"Initializing {1024*job['initial_multiplier']} fresh founders from training-only calibration",flush=True)
+        state=global_seed({},job,load_probe(job['initialization_probe'],job['training']),
+                          progress=lambda done,total:print(f'Qualified founders: {done}/{total}',flush=True))
         write_json(seedpath,state)
     state=json.loads(seedpath.read_bytes());members=[Individual.restore(p) for p in state['population']]
     if len(members) not in (1024,6144):raise ValueError('Pinned 1024-member evolved population or 6144 founders required')

@@ -5,6 +5,15 @@ from research.vectorized_backtest.v65.fresh_design import FAMILIES
 from research.vectorized_backtest.v65.founder_selection import select
 
 
+def test_probe_rarity_prefers_coverage_but_does_not_hard_exclude_patterns():
+    from collections import Counter
+    from research.vectorized_backtest.v65.founder_pool import rarity_indices
+    patterns=['common']*8+['new-a','new-b']
+    assert rarity_indices(patterns,Counter(common=10),2)==[8,9]
+    assert len(rarity_indices(patterns,Counter(common=10),10))==10
+    assert rarity_indices(['a','a','b','b'],Counter(),4)==[0,2,1,3]
+
+
 @pytest.mark.parametrize('family',FAMILIES)
 @pytest.mark.parametrize('filter_index',range(4))
 def test_combinations_use_valid_three_node_causal_graphs(family,filter_index):

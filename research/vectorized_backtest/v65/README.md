@@ -5,8 +5,10 @@ graphs, 1,536 parameterized templates and 1,536 trigger/filter combinations.
 All 6,144 distinct genomes receive full training replay at generation zero.
 The constructor uses the eight-date, four-window training probe, rejects invalid
 or unselective entries and duplicate genomes, and fails explicitly at 98,304
-proposals rather than padding the population. Probe pattern duplicates are
-reported rather than hard-excluded. Combinations allow three entry nodes.
+proposals rather than padding the population. Soft rarity ranking favors less
+represented probe patterns within each construction group, without excluding
+otherwise valid candidates solely for sharing a pattern. Combinations allow
+three entry nodes.
 Training-only selection keeps 768 quality/diversity representatives plus 256
 coverage choices. Quality combines existing fitness (50%), lower-quartile profit
 across five chronological blocks (20%), active sessions (15%), and dispersion of
