@@ -13,7 +13,7 @@ class SessionProgress:
     def publish(self):
         if hasattr(self.panel,'publish'):
             self.panel.publish(session_paths={d:dict(r) for d,r in self.rows.items()},
-                active_sessions=[d for d,r in self.rows.items() if r['status']=='running'],
+                active_sessions=[d for d,r in self.rows.items() if r['status'] in ('running','preparing')],
                 completed_sessions=sum(r['status']=='complete' for r in self.rows.values()),
                 replay_generation=self.generation,replay_role=self.role,replay_population=self.population,replay_started_epoch=self.started)
 
@@ -24,6 +24,10 @@ class SessionProgress:
     def event(self,event):
         with self.lock:
             row=self.rows.get(event['day'])
+            if row is not None and event.get('stage') in ('Prepare resident RAM','Resident RAM ready'):
+                row.update(event)
+                row['status']='preparing' if event['stage']=='Prepare resident RAM' else 'queued'
+                self.publish();return
             if row is None or row['status']!='running':return
             # Dispatch begins the operator's clock; worker cache/load events must
             # not reset it and hide time spent preparing the session.

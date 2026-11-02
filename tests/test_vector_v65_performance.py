@@ -17,6 +17,27 @@ def test_unknown_or_unbounded_settings_rejected(job):
     with pytest.raises(ValueError):configuration(job)
 
 
+def test_resume_scheduling_changes_require_exact_binding_and_preserve_semantics(tmp_path):
+    import json,copy
+    from research.vectorized_backtest.v65.resume_authority import global_predecessor
+    from research.vectorized_backtest.v65.distributed_assets import sha
+    from research.vectorized_backtest.v65.performance import loading
+    old=dict(global_session_workers=6,machines={'workstation':dict(code='old',session_workers=6)},
+             population=1024,execution={'entry':1000},source_sha256='old')
+    path=tmp_path/'old.json';path.write_text(json.dumps(old))
+    job=copy.deepcopy(old);job.update(global_session_workers=16,source_sha256='new',host_loading=dict(resident=True,workers=1,depth=6))
+    job['machines']['workstation'].update(code='new',session_workers=16)
+    job['resume_transition']=dict(predecessor_job=str(path),predecessor_job_sha256=sha(path),scheduling_change=dict(
+        before=dict(replay=configuration(old),host=loading(old)),after=dict(replay=configuration(job),host=loading(job))))
+    assert global_predecessor(job)==old
+    bad=copy.deepcopy(job);bad['execution']['entry']=2000
+    with pytest.raises(ValueError,match='semantics'):global_predecessor(bad)
+    bad=copy.deepcopy(job);bad['global_session_workers']=12
+    with pytest.raises(ValueError,match='Scheduling transition'):global_predecessor(bad)
+    bad=copy.deepcopy(job);del bad['resume_transition']['scheduling_change']
+    with pytest.raises(ValueError,match='semantics'):global_predecessor(bad)
+
+
 def test_order_parity_ignores_paths_but_preserves_counts_and_content():
     def metrics(path,count,sha):return dict(net_pnl=[1.],execution_orders=[dict(receipt=path,candidate_index=0,orders=count,sha256=sha)])
     baseline=comparable(metrics('a',10,'abc'))

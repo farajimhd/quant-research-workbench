@@ -450,6 +450,7 @@ def prime_sessions(days):
                 deferred.append(day);continue
             worker.host[day]=item
         ready+=1
+        worker.emit(day,stage='Resident RAM ready',prepared_sessions=ready,assigned_sessions=len(days))
     result=dict(pid=os.getpid(),lane=worker.lane,ready=ready,deferred=deferred,
                 seconds=perf_counter()-began,available_bytes=__import__('psutil').virtual_memory().available)
     from .publication import write_json
