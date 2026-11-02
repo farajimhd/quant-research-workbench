@@ -92,7 +92,7 @@ def render(state, width=120):
     table = Table(expand=True, box=None, pad_edge=False)
     for name in ('Worker','Session','State','Stage','Rows','MiB','Elapsed','ETA'):
         table.add_column(name, justify='right' if name in ('Rows','MiB','Elapsed') else 'left', no_wrap=True)
-    for slot, w in state['workers'].items():
+    for slot, w in sorted(state['workers'].items(),key=lambda item:int(item[0])):
         table.add_row(slot, w.get('day','-'), w['state'], w['stage'], f"{w.get('rows',0):,}", f"{w.get('bytes',0)/2**20:.1f}", duration(now-w['started']) if w.get('state')=='active' and 'started' in w else '-', duration(w.get('eta_seconds')) if w['state']=='active' else '-')
     errors = [Text(e,style='red') for e in state.get('errors',[])[-3:]]
     return Group(title,summary,timing,table,*errors)
