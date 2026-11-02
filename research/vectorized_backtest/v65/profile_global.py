@@ -61,7 +61,7 @@ def main():
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
     local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics,profile_gated=not args.ungated)
-    c=Global(local);c.publication_lane=Lane();c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
+    c=Global(local);c.publication_lane=Lane(job.get('publication_workers',1));c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
     from .distributed_assets import ensure_day
     for day in days:ensure_day(local,'workstation','training',day)
     probe_preparation_seconds=0.

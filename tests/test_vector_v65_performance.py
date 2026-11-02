@@ -3,6 +3,59 @@ from research.vectorized_backtest.v65.performance import configuration
 from research.vectorized_backtest.v65.profile_throughput import comparable
 
 
+def test_parallel_receipts_finish_before_ordered_seal(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event,Lock
+    from research.vectorized_backtest.v65 import publication_lane as module
+    release=Event();entered=Event();sealed=Event();lock=Lock();active=[]
+    def publish(index):
+        with lock:
+            active.append(index)
+            if len(active)==4:entered.set()
+        assert release.wait(5)
+        return index
+    def seal():sealed.set();return 'sealed'
+    monkeypatch.setattr(module,'ProcessPoolExecutor',lambda max_workers,**kw:ThreadPoolExecutor(max_workers=max_workers))
+    monkeypatch.setattr(module,'publish_replays',publish);monkeypatch.setattr(module,'finish_generation',seal)
+    lane=module.Lane(4)
+    try:
+        receipts=[lane.submit(publish,i) for i in range(4)]
+        assert entered.wait(5)
+        with ThreadPoolExecutor(max_workers=1) as caller:
+            future=caller.submit(lane.submit,seal)
+            assert not sealed.wait(.1)
+            release.set();assert future.result(5).result(5)=='sealed'
+        assert [f.result() for f in receipts]==list(range(4))
+    finally:release.set();lane.close()
+
+
+def test_failed_receipt_prevents_checkpoint_submission(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from research.vectorized_backtest.v65 import publication_lane as module
+    def publish():raise ValueError('Receipt failed')
+    monkeypatch.setattr(module,'ProcessPoolExecutor',lambda max_workers,**kw:ThreadPoolExecutor(max_workers=max_workers))
+    monkeypatch.setattr(module,'publish_replays',publish)
+    monkeypatch.setattr(module,'finish_generation',lambda:pytest.fail('Sealed failed receipt'))
+    lane=module.Lane(4);future=lane.submit(publish)
+    with pytest.raises(ValueError,match='Receipt failed'):future.result()
+    with pytest.raises(ValueError,match='Receipt failed'):lane.submit(module.finish_generation)
+    with pytest.raises(ValueError,match='Receipt failed'):lane.close()
+
+
+def test_real_receipt_process_pool_preserves_contents(tmp_path):
+    import json
+    from research.vectorized_backtest.v65.publication_lane import Lane,publish_replays
+    from research.vectorized_backtest.v65.distributed_assets import sha
+    lane=Lane(4)
+    try:
+        paths=[tmp_path/f'{i}.json' for i in range(8)]
+        futures=[lane.submit(publish_replays,[(str(path),dict(index=i,value=1.25))]) for i,path in enumerate(paths)]
+        for i,(path,future) in enumerate(zip(paths,futures)):
+            assert future.result(30)=={str(path):sha(path)}
+            assert json.loads(path.read_bytes())==dict(index=i,value=1.25)
+    finally:lane.close()
+
+
 @pytest.mark.parametrize('workers',[2,4,6,8,12,16])
 @pytest.mark.parametrize('block',[128,256,512,1024])
 def test_bounded_execution_settings(workers,block):
@@ -28,7 +81,7 @@ def test_resume_scheduling_changes_require_exact_binding_and_preserve_semantics(
     job=copy.deepcopy(old);job.update(global_session_workers=16,source_sha256='new',host_loading=dict(resident=True,workers=1,depth=6))
     job['machines']['workstation'].update(code='new',session_workers=16)
     job['resume_transition']=dict(predecessor_job=str(path),predecessor_job_sha256=sha(path),scheduling_change=dict(
-        before=dict(replay=configuration(old),host=loading(old)),after=dict(replay=configuration(job),host=loading(job))))
+        before=dict(replay=configuration(old),host=loading(old),publication_workers=1),after=dict(replay=configuration(job),host=loading(job),publication_workers=1)))
     assert global_predecessor(job)==old
     bad=copy.deepcopy(job);bad['execution']['entry']=2000
     with pytest.raises(ValueError,match='semantics'):global_predecessor(bad)

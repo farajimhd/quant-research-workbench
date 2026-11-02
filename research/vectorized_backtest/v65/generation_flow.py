@@ -13,7 +13,7 @@ from research.vectorized_backtest.v65.distributed_assets import sha
 
 def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,probe,objective,*,stop_after_generation=None):
     if valid and c.job.get('version')!='v65-global-v1':raise ValueError('The direct pilot cannot open validation sessions')
-    lane=Lane();c.publication_lane=lane;c.worker.defer_publication=True
+    lane=Lane(c.job.get('publication_workers',1));c.publication_lane=lane;c.worker.defer_publication=True
     snapshot=Snapshot(members);last=None;completed=state['completed'];c.sealed_generation=max(0,completed)
     limit=c.job['phase2_generations'] if stop_after_generation is None else stop_after_generation
     if not completed < limit <= c.job['phase2_generations']:raise ValueError('Invalid qualification generation bound')

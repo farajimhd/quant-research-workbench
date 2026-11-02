@@ -22,6 +22,7 @@ def check(job):
     from .performance import configuration,loading
     performance=configuration(job)
     loading(job)
+    if job.get('publication_workers',1) not in (1,2,4):raise ValueError('Bounded publication workers required')
     if job['machines']['workstation']['session_workers']!=performance['session_workers']:raise ValueError('Replay worker metadata differs')
     if job['machines']['workstation'].get('hostname')!='DESKTOP-SAAI85T':raise ValueError('Pinned workstation hostname required')
     if job.get('neural_tile',64)!=64:raise ValueError('Global campaigns require the parity-verified 64-lane neural tile')

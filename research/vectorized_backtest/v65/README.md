@@ -70,3 +70,8 @@ reports preparation separately, and checks exact cold/warm financial evidence.
 Changing concurrency on resume requires a pinned `scheduling_change` describing
 both configurations; candidates, RNG, completed receipts and financial semantics
 remain unchanged. A higher worker count is not assumed faster.
+
+`publication_workers=4` uses four independent session-receipt writers with at
+most twelve queued payloads. Generation sealing waits for all receipt futures
+and propagates writer errors; checkpoint publication remains single-process and
+ordered. Publication concurrency is also bound in resume scheduling authority.

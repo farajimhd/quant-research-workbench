@@ -97,18 +97,35 @@ def finish_generation(packet):
 
 
 class Lane:
-    def __init__(self):
+    def __init__(self,replay_workers=1):
+        if replay_workers not in (1,2,4):raise ValueError('Bounded receipt writers required')
         self.pool=ProcessPoolExecutor(max_workers=1,mp_context=multiprocessing.get_context('spawn'))
-        self.pending=[]
+        self.replay_pool=ProcessPoolExecutor(max_workers=replay_workers,mp_context=multiprocessing.get_context('spawn'))
+        self.main_pending=[];self.replay_pending=[];self.replay_capacity=3*replay_workers
         self.lock=threading.RLock()
+
+    @property
+    def pending(self):
+        with self.lock:return self.main_pending+self.replay_pending
 
     def submit(self,fn,*args):
         with self.lock:return self._submit(fn,*args)
 
     def _submit(self,fn,*args):
+        self.check()
+        if fn is publish_replays:
+            # Each complete session owns distinct receipt paths. Bound retained
+            # IPC payloads; generation seals still use the single ordered lane.
+            while len(self.replay_pending)>=self.replay_capacity:self.replay_pending.pop(0).result()
+            future=self.replay_pool.submit(fn,*args);self.replay_pending.append(future);return future
+        if fn is finish_generation:
+            # Never seal or advance a checkpoint before every session receipt
+            # exists and every writer failure has reached the controller.
+            for future in self.replay_pending:future.result()
+            self.replay_pending.clear()
         # At most one generation finishing plus one next-generation start.
-        while len(self.pending)>=2:self.pending.pop(0).result()
-        self.check();future=self.pool.submit(fn,*args);self.pending.append(future);return future
+        while len(self.main_pending)>=2:self.main_pending.pop(0).result()
+        future=self.pool.submit(fn,*args);self.main_pending.append(future);return future
 
     def check(self):
         with self.lock:
@@ -118,4 +135,6 @@ class Lane:
     def close(self):
         try:
             for future in self.pending:future.result()
-        finally:self.pool.shutdown(wait=True,cancel_futures=True)
+        finally:
+            try:self.replay_pool.shutdown(wait=True,cancel_futures=True)
+            finally:self.pool.shutdown(wait=True,cancel_futures=True)

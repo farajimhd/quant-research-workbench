@@ -24,10 +24,11 @@ def global_predecessor(job):
     scheduling=transition.get('scheduling_change')
     if scheduling:
         from .performance import configuration,loading
-        before=dict(replay=configuration(old),host=loading(old))
-        after=dict(replay=configuration(job),host=loading(job))
+        before=dict(replay=configuration(old),host=loading(old),publication_workers=old.get('publication_workers',1))
+        after=dict(replay=configuration(job),host=loading(job),publication_workers=job.get('publication_workers',1))
+        if after['publication_workers'] not in (1,2,4):raise ValueError('Unbounded publication workers')
         if scheduling!=dict(before=before,after=after):raise ValueError('Scheduling transition differs from pinned jobs')
-        mutable.update(('global_session_workers','host_loading','replay_tuning'))
+        mutable.update(('global_session_workers','host_loading','replay_tuning','publication_workers'))
     if initial_score_transition(job,old):mutable.update(('objective','score_version'))
     def semantics(value):
         value=json.loads(json.dumps({k:v for k,v in value.items() if k not in mutable}))
