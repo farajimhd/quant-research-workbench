@@ -10,15 +10,16 @@ LAYOUT = dict(recent_high=(0,60),momentum_close=(60,120),attention_mean=(120,180
               average_move=(180,211),swing_low=(211,332))
 
 
-def trailing(values, width, *, current=False, maximum=False):
+def trailing(values, width, *, current=False, maximum=False, targets=None):
     """Elapsed-clock window; NaN gaps invalidate prices, zero fills activity."""
     offset = width-1 if current else width
     padded = np.concatenate((np.full(offset,np.nan),values))
     rows = sliding_window_view(padded,width)[:len(values)]
+    if targets is not None:rows=rows[targets]
     return np.max(rows,axis=1) if maximum else np.sum(rows[:,::-1],axis=1)/width
 
 
-def calculate(mark, high, low, observed, notional):
+def calculate(mark, high, low, observed, notional, targets=None):
     n=len(mark)
     if any(np.asarray(v).shape!=(n,) for v in (high,low,observed,notional)):
         raise ValueError('Ticker history shape mismatch')
@@ -27,35 +28,27 @@ def calculate(mark, high, low, observed, notional):
     low=np.where(observed,low,np.nan).astype(np.float64)
     notional=np.asarray(notional,dtype=np.float64)
     if not np.isfinite(notional).all() or (notional<0).any():raise ValueError('Invalid activity history')
-    result=np.full((n,332),np.nan,dtype=np.float64)
+    targets=np.arange(n) if targets is None else np.asarray(targets,dtype=np.int64)
+    if ((targets<0)|(targets>=n)).any():raise ValueError('History target outside source')
+    result=np.full((len(targets),332),np.nan,dtype=np.float64)
     for w in WINDOWS:
-        result[:,w-1]=trailing(high,w,maximum=True)
-        if w<n:result[w:,60+w-1]=mark[:-w]
-        result[:,120+w-1]=trailing(notional,w)
+        result[:,w-1]=trailing(high,w,maximum=True,targets=targets)
+        prior=targets-w
+        result[:,60+w-1]=np.where(prior>=0,mark[prior.clip(0)],np.nan)
+        result[:,120+w-1]=trailing(notional,w,targets=targets)
     movement=np.abs(mark-np.concatenate(([np.nan],mark[:-1])))
-    for i,w in enumerate(ADAPTIVE):result[:,180+i]=trailing(movement,w,current=True)
-    # Compiled linear-time rolling minima, shared by equal-width swing pairs.
-    # The prior implementation built 121 overlapping strided reductions.
-    # Finite counts preserve its strict gap invalidation and confirmation clock.
-    from scipy.ndimage import minimum_filter1d
-    finite=np.r_[0,np.cumsum(np.isfinite(low),dtype=np.int64)]
-    safe_low=np.where(np.isfinite(low),low,np.inf)
-    minima={};complete={};ends=np.arange(n)+1
-    for width in {left+right+1 for left in SWING_WINDOWS for right in SWING_WINDOWS}:
-        minima[width]=minimum_filter1d(safe_low,size=width,origin=(width-1)//2,
-                                     mode='constant',cval=np.inf)
-        complete[width]=(finite[ends]-finite[np.maximum(0,ends-width)])==width
-    pivots={right:np.r_[np.full(min(right,n),np.nan),low[:max(0,n-right)]]
-            for right in SWING_WINDOWS}
+    for i,w in enumerate(ADAPTIVE):result[:,180+i]=trailing(movement,w,current=True,targets=targets)
     for i,left in enumerate(SWING_WINDOWS):
         for j,right in enumerate(SWING_WINDOWS):
             width=left+right+1
-            pivot=pivots[right]
-            confirmed=complete[width]&(pivot==minima[width])
+            padded=np.concatenate((np.full(width-1,np.nan),low))
+            rows=sliding_window_view(padded,width)
+            pivot=rows[:,left]
+            confirmed=np.isfinite(rows).all(1)&(pivot==np.min(rows,axis=1))
             last=np.maximum.accumulate(np.where(confirmed,np.arange(n),-1))
             # Decisions see only confirmation state through the previous clock.
             prior=np.concatenate(([-1],last[:-1]))
-            result[:,211+i*len(SWING_WINDOWS)+j]=np.where(prior>=0,pivot[prior.clip(0)],np.nan)
+            result[:,211+i*len(SWING_WINDOWS)+j]=np.where(prior>=0,pivot[prior.clip(0)],np.nan)[targets]
     return result
 
 

@@ -63,6 +63,9 @@ def test_scalar_features_are_future_invariant():
     changed=close.copy();changed[50:]*=10
     after=scalar_features(frame(changed),clocks,np.arange(50),0)
     for i in range(3):np.testing.assert_equal(before[i],after[i])
+    targets=np.array([0,1,14,27,49])
+    sparse=scalar_features(frame(close),clocks,targets,0)
+    for i in range(3):np.testing.assert_equal(before[i][targets],sparse[i])
 
 
 def test_shard_resident_gather_preserves_column_order_and_absence():
@@ -78,7 +81,7 @@ def test_shard_resident_gather_preserves_column_order_and_absence():
 
 
 @pytest.mark.parametrize('size',[1,10,300,19800])
-def test_linear_swing_history_is_exactly_equal_to_v64(size):
+def test_sparse_history_is_exactly_equal_to_v64(size):
     from research.vectorized_backtest.v64.certified_history_bank import calculate as old
     from research.vectorized_backtest.v65.certified_history_bank import calculate as new
     rng=np.random.default_rng(71)
@@ -86,7 +89,10 @@ def test_linear_swing_history_is_exactly_equal_to_v64(size):
     observed=rng.random(size)>.02
     high=close+.1;low=close-.1;notional=rng.integers(0,10000,size).astype(float)
     low[rng.random(size)<.01]=np.nan
-    np.testing.assert_equal(old(close,high,low,observed,notional),new(close,high,low,observed,notional))
+    expected=old(close,high,low,observed,notional)
+    np.testing.assert_equal(expected,new(close,high,low,observed,notional))
+    targets=np.arange(0,size,17)
+    np.testing.assert_equal(expected[targets],new(close,high,low,observed,notional,targets=targets))
 
 
 def test_prefetch_reuses_pageable_session_without_rebuilding(monkeypatch,tmp_path):

@@ -125,7 +125,7 @@ class SessionData(Lifecycle):
             observed[:,col]=obs
             for side in self.raw_extremes:self.raw_extremes[side][:,col]=np.where(obs&ext,dense[side],np.nan)
             self.bank['values'][points]=history_values(dense['close'],
-                np.where(ext,dense['high'],np.nan),np.where(ext,dense['low'],np.nan),obs,dense['notional'])[targets]
+                np.where(ext,dense['high'],np.nan),np.where(ext,dense['low'],np.nan),obs,dense['notional'],targets=targets)
             for k in ('volume','notional','trade_count'):self.market[k][points]=dense[k][targets]
             dollar60[points]=rolling_sum(dense['notional'],60)[targets]
         self._context(times,cols,slots,source,dollar60)
