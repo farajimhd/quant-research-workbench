@@ -113,8 +113,9 @@ def main():
             profiler=cProfile.Profile() if args.diagnostics else None
             try:
                 if profiler:profiler.enable()
-                result=c.reproduce(c.root/'global',c.root/'global/generation-0001',members,ids,records,c.cohort_snapshot.token,panels,refs,days,Objective(**job['objective']),1,rng,pedigree,Species(),probe)
+                result=c.reproduce(c.root/'global',c.root/'global/generation-0001',members,ids,records,c.cohort_snapshot.token,panels,refs,days,Objective(**job['objective']),0 if len(members)==6144 else 1,rng,pedigree,Species(),probe)
                 reproduction_seconds=result[-1]
+                selection_report=result[3]
             finally:
                 if profiler:
                     profiler.disable();profiler.dump_stats(str(root/'reproduction.prof'))
@@ -148,6 +149,7 @@ def main():
                     two_session_return_seconds=returned-started,two_session_published_seconds=time.perf_counter()-started,sessions=rows,
                     metrics_sha256=digest([financial_evidence(p) for p in published]),initial_replay_target_seconds=45)
         report['reproduction_seconds']=reproduction_seconds
+        if args.reproduce:report['selection_report']=selection_report
         report['cold_return_seconds']=cold_return_seconds
         report['workers']=job['global_session_workers']
         report['resident_preparation_seconds']=resident_preparation_seconds

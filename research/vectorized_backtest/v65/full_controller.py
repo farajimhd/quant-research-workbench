@@ -25,6 +25,7 @@ def checkpoint_contract(job,train,valid):
     from .behavior_selection import VERSION as behavior_version
     contract['behavior_selection']=behavior_version
     contract['selection_restart']=job.get('selection_restart')
+    contract['founder_pool']=job.get('founder_pool')
     contract['selection_risk_caps']=False
     contract['execution']=job.get('execution',{})
     if job.get('execution_restart'):
@@ -60,7 +61,8 @@ class Controller:
         emit=getattr(self,'artifact_write',write_json)
         session_panels=[];panel=aggregate(ordered,objective,session_sink=session_panels)
         from .execution_restart import initial_replay
-        if generation==0 and initial_replay(self.job):
+        sixfold=generation==0 and self.job['initial_multiplier']==6
+        if generation==0 and initial_replay(self.job) and not sixfold:
             if len(members)!=1024 or len(set(map(int,source_ids)))!=1024 or not panel['eligible'].all():
                 raise ValueError('Initial replay must score all 1024 founders without execution exclusions')
             emit(folder/'initial-admission.json',dict(replayed=1024,eligible=1024,execution_excluded=0))
@@ -69,7 +71,17 @@ class Controller:
         self.publish(reproduction_stage='Score training population')
         emit(folder/'training.json',dict(population_sha256=token,ids=source_ids.tolist(),panel=serializable(panel),ranking=ranking(panel,source_ids),receipts=training_receipts))
         self.publish(reproduction_stage='Select active parents and reproduce')
-        if generation<self.job['phase2_generations']:
+        if sixfold:
+            from .founder_selection import select
+            selected,diversity=select(ordered,panel)
+            successor=[members[i] for i in selected];newids=source_ids[selected]
+            emit(folder/'initial-admission.json',dict(diversity,selected_ids=newids.tolist()))
+            if getattr(self,'publication_lane',None):
+                from .validation_cache import certificate
+                from .lineage import program_key
+                self.successor_validated=certificate(successor)
+                self.successor_keys=[program_key(m) for m in successor]
+        elif generation<self.job['phase2_generations']:
             from .validation_cache import validation_scope
             # Retain parents plus offspring for this bounded transaction;
             # 4096 entries thrash even on the 5120 parental action graphs.
@@ -138,15 +150,15 @@ class Controller:
                 validation=read(f/'validation.json')
                 if validation['successor_sha256_before']!=validation['successor_sha256_after'] or not validation['display_only']:raise ValueError('Validation independence proof changed')
         else:
-            options=dict(progress=lambda done,total:self.publish(initialization_progress=dict(completed=done,total=total))) if self.job.get('campaign_stage')=='global' else {}
+            options=dict(progress=lambda done,total:self.publish(initialization_progress=dict(completed=done,total=total)))
             if self.job.get('execution_restart'):
                 from .execution_restart import seed
                 state=seed(self.job)
             else:
                 state=global_seed(exports,self.job,probe,**options)
-                # A single 1024-member fresh cohort is generation one. There
-                # is no oversampled generation-zero financial selection stage.
-                state.update(completed=0,seals={},species=species.state)
+                # Sixfold founders receive a sealed generation-zero selection;
+                # the original single-cohort path begins at generation one.
+                state.update(completed=-1 if self.job['initial_multiplier']==6 else 0,seals={},species=species.state)
             write_json(root/'initial-pool.json',state);write_checkpoint(cp,contract,state)
             completed=state['completed']
         members=[Individual.restore(p) for p in state['population']];ids=np.asarray(state['ids']);pedigree=CompactPedigree(3,state['pedigree'],state['next_serial']);rng=np.random.default_rng();rng.bit_generator.state=state['rng']

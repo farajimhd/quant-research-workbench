@@ -1,5 +1,23 @@
 # V65: ARTE multiscale shards with V64 diversity selection
 
+An opt-in `initial_multiplier=6` job pins `founder_pool.SETTINGS`: 3,072 random
+graphs, 1,536 parameterized templates and 1,536 trigger/filter combinations.
+All 6,144 distinct genomes receive full training replay at generation zero.
+The constructor uses the eight-date, four-window training probe, rejects invalid
+or unselective entries and duplicate genomes, and fails explicitly at 98,304
+proposals rather than padding the population. Probe pattern duplicates are
+reported rather than hard-excluded. Combinations allow three entry nodes.
+Training-only selection keeps 768 quality/diversity representatives plus 256
+coverage choices. Quality combines existing fitness (50%), lower-quartile profit
+across five chronological blocks (20%), active sessions (15%), and dispersion of
+positive session profits (15%). At least five trades across two sessions are
+required. Entry-time, ticker-duration and session-return descriptors group near
+duplicates at cosine similarity 0.98; a reported capacity limit prevents one
+group from dominating when sufficient distinct groups exist. No family survives
+by quota. Generation zero selects without reproduction or validation replay;
+the retained 1,024 start ordinary evolution and validation at generation one.
+Six network batches remain cached per worker during the initial replay.
+
 Event-based replay uses a bounded ring of eight pinned host buffer sets. A slot
 is reused only after its CPU execution completes; execution stays chronological.
 Admission includes all eight outstanding GPU packets, and timings report ring

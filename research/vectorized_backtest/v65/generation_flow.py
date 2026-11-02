@@ -19,6 +19,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
     if not completed < limit <= c.job['phase2_generations']:raise ValueError('Invalid qualification generation bound')
     try:
         for generation in range(completed+1,limit+1):
+            validation_days=valid if generation>0 else []
             from .disk_budget import check as check_disk
             check_disk(root,generation,len(train)+len(valid))
             started=time.perf_counter();lane.check()
@@ -34,7 +35,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
             if preparer is not None:preparer.submit_snapshot(snapshot)
             c.published_receipts=[]
             count=budgets(c.job['population'])['fresh'];count-=int(count*c.job['selection'].get('profit_fresh_fraction',0.))
-            c.fresh_prefetch=FreshPrefetch(rng,generation+1,count,probe) if generation<c.job['phase2_generations'] else None
+            c.fresh_prefetch=FreshPrefetch(rng,generation+1,count,probe) if 0<generation<c.job['phase2_generations'] else None
             if c.fresh_prefetch:
                 from .cpu_work import descriptors
                 species.descriptor_future=c.fresh_prefetch.pool.submit(descriptors,members)
@@ -49,7 +50,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
             from .generation_pipeline import overlap
             result,validation_result,overlap_timing=overlap(
                 lambda:c.reproduce(root,folder,members,ids,records,token,ordered,receipts,train,objective,generation,rng,pedigree,species,probe),
-                lambda:c.evaluate('validation',valid,members,generation),bool(valid),bool(valid))
+                lambda:c.evaluate('validation',validation_days,members,generation),bool(validation_days),bool(validation_days))
             panel,successor,newids,diversity,frozen_hash,reproduction_seconds=result
             next_snapshot=c.successor_snapshot
             if generation<c.job['phase2_generations'] and preparer is not None:
@@ -67,7 +68,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
             buffer.write(folder/'transition-timings.json',timing)
             validation=dict(population_sha256=token,ids=ids.tolist(),panel={},ranking=[],opened=False,receipts={},display_only=True,
                             successor_sha256_before=frozen_hash,successor_sha256_after=frozen_hash)
-            if valid:
+            if validation_days:
                 validation_panel=aggregate(validation_result[0],objective)
                 validation.update(panel=serializable(validation_panel),ranking=ranking(validation_panel,ids),opened=True,receipts=validation_result[1])
             pedigree.retain(newids)
