@@ -14,6 +14,7 @@ class Progress:
             completed=0, reused=0, failed=0, blocked=0, queued=0, total=0,
             workers={str(i): dict(state='idle', stage='waiting', rows=0, bytes=0) for i in range(workers)}, errors=[])
         self.stop = threading.Event()
+        self.weights={};self.weight_done=0.;self.weight_reused=0.;self.weight_total=0.
         self.thread = threading.Thread(target=self._publish, name='shard-status', daemon=True)
         self.thread.start()
 
@@ -31,12 +32,22 @@ class Progress:
             value['active'] = active; value['queued'] = max(0,value['total']-done-active)
             elapsed = now-self.state.get('phase_started', now)
             # Reused files don't inflate the throughput estimate.
-            value['phase_eta_seconds'] = max(0,value['total']-done)*elapsed/measured if measured >= 3 else None
+            completed_work=self.weight_done-self.weight_reused
+            remaining=max(0.,self.weight_total-self.weight_done)
+            ready=measured>=3 and completed_work>=.05*max(1.,self.weight_total-self.weight_reused)
+            value['phase_eta_seconds'] = remaining*elapsed/completed_work if ready else (0. if remaining==0 and done==value['total'] else None)
             value['eta_scope'] = 'current phase; next phase unmeasured' if value['stage']=='scanner' else 'remaining extraction'
             write_json(self.root/'status.json', value)
 
     def phase(self, name, total, blocked=0):
         with self.lock:
+            self.weights={};self.weight_done=0.;self.weight_reused=0.;self.weight_total=float(total)
+            if name=='extract':
+                plan=json.loads((self.root/'extraction-plan.json').read_text())
+                # Context-only daily files must not count as full execution days
+                # when estimating throughput. Units approximate projected rows.
+                self.weights={day:max(1.,len(s['decision'])*(19800*(1+.1+1/60+2)+57600)+len(s['hourly'])*16+len(s['daily'])) for day,s in plan['scopes'].items()}
+                self.weight_total=sum(self.weights.values())
             self.state.update(stage=name, total=total, completed=0, reused=0, failed=0,
                 blocked=blocked, phase_started=time.time(), measured=0)
 
@@ -48,6 +59,9 @@ class Progress:
         with self.lock:
             key = 'failed' if error else 'reused' if reused else 'completed'
             self.state[key] += 1
+            weight=self.weights.get(self.state['workers'][str(slot)].get('day'),1.)
+            self.weight_done+=weight
+            if reused or error:self.weight_reused+=weight
             if not error and not reused:
                 self.state['measured'] += 1
             self.state['workers'][str(slot)]['state'] = 'failed' if error else 'idle'
