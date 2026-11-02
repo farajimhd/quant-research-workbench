@@ -22,7 +22,7 @@ def loading(job):
     value.update(job.get('host_loading',{}))
     if set(value)!={'resident','workers','depth'} or type(value['resident']) is not bool:
         raise ValueError('Invalid host loading configuration')
-    if not 1<=value['workers']<=value['depth']<=8:
+    if not 1<=value['workers']<=8 or not value['workers']<=value['depth']<=32:
         raise ValueError('Unbounded host preparation')
     return value
 

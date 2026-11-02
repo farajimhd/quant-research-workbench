@@ -15,6 +15,10 @@ class Global(Evolution):
     def __init__(self,job):
         super().__init__(job,'workstation',Path(job['campaign'])/'phase-2',job['global_session_workers'],[Path(job['campaign'])])
         self.split_lanes={};self.worker.deferred_writes=[];self.published_receipts=[]
+        import multiprocessing
+        context=multiprocessing.get_context('spawn')
+        self.host_load_slots=context.BoundedSemaphore(32)
+        self.host_load_counts=context.Array('q',[0,0,0,0],lock=True)
 
     def close_lanes(self):
         errors=[]
@@ -73,6 +77,7 @@ class Global(Evolution):
                 expected={str(Path(x['path'])):x['sha256'] for x in assets}
                 verified[day]={x['path']:dict(x,sha256=expected[str(Path(x['path']))]) for x in receipt['files']}
             cfg['verified_file_hashes']=verified
+            cfg.update(host_load_slots=self.host_load_slots,host_load_counts=self.host_load_counts)
             cfg.update(output=str(self.root/'replays'/role),stop_roots=list(map(str,self.stop_roots)),boundary_stop=str(self.stop_roots[0]),
                 # Inductor/Triton keys bind graphs and kernels. UI/publication
                 # source changes must not discard those content-addressed caches.
@@ -113,6 +118,7 @@ class Global(Evolution):
         self.diagnostic_token=digest([m.payload() for m in mutants])
         lanes=self.get_lanes(role)
         if role=='training' and self.job['validation_days']:
+            if lanes.config.get('host_resident_prepare'):lanes.preload(days,snapshot)
             self.get_lanes('validation').preload(self.job['validation_days'],snapshot)
         self.stage=('Fresh founder replay' if generation==0 else 'Global training') if role=='training' else 'Validation replay + training-only reproduction'
         self.publish(phase=2,generation=generation,total_sessions=len(days),replay_role=role,evaluated_population=len(members))

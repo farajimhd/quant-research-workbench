@@ -93,9 +93,16 @@ class Worker:
 
     def prefetch_report(self,info):
         from research.vectorized_backtest.v65.runtime import write_json
+        counts=self.config.get('host_load_counts')
+        if counts is not None:
+            with counts.get_lock():info.update(global_load_active=counts[0],global_load_peak=counts[1],global_load_started=counts[2],global_load_completed=counts[3])
         write_json(Path(self.config['output'])/'prefetch-events'/f'{os.getpid()}-{__import__("time").time_ns()}.json',info)
 
     def read_host(self,day):
+        from .host_load_slots import slot
+        with slot(self.config,self.check_stop):return self._read_host(day)
+
+    def _read_host(self,day):
         """Construct a separate CPU session; only the demand thread owns the LRU."""
         c=self.config
         with self.load_count_lock:self.loads+=1
@@ -431,6 +438,15 @@ def preload(days,payload,token):
     _worker.prefetch.schedule(days,_worker.host)
 
 
+def queue_sessions(days):
+    """Start bounded CPU loads, without a cross-lane readiness barrier."""
+    _worker.prefetch.schedule(days,_worker.host)
+
+
+def choose_ready(days):
+    return _worker.prefetch.ready_day(days,_worker.host,_worker.check_stop)
+
+
 def prime_sessions(days):
     """Bounded CPU preparation; keep complete sessions across generations.
 
@@ -534,12 +550,18 @@ class SessionLanes:
         bound=getattr(self.panel,'job',{}).get('resume_transition',{}).get('completed_replays',{})
         role=self.config.get('split','training')
         can_restore=lambda day:output_override is None and not prepared_population and f'{role}/{generation}/{day}' in bound
+        queued={};dispatched_days=[set() for _ in range(self.workers)]
         if self.config.get('host_resident_prepare'):
-            began=perf_counter()
-            futures=[pool.submit(prime_sessions,[d for d in days[lane::self.workers] if not can_restore(d)])
-                     for lane,pool in enumerate(self.pools)]
-            self.resident_preparation=[future.result() for future in futures]
-            self.resident_preparation_seconds=perf_counter()-began
+            # FIFO within each process ensures scheduling precedes its replay.
+            # Never wait for another lane's cold session before dispatching a
+            # ready lane. The existing bounded queue refills as that lane runs.
+            for lane,pool in enumerate(self.pools):
+                assigned=[d for d in self.config.get('prefetch_days',days)[lane::self.workers] if not can_restore(d)]
+                if assigned:queued[lane]=pool.submit(queue_sessions,assigned[:self.config.get('host_prefetch_depth',6)])
+        def choose(lane,remaining):
+            if lane in queued:queued.pop(lane).result()
+            restored=next((d for d in remaining if can_restore(d)),None)
+            return restored or self.pools[lane].submit(choose_ready,remaining).result()
         def submit(lane,index,day,next_day):
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             if can_restore(day):
@@ -552,7 +574,8 @@ class SessionLanes:
                             timings=[],wall_seconds=perf_counter()-began,clocks=19799)
                 future=Future();future.set_result(result);return future
             assigned=days[lane::self.workers]
-            next_day=[d for d in assigned[index+1:] if not can_restore(d)][:self.config.get('host_prefetch_depth',6)]
+            dispatched_days[lane].add(day)
+            next_day=[d for d in assigned if d not in dispatched_days[lane] and not can_restore(d)][:self.config.get('host_prefetch_depth',6)]
             # The generation's immutable population crosses IPC once per lane.
             first=not dispatched[lane];dispatched[lane]=True
             request=payload if (first and getattr(self,'preloaded_token',None)!=token) or not self.config.get('immutable_population_cache') else None
@@ -561,7 +584,8 @@ class SessionLanes:
             if output_override is not None:return self.pools[lane].submit(evaluate_scoped,day,next_day,request,generation,token,fixed_widths[day],str(output_override),isolate_results)
             return self.pools[lane].submit(evaluate,day,next_day,request,generation,token,fixed_widths[day])
         try:
-            results=independent_sessions(days,self.workers,submit,self.independent_progress)
+            results=independent_sessions(days,self.workers,submit,self.independent_progress,
+                choose=choose if self.config.get('host_resident_prepare') else None)
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             if self.config.get('defer_publication'):return results
             return [timing for result in results for timing in result['timings']]
@@ -569,6 +593,7 @@ class SessionLanes:
 
     def preload(self,days,snapshot):
         self.preloaded_token=snapshot.token
+        days=self.config.get('prefetch_days',days)
         self.preload_futures=[pool.submit(preload,days[lane::self.workers][:self.config.get('host_prefetch_depth',6)],snapshot.payload,snapshot.token) for lane,pool in enumerate(self.pools) if lane<len(days)]
 
     def release_plans(self):

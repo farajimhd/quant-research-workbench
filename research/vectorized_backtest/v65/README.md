@@ -60,18 +60,27 @@ with `python -B -m research.vectorized_backtest.v65.run_train --job <new-job>`.
 Set PYTHONDONTWRITEBYTECODE=1. Deployment must be committed, pushed, and hash-verified.
 # Resident RAM and concurrency qualification
 
-`host_loading={"resident":true,"workers":2,"depth":6}` prepares each replay
-lane's assigned sessions in a bounded CPU queue before replay and retains them
-for subsequent generations. The existing RAM reserve remains enforced; deferred
+For 16 replay lanes, `host_loading={"resident":true,"workers":2,"depth":32}` prepares each replay
+lane's upcoming sessions in a bounded CPU queue and retains them for subsequent
+generations. Ready lanes replay immediately without waiting for other lanes'
+preparation. The existing RAM reserve remains enforced; deferred
 sessions are reported and use demand loading. CUDA upload remains owned by the
-replay lane. Worker counts 6, 8, 12 and 16 are supported for measured comparisons.
+replay lane. One shared semaphore caps training plus validation CPU preparation
+at 32 active loads, including demand loads. Each lane chooses a ready session
+without waiting for a slower earlier load; returned fitness retains date order.
+Worker counts 6, 8, 12 and 16 are supported for measured comparisons.
 `profile_global --days ... --repeat-warm` accepts up to all 150 training sessions,
 reports preparation separately, and checks exact cold/warm financial evidence.
+`--prefetch-all-sessions` additionally verifies all 188 sessions can remain in RAM
+with the 128 GiB reserve; only the selected training prefix is replayed.
 Changing concurrency on resume requires a pinned `scheduling_change` describing
 both configurations; candidates, RNG, completed receipts and financial semantics
 remain unchanged. A higher worker count is not assumed faster.
 
 `publication_workers=4` uses four independent session-receipt writers with at
-most twelve queued payloads. Generation sealing waits for all receipt futures
-and propagates writer errors; checkpoint publication remains single-process and
-ordered. Publication concurrency is also bound in resume scheduling authority.
+most twelve queued payloads. A bounded CPU handoff queue lets replay workers
+advance while results are dispatched. Each session uses a stable FIFO writer.
+Generation sealing waits for receipt futures in a background coordinator and
+propagates writer errors; checkpoint publication remains single-process and
+ordered while the next generation can replay. Publication concurrency is also
+bound in resume scheduling authority.

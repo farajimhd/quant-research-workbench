@@ -1,6 +1,6 @@
 """Bounded independent session scheduling and complete per-session telemetry."""
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event,RLock
+from threading import Event,RLock,BoundedSemaphore
 from time import time,perf_counter
 
 
@@ -49,23 +49,44 @@ class SessionProgress:
                 session_seconds=time()-self.rows[day]['session_started_epoch']);self.publish()
 
 
-def independent_sessions(days,workers,submit,progress):
+def independent_sessions(days,workers,submit,progress,*,choose=None):
     """Each lane advances immediately, preserving its day order and bounded work."""
     abort=Event()
+    # Retain at most two completed result packets per replay lane while CPU
+    # attribution/publication dispatch runs independently of the CUDA owner.
+    capacity=BoundedSemaphore(2*workers);callbacks=[];callback_lock=RLock()
+    completion=ThreadPoolExecutor(max_workers=min(4,workers),thread_name_prefix='v65-result-handoff')
+    def finish(day,result):
+        try:progress.finish(day,result)
+        except BaseException as error:
+            abort.set();progress.fail(day,error);raise
+        finally:capacity.release()
     def lane_run(lane):
         results=[];assigned=days[lane::workers]
         try:
-            for index,day in enumerate(assigned):
+            remaining=list(assigned)
+            for index in range(len(assigned)):
                 if abort.is_set():break
+                day=remaining[0]
+                if choose:day=choose(lane,remaining)
+                if day not in remaining:raise ValueError('Ready scheduler returned an unassigned session')
+                remaining.remove(day)
                 progress.begin(day)
-                result=submit(lane,index,day,assigned[index+1] if index+1<len(assigned) else None).result()
-                progress.finish(day,result);results.append(result)
+                result=submit(lane,index,day,remaining[0] if remaining else None).result()
+                capacity.acquire()
+                try:future=completion.submit(finish,day,result)
+                except BaseException:capacity.release();raise
+                with callback_lock:callbacks.append(future)
+                results.append(result)
             return results
         except BaseException as error:
             abort.set();progress.fail(day,error);raise
-    with ThreadPoolExecutor(max_workers=workers) as dispatch:
-        futures=[dispatch.submit(lane_run,lane) for lane in range(workers)]
-        results=[result for future in futures for result in future.result()]
+    try:
+        with ThreadPoolExecutor(max_workers=workers) as dispatch:
+            futures=[dispatch.submit(lane_run,lane) for lane in range(workers)]
+            results=[result for future in futures for result in future.result()]
+        for future in callbacks:future.result()
+    finally:completion.shutdown(wait=True,cancel_futures=False)
     by_day={r['day']:r for r in results}
     return [by_day[day] for day in days]
 

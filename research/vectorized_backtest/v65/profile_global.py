@@ -34,6 +34,7 @@ def main():
     parser.add_argument('--ungated',action='store_true',help='Diagnostic comparison of independent CUDA contexts without host mutex')
     parser.add_argument('--days',nargs='+',default=['2026-01-05','2026-07-06'],help='Bounded training sessions for comparison')
     parser.add_argument('--repeat-warm',action='store_true',help='Replay identical genomes from retained RAM, without result reuse')
+    parser.add_argument('--prefetch-all-sessions',action='store_true',help='Qualify RAM capacity for all train/validation sessions; replay only --days')
     args=parser.parse_args();job=json.loads(args.job.read_bytes());check(job)
     args.output.mkdir(parents=True,exist_ok=True)
     seedpath=args.output/'founders.json'
@@ -60,10 +61,16 @@ def main():
     if not set(days).issubset(job['training_days']):raise ValueError('Profile days outside training')
     label='batch-'+str(args.maximum_batch)+(f'-{args.offset}-{args.count}' if args.count!=6144 else '')+('-mixed' if args.mixed else '');root=args.output/label
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
-    local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics,profile_gated=not args.ungated)
+    local=dict(job,campaign=str(root),training_days=days,validation_days=job['validation_days'] if args.prefetch_all_sessions else [],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics,profile_gated=not args.ungated)
     c=Global(local);c.publication_lane=Lane(job.get('publication_workers',1));c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
     from .distributed_assets import ensure_day
     for day in days:ensure_day(local,'workstation','training',day)
+    if args.prefetch_all_sessions:
+        if days!=job['training_days'][:len(days)] or len(days)%job['global_session_workers']:
+            raise ValueError('Full-cache qualification requires a lane-aligned training prefix')
+        for role in ('training','validation'):
+            for day in job[role+'_days']:ensure_day(local,'workstation',role,day)
+        c.get_lanes('training').config['prefetch_days']=job['training_days']
     probe_preparation_seconds=0.
     if args.reproduce:
         import numpy as np
@@ -85,7 +92,6 @@ def main():
         resident_preparation=getattr(lanes,'resident_preparation',[])
         warm_return_seconds=None
         if args.repeat_warm:
-            for future in c.publication_lane.pending:future.result()
             lanes=c.get_lanes('training')
             futures=[pool.submit(disable_result_reuse) for pool in lanes.pools]
             for future in futures:future.result()
@@ -116,6 +122,21 @@ def main():
         publication_wait_started=time.perf_counter()
         c.publication_lane.close()
         publication_wait_seconds=time.perf_counter()-publication_wait_started
+        full_cache=None
+        if args.prefetch_all_sessions:
+            from .session_lanes import prime_sessions
+            c.stage='Qualify all-session RAM residency';c.publish()
+            futures=[]
+            for role in ('training','validation'):
+                for lane,pool in enumerate(c.get_lanes(role).pools):
+                    futures.append(pool.submit(prime_sessions,job[role+'_days'][lane::job['global_session_workers']]))
+            prepared=[future.result() for future in futures]
+            import psutil
+            with c.host_load_counts.get_lock():counts=list(c.host_load_counts)
+            full_cache=dict(sessions=sum(r['ready'] for r in prepared),deferred=[d for r in prepared for d in r['deferred']],
+                available_gib=psutil.virtual_memory().available/2**30,load_counts=counts,workers=prepared)
+            if full_cache['sessions']!=188 or full_cache['deferred']:raise ValueError('All-session RAM residency did not qualify')
+            if full_cache['available_gib']<128:raise MemoryError('All-session residency breached RAM reserve')
         rows=[]
         for day in days:
             timing=json.loads((c.root/'replays/training/generation-0001'/day/'timings.json').read_bytes())
@@ -131,6 +152,7 @@ def main():
         report['workers']=job['global_session_workers']
         report['resident_preparation_seconds']=resident_preparation_seconds
         report['resident_preparation']=resident_preparation
+        report['full_cache']=full_cache
         report['warm_return_seconds']=warm_return_seconds
         if args.repeat_warm:
             warm=[json.loads((c.root/'replays/training/generation-0002'/day/'receipt.json').read_bytes())['metrics'] for day in days]

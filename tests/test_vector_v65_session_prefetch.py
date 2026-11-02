@@ -10,6 +10,72 @@ class Item:
     def close(self):self.closed=True
 
 
+def test_ready_session_can_pass_a_slower_earlier_load():
+    release=Event();fast=Event()
+    def load(day):
+        if day=='slow':assert release.wait(5)
+        else:fast.set()
+        return Item()
+    queue=SessionPrefetch(load,workers=2,capacity=2,reserve_gib=0,admission_gib=1,
+        snapshot=lambda:SimpleNamespace(available=100*2**30))
+    try:
+        queue.schedule(['slow','fast']);assert fast.wait(5)
+        assert queue.ready_day(['slow','fast'],{},lambda:None)=='fast'
+    finally:release.set();queue.close()
+
+
+def test_global_loader_cap_is_32_across_all_callers():
+    import multiprocessing
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import BoundedSemaphore
+    from research.vectorized_backtest.v65.host_load_slots import slot
+    counts=multiprocessing.get_context('spawn').Array('q',[0,0,0,0],lock=True)
+    config=dict(host_load_slots=BoundedSemaphore(32),host_load_counts=counts)
+    release=Event();full=Event()
+    def load():
+        with slot(config,lambda:None):
+            with counts.get_lock():
+                if counts[0]==32:full.set()
+            assert release.wait(5)
+    with ThreadPoolExecutor(max_workers=40) as pool:
+        futures=[pool.submit(load) for _ in range(40)]
+        try:
+            assert full.wait(5)
+            with counts.get_lock():assert counts[0]==32 and counts[1]==32
+        finally:release.set()
+        for future in futures:future.result()
+    assert list(counts)==[0,32,40,40]
+
+
+def test_ready_order_preserves_returned_session_order():
+    from concurrent.futures import Future
+    from research.vectorized_backtest.v65.session_pipeline import independent_sessions
+    dispatched=[]
+    def submit(lane,index,day,next_day):
+        dispatched.append(day);future=Future();future.set_result(dict(day=day));return future
+    progress=SimpleNamespace(begin=lambda d:None,finish=lambda *a:None,fail=lambda *a:None)
+    results=independent_sessions(['a','b'],1,submit,progress,choose=lambda lane,remaining:remaining[-1])
+    assert dispatched==['b','a'] and [r['day'] for r in results]==['a','b']
+
+
+def test_ready_replay_does_not_wait_for_previous_result_handoff():
+    from concurrent.futures import Future,ThreadPoolExecutor
+    from research.vectorized_backtest.v65.session_pipeline import independent_sessions
+    release=Event();second=Event();publishing=Event()
+    def submit(lane,index,day,next_day):
+        if day=='b':second.set()
+        result=Future();result.set_result(dict(day=day));return result
+    def finish(day,result):
+        if day=='a':publishing.set();assert release.wait(5)
+    progress=SimpleNamespace(begin=lambda d:None,finish=finish,fail=lambda *a:None)
+    with ThreadPoolExecutor(max_workers=1) as caller:
+        future=caller.submit(independent_sessions,['a','b'],1,submit,progress)
+        try:
+            assert publishing.wait(5) and second.wait(5)
+        finally:release.set()
+        assert [r['day'] for r in future.result(5)]==['a','b']
+
+
 def test_late_preparation_events_cannot_rewind_active_replay():
     from research.vectorized_backtest.v65.session_pipeline import SessionProgress
     progress=SessionProgress(SimpleNamespace(publish=lambda **k:None),['a'],1024,1,'training')

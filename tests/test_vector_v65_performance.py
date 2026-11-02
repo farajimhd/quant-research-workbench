@@ -42,6 +42,44 @@ def test_failed_receipt_prevents_checkpoint_submission(monkeypatch):
     with pytest.raises(ValueError,match='Receipt failed'):lane.close()
 
 
+def test_seal_dependency_wait_does_not_block_next_generation_start(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from research.vectorized_backtest.v65 import publication_lane as module
+    release=Event();started=Event();sealed=Event()
+    def publish():assert release.wait(5)
+    def seal():sealed.set()
+    monkeypatch.setattr(module,'ProcessPoolExecutor',lambda max_workers,**kw:ThreadPoolExecutor(max_workers=max_workers))
+    monkeypatch.setattr(module,'publish_replays',publish);monkeypatch.setattr(module,'finish_generation',seal)
+    lane=module.Lane(4)
+    try:
+        lane.submit(publish);pending=lane.submit(seal)
+        lane.submit(started.set)
+        assert started.wait(5) and not sealed.is_set()
+        release.set();pending.result(5);assert sealed.is_set()
+    finally:release.set();lane.close()
+
+
+def test_same_session_writes_remain_fifo_across_generations(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from research.vectorized_backtest.v65 import publication_lane as module
+    release=Event();entered=Event();later=Event()
+    def publish(writes):
+        if writes[0][1]==1:entered.set();assert release.wait(5)
+        else:later.set()
+    monkeypatch.setattr(module,'ProcessPoolExecutor',lambda max_workers,**kw:ThreadPoolExecutor(max_workers=max_workers))
+    monkeypatch.setattr(module,'publish_replays',publish)
+    lane=module.Lane(4)
+    try:
+        lane.submit(publish,[('training/generation-0001/day/receipt.json',1)])
+        assert entered.wait(5)
+        last=lane.submit(publish,[('training/generation-0002/day/receipt.json',2)])
+        assert not later.wait(.1)
+        release.set();last.result(5);assert later.is_set()
+    finally:release.set();lane.close()
+
+
 def test_real_receipt_process_pool_preserves_contents(tmp_path):
     import json
     from research.vectorized_backtest.v65.publication_lane import Lane,publish_replays

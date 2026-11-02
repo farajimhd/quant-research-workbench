@@ -3,7 +3,7 @@ import json,time,multiprocessing
 import threading
 from pathlib import Path
 from hashlib import sha256
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor,ThreadPoolExecutor
 from .population_snapshot import envelope
 from research.vectorized_backtest.v65.publication import write_json,_write_text
 from research.vectorized_backtest.v65.distributed_assets import sha
@@ -100,7 +100,9 @@ class Lane:
     def __init__(self,replay_workers=1):
         if replay_workers not in (1,2,4):raise ValueError('Bounded receipt writers required')
         self.pool=ProcessPoolExecutor(max_workers=1,mp_context=multiprocessing.get_context('spawn'))
-        self.replay_pool=ProcessPoolExecutor(max_workers=replay_workers,mp_context=multiprocessing.get_context('spawn'))
+        self.replay_pools=[ProcessPoolExecutor(max_workers=1,mp_context=multiprocessing.get_context('spawn')) for _ in range(replay_workers)]
+        self.seal_dispatch=ThreadPoolExecutor(max_workers=1,thread_name_prefix='v65-seal-dependencies')
+        self.replay_serial=0
         self.main_pending=[];self.replay_pending=[];self.replay_capacity=3*replay_workers
         self.lock=threading.RLock()
 
@@ -117,15 +119,30 @@ class Lane:
             # Each complete session owns distinct receipt paths. Bound retained
             # IPC payloads; generation seals still use the single ordered lane.
             while len(self.replay_pending)>=self.replay_capacity:self.replay_pending.pop(0).result()
-            future=self.replay_pool.submit(fn,*args);self.replay_pending.append(future);return future
+            # A session always uses the same FIFO writer, including its mutable
+            # result-cache index. Later generations cannot be overwritten by an
+            # earlier session write that happened to complete more slowly.
+            key=next((str(Path(path).parent) for path,value in args[0] if Path(path).name=='receipt.json'),None) if args and isinstance(args[0],list) else None
+            if key is not None:
+                path=Path(key);key=str(path.parent.parent/path.name)
+            index=int(sha256(key.encode()).hexdigest(),16) if key else self.replay_serial
+            self.replay_serial+=1
+            future=self.replay_pools[index%len(self.replay_pools)].submit(fn,*args);self.replay_pending.append(future);return future
         if fn is finish_generation:
             # Never seal or advance a checkpoint before every session receipt
             # exists and every writer failure has reached the controller.
-            for future in self.replay_pending:future.result()
+            dependencies=tuple(self.replay_pending)
             self.replay_pending.clear()
+            while len(self.main_pending)>=2:self.main_pending.pop(0).result()
+            future=self.seal_dispatch.submit(self._finish,dependencies,fn,args)
+            self.main_pending.append(future);return future
         # At most one generation finishing plus one next-generation start.
         while len(self.main_pending)>=2:self.main_pending.pop(0).result()
         future=self.pool.submit(fn,*args);self.main_pending.append(future);return future
+
+    def _finish(self,dependencies,fn,args):
+        for future in dependencies:future.result()
+        return self.pool.submit(fn,*args).result()
 
     def check(self):
         with self.lock:
@@ -136,5 +153,7 @@ class Lane:
         try:
             for future in self.pending:future.result()
         finally:
-            try:self.replay_pool.shutdown(wait=True,cancel_futures=True)
+            try:
+                self.seal_dispatch.shutdown(wait=True,cancel_futures=False)
+                for pool in self.replay_pools:pool.shutdown(wait=True,cancel_futures=True)
             finally:self.pool.shutdown(wait=True,cancel_futures=True)
