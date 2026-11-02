@@ -5,6 +5,12 @@ from research.vectorized_backtest.v65.fresh_design import FAMILIES
 from research.vectorized_backtest.v65.founder_selection import select
 
 
+def test_no_positive_sessions_cannot_earn_profit_dispersion_credit():
+    from research.vectorized_backtest.v65.founder_selection import profit_concentration
+    value=profit_concentration(np.array([[-1.,-2.],[0.,0.],[2.,0.],[1.,1.]]))
+    np.testing.assert_array_equal(value,[1.,1.,1.,.5])
+
+
 def test_probe_rarity_prefers_coverage_but_does_not_hard_exclude_patterns():
     from collections import Counter
     from research.vectorized_backtest.v65.founder_pool import rarity_indices

@@ -7,6 +7,13 @@ def percentile(values):
     return (np.cumsum(counts)-.5*counts)[inverse]/len(values)
 
 
+def profit_concentration(pnl):
+    positive=np.maximum(pnl,0.)
+    total=positive.sum(1)
+    # No positive session is not evidence of well-distributed profit.
+    return np.divide(positive.max(1),total,out=np.ones(len(total)),where=total>0)
+
+
 def select(ordered,panel,size=1024):
     n=len(panel['score'])
     if n!=6*size or len(ordered)<2:raise ValueError('Complete sixfold training replay required')
@@ -14,8 +21,7 @@ def select(ordered,panel,size=1024):
     trades=np.asarray([m['closed_positions'] for m in ordered],float).T
     if not np.isfinite(pnl).all():raise ValueError('Nonfinite training outcomes')
     blocks=np.stack([pnl[:,part].sum(1) for part in np.array_split(np.arange(pnl.shape[1]),min(5,pnl.shape[1]))],1)
-    positive=np.maximum(pnl,0.)
-    concentration=positive.max(1)/np.maximum(positive.sum(1),1e-12)
+    concentration=profit_concentration(pnl)
     support=(trades>0).sum(1)
     quality=(.5*percentile(panel['score'])+.2*percentile(np.quantile(blocks,.25,axis=1))
              +.15*percentile(support)+.15*percentile(-concentration))
