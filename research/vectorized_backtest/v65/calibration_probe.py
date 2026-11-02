@@ -38,8 +38,10 @@ def load(path,training,stamp):
     from .price_references import References
     from .price_program import REFERENCES
     cfg=spec['config'];rows=[];price_rows=[]
+    starts=np.linspace(0,19800-16,4,dtype=int)
+    requested_ticks=np.concatenate([np.arange(s,s+16) for s in starts])
     for day in spec['days']:
-        item=SessionData(Path(cfg['inputs'])/day,Path(cfg['history'])/day,device='cpu',manifest=cfg['shard_manifest'],
+        item=SessionData(Path(cfg['inputs'])/day,Path(cfg['history'])/day,device='cpu',manifest=cfg['shard_manifest'],feature_ticks=requested_ticks,
             maximum_quote_age_seconds=None,execution_tail=Path(cfg['execution_tail'])/'training'/day,
             indicator_root=None,enriched_root=None)
         plan=None

@@ -17,7 +17,7 @@ from .shard_features import materialize
 
 class SessionData(Lifecycle):
     def __init__(self, root, history=None, *, device='cpu', maximum_gib=4.,
-                 manifest=None, **kwargs):
+                 manifest=None, feature_ticks=None, **kwargs):
         start=time.perf_counter();root=Path(root)
         if manifest is None:
             raise ValueError('V65 requires an explicit sealed shared-shard manifest')
@@ -42,8 +42,18 @@ class SessionData(Lifecycle):
         membership=np.zeros((n,u),bool)
         tick,rank=np.nonzero(slots>=0);membership[tick,slots[tick,rank]]=True
         needed=membership.copy()
+        if feature_ticks is not None:
+            ticks=np.asarray(feature_ticks,dtype=np.int64)
+            if ((ticks<0)|(ticks>=n)).any():raise ValueError('Calibration tick outside session')
+            # Rank-change features also need the top-five universe 15 seconds ago.
+            context_ticks=np.unique(np.r_[ticks,np.maximum(0,ticks-15)])
+            requested=np.zeros(n,bool);requested[context_ticks]=True
+            needed &= requested[:,None]
         # The lag input uses today's selected ticker at the preceding clock.
-        needed[:-1]|=membership[1:]
+        needed[:-1]|=needed[1:].copy()
+        if feature_ticks is not None:
+            prior=np.zeros(n,bool);prior[np.maximum(0,context_ticks-1)]=True
+            needed |= membership & prior[:,None]
         times,cols=np.nonzero(needed);p=len(times)
         if not p:raise ValueError('Empty scanner session')
         source=np.full((n,u),-1,np.int32);source[times,cols]=np.arange(p,dtype=np.int32)
@@ -55,6 +65,7 @@ class SessionData(Lifecycle):
         self.identity=dict(input_sha256=sha(manifest),history_sha256=session.source['hash'],
             shard_day=session.day,scanner_sha256=sha(session.root/'scanner'/session.day/'complete.json'),
             execution_tail_sha256=session.manifest['shard_seals'][session.day])
+        if feature_ticks is not None:self.identity['calibration_ticks']=ticks.tolist()
         trade=session._read(session.day,'trade-1000',self.tickers)
         if trade is None:raise ValueError('Required one-second trade shard missing')
         previous_days=[d for d in session.item['hourly'] if d<session.day]
@@ -77,6 +88,12 @@ class SessionData(Lifecycle):
             points=np.flatnonzero(cols==col);targets=times[points]
             frame=trade.filter(pl.col('ticker')==ticker).sort('time_us')
             if not frame.height:raise ValueError('Scanner ticker has no trade bars: '+ticker)
+            if not len(points):
+                ix=(frame['time_us'].to_numpy()//1000000-clocks[0]).astype(np.int64)
+                obs=frame['price_valid'].to_numpy()==1;ext=frame['extremes_valid'].to_numpy()==1
+                observed[ix,col]=obs
+                for side in self.raw_extremes:self.raw_extremes[side][ix,col]=np.where(obs&ext,frame[side].to_numpy(),np.nan)
+                continue
             base,ind,own,dense,obs,ext=scalar_features(frame,clocks,targets,origin)
             # Same elapsed 10-second activity window, only when the previous
             # session actually stored this ticker. No coarse-bar approximation.
@@ -125,7 +142,7 @@ class SessionData(Lifecycle):
     def _context(self,times,cols,slots,source,dollar60):
         from scipy.stats import rankdata
         safe=slots.clip(0);rows=source[np.arange(len(slots))[:,None],safe]
-        ranked=slots>=0;safe_rows=rows.clip(0)
+        ranked=(slots>=0)&(rows>=0);safe_rows=rows.clip(0)
         offset=len(OWN_NAMES)
         for horizon in MARKET_HORIZONS:
             index=OWN_NAMES.index(f'return.{horizon}s')

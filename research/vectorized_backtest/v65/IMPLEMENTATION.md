@@ -1,6 +1,12 @@
-# V65 contract
+# Inherited reference
 
-V65 starts 6,144 fresh founders with 1–2 reachable nodes per action (5–10 total),
+This document is retained from V64 for design provenance. Historical performance
+and qualification statements below are not V65 results. See README.md for V65
+input, initialization, and feature changes; workstation evidence lives in its runtime.
+
+# V64 contract
+
+V64 starts 6,144 fresh founders with 1–2 reachable nodes per action (5–10 total),
 then evolves populations of 1,024. Evolved limits remain 1,024 total/per-action
 nodes. The global campaign uses 24 training and 12 display-only validation
 sessions, 200 generations and six workstation lanes with 256-clock event-based

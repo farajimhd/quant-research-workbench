@@ -57,7 +57,7 @@ class Worker:
         self.config=config;self.events=events;self.lane=lane
         from collections import OrderedDict
         self.host=OrderedDict();self.maximum_host_sessions=config.get('maximum_host_sessions',2)
-        if not 2<=self.maximum_host_sessions<=8:raise ValueError('Bounded CPU session residency required')
+        if not 2<=self.maximum_host_sessions<=32:raise ValueError('Bounded CPU session residency required')
         self.staging=TransferStaging();self.loader=ThreadPoolExecutor(max_workers=1)
         from collections import OrderedDict
         self.plans=OrderedDict();self.plan_generation=None;self.plan_limit=config.get("plan_limit",2)
@@ -114,7 +114,9 @@ class Worker:
         return item
 
     def read_ahead(self,day):
-        return prepare_next(self.read_host(day),Path(self.config['output'])/'result-cache'/(day+'.json'),self.config)
+        item=self.host.get(day)
+        if item is None:item=self.read_host(day)
+        return prepare_next(item,Path(self.config['output'])/'result-cache'/(day+'.json'),self.config)
 
     def release_inactive_sessions(self):
         """Only between completed replays; evict recomputable data, not results."""

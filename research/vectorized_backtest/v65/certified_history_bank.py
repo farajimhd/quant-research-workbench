@@ -34,13 +34,24 @@ def calculate(mark, high, low, observed, notional):
         result[:,120+w-1]=trailing(notional,w)
     movement=np.abs(mark-np.concatenate(([np.nan],mark[:-1])))
     for i,w in enumerate(ADAPTIVE):result[:,180+i]=trailing(movement,w,current=True)
+    # Compiled linear-time rolling minima, shared by equal-width swing pairs.
+    # The prior implementation built 121 overlapping strided reductions.
+    # Finite counts preserve its strict gap invalidation and confirmation clock.
+    from scipy.ndimage import minimum_filter1d
+    finite=np.r_[0,np.cumsum(np.isfinite(low),dtype=np.int64)]
+    safe_low=np.where(np.isfinite(low),low,np.inf)
+    minima={};complete={};ends=np.arange(n)+1
+    for width in {left+right+1 for left in SWING_WINDOWS for right in SWING_WINDOWS}:
+        minima[width]=minimum_filter1d(safe_low,size=width,origin=(width-1)//2,
+                                     mode='constant',cval=np.inf)
+        complete[width]=(finite[ends]-finite[np.maximum(0,ends-width)])==width
+    pivots={right:np.r_[np.full(min(right,n),np.nan),low[:max(0,n-right)]]
+            for right in SWING_WINDOWS}
     for i,left in enumerate(SWING_WINDOWS):
         for j,right in enumerate(SWING_WINDOWS):
             width=left+right+1
-            padded=np.concatenate((np.full(width-1,np.nan),low))
-            rows=sliding_window_view(padded,width)
-            pivot=rows[:,left]
-            confirmed=np.isfinite(rows).all(1)&(pivot==np.min(rows,axis=1))
+            pivot=pivots[right]
+            confirmed=complete[width]&(pivot==minima[width])
             last=np.maximum.accumulate(np.where(confirmed,np.arange(n),-1))
             # Decisions see only confirmation state through the previous clock.
             prior=np.concatenate(([-1],last[:-1]))

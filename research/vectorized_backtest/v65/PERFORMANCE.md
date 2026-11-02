@@ -1,3 +1,9 @@
+# Inherited reference
+
+This document is retained from V64 for design provenance. Historical performance
+and qualification statements below are not V65 results. See README.md for V65
+input, initialization, and feature changes; workstation evidence lives in its runtime.
+
 # Replay scheduling qualification
 
 Performance settings do not change genomes, the objective, market inputs, price
@@ -20,7 +26,7 @@ Use `total_replay_seconds` and end-to-end multi-session throughput to select a
 configuration. The actual block size is recorded and may be reduced by memory
 admission. Spare GPU capacity alone does not establish a throughput improvement.
 
-`python -B -m research.vectorized_backtest.v65.profile_throughput` runs four full
+`python -B -m research.vectorized_backtest.v64.profile_throughput` runs four full
 training sessions from the first 1,024 genomes in a hash-validated checkpoint,
 in an isolated runtime. It includes loading and deferred result publication in
 its measured total, and compares every metric plus each ordered execution journal

@@ -75,3 +75,24 @@ def test_shard_resident_gather_preserves_column_order_and_absence():
     values,valid=bank._values(rows,rows,torch.zeros_like(rows),columns)
     assert values.tolist()==[[[4.,3.],[0.,0.],[0.,1.]]]
     assert valid.tolist()==[[[True,True],[False,False],[False,True]]]
+
+
+@pytest.mark.parametrize('size',[1,10,300,19800])
+def test_linear_swing_history_is_exactly_equal_to_v64(size):
+    from research.vectorized_backtest.v64.certified_history_bank import calculate as old
+    from research.vectorized_backtest.v65.certified_history_bank import calculate as new
+    rng=np.random.default_rng(71)
+    close=np.round(10+rng.normal(0,.1,size),2)
+    observed=rng.random(size)>.02
+    high=close+.1;low=close-.1;notional=rng.integers(0,10000,size).astype(float)
+    low[rng.random(size)<.01]=np.nan
+    np.testing.assert_equal(old(close,high,low,observed,notional),new(close,high,low,observed,notional))
+
+
+def test_prefetch_reuses_pageable_session_without_rebuilding(monkeypatch,tmp_path):
+    from research.vectorized_backtest.v65 import session_lanes
+    worker=object.__new__(session_lanes.Worker)
+    item=object();worker.host={'2026-01-05':item};worker.config={'output':str(tmp_path)}
+    worker.read_host=lambda day:pytest.fail('Cached session was rebuilt')
+    monkeypatch.setattr(session_lanes,'prepare_next',lambda data,path,config:data)
+    assert worker.read_ahead('2026-01-05') is item

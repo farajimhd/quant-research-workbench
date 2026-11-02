@@ -1,3 +1,9 @@
+# Inherited reference
+
+This document is retained from V64 for design provenance. Historical performance
+and qualification statements below are not V65 results. See README.md for V65
+input, initialization, and feature changes; workstation evidence lives in its runtime.
+
 # Observer quality pages
 
 Open **Y**, or **A → 5**, without changing optimizer state.
