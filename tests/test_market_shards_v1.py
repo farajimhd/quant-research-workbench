@@ -12,6 +12,8 @@ from research.market_shards.v1 import contract, sql, source, data, transport, pr
 
 
 class MarketShardTests(unittest.TestCase):
+    def test_contract_hash_survives_json_roundtrip(self):
+        self.assertEqual(contract.digest(contract.CONTRACT),contract.digest(json.loads(json.dumps(contract.CONTRACT))))
     def test_empty_certified_stream_and_sealed_resume(self):
         base=Path('D:/TradingML/runtimes/market_shards/implementation/tests');base.mkdir(parents=True,exist_ok=True)
         with tempfile.TemporaryDirectory(dir=base) as temporary:

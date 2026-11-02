@@ -23,7 +23,10 @@ CONTRACT = dict(version=VERSION, scanner=dict(window_seconds=60, top_n=5,
 
 
 def digest(value):
-    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+    # JSON object keys are strings on disk; normalize before sorting so integer
+    # timeframe keys hash identically before and after a restart.
+    normalized=json.loads(json.dumps(value,allow_nan=False))
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
 def sha(path):
