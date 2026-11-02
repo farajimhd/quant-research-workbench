@@ -149,6 +149,9 @@ def test_compact_admission_counts_growth_and_blocks_without_gpu_episode_ledger()
     assert grown['required_bytes']>small['required_bytes']
     assert larger['required_bytes']>small['required_bytes']
     assert small['context_headroom_bytes']==2*1024**3
+    # Admission must cover all eight outstanding output packets, including
+    # routed candidates whose leaf count exceeds their population count.
+    assert small['output_bytes']>=256*5*8*(8+3*4+3*4+8+1)
 
 
 def test_session_rotation_releases_only_obsolete_device_residency(monkeypatch):

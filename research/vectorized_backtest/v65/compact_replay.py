@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import torch
 from .compact_execution import advance,state
+from .performance import TRANSFER_BUFFERS
 
 
 def replay(item,members,plan,execution,progress=None):
@@ -40,8 +41,10 @@ def replay(item,members,plan,execution,progress=None):
     tail_future=tail_pool.submit(tail.load,0) if tail.receipt['pages'] else None
     asynchronous=getattr(plan,'replay_transfer_mode','synchronous')=='events'
     copy_stream=torch.cuda.Stream(device=item.device) if asynchronous else None
-    pending=deque();slots=[None,None]
+    pending=deque();slots=[None]*TRANSFER_BUFFERS
     profile.update(transfer_mode='events' if asynchronous else 'synchronous',inference_gpu_seconds=0.)
+    profile.update(transfer_buffer_capacity=TRANSFER_BUFFERS if asynchronous else 1,
+                   transfer_buffers_peak=0,pinned_transfer_bytes=0)
     future=None
     def execute(start,slots,packet,book):
         set_num_threads(4)
@@ -76,7 +79,7 @@ def replay(item,members,plan,execution,progress=None):
     try:
         with torch.inference_mode():
             for begin in range(0,total,engine.width):
-                if asynchronous and len(pending)==2:collect_pending()
+                if asynchronous and len(pending)==TRANSFER_BUFFERS:collect_pending()
                 end=min(total,begin+engine.width)
                 indices=torch.arange(begin,end,device=item.device)
                 start=time.perf_counter()
@@ -85,9 +88,10 @@ def replay(item,members,plan,execution,progress=None):
                     copied=torch.cuda.Event(enable_timing=True);first.record()
                 packet=engine(indices)
                 if asynchronous:
-                    inferred.record();slot=(begin//engine.width)%2
+                    inferred.record();slot=(begin//engine.width)%TRANSFER_BUFFERS
                     if slots[slot] is None:
                         slots[slot]=tuple(torch.empty_like(v,device='cpu',pin_memory=True) for v in packet)
+                        profile['pinned_transfer_bytes']+=sum(v.numel()*v.element_size() for v in slots[slot])
                     host=tuple(v[:end-begin] for v in slots[slot])
                     with torch.cuda.stream(copy_stream):
                         copy_stream.wait_event(inferred)
@@ -95,6 +99,7 @@ def replay(item,members,plan,execution,progress=None):
                         copied.record()
                     pending.append((pool.submit(execute_ready,copied,begin,engine.slots_cpu[begin:end],host,
                         tuple(v[begin:end] for v in quotes),packet),(first,inferred,copied)))
+                    profile['transfer_buffers_peak']=max(profile['transfer_buffers_peak'],len(pending))
                     profile['inference_seconds']+=time.perf_counter()-start
                 else:
                     torch.cuda.synchronize(item.device)

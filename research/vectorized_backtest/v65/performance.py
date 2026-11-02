@@ -1,5 +1,6 @@
 """Execution scheduling only; never a genome, score, or replay identity input."""
 DEFAULT=dict(time_block=256,transfer_mode='synchronous')
+TRANSFER_BUFFERS=8
 
 
 def tuning(job):
@@ -40,9 +41,9 @@ def memory_budget(item,population,batches,block):
     # Count unshared networks conservatively, including retained founder plans.
     packed=sum(nodes)*512
     workspace=block*largest_nodes*5*5
-    # Projection/transforms/lag intermediates plus two outstanding output packets.
+    # Projection/transforms/lag intermediates plus the bounded output ring.
     projection=block*5*len(CATALOG)*128
-    outputs=block*largest_leaves*5*192
+    outputs=block*largest_leaves*5*96*TRANSFER_BUFFERS
     prices=item.clocks*5*(len(REFERENCES)+1)*8
     context=2*1024**3
     required=resident+context+int(1.25*(packed+workspace+projection+outputs+prices))

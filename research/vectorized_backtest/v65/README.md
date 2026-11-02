@@ -1,5 +1,14 @@
 # V65: ARTE multiscale shards with V64 diversity selection
 
+Event-based replay uses a bounded ring of eight pinned host buffer sets. A slot
+is reused only after its CPU execution completes; execution stays chronological.
+Admission includes all eight outstanding GPU packets, and timings report ring
+capacity, peak occupancy and allocated pinned bytes. This absorbs temporary CPU
+delays; sustained CPU throughput still bounds a finite queue.
+Candidate plans stay on each worker's GPU across sessions within a generation,
+keyed by the exact candidate batch, with a bounded two-plan cache. Generation
+changes invalidate it; more than two distinct batches can cause eviction.
+
 V65 retains V64's execution engine, explicit-price programs, objective, and
 behavior-grouped elite/parent selection. It starts 1,024 fresh candidates with
 fresh training-only calibration and fitness; no prior financial results transfer.
