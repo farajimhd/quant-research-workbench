@@ -297,7 +297,7 @@ class Individual:
         return self
 
     def payload(self):
-        value=dict(version='v64-bottom-up-routing-v1',networks={s:n.payload() for s,n in self.networks.items()},policy=self.policy.payload(),minimum_age=self.minimum_age)
+        value=dict(version='v63-bottom-up-routing-v1',networks={s:n.payload() for s,n in self.networks.items()},policy=self.policy.payload(),minimum_age=self.minimum_age)
         if self.routing:value['routing']=[m.payload() for m in self.routing]
         if self.case_owner is not None:value['case_owner']=self.case_owner
         return value
@@ -306,7 +306,7 @@ class Individual:
 
     def restore(cls,p):
 
-        if p.get('version')!='v64-bottom-up-routing-v1':raise ValueError('Fresh V60 crossing/order-state genomes required; old state layouts cannot be reused')
+        if p.get('version')!='v63-bottom-up-routing-v1':raise ValueError('Fresh V60 crossing/order-state genomes required; old state layouts cannot be reused')
 
         return cls({s:Network._decode(n) for s,n in p['networks'].items()},Policy(**p['policy']),p['minimum_age'],p.get('case_owner'),tuple(cls.restore(v) for v in p['routing']) if p.get('routing') else None).validate()
 

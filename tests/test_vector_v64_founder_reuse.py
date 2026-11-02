@@ -1,5 +1,6 @@
 import json
 import pytest
+import numpy as np
 from research.vectorized_backtest.v64 import founder_reuse as reuse
 from research.vectorized_backtest.v64.distributed_assets import sha
 
@@ -36,3 +37,15 @@ def test_source_job_cannot_be_rebound_silently(tmp_path):
     job,folder=fixture(tmp_path)
     source=tmp_path/'job.json';source.write_text('{}')
     with pytest.raises(ValueError,match='source job'):reuse.authority(job)
+
+
+def test_v63_genome_schema_and_program_identity_are_preserved():
+    from research.vectorized_backtest.v63.genome import sample
+    from research.vectorized_backtest.v63.lineage import program_key as old_key
+    from research.vectorized_backtest.v64.genome import Individual
+    from research.vectorized_backtest.v64.lineage import program_key
+    from research.vectorized_backtest.v64.identity import digest
+    for old in sample(np.random.default_rng(2021),4):
+        payload=old.payload(); restored=Individual.restore(payload)
+        assert digest(restored.payload())==digest(payload)
+        assert program_key(restored)==old_key(old)

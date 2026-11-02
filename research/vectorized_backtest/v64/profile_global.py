@@ -60,6 +60,8 @@ def main():
     if root.exists():raise ValueError('Preserve the previous benchmark; use a fresh destination')
     local=dict(job,campaign=str(root),training_days=days,validation_days=[],replay_maximum_batch=args.maximum_batch,neural_tile=args.neural_tile,execution_diagnostics=args.diagnostics,profile_gated=not args.ungated)
     c=Global(local);c.publication_lane=Lane();c.cohort_snapshot=Snapshot(members);c.paired_probe=dict(mutants=[],generation=1)
+    from .distributed_assets import ensure_day
+    for day in days:ensure_day(local,'workstation','training',day)
     probe_preparation_seconds=0.
     if args.reproduce:
         import numpy as np
