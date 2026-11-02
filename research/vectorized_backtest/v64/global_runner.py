@@ -60,7 +60,8 @@ class Global(Evolution):
             # unchanged-file receipts to readers instead of hashing each large
             # bank again in all six processes.
             verified={}
-            for day,assets in self.job['assets'][role].items():
+            for day in self.job[role+'_days']:
+                assets=self.job['assets'][role][day]
                 marker=Path(self.job['campaign'])/'data-ready/workstation'/role/(day+'.json')
                 receipt=json.loads(marker.read_bytes())
                 if receipt['asset_sha256']!=self.job['asset_sha256']:raise ValueError('Asset verification authority changed')
