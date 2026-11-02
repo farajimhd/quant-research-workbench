@@ -25,6 +25,7 @@ class SessionProgress:
         with self.lock:
             row=self.rows.get(event['day'])
             if row is not None and event.get('stage') in ('Prepare resident RAM','Resident RAM ready'):
+                if row['status'] not in ('queued','preparing'):return
                 row.update(event)
                 row['status']='preparing' if event['stage']=='Prepare resident RAM' else 'queued'
                 self.publish();return

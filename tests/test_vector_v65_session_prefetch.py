@@ -10,6 +10,18 @@ class Item:
     def close(self):self.closed=True
 
 
+def test_late_preparation_events_cannot_rewind_active_replay():
+    from research.vectorized_backtest.v65.session_pipeline import SessionProgress
+    progress=SessionProgress(SimpleNamespace(publish=lambda **k:None),['a'],1024,1,'training')
+    progress.event(dict(day='a',stage='Prepare resident RAM'))
+    assert progress.rows['a']['status']=='preparing'
+    progress.event(dict(day='a',stage='Resident RAM ready'))
+    assert progress.rows['a']['status']=='queued'
+    progress.begin('a')
+    progress.event(dict(day='a',stage='Resident RAM ready'))
+    assert progress.rows['a']['status']=='running' and progress.rows['a']['stage']=='Load session'
+
+
 def test_resident_preparation_keeps_all_assigned_sessions_and_reuses_them(tmp_path,monkeypatch):
     from collections import OrderedDict
     from research.vectorized_backtest.v65 import session_lanes as lanes
