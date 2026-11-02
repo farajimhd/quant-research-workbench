@@ -46,6 +46,8 @@ def prepare(source, dataset, root, code, workers=6):
             receipts={d:doc['shard_seals'][d] for d in days},indicator_receipts={},enriched_receipts={})
         path=root/(role+'.json');write_json(path,wrapper);manifests[role]=(path,days)
     job=dict(original)
+    from .fresh_design import SETTINGS
+    job['fresh_design']=SETTINGS
     for key in ('selection_restart','founder_restart','execution_restart','continuation','promotion_exports',
                 'resume_transition','result_cache_transition','training_probe_reused'):
         job.pop(key,None)

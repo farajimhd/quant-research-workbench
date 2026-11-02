@@ -77,7 +77,7 @@ class Pedigree:
                 program_sha256=key,complexity=count(member),
                 label=f'G{origin:03d}-{serial:06d}-M{mutations[j]:03d}-X{crosses[j]:03d}-{key[:4]}')
             from research.vectorized_backtest.v65.family_stats import annotate
-            annotate(record,[self.records[int(p)] for p in pair if p>=0])
+            annotate(record,[self.records[int(p)] for p in pair if p>=0],family=getattr(member,'_fresh_family','random'))
             result.append(record)
         self.records.extend(result)
         return np.arange(base,base+size,dtype=np.int64)

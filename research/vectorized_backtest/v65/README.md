@@ -4,6 +4,25 @@ V65 retains V64's execution engine, explicit-price programs, objective, and
 behavior-grouped elite/parent selection. It starts 1,024 fresh candidates with
 fresh training-only calibration and fitness; no prior financial results transfer.
 
+Fresh construction mixes ordinary mutable templates with random minimal graphs.
+It proposes 2,048 candidates on the training activation probe, extending to at
+most 6,144 only if needed to fill 1,024 distinct slots. Templates occupy at most
+384 slots and 48 per family. Vectorized action-pattern distance selection permits
+at most two identical probe request patterns. This is coverage screening, not
+profit selection: only the selected 1,024 candidates undergo full-session replay.
+Later fresh immigrants use the same template/random proposal mixture, with
+source families recorded in the pedigree. No template receives a survival quota.
+
+Six persistent replay lanes each prepare up to six upcoming CPU sessions with
+three loader threads, subject to host admission. Prepared sessions remain in
+pageable RAM across generations. Only replay owners allocate/upload CUDA data.
+Repeated swing-window reductions share exact intermediate results. Use
+`profile_global --repeat-warm --days <2 to 24 training dates>` to verify retained
+RAM residency and exact cold/warm financial parity without result-cache reuse.
+Generation-boundary disk admission reserves room for two overlapping publications
+plus 64 GiB. It stops before beginning another generation when capacity is low,
+preserving sealed results; it never deletes prior evidence to make room.
+
 Inputs are the sealed market_shards/v1 dataset: 150 training and 38 chronological
 validation sessions. The scanner selects the causal top five by trailing
 60-second trade counts after the prior-close 0.80–50 filter. Validation is

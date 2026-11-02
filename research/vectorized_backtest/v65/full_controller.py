@@ -42,6 +42,8 @@ def checkpoint_contract(job,train,valid):
     if job.get('score_version'):contract['score_version']=job['score_version']
     contract['concentration_coefficient']=job['concentration_coefficient']
     contract['fresh_founders']=True
+    from .fresh_design import SETTINGS
+    contract['fresh_design']=SETTINGS
     contract['strategy_contract']=job['strategy_contract']
     contract['profit_targets']={k:job[k] for k in ('ticker_target','session_target')}
     if job.get('validation_schedule')=='concurrent-training-only-v1':contract['validation']='display-only; isolated training-only reproduction concurrent with replay'

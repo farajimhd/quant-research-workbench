@@ -38,13 +38,20 @@ def calculate(mark, high, low, observed, notional, targets=None):
         result[:,120+w-1]=trailing(notional,w,targets=targets)
     movement=np.abs(mark-np.concatenate(([np.nan],mark[:-1])))
     for i,w in enumerate(ADAPTIVE):result[:,180+i]=trailing(movement,w,current=True,targets=targets)
+    # Many left/right pairs have the same total width. Their finite-window
+    # test and minimum are identical; calculate those reductions once.
+    extrema={}
     for i,left in enumerate(SWING_WINDOWS):
         for j,right in enumerate(SWING_WINDOWS):
             width=left+right+1
-            padded=np.concatenate((np.full(width-1,np.nan),low))
-            rows=sliding_window_view(padded,width)
-            pivot=rows[:,left]
-            confirmed=np.isfinite(rows).all(1)&(pivot==np.min(rows,axis=1))
+            if width not in extrema:
+                padded=np.concatenate((np.full(width-1,np.nan),low))
+                rows=sliding_window_view(padded,width)
+                extrema[width]=(np.isfinite(rows).all(1),np.min(rows,axis=1))
+            valid,minimum=extrema[width]
+            pivot=np.full(n,np.nan)
+            if right<n:pivot[right:]=low[:n-right]
+            confirmed=valid&(pivot==minimum)
             last=np.maximum.accumulate(np.where(confirmed,np.arange(n),-1))
             # Decisions see only confirmation state through the previous clock.
             prior=np.concatenate(([-1],last[:-1]))

@@ -25,8 +25,8 @@ class CompactPedigree:
                 mutations=mutations,crossovers=crosses,ancestors=sorted(ancestors.items()),program_sha256=key,case_owner=member.case_owner,branch_count=len(member.routing) if member.routing else 1,complexity=count(member),node_count=node_count(member),
                 label=f'G{origin:03d}-{serial:06d}-M{mutations:03d}-X{crosses:03d}-{key[:4]}')
         from research.vectorized_backtest.v65.family_stats import annotate
-        for serial,pair in zip(ids,parents):
-            annotate(self.records[int(serial)],[self.records[int(p)] for p in pair if p>=0])
+        for serial,pair,member in zip(ids,parents,members):
+            annotate(self.records[int(serial)],[self.records[int(p)] for p in pair if p>=0],family=getattr(member,'_fresh_family','random'))
             parents_meta=[self.records[int(p)] for p in pair if p>=0]
             mask=0
             for record in parents_meta:mask |= int(record.get('founder_mask','0'),16)

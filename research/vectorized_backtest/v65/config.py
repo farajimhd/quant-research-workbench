@@ -69,6 +69,9 @@ INITIALIZATION=dict(calibrated_fraction=.8,activation_routes=[.30,.30,.20,.20],
 
     search_bounds_unchanged=True)
 
+from .fresh_design import SETTINGS as FRESH_DESIGN
+INITIALIZATION=dict(INITIALIZATION,fresh_design=FRESH_DESIGN)
+
 
 CROSSOVER=dict(children_per_pair={'1':.75,'2':.20,'3':.05},reciprocal_siblings=True,
     fixed_population_and_species_budgets=True,validation_feedback=False,

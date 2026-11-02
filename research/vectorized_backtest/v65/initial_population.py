@@ -10,7 +10,7 @@ def validate_fresh(member):
     return member
 
 
-def immigrant(rng,probe):
+def random_immigrant(rng,probe):
     """Same minimal construction and training-only calibration as founders."""
     if probe is None:raise ValueError('Fresh V65 offspring require the sealed training probe')
     from .genome import sample
@@ -22,7 +22,7 @@ def immigrant(rng,probe):
     return validate_fresh(members[0])
 
 
-def initialize(rng,size,*,probe=None):
+def initialize_random_baseline(rng,size,*,probe=None):
     """All 1024 founders begin with 1-2 output-reachable nodes per action."""
     if size!=1024 or probe is None:raise ValueError('1024 fresh founders and training probe required')
     from .genome import sample
@@ -31,9 +31,19 @@ def initialize(rng,size,*,probe=None):
     from .population_builder import build
     members,calibration=calibrate(rng,policies(rng,sample(rng,size,stratified=True,structural=True)),probe)
     members,construction=build(size,lambda stream,slot,attempt:validate_fresh(members[slot]),
-        lambda stream,slot,attempt:immigrant(stream,probe),seed=int(rng.integers(2**32)))
+        lambda stream,slot,attempt:random_immigrant(stream,probe),seed=int(rng.integers(2**32)))
     counts=[sum(len(n.nodes) for n in m.networks.values()) for m in members]
     return members,dict(experiment='v65',construction=construction,calibration=calibration,
         random_count=size,seed_count=0,past_results_loaded=False,initial_families=['simple']*size,
         founder_nodes=dict(min=min(counts),median=float(np.median(counts)),max=max(counts)),
         initialization='fresh minimal 1-2 nodes per action; no templates, archived genomes or financial selection')
+
+
+def initialize(rng,size,*,probe=None):
+    from .fresh_design import initialize as mixed
+    return mixed(rng,size,probe)
+
+
+def immigrant(rng,probe):
+    from .fresh_design import immigrant as mixed
+    return mixed(rng,probe)

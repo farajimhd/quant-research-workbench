@@ -19,6 +19,8 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
     if not completed < limit <= c.job['phase2_generations']:raise ValueError('Invalid qualification generation bound')
     try:
         for generation in range(completed+1,limit+1):
+            from .disk_budget import check as check_disk
+            check_disk(root,generation,len(train)+len(valid))
             started=time.perf_counter();lane.check()
             if last is not None and last.done():c.sealed_generation=last.result()['generation']
             folder=root/f'generation-{generation:04d}';folder.mkdir(exist_ok=True)

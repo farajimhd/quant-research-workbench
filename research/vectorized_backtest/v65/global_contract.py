@@ -13,6 +13,8 @@ STRATEGY_CONTRACT=dict(top_k=5,price_program='explicit-prices-v1',rank_loss_exit
 
 
 def check(job):
+    from .fresh_design import SETTINGS
+    if job.get('fresh_design')!=SETTINGS:raise ValueError('Fresh candidate design differs')
     if job.get('strategy_contract')!=STRATEGY_CONTRACT:raise ValueError('V65 strategy/execution contract differs')
     if job['version']!=VERSION or job['source_sha256']!=source_hash():raise ValueError('Global source identity differs')
     if set(job['machines'])!={'workstation'} or job['campaign_stage']!='fresh-global':raise ValueError('Fresh workstation global ownership required')
