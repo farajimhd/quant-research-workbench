@@ -93,3 +93,18 @@ def test_policy_transition_cannot_change_selection(tmp_path):
     bad=copy.deepcopy(job);bad['selection']['elite']=.5
     with pytest.raises(ValueError):global_predecessor(bad)
     with pytest.raises(ValueError):accept_checkpoint(job,cp,saved,dict(expected,extra='unauthorized'))
+
+
+def test_resume_preserves_founder_cache_authority(tmp_path):
+    from research.vectorized_backtest.v65.founder_readmission import verify_cache_bindings
+    original={'first':{'source':'founder'}};bound={'result_caches':original}
+    previous=dict(version='v65-global-v1',source_sha256='prior',founder_readmission=bound,
+                  result_cache_transition=original,machines={'workstation':{'code':'old'}})
+    path=tmp_path/'previous.json';write_json(path,previous)
+    job=dict(previous,source_sha256='new',result_cache_transition=dict(original,current={'source':'prior'}),
+        resume_transition=dict(predecessor_job=str(path),predecessor_job_sha256=sha(path)))
+    verify_cache_bindings(job,bound)
+    bad=copy.deepcopy(job);bad['result_cache_transition']['current']['source']='unrelated'
+    with pytest.raises(ValueError):verify_cache_bindings(bad,bound)
+    bad=copy.deepcopy(job);bad['result_cache_transition']['first']['source']='changed'
+    with pytest.raises(ValueError):verify_cache_bindings(bad,bound)
