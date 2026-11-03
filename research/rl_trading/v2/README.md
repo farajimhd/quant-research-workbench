@@ -35,6 +35,21 @@ head with context-independent stochastic Beta distributions of concentration
 bounds, not raw price percentages. This explicit intervention zeros only the
 sizing head weights and analytically sets its biases; the manifest records it.
 
+`head_refine.py` provides a separate training-only PPO pass with the temporal,
+history, position, account and market encoder frozen. It caches detached contexts
+for at most 512 transitions, then updates only the actor, action-type, trade-gate,
+sizing and critic heads with at most 32 rows per minibatch. It uses the unchanged
+net-equity reward, gamma/lambda 1, clip 0.1, entropy weight 0.0001, KL stop 0.01
+and gradient norm cap 0.5. A `--candidate` may initialize from a fully reconstructed
+direct-edit checkpoint. No validation selection takes place. The account
+continues across rollouts and resets only after a valid full-session terminal.
+Artifacts are under `<runtime>/rl-trading/v2/head-refine-20261103/<name>`;
+rollout checkpoints retain account/optimizer/RNG state, but the command does not
+expose automatic resume. `STOP` in the run or campaign root stops after a
+committed rollout. Training returns describe a changing policy. Once a run is
+complete, `weight_edit.py --refined-run <run>` replays its frozen checkpoint on
+parent training dates, without further edits, for actual candidate assessment.
+
 V2 starts a stochastic policy from random weights and trains on its own simulated
 account trajectories. There are no teacher actions, hindsight targets, or teacher
 account states. Full extraction has no V1 Phase 1–3 dependency; optional V1 cache

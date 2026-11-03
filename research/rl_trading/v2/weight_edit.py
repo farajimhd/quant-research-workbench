@@ -157,6 +157,7 @@ def main(argv=None):
                         help='Normalized allocation/stop/target Beta means; concentration 1000')
     parser.add_argument('--max-steps', type=int, default=0, help='Diagnostic only; never selection evidence')
     parser.add_argument('--resume', action='store_true')
+    parser.add_argument('--refined-run', type=Path, help='Frozen training-only head refinement to evaluate')
     args = parser.parse_args(argv)
     if Path(args.name).name != args.name or args.name in ('.', '..') or args.max_steps < 0:
         raise ValueError('Invalid experiment name or step count')
@@ -175,9 +176,35 @@ def main(argv=None):
         raise ValueError('Parent checkpoint contract mismatch')
     if not all(torch.isfinite(v).all() for v in saved['policy'].values()):
         raise ValueError('Parent policy contains nonfinite weights')
+    refinement = None
+    source_state = saved['policy']
+    if args.refined_run:
+        if any((args.close_bias, args.reduce_bias, args.gate_bias)) or args.size_means is not None:
+            raise ValueError('Evaluate a refined checkpoint without additional edits')
+        refined_root = args.refined_run.resolve()
+        if read(refined_root/'status.json').get('status') != 'complete':
+            raise ValueError('Refinement must finish before frozen-policy evaluation')
+        refined_manifest = read(refined_root/'manifest.json')
+        refined_path = refined_root/'checkpoint_latest.pt'
+        refined_hash = file_hash(refined_path)
+        refined = torch.load(refined_path, map_location='cpu', weights_only=False)
+        if (refined_manifest['contract_hash'] != digest({k:v for k,v in refined_manifest.items() if k != 'contract_hash'})
+                or refined['contract_hash'] != refined_manifest['contract_hash']
+                or refined_manifest['lineage']['parent_checkpoint_hash'] != file_hash(checkpoint)
+                or refined_manifest.get('validation_access') is not False
+                or refined_manifest['model'] != manifest['model']
+                or refined_manifest['config'] != manifest['config']
+                or file_hash(refined_path) != refined_hash
+                or any(train.get(s['date']) != s for s in refined_manifest['train'])):
+            raise ValueError('Refinement provenance mismatch')
+        source_state = refined['policy']
+        if not all(torch.isfinite(v).all() for v in source_state.values()):
+            raise ValueError('Refinement contains nonfinite weights')
+        refinement = dict(root=str(refined_root), checkpoint_hash=refined_hash,
+                          contract_hash=refined['contract_hash'], iteration=refined['iteration'])
     config = Config(**{f.name: manifest['config'][f.name] for f in fields(Config)})
     policy = PortfolioPolicy(**manifest['model']).to(args.device)
-    state = edited_state(saved['policy'], close_bias=args.close_bias,
+    state = edited_state(source_state, close_bias=args.close_bias,
                          reduce_bias=args.reduce_bias, gate_bias=args.gate_bias, size_means=args.size_means)
     policy.load_state_dict(state)
     root = output_root()/'weight-edit-20261103'/args.name
@@ -189,6 +216,7 @@ def main(argv=None):
         train=[train[d] for d in args.dates], validation_access=False,
         offsets=dict(close=args.close_bias, reduce=args.reduce_bias, gate=args.gate_bias),
         size_means=args.size_means, size_concentration=1000 if args.size_means is not None else None,
+        refinement=refinement,
         changed_parameters=changes, seed=args.seed, device=args.device,
         max_steps=args.max_steps, code=code_identity())
     if args.resume:

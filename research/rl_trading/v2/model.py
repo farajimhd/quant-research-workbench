@@ -50,6 +50,10 @@ class PortfolioPolicy(nn.Module):
         self.critic = nn.Sequential(nn.Linear(width,width),nn.Tanh(),nn.Linear(width,1))
 
     def forward(self, batch, *, scheduler=False):
+        return self.heads(self.encode(batch), batch, scheduler=scheduler)
+
+    def encode(self, batch):
+        """Account and listing context; reusable only while the encoder is frozen."""
         x = batch['market']
         b,n,h,f = x.shape
         temporal = self.temporal(x.reshape(b*n,h,f).transpose(1,2))
@@ -58,6 +62,11 @@ class PortfolioPolicy(nn.Module):
         account = self.account(batch['account']).unsqueeze(1)
         mask = torch.cat((torch.zeros((b,1),dtype=torch.bool,device=x.device),~batch['valid']),dim=1)
         context = self.market(torch.cat((account,encoded),dim=1),src_key_padding_mask=mask)
+        return context
+
+    def heads(self, context, batch, *, scheduler=False):
+        """Original action/value distributions from an already encoded observation."""
+        b,n = batch['valid'].shape
         logits = self.actor(context[:,1:]).masked_fill(~batch['action_mask'],-1e9)
         parameters = torch.nn.functional.softplus(self.size(context[:,1:])).reshape(b,n,3,2)+1.01
         category = Categorical(logits=logits)
@@ -80,13 +89,21 @@ class PortfolioPolicy(nn.Module):
         listing_mask = batch['action_mask'][...,1:].transpose(1,2)
         listing_probability = torch.softmax(listing_logits,dim=-1).masked_fill(~listing_mask,0.)
         joint = (type_probability.unsqueeze(-1)*listing_probability).transpose(1,2).reshape(b,-1)
-        fallback = torch.nn.functional.one_hot(torch.zeros(b,dtype=torch.long,device=x.device),
+        fallback = torch.nn.functional.one_hot(torch.zeros(b,dtype=torch.long,device=context.device),
                                                 num_classes=n*3).to(joint.dtype)
         joint = torch.where(eligible.unsqueeze(-1),joint,fallback)
         return category,sizing,value,Bernoulli(logits=gate_logits),Categorical(probs=joint)
 
     def action(self, batch, modes=None, sizes=None, *, deterministic=False):
-        _,sizing,value,gate,choice = self(batch,scheduler=True)
+        return self._action(batch, self(batch,scheduler=True), modes, sizes,
+                            deterministic=deterministic)
+
+    def action_from_context(self, context, batch, modes=None, sizes=None, *, deterministic=False):
+        return self._action(batch, self.heads(context,batch,scheduler=True), modes, sizes,
+                            deterministic=deterministic)
+
+    def _action(self, batch, distributions, modes=None, sizes=None, *, deterministic=False):
+        _,sizing,value,gate,choice = distributions
         b,n = batch['valid'].shape
         if modes is None:
             trade = (gate.probs >= .5).long() if deterministic else gate.sample().long()
