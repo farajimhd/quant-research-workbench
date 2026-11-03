@@ -111,3 +111,24 @@ python -B -u research/rl_trading/v7/experiments/entry_outcomes.py --output D:/Tr
 The current V7 simulation charges commissions separately for each partial fill.
 This differs from V65 persistent-order commission aggregation. Results retain
 this explicit scenario; changing order semantics requires a separate contract.
+
+`entry_score.py` requires all 150 sealed outcome days before fitting two fixed
+ridge predictors of standalone net dollars. One uses the 112 causal features
+plus account inputs; the other uses the frozen attention encoder plus current
+cost and account inputs. Both fit only on the first 120 training days, with
+fit-only scaling and fixed regularization. The remaining 30 training days
+provide diagnostics. Unliquidated targets block fitting rather than disappearing
+from the sample. No representation or score threshold is selected automatically.
+
+`entry_replay.py` loads either frozen predictor and runs one persistent account
+per training day. Only at the matching five-minute clocks, a flat account buys
+the highest currently permitted score strictly above zero. All other actions
+are WAIT, leaving the original fixed exits in control. This replay measures
+cash, overlapping opportunity constraints, partial fills and actual fees; a sum
+of independent entry targets is not a substitute for it.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/entry_score.py --output D:/TradingML/runtimes/rl-trading/v7/entry-score-v1 --device cuda
+python -B -u research/rl_trading/v7/experiments/entry_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-score-v1/attention --forecast D:/TradingML/runtimes/rl-trading/v7/forecast-seed1917/checkpoint_best.pt --output D:/TradingML/runtimes/rl-trading/v7/entry-score-attention-replay --dates 2026-01-05 2026-04-01 2026-08-10
+```
