@@ -89,3 +89,25 @@ For frozen account replay, use a new output directory and add
 decision rule; the default samples actions. Neither mode opens validation data.
 Checkpoint/source compatibility is enforced, so changing bound source requires
 a separately identified experiment.
+
+## Exact entry-outcome diagnostic
+
+`entry_outcomes.py` samples every tenth stored 30-second snapshot (five minutes),
+tries each currently eligible candidate from a flat $10,000 account, and waits
+for the existing fixed exits. It reuses the simulator for every fill and fee;
+the accelerated path skips holding clocks before the first exit trigger. It
+does not preserve a PPO reward trajectory, peak equity or drawdown. Hindsight
+profits are opportunity diagnostics, never policy results or observations.
+
+Observed nonfills are known zero; current ineligibility and failed liquidation
+remain distinct statuses. Day reports have hash seals and resume verifies them.
+The default covers all 150 training dates, with day-boundary `STOP` support:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/entry_outcomes.py --output D:/TradingML/runtimes/rl-trading/v7/entry-opportunity-full150
+```
+
+The current V7 simulation charges commissions separately for each partial fill.
+This differs from V65 persistent-order commission aggregation. Results retain
+this explicit scenario; changing order semantics requires a separate contract.
