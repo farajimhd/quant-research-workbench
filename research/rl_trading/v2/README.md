@@ -1,5 +1,40 @@
 # V2: reward-driven portfolio PPO
 
+## Training-only direct-weight experiments
+
+`weight_edit.py` evaluates a copy of an existing latest checkpoint with explicit
+additive close/reduce/trade-gate bias offsets. It accepts only dates listed in the
+parent manifest's training split; validation banks and validation metrics are
+not used. All causal observations, stochastic action sampling, costs, masks and
+execution rules remain those of V2. Positive training return is not held-out
+evidence. A zero-trade result does not establish profitable trading.
+
+The runner verifies full bank hashes, records the parent checkpoint hash and
+exact changed tensor entries, and retains fills, sampled layer activation
+statistics, action probabilities, account metrics and progress. Artifacts live
+under `<runtime>/rl-trading/v2/weight-edit-20261103/<name>/`. The original run is
+read-only. Each run name must be new unless `--resume` is supplied; resume checks
+the source/data/edit/device contract and restores committed account/RNG state,
+rolling back any uncommitted fill-log suffix. A campaign-root `STOP` file stops
+replay; remove it before explicit resume. Checkpoints are committed every 600
+simulation seconds. `--max-steps` is an explicitly partial diagnostic, never a
+full-session selection result.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+& 'C:\Users\g835l\miniconda3\envs\ml4t\python.exe' -B research/rl_trading/v2/weight_edit.py --parent 'D:\TradingML\runtimes\rl-trading\v2\train\ppo-v2-executable-actions-aug2026-seed17-v1' --name baseline-seed1917 --dates 2026-08-19 2026-08-20 2026-08-21 --device cuda
+```
+
+For an edit, supply a new name and explicit `--close-bias`, `--reduce-bias`, or
+`--gate-bias` offsets (bounded to +/-8). These are logit offsets, not guaranteed
+improvements. Compare matched seeds on training dates and confirm with additional
+training seeds before freezing any candidate for a final validation check.
+An optional `--size-means ALLOCATION STOP TARGET` replaces the existing sizing
+head with context-independent stochastic Beta distributions of concentration
+1000. STOP and TARGET are normalized coordinates within the unchanged Config
+bounds, not raw price percentages. This explicit intervention zeros only the
+sizing head weights and analytically sets its biases; the manifest records it.
+
 V2 starts a stochastic policy from random weights and trains on its own simulated
 account trajectories. There are no teacher actions, hindsight targets, or teacher
 account states. Full extraction has no V1 Phase 1–3 dependency; optional V1 cache
