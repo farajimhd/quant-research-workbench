@@ -121,3 +121,22 @@ def test_initial_view_available_before_generation_seal(tmp_path):
     model.request=3;model.load_sessions()
     assert model.error is None and len(model.sessions)==1
     assert model.sessions[0]['score']==aggregate([raw])['score'][3]
+
+
+def test_position_timeline_uses_shared_shards_not_legacy_clocks(tmp_path):
+    from research.vectorized_backtest.v65.position_details import shard_timeline
+    from research.market_shards.v1.contract import origin_us
+    day='2026-01-05';bars=tmp_path/'bars'/day;bars.mkdir(parents=True)
+    seal=bars/'complete.json';seal.write_text('{}');job={}
+    for role,ticker in [('training','AAA'),('validation','BBB')]:
+        manifest=tmp_path/(role+'-shards.json');manifest.write_text(json.dumps({'sessions':[{'day':day,'selected':[ticker]}]}))
+        wrapper=tmp_path/(role+'.json');wrapper.write_text(json.dumps(dict(days=[day],inputs=str(bars.parent),
+            receipts={day:sha(seal)},shard_manifest=str(manifest),shard_manifest_sha256=sha(manifest))))
+        job[role]=str(wrapper);job[role+'_sha256']=sha(wrapper)
+    receipt=dict(result_identity=dict(data=dict(input_sha256=sha(tmp_path/'training-shards.json'))))
+    clocks,records=shard_timeline(job,tmp_path,'training',day,receipt)
+    assert len(clocks)==19800 and clocks[0]==origin_us(day)//1000000+14401
+    assert clocks[-1]==origin_us(day)//1000000+34200
+    assert [v['listing_id'] for v in records[1:]]==['ARTE:AAA','ARTE:BBB']
+    receipt['result_identity']['data']['input_sha256']='changed'
+    with pytest.raises(ValueError,match='shared-shard identity changed'):shard_timeline(job,tmp_path,'training',day,receipt)

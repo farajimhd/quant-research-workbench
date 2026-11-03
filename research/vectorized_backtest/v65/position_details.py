@@ -14,6 +14,29 @@ def clock_timestamp(clocks,index,order_mode):
     return int(clocks[0])+index
 
 
+def shard_timeline(job,root,role,day,receipt):
+    """Resolve the V65 shared-shard clock and source-symbol identity contract."""
+    import numpy as np
+    from .distributed_assets import remote
+    from .shard_data import listing_records
+    from research.market_shards.v1.contract import CONTRACT,origin_us
+    def path(value):
+        return remote(value,job['workstation_share']) if str(root).startswith('\\\\') and not str(value).startswith('\\\\') else Path(value)
+    names=set();current=None
+    for split in ('training','validation'):
+        wrapper=read_verified(path(job[split]),job[split+'_sha256'])
+        manifest=read_verified(path(wrapper['shard_manifest']),wrapper['shard_manifest_sha256'])
+        names.update(t for row in manifest['sessions'] for t in row['selected'])
+        if split==role:
+            if day not in wrapper['days']:raise ValueError('Position session outside split')
+            read_verified(path(wrapper['inputs'])/day/'complete.json',wrapper['receipts'][day])
+            current=wrapper
+    if receipt['result_identity']['data']['input_sha256']!=current['shard_manifest_sha256']:
+        raise ValueError('Position shared-shard identity changed')
+    start,end=[sum(int(v)*m for v,m in zip(value.split(':'),(3600,60))) for value in CONTRACT['decision_hours']]
+    return origin_us(day)//1000000+np.arange(start+1,end+1,dtype=np.int64),listing_records(names)
+
+
 def load(root,generation,serial,session,share,job=None):
     from research.vectorized_backtest.v65.distributed_assets import remote
     role,day=session.split(':',1)
@@ -58,14 +81,17 @@ def load(root,generation,serial,session,share,job=None):
         manifest=read_verified(job[role],job[role+'_sha256'])
         inputs=Path(manifest['inputs'])/day
         if str(root).startswith('\\\\'):inputs=remote(inputs,share)
-        cert=read_verified(inputs/'complete.json',manifest['receipts'][day]['inputs'])
-        from research.vectorized_backtest.v65.distributed_assets import sha
-        if sha(inputs/'clocks.npy')!=cert['files']['clocks.npy']:raise ValueError('Position timeline changed')
-        clocks=np.load(inputs/'clocks.npy',mmap_mode='r',allow_pickle=False)
+        if manifest.get('version')=='v65-arte-manifest-v1':
+            clocks,listings=shard_timeline(job,root,role,day,receipt)
+        else:
+            cert=read_verified(inputs/'complete.json',manifest['receipts'][day]['inputs'])
+            from research.vectorized_backtest.v65.distributed_assets import sha
+            if sha(inputs/'clocks.npy')!=cert['files']['clocks.npy']:raise ValueError('Position timeline changed')
+            clocks=np.load(inputs/'clocks.npy',mmap_mode='r',allow_pickle=False);listings=cert['listings']
         def timestamp(index):
             return clock_timestamp(clocks,index,receipt['execution'].get('order_mode'))
         for row in rows:
-            listing=cert['listings'][row['listing_id']]
+            listing=listings[row['listing_id']]
             row.update(ticker=listing['ticker'],listing_identity=listing['listing_id'])
             for prefix in ('entry','exit'):
                 index=row.get(prefix+'_clocks')
