@@ -22,10 +22,9 @@ def global_predecessor(job):
     old=json.loads(path.read_bytes())
     mutable={'source_sha256','code','commit','deployment','resume_transition','result_cache_transition'}
     if transition.get('agent_intervention_change'):
-        from .agent_intervention import POLICY
-        if (transition['agent_intervention_change']!=POLICY or old.get('agent_intervention') is not None
-                or job.get('agent_intervention')!=POLICY):
-            raise ValueError('Unapproved agent intervention transition')
+        from .agent_intervention import check_transition
+        check_transition(old.get('agent_intervention'), job.get('agent_intervention'),
+                         transition['agent_intervention_change'])
         mutable.add('agent_intervention')
     scheduling=transition.get('scheduling_change')
     if scheduling:

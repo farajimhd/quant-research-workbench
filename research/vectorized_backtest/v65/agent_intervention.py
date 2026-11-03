@@ -1,6 +1,6 @@
 """Auditable, training-only manual offspring intake; never changes fitness rules.
 
-Reviewed proposals replace fresh slots before their first replay. A durable
+Reviewed proposals extend the normal cohort before their first replay. A durable
 decision freezes both an empty intake and an accepted package across retries.
 """
 import json
@@ -10,13 +10,30 @@ from .distributed_assets import sha
 from .identity import digest
 from .publication import write_json
 
-POLICY = dict(version='training-agent-offspring-v1', interval=10,
+LEGACY_POLICY = dict(version='training-agent-offspring-v1', interval=10,
               maximum_offspring=64, maximum_per_parent=4, replace='fresh-only')
+POLICY = dict(version='training-agent-offspring-v2', interval=5,
+              maximum_offspring=256, maximum_per_parent=1, replace='append',
+              review_candidates=256)
 
 
 def check_policy(job):
-    if job.get('agent_intervention') not in (None, POLICY):
+    if job.get('agent_intervention') not in (None, LEGACY_POLICY, POLICY):
         raise ValueError('Unknown agent intervention policy')
+
+
+def policy(job):
+    check_policy(job)
+    return job.get('agent_intervention') or POLICY
+
+
+def check_transition(before, after, change):
+    """Keep historical introduction receipts valid; pin the one bounded upgrade."""
+    if before is None and after in (LEGACY_POLICY, POLICY) and change == after:
+        return
+    if before == LEGACY_POLICY and after == POLICY and change == dict(before=before, after=after):
+        return
+    raise ValueError('Unapproved agent intervention transition')
 
 
 def evidence(root, generation):
@@ -39,15 +56,16 @@ def validate_package(root, job, package, generation):
     if set(package) != {'version','scope','review_epoch','source_generation',
                         'training_sha256','evidence','rationale','offspring'}:
         raise ValueError('Unexpected review package fields')
+    rules = policy(job); interval = rules['interval']
     source = package['source_generation']
     epoch = package['review_epoch']
-    if (package['version'] != POLICY['version'] or package['scope'] != 'training'
+    if (package['version'] != rules['version'] or package['scope'] != 'training'
             or type(source) is not int or type(epoch) is not int
-            or epoch < 10 or epoch % 10 or not epoch <= source < epoch + 10
-            or not source < generation or generation > epoch + 20
+            or epoch < interval or epoch % interval or not epoch <= source < epoch + interval
+            or not source < generation or generation > epoch + 2*interval
             or package['training_sha256'] != job['training_sha256']
             or not isinstance(package['rationale'], str) or not package['rationale'].strip()
-            or len(package['offspring']) > POLICY['maximum_offspring']):
+            or len(package['offspring']) > rules['maximum_offspring']):
         raise ValueError('Invalid or stale training review package')
     folder, binding = evidence(root, source)
     if package['evidence'] != binding:
@@ -61,7 +79,7 @@ def validate_package(root, job, package, generation):
         if parent['program_sha256'] != item['parent_sha256']:
             raise ValueError('Review parent identity changed')
         counts[item['parent']] = counts.get(item['parent'], 0) + 1
-        if counts[item['parent']] > POLICY['maximum_per_parent']:
+        if counts[item['parent']] > rules['maximum_per_parent']:
             raise ValueError('Review parent concentration exceeded')
         child = Individual.restore(item['payload']); key = program_key(child)
         from .authority import construct
@@ -74,7 +92,7 @@ def validate_package(root, job, package, generation):
 
 
 def apply(root, job, generation, members, ids, pedigree, consumed):
-    """Run before Snapshot/packing, once per generation; no worker synchronization."""
+    """Run before Snapshot/packing; v1 replaces fresh slots, v2 appends proposals."""
     check_policy(job)
     if not job.get('agent_intervention'):
         return members, ids, consumed, None
@@ -107,8 +125,13 @@ def apply(root, job, generation, members, ids, pedigree, consumed):
     children,parents=validate_package(root,job,package,generation)
     training=json.loads((root/f"generation-{package['source_generation']:04d}"/'training.json').read_bytes())
     scores=dict(zip(training['ids'],training['panel']['score']))
-    slots=[i for i,s in enumerate(ids) if pedigree.records[int(s)]['generation']==generation
-           and pedigree.records[int(s)]['operation'].startswith('fresh')]
+    rules=policy(job)
+    append=rules['replace']=='append'
+    if append and len(members)!=job['population']:
+        raise ValueError('Review append requires the normal successor population')
+    slots=(list(range(len(members),len(members)+len(children))) if append else
+           [i for i,s in enumerate(ids) if pedigree.records[int(s)]['generation']==generation
+            and pedigree.records[int(s)]['operation'].startswith('fresh')])
     if len(slots)<len(children):raise ValueError('Insufficient fresh offspring slots')
     existing={program_key(m) for m in members}
     if any(program_key(child) in existing for child in children):
@@ -122,8 +145,12 @@ def apply(root, job, generation, members, ids, pedigree, consumed):
     born=pedigree.birth(children,generation,[(p['serial'],-1) for p in parents],
                         ['agent_mutation']*len(children))
     members=list(members);ids=ids.copy();replaced=[]
+    if append:
+        import numpy as np
+        members.extend(children);ids=np.concatenate((ids,born))
     for slot,child,serial,item in zip(slots,children,born,package['offspring']):
-        replaced.append(int(ids[slot]));members[slot]=child;ids[slot]=serial
+        if not append:
+            replaced.append(int(ids[slot]));members[slot]=child;ids[slot]=serial
         pedigree.records[int(serial)].update(agent_review_sha256=package_hash,
             review_epoch=int(epoch),hypothesis=item['hypothesis'],fitness_evidence='unreplayed proposal',
             parent_objectives=[float(scores[item['parent']])],
@@ -132,4 +159,7 @@ def apply(root, job, generation, members, ids, pedigree, consumed):
     report=dict(package_sha256=package_hash,review_epoch=int(epoch),source_generation=package['source_generation'],
                 decision_sha256=sha(decision_path),new_ids=born.tolist(),replaced_ids=replaced,
                 scope='training',admission='experimental; normal full replay and selection')
+    if append:
+        report.update(mode='append',base_population=job['population'],replay_population=len(members),
+                      successor_population=job['population'])
     return members,ids,consumed,report

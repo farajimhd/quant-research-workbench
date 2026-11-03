@@ -25,12 +25,12 @@ def case(tmp_path):
     # Deliberately unreadable validation: evidence/intake must never open it.
     (folder/'validation.json').write_text('NOT JSON')
     child=replace(parent,networks=dict(parent.networks,entry=replace(parent.networks['entry'],threshold=.12345)))
-    package=dict(version=review.POLICY['version'],scope='training',review_epoch=10,source_generation=10,
+    package=dict(version=review.LEGACY_POLICY['version'],scope='training',review_epoch=10,source_generation=10,
         training_sha256='train',evidence=review.evidence(tmp_path,10)[1],rationale='Test a stricter entry',
         offspring=[dict(parent=0,parent_sha256=pedigree.records[0]['program_sha256'],payload=child.payload(),hypothesis='Threshold sensitivity')])
     inbox=tmp_path/'agent-reviews/inbox';inbox.mkdir(parents=True)
     write_json(inbox/'review-0010.json',package)
-    return tmp_path,dict(agent_intervention=review.POLICY,training_sha256='train'),[fresh,elite],ids,pedigree,package
+    return tmp_path,dict(agent_intervention=review.LEGACY_POLICY,training_sha256='train'),[fresh,elite],ids,pedigree,package
 
 
 def test_intake_preserves_nonfresh_and_restarts_exactly(case):
@@ -108,3 +108,62 @@ def test_resume_preserves_founder_cache_authority(tmp_path):
     with pytest.raises(ValueError):verify_cache_bindings(bad,bound)
     bad=copy.deepcopy(job);bad['result_cache_transition']['first']['source']='changed'
     with pytest.raises(ValueError):verify_cache_bindings(bad,bound)
+
+
+def test_append_256_preserves_normal_population_and_retry(case):
+    root,job,members,ids,pedigree,package=case
+    parent=sample(np.random.default_rng(21),1)[0]
+    parents=[replace(parent,networks=dict(parent.networks,entry=replace(parent.networks['entry'],threshold=-.9+i/1000))) for i in range(256)]
+    pedigree=CompactPedigree(3);parent_ids=pedigree.birth(parents,15,[(-1,-1)]*256,['crossover']*256)
+    normal=[members[0]]*1024
+    normal_ids=pedigree.birth(normal,16,[(0,-1)]*1024,['parent_mutation']*1024)
+    folder=root/'generation-0015';folder.mkdir()
+    for name,value in {'population.json':dict(ids=parent_ids.tolist(),population=[p.payload() for p in parents]),
+        'training.json':dict(ids=parent_ids.tolist(),panel={'score':list(range(256))}),
+        'evaluated-pedigree.json':[pedigree.records[int(i)] for i in parent_ids], 'session-metrics.json':{}}.items():write_json(folder/name,value)
+    write_json(folder/'complete.json',dict(population_sha256=sha(folder/'population.json'),training_sha256=sha(folder/'training.json'),
+        evaluated_pedigree_sha256=sha(folder/'evaluated-pedigree.json'),observational_reports={'session-metrics.json':sha(folder/'session-metrics.json')}))
+    (folder/'validation.json').write_text('NEVER READ VALIDATION')
+    package.update(version=review.POLICY['version'],review_epoch=15,source_generation=15,evidence=review.evidence(root,15)[1],offspring=[])
+    for i,p in enumerate(parents):
+        child=replace(p,networks=dict(p.networks,entry=replace(p.networks['entry'],threshold=.2+i/1000)))
+        package['offspring'].append(dict(parent=i,parent_sha256=pedigree.records[i]['program_sha256'],payload=child.payload(),hypothesis='Training-supported repair'))
+    (root/'agent-reviews/inbox/review-0010.json').unlink()
+    write_json(root/'agent-reviews/inbox/review-0015.json',package)
+    job.update(agent_intervention=review.POLICY,population=1024)
+    before=copy.deepcopy(pedigree)
+    got,newids,consumed,report=review.apply(root,job,16,normal,normal_ids,pedigree,{})
+    assert len(got)==1280 and len(newids)==1280 and len(set(newids))==1280
+    assert all(a is b for a,b in zip(got[:1024],normal))
+    assert np.array_equal(newids[:1024],normal_ids) and report['replaced_ids']==[]
+    assert report['successor_population']==1024 and len(report['new_ids'])==256
+    retry,rids,rconsumed,rreport=review.apply(root,job,16,normal,normal_ids,before,{})
+    assert [x.payload() for x in retry]==[x.payload() for x in got]
+    assert np.array_equal(rids,newids) and rreport==report and consumed==rconsumed
+    bad=copy.deepcopy(package);bad['offspring'][1]['parent']=0;bad['offspring'][1]['parent_sha256']=bad['offspring'][0]['parent_sha256']
+    with pytest.raises(ValueError,match='concentration'):review.validate_package(root,job,bad,16)
+    with pytest.raises(ValueError,match='stale'):review.validate_package(root,job,package,26)
+
+
+def test_review_selection_covers_256_evolved_behaviors_in_one_recorded_family():
+    from research.vectorized_backtest.v65.agent_review_packet import select_candidates
+    n=512;ids=list(range(n));panel=dict(eligible=[True]*n,closed_positions=[10]*n,score=list(range(n)))
+    sessions={d:dict(net_pnl=(np.arange(n)*sign).tolist(),score=list(range(n)),closed_positions=[10]*n,
+        winning_positions=[2]*n,blocked_requests=[0]*n) for d,sign in [('a',1),('b',-0.5)]}
+    records=[dict(node_count=2**(i%8),family_contributions=[1],operation='crossover') for i in ids]
+    got,summary=select_candidates(ids,panel,sessions,records,256)
+    assert len(got)==256 and len(set(got))==256 and summary['shortfall']==0
+    assert len({records[i]['node_count'] for i in got})==8
+    assert got==select_candidates(ids,panel,sessions,records,256)[0]
+    for d in sessions:
+        for k in sessions[d]:sessions[d][k]=[sessions[d][k][0]]*n
+    got,summary=select_candidates(ids,panel,sessions,records,256)
+    assert len(got)==1 and summary['shortfall']==255
+
+
+def test_only_explicit_legacy_to_append_transition_allowed():
+    review.check_transition(None,review.LEGACY_POLICY,review.LEGACY_POLICY)
+    change=dict(before=review.LEGACY_POLICY,after=review.POLICY)
+    review.check_transition(review.LEGACY_POLICY,review.POLICY,change)
+    with pytest.raises(ValueError):review.check_transition(review.LEGACY_POLICY,review.POLICY,review.POLICY)
+    with pytest.raises(ValueError):review.check_transition(review.POLICY,review.LEGACY_POLICY,change)
