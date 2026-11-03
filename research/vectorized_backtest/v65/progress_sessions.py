@@ -32,8 +32,22 @@ def load_live_session(job,root,generation,role,day,ids,token):
     """Completed replay evidence; explicitly not a sealed-generation result."""
     from .full_common import aggregate,ranking
     from .objectives import Objective
-    path=Path(root)/'replays'/role/f'generation-{generation:04d}'/day/'receipt.json'
-    receipt=read_verified(path)
+    from .completed_replays import reference
+    from .restored_summary import load,location,authority
+    out=Path(root)/'replays'/role
+    path,expected=reference(job,out,role,day,generation)
+    reused=expected is not None
+    if str(root).startswith('\\\\'):
+        from .distributed_assets import remote
+        path=remote(path,job['workstation_share'])
+    saved=load(location(out,generation,day),authority(job,expected,token,len(ids))) if reused and generation==0 else None
+    if saved is not None:
+        panel=saved['_session_panel']
+        replay=dict(total_candidates=len(ids),completed_candidates=len(ids),evaluated_candidates=0,
+                    reused_candidates=len(ids),completed_local_batches=0,total_local_batches=0,
+                    session_seconds=None,stage='Reused sealed replay')
+        return dict(ids=ids,panel=panel),dict(strength=strength(ranking(panel,ids)),batch_seconds=None,cached=True,replay_details=replay)
+    receipt=read_verified(path,expected)
     if receipt['day']!=day or receipt['split']!=role or receipt['population_sha256']!=token or not receipt['full_session'] or receipt['validation_opened']!=(role=='validation') or receipt['execution']!=job['execution']:raise ValueError('Live replay receipt identity changed')
     panel=aggregate([receipt['metrics']],Objective(**job['objective']))
     if len(panel['score'])!=len(ids):raise ValueError('Live replay candidate alignment changed')

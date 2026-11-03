@@ -73,6 +73,12 @@ def accept_checkpoint(job,path,saved,expected):
         bound=job['resume_transition'].get('global_checkpoint',{})
         if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Global checkpoint differs from bound receipt')
         actual=dict(saved['contract'],source_sha256=expected['source_sha256'])
+        if job['resume_transition'].get('initial_reproduction_change'):
+            from .founder_reproduction import VERSION
+            if (job['resume_transition']['initial_reproduction_change']!=VERSION or saved['state']['completed']!=-1
+                or saved['state']['seals'] or 'initial_reproduction' in saved['contract']):
+                raise ValueError('Initial reproduction transition requires unselected founders')
+            actual['initial_reproduction']=VERSION
         if initial_score_transition(job,old):
             if saved['state']['completed']!=-1 or saved['state']['seals']:
                 raise ValueError('Objective transition requires unselected initial founders')

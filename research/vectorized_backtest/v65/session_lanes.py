@@ -561,20 +561,20 @@ class SessionLanes:
                 assigned=[d for d in self.config.get('prefetch_days',days)[lane::self.workers] if not can_restore(d)]
                 if assigned:queued[lane]=pool.submit(queue_sessions,assigned[:self.config.get('host_prefetch_depth',6)])
         def choose(lane,remaining):
+            from .campaign_runner import stop_check
+            stop_check(getattr(self.panel,'stop_roots',[]))
             if lane in queued:queued.pop(lane).result()
             restored=next((d for d in remaining if can_restore(d)),None)
             return restored or self.pools[lane].submit(choose_ready,remaining).result()
         def submit(lane,index,day,next_day):
             if self.error is not None:raise RuntimeError('Session progress consumer failed') from self.error
             if can_restore(day):
-                from concurrent.futures import Future
-                from .completed_replays import restore
-                from .controller_metrics import compact
-                began=perf_counter()
-                panels,refs=restore(self.panel.job,self.config['output'],role,[day],generation,token,len(population))
-                result=dict(day=day,metrics=compact(panels[0]),ref=refs[day],restored=True,
-                            timings=[],wall_seconds=perf_counter()-began,clocks=19799)
-                future=Future();future.set_result(result);return future
+                from .restored_summary import prepared
+                key=f'{role}/{generation}/{day}'
+                job=self.panel.job
+                request={k:job[k] for k in ('execution','objective','source_sha256')}
+                request['founder_readmission']=dict(completed_replays={key:bound[key]})
+                return self.pools[lane].submit(prepared,request,self.config['output'],role,day,generation,token,len(population))
             assigned=days[lane::self.workers]
             dispatched_days[lane].add(day)
             next_day=[d for d in assigned if d not in dispatched_days[lane] and not can_restore(d)][:self.config.get('host_prefetch_depth',6)]

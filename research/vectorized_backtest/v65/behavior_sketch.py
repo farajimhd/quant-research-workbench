@@ -27,6 +27,10 @@ def fill(offsets,entries,exits,listings):
 
 
 def sketch(metrics,n):
+    if '_behavior_sketch' in metrics:
+        values,active=metrics['_behavior_sketch']
+        if values.shape!=(n,131) or active.shape!=(n,):raise ValueError('Cached behavior population differs')
+        return values,active
     keys=('episode_entry_clocks','episode_exit_clocks','episode_listings')
     if any(len(metrics[k])!=n for k in keys):raise ValueError('Behavior population differs')
     lengths=np.fromiter(map(len,metrics['episode_entry_clocks']),np.int64,count=n)

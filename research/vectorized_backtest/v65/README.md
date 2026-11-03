@@ -126,3 +126,13 @@ Generation sealing waits for receipt futures in a background coordinator and
 propagates writer errors; checkpoint publication remains single-process and
 ordered while the next generation can replay. Publication concurrency is also
 bound in resume scheduling authority.
+
+Hash-bound replay restoration runs in the existing process-isolated replay
+workers, not controller threads. Initial admission saves exact NumPy score and
+behavior summaries with receipt/source hashes; restart and live panels reuse
+these without reparsing large JSON ledgers. The panel resolves preserved receipt
+paths and distinguishes saved-result restoration from actual GPU replay. The
+6144 founders select a diverse 1024-parent shortlist including session champions;
+the unchanged V64 reproduction policy then produces the 1024 generation-one
+candidates. New offspring require GPU evaluation immediately in generation one;
+only unchanged elites can reuse exact results.

@@ -183,21 +183,25 @@ def test_partial_resume_sends_population_to_first_unfinished_session(tmp_path,mo
     from research.vectorized_backtest.v65.session_lanes import SessionLanes
     from research.vectorized_backtest.v65.distributed_assets import sha
     from research.vectorized_backtest.v65 import controller_metrics
+    from research.vectorized_backtest.v65 import restored_summary
     receipt=tmp_path/'generation-0001'/'a'/'receipt.json';receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps(dict(day='a',split='training',population_sha256='token',full_session=True,
         execution={},validation_opened=False,case_owners=[None],metrics={'net_pnl':[1.]})))
     bound={'training/1/a':sha(receipt)}
     monkeypatch.setattr(controller_metrics,'compact',lambda x:x)
+    monkeypatch.setattr(restored_summary,'prepare_summary',lambda x,*a:x)
     calls=[];finished=[]
     class Pool:
         def submit(self,fn,*args):
+            if fn is restored_summary.prepared:
+                future=Future();future.set_result(fn(*args));return future
             calls.append(args);future=Future()
             future.set_result(dict(day=args[0],metrics={},ref={},timings=[],wall_seconds=0,clocks=19799))
             return future
     lanes=SessionLanes.__new__(SessionLanes)
     lanes.workers=1;lanes.widths={'a':1,'b':1,'c':1};lanes.error=None
     lanes.config=dict(output=str(tmp_path),split='training',immutable_population_cache=True,defer_publication=True)
-    lanes.panel=SimpleNamespace(job=dict(execution={},resume_transition={'completed_replays':bound}),
+    lanes.panel=SimpleNamespace(job=dict(execution={},objective=dict(drawdown_weight=0.,loss_weight=0.),source_sha256='source',resume_transition={'completed_replays':bound}),
         session_result=lambda day,result,role,generation:finished.append((day,result.get('restored',False))))
     lanes.pools=[Pool()]
     results=lanes.generation(['a','b','c'],[SimpleNamespace(payload=lambda:{'genome':1})],1,'token')

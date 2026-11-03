@@ -337,14 +337,21 @@ class Model:
         if role and day in self.job[role+'_days'] and state.get('replay_generation',generation)==generation:
             self.replay_samples[role+':'+day]=dict(event)
         rows={}
+        from .completed_replays import bindings
+        from .restored_summary import location
+        bound=bindings(self.job)
         for split in ('training','validation'):
             for day in self.job[split+'_days']:
                 key=split+':'+day;sample=self.replay_samples.get(key,{})
                 complete=(root/'replays'/split/f'generation-{generation:04d}'/day/'receipt.json').exists()
+                reused=f'{split}/{generation}/{day}' in bound
+                if reused:
+                    complete=location(root/'replays'/split,generation,day).exists()
+                    if not complete:sample=dict(sample,stage='Restore saved results' if sample.get('status')=='running' else 'Saved results; awaiting restoration')
                 active=role==split and day in state.get('active_sessions',[])
                 status='complete' if complete else 'failed' if sample.get('status')=='failed' else state.get('status','running') if active else 'queued'
                 if active and status=='running' and not sample:sample=dict(stage='Active / awaiting update')
-                rows[key]=dict(generation=generation,status=status,progress=sample,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None)
+                rows[key]=dict(generation=generation,status=status,progress=sample,reused=reused,age=max(0,now-sample['updated_epoch']) if sample.get('updated_epoch') else None)
         return rows
 
     def diagnostic_replays(self):

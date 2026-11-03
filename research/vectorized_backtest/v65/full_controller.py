@@ -26,6 +26,8 @@ def checkpoint_contract(job,train,valid):
     contract['behavior_selection']=behavior_version
     contract['selection_restart']=job.get('selection_restart')
     contract['founder_pool']=job.get('founder_pool')
+    from .founder_reproduction import VERSION
+    contract['initial_reproduction']=VERSION
     if job.get('founder_readmission'):contract['founder_readmission']=digest(job['founder_readmission'])
     contract['selection_risk_caps']=False
     contract['execution']=job.get('execution',{})
@@ -75,10 +77,14 @@ class Controller:
         if sixfold:
             from .founder_selection import select
             selected,diversity=select(ordered,panel)
-            successor=[members[i] for i in selected];newids=source_ids[selected]
             for i in diversity['champion_selected']:
                 pedigree.records[int(source_ids[i])]['initial_session_champion']=diversity['champion_wins'][str(i)]
-            emit(folder/'initial-admission.json',dict(diversity,selected_ids=newids.tolist()))
+            admission=dict(diversity,selected_parent_ids=source_ids[selected].tolist())
+            from .founder_reproduction import reproduce
+            successor,newids,reproduction=reproduce(selected,members,source_ids,pedigree,ordered,rng,
+                Selection(**self.job['selection']),species,probe)
+            diversity=dict(reproduction,initial_admission=admission,replayed=len(members),selected=len(successor),reproduction_performed=True)
+            emit(folder/'initial-admission.json',dict(admission,reproduction_performed=True,successor_ids=newids.tolist()))
             if getattr(self,'publication_lane',None):
                 from .validation_cache import certificate
                 from .lineage import program_key

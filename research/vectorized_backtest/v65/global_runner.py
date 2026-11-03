@@ -68,7 +68,7 @@ class Global(Evolution):
         from .full_common import prepare_summary
         from .objectives import Objective
         prepare_summary(metrics,Objective(**self.job['objective']))
-        if generation==0:
+        if generation==0 and '_founder_descriptor' not in metrics:
             from .founder_selection import session_descriptor
             metrics['_founder_descriptor']=session_descriptor(metrics)
 
@@ -131,6 +131,9 @@ class Global(Evolution):
             if lanes.config.get('host_resident_prepare'):lanes.preload(days,snapshot)
             self.get_lanes('validation').preload(self.job['validation_days'],snapshot)
         self.stage=('Fresh founder replay' if generation==0 else 'Global training') if role=='training' else 'Validation replay + training-only reproduction'
+        from .completed_replays import bindings
+        if all(f'{role}/{generation}/{day}' in bindings(self.job) for day in days):
+            self.stage='Restore saved founder results'
         self.publish(phase=2,generation=generation,total_sessions=len(days),replay_role=role,evaluated_population=len(members))
         pair=dict(main_token=snapshot.token,extra=[m.payload() for m in mutants]) if mutants else None
         results=lanes.generation(days,population,generation,token,prepared_population=pair)
