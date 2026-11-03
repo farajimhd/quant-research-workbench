@@ -1,6 +1,7 @@
 import json
 import numpy as np
 import torch
+from types import SimpleNamespace
 from research.rl_trading.v7.experiments import pretrain
 
 
@@ -12,8 +13,16 @@ def test_actual_pretraining_launcher_and_completed_resume(tmp_path,monkeypatch):
     class Dataset:
         binding={'synthetic':True}
         fit_days=['2026-01-05'];development_days=['2026-01-06']
+        days=fit_days+development_days
         def __init__(self,*args):pass
         def iter_days(self,split):yield ('2026-01-05' if split=='fit' else '2026-01-06'),arrays
+        def load(self,day,cache_root=None):
+            n=1000;selection=np.full((20,5),-1,np.int32);selection[:,0]=0
+            e={k:np.full((n,1),v,dtype=d) for k,v,d in [('mark',10.,float),('bid',9.99,float),
+                ('ask',10.01,float),('bid_size',1000.,float),('ask_size',1000.,float),
+                ('quote_valid',True,bool),('quote_us',1000000,np.int64)]}
+            return SimpleNamespace(day=day,tickers=['A'],clocks=np.arange(1,n+1),selection=selection,
+                                   features=np.zeros((20,5,98),np.float32),execution=e)
     monkeypatch.setattr(pretrain,'PredictiveDataset',Dataset)
     monkeypatch.setattr(pretrain,'TrainingDataset',Dataset)
     arguments=['--output',str(tmp_path/'run'),'--device','cpu','--epochs','2','--batch','4']
@@ -45,3 +54,17 @@ def test_actual_pretraining_launcher_and_completed_resume(tmp_path,monkeypatch):
     b=torch.load(tmp_path/'restarted'/'checkpoint_latest.pt',weights_only=False)
     assert a['history']==b['history']
     for name,value in a['policy'].items():assert torch.equal(value,b['policy'][name]),name
+    from research.rl_trading.v7.experiments import predictive_ppo
+    monkeypatch.setattr(predictive_ppo,'TrainingDataset',Dataset)
+    monkeypatch.setattr(predictive_ppo.train,'TrainingDataset',Dataset)
+    replay=tmp_path/'forecast-replay'
+    assert predictive_ppo.main(['--forecast',str(root/'checkpoint_best.pt'),'--frozen-forecast','--output',str(replay)])==0
+    manifest=json.loads((replay/'manifest.json').read_text())
+    assert 'supervised' in manifest['contract']['config']['labels']['initialization']
+    assert manifest['contract']['mode']=='frozen-training-replay'
+    ppo=tmp_path/'forecast-ppo'
+    assert predictive_ppo.main(['--forecast',str(root/'checkpoint_best.pt'),'--output',str(ppo)])==0
+    initialized=torch.load(ppo/'checkpoint_initial.pt',weights_only=False)
+    refined=torch.load(ppo/'checkpoint_latest.pt',weights_only=False)
+    for name,value in initialized['policy'].items():
+        if not name.startswith(('buy.','control.','value.')):assert torch.equal(value,refined['policy'][name]),name
