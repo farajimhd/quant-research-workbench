@@ -54,7 +54,7 @@ def replay_session(session, scorer, config=Config(), notify=None):
     return dict(env.result(), fill_records=fills, decisions=decisions)
 
 
-def main(argv=None):
+def main(argv=None, *, bundle_loader=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', default=DEFAULT_DEST)
     parser.add_argument('--bundle', type=Path, required=True)
@@ -66,9 +66,11 @@ def main(argv=None):
     dates = args.dates or data.days
     if len(set(dates)) != len(dates) or any(d not in data.days for d in dates):
         raise ValueError('Only unique approved TRAINING dates may be replayed')
-    from research.rl_trading.v7.experiments.entry_score import load_bundle
+    if bundle_loader is None:
+        from research.rl_trading.v7.experiments.entry_score import load_bundle
+        bundle_loader = load_bundle
     torch.set_num_threads(1)
-    scorer = load_bundle(args.bundle, data, args.forecast, device='cpu')
+    scorer = bundle_loader(args.bundle, data, args.forecast, device='cpu')
     root = args.output.resolve()
     runtime = Path('D:/TradingML/runtimes').resolve()
     if not runtime.is_dir() or not root.is_relative_to(runtime):

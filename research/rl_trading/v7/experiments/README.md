@@ -132,3 +132,18 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -u research/rl_trading/v7/experiments/entry_score.py --output D:/TradingML/runtimes/rl-trading/v7/entry-score-v1 --device cuda
 python -B -u research/rl_trading/v7/experiments/entry_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-score-v1/attention --forecast D:/TradingML/runtimes/rl-trading/v7/forecast-seed1917/checkpoint_best.pt --output D:/TradingML/runtimes/rl-trading/v7/entry-score-attention-replay --dates 2026-01-05 2026-04-01 2026-08-10
 ```
+
+`entry_net.py` predicts the same net-dollar targets with a nonlinear residual
+added to the causal current-quote roundtrip estimate. It fine-tunes the forecast
+encoder at 1e-5 and an 86→64→1 residual head at 1e-3 for at most 20 epochs. The
+head starts at zero, so epoch zero is exactly the known-cost baseline. Selection
+uses internal-development MSE and includes epoch zero; a baseline win is not a
+learned improvement. Sealed epoch checkpoints support exact boundary resume.
+`entry_net_replay.py` uses the same entry schedule, positive-score rule and
+simulator as `entry_replay.py`, with the neural scorer injected explicitly.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/entry_net.py --output D:/TradingML/runtimes/rl-trading/v7/entry-net-v1 --device cuda
+python -B -u research/rl_trading/v7/experiments/entry_net_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-net-v1 --forecast D:/TradingML/runtimes/rl-trading/v7/forecast-seed1917/checkpoint_best.pt --output D:/TradingML/runtimes/rl-trading/v7/entry-net-three-days --dates 2026-01-05 2026-04-01 2026-08-10
+```
