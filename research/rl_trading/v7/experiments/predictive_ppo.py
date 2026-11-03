@@ -7,6 +7,7 @@ import sys
 if __package__ in (None,''):
     sys.path.insert(0,str(Path(__file__).resolve().parents[4]))
 import torch
+from torch.distributions import Categorical
 from research.market_shards.v1.contract import digest,sha
 from research.rl_trading.v7 import train
 from research.rl_trading.v7.data import TrainingDataset
@@ -15,23 +16,11 @@ from research.rl_trading.v7.experiments.cost_aware import CostEnvironment
 from research.rl_trading.v7.experiments.predictive_model import PredictivePolicy
 
 
-def main(argv=None):
-    parser=argparse.ArgumentParser(add_help=False)
-    parser.add_argument('--forecast',type=Path,required=True)
-    parser.add_argument('--frozen-forecast',action='store_true')
-    parser.add_argument('--train-encoder',action='store_true')
-    options,remaining=parser.parse_known_args(argv)
-    required=argparse.ArgumentParser(add_help=False)
-    required.add_argument('--output',required=True)
-    required.add_argument('--dataset',default=DEFAULT_DEST)
-    location,_=required.parse_known_args(remaining)
-    root=Path(location.output).resolve();runtime=Path('D:/TradingML/runtimes').resolve()
-    if not runtime.is_dir() or not root.is_relative_to(runtime):raise ValueError('Runtime output required')
-    dataset=TrainingDataset(location.dataset)
-    forecast_hash=sha(options.forecast)
-    saved=torch.load(options.forecast,map_location='cpu',weights_only=False)
+def load_forecast(path,dataset):
+    forecast_hash=sha(path)
+    saved=torch.load(path,map_location='cpu',weights_only=False)
     contract=saved['contract']
-    if (sha(options.forecast)!=forecast_hash or saved['contract_hash']!=digest(contract)
+    if (sha(path)!=forecast_hash or saved['contract_hash']!=digest(contract)
             or contract['training_binding']!=dataset.binding or contract['base_source']!=train.source_identity()):
         raise ValueError('Forecast checkpoint training/source contract mismatch')
     here=Path(__file__).parent
@@ -42,12 +31,39 @@ def main(argv=None):
         raise ValueError('Forecast split differs from approved training dates')
     if any(not torch.isfinite(value).all() for value in saved['policy'].values()):
         raise ValueError('Nonfinite forecast checkpoint')
+    return saved,forecast_hash
+
+
+class GreedyCategorical(Categorical):
+    def sample(self,sample_shape=torch.Size()):
+        return self.probs.argmax(-1).expand(torch.Size(sample_shape)+self.batch_shape)
+
+
+def main(argv=None):
+    parser=argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--forecast',type=Path,required=True)
+    parser.add_argument('--frozen-forecast',action='store_true')
+    parser.add_argument('--train-encoder',action='store_true')
+    parser.add_argument('--greedy',action='store_true',help='Frozen replay only; choose highest-probability action')
+    options,remaining=parser.parse_known_args(argv)
+    if options.greedy and not (options.frozen_forecast or '--evaluate' in remaining):
+        raise ValueError('Greedy actions are restricted to frozen replay, not PPO collection')
+    required=argparse.ArgumentParser(add_help=False)
+    required.add_argument('--output',required=True)
+    required.add_argument('--dataset',default=DEFAULT_DEST)
+    location,_=required.parse_known_args(remaining)
+    root=Path(location.output).resolve();runtime=Path('D:/TradingML/runtimes').resolve()
+    if not runtime.is_dir() or not root.is_relative_to(runtime):raise ValueError('Runtime output required')
+    dataset=TrainingDataset(location.dataset)
+    saved,forecast_hash=load_forecast(options.forecast,dataset)
+    here=Path(__file__).parent
     original_policy,original_environment,original_identity,original_config=train.Policy,train.Environment,train.source_identity,train.Config
     class InitializedConfig(original_config):
         def manifest(self):
             return dict(super().manifest(),version='rl-v7-predictive-init-ppo-v1',
                         labels=dict(initialization='supervised training-only future mark returns',ppo='own account rewards only'),
-                        forecast_encoder_trainable=options.train_encoder)
+                        forecast_encoder_trainable=options.train_encoder,
+                        decision_rule='argmax' if options.greedy else 'stochastic')
     class InitializedPolicy(PredictivePolicy):
         def __init__(self,*args,**kwargs):
             super().__init__(*args,**kwargs)
@@ -55,6 +71,9 @@ def main(argv=None):
             if not options.train_encoder:
                 for name,parameter in self.named_parameters():
                     parameter.requires_grad_(name.startswith(('buy.','control.','value.')))
+        def forward(self,*args,**kwargs):
+            dist,value=super().forward(*args,**kwargs)
+            return (GreedyCategorical(logits=dist.logits) if options.greedy else dist),value
     def identity():
         return dict(original_identity(),experiment_sha256=sha(Path(__file__)),
                     predictive_model_sha256=sha(here/'predictive_model.py'),cost_aware_sha256=sha(here/'cost_aware.py'),

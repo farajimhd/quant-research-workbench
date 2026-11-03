@@ -62,6 +62,8 @@ def test_actual_pretraining_launcher_and_completed_resume(tmp_path,monkeypatch):
     manifest=json.loads((replay/'manifest.json').read_text())
     assert 'supervised' in manifest['contract']['config']['labels']['initialization']
     assert manifest['contract']['mode']=='frozen-training-replay'
+    assert predictive_ppo.main(['--forecast',str(root/'checkpoint_best.pt'),'--frozen-forecast','--greedy',
+                               '--output',str(tmp_path/'greedy-replay')])==0
     ppo=tmp_path/'forecast-ppo'
     assert predictive_ppo.main(['--forecast',str(root/'checkpoint_best.pt'),'--output',str(ppo)])==0
     initialized=torch.load(ppo/'checkpoint_initial.pt',weights_only=False)
