@@ -347,12 +347,24 @@ def main(argv=None):
         if not fit.any() or not development.any() or np.any(fit == development):
             raise ValueError('Invalid nonempty internal fit/development partition')
         reports = {}
+        raw_features = np.concatenate(matrices['raw']).astype(np.float64)
+        # Known current-quote single-fill roundtrip loss, not a future execution
+        # guarantee. Features 98:105 are the causal cost values; account starts
+        # at112 and its first component is cash/initial_cash.
+        immediate_cost = (-Config().initial_cash*raw_features[:, 112]*Config().allocation*
+                          raw_features[:, 99]*raw_features[:, 100:103].sum(axis=1)/100)
+        baselines = dict(fit_mean_dollars=float(y[fit].mean()),
+            fit_mean_mse=float(np.mean((y[development]-y[fit].mean())**2)),
+            current_quote_roundtrip_mse=float(np.mean((y[development]-immediate_cost[development])**2)),
+            current_quote_roundtrip_mean=float(immediate_cost[development].mean()),
+            current_quote_scope='single-fill current quote estimate; actual next-second and partial exits may differ')
         with threadpool_limits(limits=4):
             for kind in KINDS:
                 x = np.concatenate(matrices[kind]).astype(np.float64)
                 parameters = fit_ridge(x[fit], y[fit])
                 metrics = dict(fit_count=int(fit.sum()), development_count=int(development.sum()),
                     alpha=int(fit.sum())*REGULARIZATION,
+                    development_baselines=baselines,
                     development=diagnostics(predict(x[development], parameters), y[development], days[development]))
                 write_bundle(root/kind, kind, parameters, common, metrics)
                 reports[kind] = metrics
