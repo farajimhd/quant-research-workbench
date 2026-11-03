@@ -40,7 +40,7 @@ def load_live_session(job,root,generation,role,day,ids,token):
     if str(root).startswith('\\\\'):
         from .distributed_assets import remote
         path=remote(path,job['workstation_share'])
-    saved=load(location(out,generation,day),authority(job,expected,token,len(ids))) if reused and generation==0 else None
+    saved=load(location(out,generation,day),authority(job,expected,token,len(ids)),panel_only=True) if reused and generation==0 else None
     if saved is not None:
         panel=saved['_session_panel']
         replay=dict(total_candidates=len(ids),completed_candidates=len(ids),evaluated_candidates=0,

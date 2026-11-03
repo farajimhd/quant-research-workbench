@@ -1,5 +1,5 @@
 """Observer-only access to the rescored founder cohort, independent of evolution."""
-import threading
+import threading,time
 from pathlib import Path
 import numpy as np
 from .progress_sessions import read_verified
@@ -9,6 +9,7 @@ class InitialData:
     def __init__(self,job,root,stop):
         self.job=job;self.root=Path(root);self.stop=stop;self.data=None;self.error=None
         self.thread=None;self.session_thread=None;self.request=None;self.sessions=[]
+        self.cache_check=0.;self.cache_count=0
         from .execution_restart import initial_replay
         self.generation=0 if initial_replay(job) else 1
 
@@ -17,21 +18,26 @@ class InitialData:
         return remote(path,self.job['workstation_share']) if str(self.root).startswith('\\\\') and not str(path).startswith('\\\\') else Path(path)
 
     def report(self):
-        if self.data is None and self.thread is None and (self.job.get('founder_restart') or (self.root/'phase-2/global'/f'generation-{self.generation:04d}'/'training.json').exists()):
+        if self.job.get('founder_readmission') and time.monotonic()-self.cache_check>2:
+            self.cache_check=time.monotonic()
+            self.cache_count=sum(1 for _ in (self.root/'phase-2/replays/training/restored-summary'/f'generation-{self.generation:04d}').glob('*/summary.json'))
+        refreshing=self.cache_count>(self.data or {}).get('coverage',0)
+        if (self.data is None or refreshing) and (self.thread is None or not self.thread.is_alive()) and (refreshing or self.job.get('founder_restart') or (self.root/'phase-2/global'/f'generation-{self.generation:04d}'/'training.json').exists()):
             self.thread=threading.Thread(target=self.load,daemon=True);self.thread.start()
-        return self.data or dict(generation=0,candidates=[],groups=[],coverage=0,total=24,partial=True,scope='initial-founders',error=self.error)
+        return self.data or dict(generation=0,candidates=[],groups=[],coverage=0,total=len(self.job['training_days']),partial=True,scope='initial-founders',error=self.error)
 
     def load(self):
         try:
             from .evolution_report import summarize
             if not self.job.get('founder_restart'):
                 source=self.root/'phase-2/global'/f'generation-{self.generation:04d}'
-                evidence=read_verified(source/'training.json')
+                if (source/'training.json').exists():evidence=read_verified(source/'training.json')
+                else:evidence=self.cached_evidence(source)
                 records=read_verified(source/'evaluated-pedigree.json')
                 panel={k:np.asarray(v) for k,v in evidence['panel'].items()}
                 report=summarize(evidence['ids'],panel,records,generation=self.generation)
                 for row in report['candidates']:row.update(initial_founder=True,original_founder=True)
-                report.update(coverage=len(evidence['receipts']),total=len(self.job['training_days']),partial=False,scope='initial-founders')
+                report.update(coverage=len(evidence['receipts']),total=len(self.job['training_days']),partial=len(evidence['receipts'])<len(self.job['training_days']),scope='initial-founders')
                 self.evidence=evidence;self.source_root=self.root/'phase-2';self.data=report
                 return
             binding=self.job['founder_restart']
@@ -63,6 +69,22 @@ class InitialData:
             self.data=report
         except Exception as error:self.error=str(error)
 
+    def cached_evidence(self,source):
+        from .progress_sessions import population_metadata
+        from .completed_replays import reference
+        from .restored_summary import location,load,authority
+        from .robust_score import combine
+        ids,token=population_metadata(source/'population.json');panels=[];refs={}
+        out=self.root/'phase-2/replays/training'
+        for day in self.job['training_days']:
+            if self.stop.is_set():raise InterruptedError('Observer closed')
+            path,expected=reference(self.job,out,'training',day,self.generation)
+            saved=load(location(out,self.generation,day),authority(self.job,expected,token,len(ids)),panel_only=True)
+            if saved is None:continue
+            panels.append(saved['_session_panel']);refs[day]=dict(receipt=str(path),receipt_sha256=expected)
+        if not panels:raise ValueError('No restored founder summaries yet')
+        return dict(ids=ids,population_sha256=token,panel=combine(panels),receipts=refs)
+
     def candidate_sessions(self,serial):
         if self.data is None:self.report();return []
         if self.request!=serial:self.request=serial;self.sessions=[];self.error=None
@@ -80,6 +102,13 @@ class InitialData:
                 if self.stop.is_set() or self.request!=serial:return
                 key='training:'+day
                 if key in complete:continue
+                from .restored_summary import location,load,authority
+                marker=location(self.root/'phase-2/replays/training',self.generation,day)
+                if marker.exists():
+                    cached=load(marker,authority(self.job,ref['receipt_sha256'],self.evidence['population_sha256'],len(self.evidence['ids'])),panel_only=True)
+                    row=dict(session=key,**{k:float(cached['_session_panel'][k][index]) for k in ('score','net_pnl','gross_losses','drawdown')})
+                    if self.request!=serial:return
+                    self.sessions=[*self.sessions,row];continue
                 if getattr(self,'io',None):
                     row=self.io.call('research.vectorized_backtest.v65.observer_io','initial_session',self.path(ref['receipt']),ref['receipt_sha256'],day,index)
                     if self.request!=serial:return

@@ -25,8 +25,9 @@ def load(root,generation,serial,session,share,job=None):
     else:
         from .progress_sessions import population_metadata
         ids,token=population_metadata(folder/'population.json')
-        path=Path(root)/'replays'/role/f'generation-{generation:04d}'/day/'receipt.json'
-        evidence=dict(ids=ids,population_sha256=token,receipts={day:dict(receipt=str(path),receipt_sha256=None)})
+        from .completed_replays import reference
+        path,expected=reference(job or {},Path(root)/'replays'/role,role,day,generation)
+        evidence=dict(ids=ids,population_sha256=token,receipts={day:dict(receipt=str(path),receipt_sha256=expected)})
     index=evidence['ids'].index(serial)
     reference=evidence['receipts'][day];path=Path(reference['receipt'])
     if str(root).startswith('\\\\') and not str(path).startswith('\\\\'):path=remote(path,share)

@@ -103,3 +103,21 @@ def test_initial_admission_reproduces_instead_of_passing_through(tmp_path,monkey
     monkeypatch.setattr(lineage,'next_population',breed)
     children,newids,report=reproduce(selected,members,ids,None,[metrics],None,None,None,None)
     assert len(children)==1024 and report['initial_new_candidates']==1024
+
+
+def test_initial_view_available_before_generation_seal(tmp_path):
+    from threading import Event
+    from research.vectorized_backtest.v65.initial_progress import InitialData
+    job,day,path,raw=fixture(tmp_path);token='a'*64
+    receipt=json.loads(path.read_bytes());receipt['population_sha256']=token;path.write_text(json.dumps(receipt))
+    job['founder_readmission']['completed_replays'][f'training/0/{day}']['sha256']=sha(path)
+    job.update(training_days=[day],fresh_initial_replay='v65-fresh-founders-v1')
+    root=tmp_path/'run';folder=root/'phase-2/global/generation-0000';folder.mkdir(parents=True)
+    (folder/'population.json').write_text(json.dumps(dict(ids=list(range(12)),population=[],population_sha256=token),sort_keys=True,separators=(',',':')))
+    summary.prepared(job,root/'phase-2/replays/training','training',day,0,token,12)
+    model=InitialData(job,root,Event());model.evidence=model.cached_evidence(folder)
+    assert len(model.evidence['receipts'])==1 and not (folder/'training.json').exists()
+    np.testing.assert_array_equal(model.evidence['panel']['score'],aggregate([raw])['score'])
+    model.request=3;model.load_sessions()
+    assert model.error is None and len(model.sessions)==1
+    assert model.sessions[0]['score']==aggregate([raw])['score'][3]

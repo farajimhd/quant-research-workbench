@@ -19,7 +19,7 @@ def authority(job,receipt_hash,token,population):
                 token=token,population=population,objective=job['objective'],execution=job['execution'])
 
 
-def load(path,expected):
+def load(path,expected,*,panel_only=False):
     path=Path(path)
     if not path.exists():return None
     record=json.loads(path.read_bytes())
@@ -27,8 +27,10 @@ def load(path,expected):
     arrays=path.with_name(record['arrays'])
     if sha(arrays)!=record['sha256']:raise ValueError('Restored summary arrays changed')
     with np.load(arrays,allow_pickle=False) as bank:
+        panel={k[6:]:bank[k] for k in bank.files if k.startswith('panel:')}
+        if panel_only:return {'_session_panel':panel}
         metrics={k:bank[k] for k in ('net_pnl','closed_positions','terminal_valid')}
-        metrics['_session_panel']={k[6:]:bank[k] for k in bank.files if k.startswith('panel:')}
+        metrics['_session_panel']=panel
         metrics['_founder_descriptor']=(bank['entries'],bank['exposure'])
         metrics['_behavior_sketch']=(bank['behavior'],bank['active'])
         metrics['selection_behavior_keys']=[row.tobytes() for row in bank['behavior_keys']]
