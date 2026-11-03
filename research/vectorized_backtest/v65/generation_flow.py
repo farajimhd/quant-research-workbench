@@ -16,9 +16,13 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
     lane=Lane(c.job.get('publication_workers',1));c.publication_lane=lane;c.worker.defer_publication=True
     snapshot=Snapshot(members);last=None;completed=state['completed'];c.sealed_generation=max(0,completed)
     limit=c.job['phase2_generations'] if stop_after_generation is None else stop_after_generation
+    consumed=state.get('agent_reviews',{})
     if not completed < limit <= c.job['phase2_generations']:raise ValueError('Invalid qualification generation bound')
     try:
         for generation in range(completed+1,limit+1):
+            from .agent_intervention import apply as apply_review
+            members,ids,consumed,intervention=apply_review(root,c.job,generation,members,ids,pedigree,consumed)
+            if intervention is not None:snapshot=Snapshot(members)
             validation_days=valid
             from .disk_budget import check as check_disk
             check_disk(root,generation,len(train)+len(valid))
@@ -41,6 +45,8 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
                 species.descriptor_future=c.fresh_prefetch.pool.submit(descriptors,members)
             c.paired_probe=prepare_probe(c,members,ids,records,generation)
             buffer=Buffer();c.artifact_write=buffer.write
+            if c.job.get('agent_intervention'):
+                buffer.write(folder/'agent-intervention.json',intervention or dict(admitted=0,scope='training'))
             replay_started=time.perf_counter()
             ordered,receipts=c.evaluate('training',train,members,generation)
             replay_returned=time.perf_counter()
@@ -76,6 +82,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
             pedigree.retain(newids)
             next_state=dict(ids=newids.tolist(),pedigree=list(pedigree.records.values()),next_serial=pedigree.next_serial,
                             rng=copy.deepcopy(rng.bit_generator.state),species=copy.deepcopy(species.state))
+            if c.job.get('agent_intervention'):next_state['agent_reviews']=dict(consumed)
             packet=dict(root=str(root),folder=str(folder),generation=generation,contract=contract,state=next_state,
                         source=c.job['source_sha256'],started=started,critical_path_seconds=time.perf_counter()-started,
                         successor_raw=next_snapshot.raw,frozen_raw=frozen_raw,frozen_hash=frozen_hash,

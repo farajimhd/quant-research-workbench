@@ -13,6 +13,8 @@ STRATEGY_CONTRACT=dict(top_k=5,price_program='explicit-prices-v1',rank_loss_exit
 
 
 def check(job):
+    from .agent_intervention import check_policy
+    check_policy(job)
     from .fresh_design import SETTINGS
     if job.get('fresh_design')!=SETTINGS:raise ValueError('Fresh candidate design differs')
     if job.get('strategy_contract')!=STRATEGY_CONTRACT:raise ValueError('V65 strategy/execution contract differs')

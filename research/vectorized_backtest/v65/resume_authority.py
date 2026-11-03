@@ -21,6 +21,12 @@ def global_predecessor(job):
     if not path.is_file() or sha(path)!=transition.get('predecessor_job_sha256'):raise ValueError('Global predecessor changed')
     old=json.loads(path.read_bytes())
     mutable={'source_sha256','code','commit','deployment','resume_transition','result_cache_transition'}
+    if transition.get('agent_intervention_change'):
+        from .agent_intervention import POLICY
+        if (transition['agent_intervention_change']!=POLICY or old.get('agent_intervention') is not None
+                or job.get('agent_intervention')!=POLICY):
+            raise ValueError('Unapproved agent intervention transition')
+        mutable.add('agent_intervention')
     scheduling=transition.get('scheduling_change')
     if scheduling:
         from .performance import configuration,loading
@@ -73,6 +79,8 @@ def accept_checkpoint(job,path,saved,expected):
         bound=job['resume_transition'].get('global_checkpoint',{})
         if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Global checkpoint differs from bound receipt')
         actual=dict(saved['contract'],source_sha256=expected['source_sha256'])
+        if job['resume_transition'].get('agent_intervention_change'):
+            actual['agent_intervention']=job['agent_intervention']
         if job['resume_transition'].get('initial_reproduction_change'):
             from .founder_reproduction import VERSION
             if (job['resume_transition']['initial_reproduction_change']!=VERSION or saved['state']['completed']!=-1

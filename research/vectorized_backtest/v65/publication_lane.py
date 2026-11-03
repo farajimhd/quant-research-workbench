@@ -79,6 +79,7 @@ def finish_generation(packet):
              'population.json':'population_sha256','reproduction.json':'reproduction_sha256','births.json':'births_sha256',
              'evaluated-pedigree.json':'evaluated_pedigree_sha256','offspring-audit.json':'offspring_audit_sha256'}
     seal={key:sha(folder/name) for name,key in mapping.items()}
+    if (folder/'agent-intervention.json').exists():seal['agent_intervention_sha256']=sha(folder/'agent-intervention.json')
     seal.update(observational_reports={name:sha(folder/name) for name in ('evolution-report.json','founder-results.json','session-metrics.json','transition-timings.json') if (folder/name).exists()},
                 mutation_probe_sha256=sha(folder/'mutation-probe.json') if (folder/'mutation-probe.json').exists() else None,
                 source_sha256=p['source'],validation_independent=True,wall_seconds=time.perf_counter()-p['started'])
