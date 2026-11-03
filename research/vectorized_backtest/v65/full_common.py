@@ -67,6 +67,10 @@ def aggregate(ordered,objective=Objective(),session_sink=None):
     from .robust_score import ticker_component,combine
     objective.validate();panels=[]
     for metrics in ordered:
+        if '_session_panel' in metrics:
+            if metrics['_summary_objective']!=(objective.drawdown_weight,objective.loss_weight):
+                raise ValueError('Prepared session objective changed')
+            panels.append(metrics['_session_panel']);continue
         panel=_original_aggregate([metrics],objective)
         panel['ticker_component']=ticker_component(metrics)
         panel['blocked_requests']=np.asarray(metrics['blocked_requests'],dtype=float)
@@ -74,3 +78,11 @@ def aggregate(ordered,objective=Objective(),session_sink=None):
         panel=combine([panel]);panels.append(panel)
     if session_sink is not None:session_sink.extend(panels)
     return combine(panels)
+
+
+def prepare_summary(metrics,objective=Objective()):
+    """Called by the CPU result handoff while replay owners continue working."""
+    if '_session_panel' not in metrics:
+        metrics['_session_panel']=aggregate([metrics],objective)
+        metrics['_summary_objective']=(objective.drawdown_weight,objective.loss_weight)
+    return metrics

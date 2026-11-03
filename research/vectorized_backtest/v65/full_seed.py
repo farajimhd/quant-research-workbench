@@ -21,7 +21,10 @@ def global_seed(exports,job,probe,progress=None):
             from .initial_population import validate_fresh
         for p in state['population']:validate_fresh(Individual.restore(p))
         return state
-    if job['initial_multiplier']==6:
+    if job.get('founder_readmission'):
+        from .founder_readmission import seed as readmit
+        state=readmit(job)
+    elif job['initial_multiplier']==6:
         if exports:raise ValueError('Fresh founders cannot inherit exports')
         from .founder_pool import seed as sixfold_seed
         state=sixfold_seed(job,probe,progress)

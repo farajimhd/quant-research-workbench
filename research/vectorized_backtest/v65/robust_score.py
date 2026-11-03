@@ -20,13 +20,13 @@ def ticker_costs(profits,listings):
 
 def ticker_ledgers(metrics):
     for i,(profits,listings) in enumerate(zip(metrics['episode_profits'],metrics['episode_listings'])):
-        yield (list(profits)+list(metrics.get('open_episode_realized',[[]]*len(metrics['net_pnl']))[i]),
-               list(listings)+list(metrics.get('open_episode_listings',[[]]*len(metrics['net_pnl']))[i]))
+        yield (np.concatenate((profits,metrics.get('open_episode_realized',[[]]*len(metrics['net_pnl']))[i])),
+               np.concatenate((np.asarray(listings,np.int64),np.asarray(metrics.get('open_episode_listings',[[]]*len(metrics['net_pnl']))[i],np.int64))))
 
 def ticker_component(metrics):
     result=[]
     for i,(profits,listings) in enumerate(ticker_ledgers(metrics)):
-        if not np.isclose(sum(profits),metrics['net_pnl'][i],rtol=1e-10,atol=1e-7):
+        if not np.isclose(np.sum(profits),metrics['net_pnl'][i],rtol=1e-10,atol=1e-7):
             raise ValueError('Ticker-date cashflows do not reconcile to session net profit')
         result.append(ticker_costs(profits,listings)[1].sum())
     return np.asarray(result)

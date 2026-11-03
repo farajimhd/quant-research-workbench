@@ -9,6 +9,7 @@ def overlap(reproduce,replay,concurrent,has_validation=True):
         with ThreadPoolExecutor(max_workers=1,thread_name_prefix='training-reproduction') as pool:
             future=pool.submit(reproduce)
             timing['validation_dispatch_seconds']=perf_counter()-started
+            timing['validation_started_epoch']=__import__('time').time()
             validation=replay()
             timing['validation_finished_seconds']=perf_counter()-started
             result=future.result()

@@ -26,6 +26,7 @@ def checkpoint_contract(job,train,valid):
     contract['behavior_selection']=behavior_version
     contract['selection_restart']=job.get('selection_restart')
     contract['founder_pool']=job.get('founder_pool')
+    if job.get('founder_readmission'):contract['founder_readmission']=digest(job['founder_readmission'])
     contract['selection_risk_caps']=False
     contract['execution']=job.get('execution',{})
     if job.get('execution_restart'):
@@ -75,6 +76,8 @@ class Controller:
             from .founder_selection import select
             selected,diversity=select(ordered,panel)
             successor=[members[i] for i in selected];newids=source_ids[selected]
+            for i in diversity['champion_selected']:
+                pedigree.records[int(source_ids[i])]['initial_session_champion']=diversity['champion_wins'][str(i)]
             emit(folder/'initial-admission.json',dict(diversity,selected_ids=newids.tolist()))
             if getattr(self,'publication_lane',None):
                 from .validation_cache import certificate

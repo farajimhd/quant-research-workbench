@@ -14,6 +14,15 @@ def profit_concentration(pnl):
     return np.divide(positive.max(1),total,out=np.ones(len(total)),where=total>0)
 
 
+def session_descriptor(metrics):
+    n=len(metrics['net_pnl']);entries=np.zeros((n,64),np.float64);exposure=np.zeros_like(entries)
+    for i,(ids,starts,ends) in enumerate(zip(metrics['episode_listings'],metrics['episode_entry_clocks'],metrics['episode_exit_clocks'])):
+        ids=np.asarray(ids,np.int64);starts=np.asarray(starts,np.int64);ends=np.asarray(ends,np.int64)
+        entries[i]=np.bincount((ids*31+starts//300)%64,minlength=64)
+        exposure[i]=np.bincount(ids%64,weights=np.maximum(ends-starts,0),minlength=64)
+    return entries,exposure
+
+
 def select(ordered,panel,size=1024):
     n=len(panel['score'])
     if n!=6*size or len(ordered)<2:raise ValueError('Complete sixfold training replay required')
@@ -31,11 +40,8 @@ def select(ordered,panel,size=1024):
     # distances only, never replace exact genome or receipt identity.
     entries=np.zeros((n,64),np.float32);exposure=np.zeros_like(entries)
     for m in ordered:
-        for i,(ids,starts,ends) in enumerate(zip(m['episode_listings'],m['episode_entry_clocks'],m['episode_exit_clocks'])):
-            ids=np.asarray(ids,np.int64);starts=np.asarray(starts,np.int64);ends=np.asarray(ends,np.int64)
-            buckets=(ids*31+starts//300)%64
-            entries[i]+=np.bincount(buckets,minlength=64)
-            exposure[i]+=np.bincount(ids%64,weights=np.maximum(ends-starts,0),minlength=64)
+        e,x=m['_founder_descriptor'] if '_founder_descriptor' in m else session_descriptor(m)
+        entries+=e;exposure+=x
     def normalized(x):
         return x/np.maximum(np.linalg.norm(x,axis=1,keepdims=True),1e-12)
     descriptor=np.concatenate((normalized(pnl)*np.sqrt(.4),normalized(entries)*np.sqrt(.35),
@@ -54,6 +60,18 @@ def select(ordered,panel,size=1024):
     while np.minimum(group_sizes,cap).sum()<size:cap+=1
     counts=np.zeros(len(leaders),int);chosen=[];available=eligible.copy()
     quality_count=3*size//4
+    from .full_common import aggregate
+    nominations={}
+    for day,m in enumerate(ordered):
+        scores=aggregate([m])['score']
+        for metric,values in (('score',scores),('net_pnl',pnl[:,day])):
+            winner=int(np.argmax(np.where(np.asarray(m['terminal_valid'],bool),values,-np.inf)))
+            if eligible[winner]:nominations.setdefault(winner,[]).append(dict(session=day,metric=metric))
+    champions=[]
+    for i in sorted(nominations,key=lambda i:(-quality[i],-len(nominations[i]),i)):
+        if counts[labels[i]]>=cap:continue
+        champions.append(i);chosen.append(i);available[i]=False;counts[labels[i]]+=1
+        if len(champions)>=size//4:break
     for round_index in range(cap):
         for i in ranked:
             if available[i] and counts[labels[i]]==round_index:
@@ -71,7 +89,9 @@ def select(ordered,panel,size=1024):
         i=int(candidates[np.argmax(distance[candidates]+.1*quality[candidates])])
         chosen.append(i);available[i]=False;counts[labels[i]]+=1
         distance=np.minimum(distance,1-descriptor@descriptor[i])
-    return chosen,dict(version='full-replay-sixfold-selection-v1',replayed=n,selected=size,
+    return chosen,dict(version='full-replay-sixfold-selection-v2-champions',replayed=n,selected=size,
+        champion_nominees=len(nominations),champion_limit=size//4,champion_selected=champions,
+        champion_wins={str(i):nominations[i] for i in champions},champions_are_ordinary_parents=True,
         supported=int(eligible.sum()),quality_selected=quality_count,exploration_selected=size-quality_count,
         behavior_groups=len(leaders),group_cap=cap,largest_selected_group=int(counts.max()),
         quality_weights=dict(fitness=.5,lower_quartile_block_profit=.2,active_sessions=.15,profit_dispersion=.15),

@@ -60,7 +60,10 @@ def check(job):
     if job.get('resume_transition'):
         from .resume_authority import global_predecessor
         global_predecessor(job)
-    elif job.get('result_cache_transition'):raise ValueError('Cache transition requires a pinned predecessor')
+    elif job.get('result_cache_transition') and not job.get('founder_readmission'):raise ValueError('Cache transition requires a pinned predecessor')
+    if job.get('founder_readmission'):
+        from .founder_readmission import verify
+        verify(job)
     from .calibration import load_probe
     metadata=json.loads(Path(job['initialization_probe']).read_bytes())
     if metadata['version']!='v65-top5-in-memory-probe-v1':raise ValueError('V60 requires its own execution-aligned calibration probe')

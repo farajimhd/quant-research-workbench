@@ -19,7 +19,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
     if not completed < limit <= c.job['phase2_generations']:raise ValueError('Invalid qualification generation bound')
     try:
         for generation in range(completed+1,limit+1):
-            validation_days=valid if generation>0 else []
+            validation_days=valid
             from .disk_budget import check as check_disk
             check_disk(root,generation,len(train)+len(valid))
             started=time.perf_counter();lane.check()
@@ -44,6 +44,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
             replay_started=time.perf_counter()
             ordered,receipts=c.evaluate('training',train,members,generation)
             replay_returned=time.perf_counter()
+            training_returned_epoch=time.time()
             # A failed publication is surfaced before producing another cohort.
             lane.check()
             c.stage='Reproduction';c.publish(reproduction_stage='Select active parents and reproduce')
@@ -62,6 +63,7 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
             frozen_raw,verified_hash=next_snapshot.successor(newids,rng.bit_generator.state)
             if frozen_hash!=verified_hash:raise ValueError('Diagnostic changed successor or training RNG')
             timing=dict(concurrent=True,publication_process=True,reproduction_seconds=reproduction_seconds,
+                        training_returned_epoch=training_returned_epoch,
                         total_seconds=time.perf_counter()-replay_returned,replay_dispatch_seconds=replay_started-started,
                         replay_return_seconds=replay_returned-started)
             timing['validation_overlap']=overlap_timing

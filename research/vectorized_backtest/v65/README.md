@@ -10,15 +10,28 @@ represented probe patterns within each construction group, without excluding
 otherwise valid candidates solely for sharing a pattern. Combinations allow
 three entry nodes.
 Training-only selection keeps 768 quality/diversity representatives plus 256
-coverage choices. Quality combines existing fitness (50%), lower-quartile profit
+coverage choices. Up to 256 of the quality slots admit deduplicated session
+champions nominated by each training session's best score and net profit.
+They retain the same support/group limits, rank by multi-period quality, and
+become ordinary crossover/mutation parents without protection or frozen genes.
+Quality combines existing fitness (50%), lower-quartile profit
 across five chronological blocks (20%), active sessions (15%), and dispersion of
 positive session profits (15%). At least five trades across two sessions are
 required. Entry-time, ticker-duration and session-return descriptors group near
 duplicates at cosine similarity 0.98; a reported capacity limit prevents one
 group from dominating when sufficient distinct groups exist. No family survives
-by quota. Generation zero selects without reproduction or validation replay;
-the retained 1,024 start ordinary evolution and validation at generation one.
+by quota. Generation zero selects without reproduction while its original
+6,144-member cohort receives display-only validation; the retained 1,024 start
+ordinary evolution at generation one. Validation never feeds selection.
 Six network batches remain cached per worker during the initial replay.
+
+CPU result handoff prepares per-session score panels and initial behavior
+descriptors while the GPU continues with ready sessions. At the split boundary,
+aggregation combines these compact panels instead of rescanning all ledgers.
+Validation dispatch overlaps reproduction in every generation. Split release
+frees CUDA references without a full collection of the retained CPU heap.
+An explicit hash-bound founder readmission can reuse unchanged V65 founder
+training receipts to revise initial selection, retaining prior runs untouched.
 
 Event-based replay uses a bounded ring of eight pinned host buffer sets. A slot
 is reused only after its CPU execution completes; execution stays chronological.

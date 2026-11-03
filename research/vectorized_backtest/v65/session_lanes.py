@@ -491,7 +491,8 @@ def release_plans():
         if hasattr(item,'resident_features'):item.resident_features.deactivate()
         item.deactivate()
     _worker.staging.close();_worker.staging=TransferStaging()
-    gc.collect()
+    # GPU tensors above are released by reference count. A full Python heap
+    # collection scans unrelated retained CPU ledgers and blocks the next split.
     if torch.device(_worker.config['device']).type=='cuda':torch.cuda.empty_cache()
 
 
@@ -547,7 +548,8 @@ class SessionLanes:
         from .session_pipeline import SessionProgress,independent_sessions
         self.independent_progress=SessionProgress(self.panel,days,len(population),generation,self.config.get('split','training'))
         dispatched=[False]*self.workers
-        bound=getattr(self.panel,'job',{}).get('resume_transition',{}).get('completed_replays',{})
+        from .completed_replays import bindings
+        bound=bindings(getattr(self.panel,'job',{}))
         role=self.config.get('split','training')
         can_restore=lambda day:output_override is None and not prepared_population and f'{role}/{generation}/{day}' in bound
         queued={};dispatched_days=[set() for _ in range(self.workers)]

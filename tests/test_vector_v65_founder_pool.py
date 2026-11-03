@@ -33,9 +33,14 @@ def test_combinations_use_valid_three_node_causal_graphs(family,filter_index):
 def evidence(n=48):
     rng=np.random.default_rng(3);ordered=[]
     for day in range(5):
-        ordered.append(dict(net_pnl=rng.normal(10,30,n),closed_positions=np.full(n,5),
+        ordered.append(dict(net_pnl=rng.normal(10,30,n),closed_positions=np.ones(n),
             episode_listings=[[i%7] for i in range(n)],episode_entry_clocks=[[i*300] for i in range(n)],
             episode_exit_clocks=[[i*300+60] for i in range(n)]))
+        m=ordered[-1]
+        m.update(terminal_valid=np.ones(n,bool),drawdown=np.zeros(n),blocked_requests=np.zeros(n),
+                 winning_positions=(m['net_pnl']>0).astype(int),maximum_position_risk=np.ones(n),
+                 maximum_stop_distance=np.ones(n),episode_profits=[[v] for v in m['net_pnl']],
+                 open_episode_realized=[[] for _ in range(n)],open_episode_listings=[[] for _ in range(n)])
     panel=dict(score=rng.normal(size=n),eligible=np.ones(n,bool))
     return ordered,panel
 
@@ -56,10 +61,23 @@ def test_insufficient_support_fails_without_silent_inactive_filler():
     with pytest.raises(ValueError,match='supported founders'):select(ordered,panel,8)
 
 
+def test_session_champion_enters_ordinary_survivor_pool():
+    ordered,panel=evidence()
+    for m in ordered:
+        m['net_pnl'][47]=10000.;m['episode_profits'][47]=[10000.]
+    panel['score'][47]=100000.
+    chosen,report=select(ordered,panel,8)
+    assert 47 in report['champion_selected'] and 47 in chosen
+    assert len(report['champion_selected'])<=2
+    assert report['champions_are_ordinary_parents']
+    assert {v['metric'] for v in report['champion_wins']['47']}=={'score','net_pnl'}
+
+
 def test_identical_behavior_capacity_is_explicit_not_hidden():
     ordered,panel=evidence()
     for m in ordered:
         m['net_pnl'][:]=1
+        m['episode_profits']=[[1.]]*48
         for key in ('episode_listings','episode_entry_clocks','episode_exit_clocks'):
             m[key]=[m[key][0]]*48
     chosen,report=select(ordered,panel,8)

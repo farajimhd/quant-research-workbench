@@ -33,6 +33,7 @@ class Global(Evolution):
             # Explicitly bound receipts remain immutable; publication only links
             # their hashes into the new generation seal, without rewriting them.
             self.published_receipts.append(result['ref']['receipt'])
+            self.prepare_session_summary(result['metrics'],generation)
             return
         writes=result.pop('writes')
         path=str(self.root/'replays'/role/f'generation-{generation:04d}'/day/'receipt.json')
@@ -59,8 +60,17 @@ class Global(Evolution):
             self.published_receipts.extend([rawpath,extra_path])
         from .controller_metrics import compact
         result['metrics']=compact(receipt['metrics']);result['ref']=dict(receipt=path,receipt_sha256=None)
+        self.prepare_session_summary(result['metrics'],generation)
         self.published_receipts.append(path)
         self.publication_lane.submit(publish_replays,writes,True)
+
+    def prepare_session_summary(self,metrics,generation):
+        from .full_common import prepare_summary
+        from .objectives import Objective
+        prepare_summary(metrics,Objective(**self.job['objective']))
+        if generation==0:
+            from .founder_selection import session_descriptor
+            metrics['_founder_descriptor']=session_descriptor(metrics)
 
     def get_lanes(self,role):
         if role not in self.split_lanes:
@@ -129,7 +139,10 @@ class Global(Evolution):
             self.paired_probe['receipts']={r['day']:r['diagnostic_ref'] for r in results}
         # Release graph allocations while the other split replays, retaining
         # processes, compiler caches and bounded CPU market residency.
+        from time import perf_counter
+        release_started=perf_counter()
         self.split_lanes[role].release_plans()
+        self.publish(split_release_role=role,split_release_seconds=perf_counter()-release_started)
         return [r['metrics'] for r in results],{r['day']:r['ref'] for r in results}
 
 
