@@ -105,6 +105,8 @@ def apply(root, job, generation, members, ids, pedigree, consumed):
     epoch=str(package['review_epoch']); package_hash=digest(package)
     if epoch in consumed:raise ValueError('Agent review already consumed')
     children,parents=validate_package(root,job,package,generation)
+    training=json.loads((root/f"generation-{package['source_generation']:04d}"/'training.json').read_bytes())
+    scores=dict(zip(training['ids'],training['panel']['score']))
     slots=[i for i,s in enumerate(ids) if pedigree.records[int(s)]['generation']==generation
            and pedigree.records[int(s)]['operation'].startswith('fresh')]
     if len(slots)<len(children):raise ValueError('Insufficient fresh offspring slots')
@@ -123,7 +125,9 @@ def apply(root, job, generation, members, ids, pedigree, consumed):
     for slot,child,serial,item in zip(slots,children,born,package['offspring']):
         replaced.append(int(ids[slot]));members[slot]=child;ids[slot]=serial
         pedigree.records[int(serial)].update(agent_review_sha256=package_hash,
-            review_epoch=int(epoch),hypothesis=item['hypothesis'],fitness_evidence='unreplayed proposal')
+            review_epoch=int(epoch),hypothesis=item['hypothesis'],fitness_evidence='unreplayed proposal',
+            parent_objectives=[float(scores[item['parent']])],
+            agent_control=item['hypothesis'].startswith('control:'))
     consumed=dict(consumed,**{epoch:package_hash})
     report=dict(package_sha256=package_hash,review_epoch=int(epoch),source_generation=package['source_generation'],
                 decision_sha256=sha(decision_path),new_ids=born.tolist(),replaced_ids=replaced,

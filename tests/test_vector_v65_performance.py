@@ -3,6 +3,17 @@ from research.vectorized_backtest.v65.performance import configuration
 from research.vectorized_backtest.v65.profile_throughput import comparable
 
 
+def test_memory_admission_splits_without_losing_or_reordering_candidates(monkeypatch):
+    from research.vectorized_backtest.v65 import performance as p
+    monkeypatch.setattr(p,'memory_budget',lambda item,pop,batches,block:dict(required_bytes=100+10*max(map(len,batches))))
+    original=[[3,1,4,0],[9,8,7]]
+    batches,report=p.admit_batches(None,None,original,256,120)
+    assert [i for b in batches for i in b]==[i for b in original for i in b]
+    assert report['required_bytes']<=120 and report['admitted_batches']==4
+    assert p.admit_batches(None,None,original,256,200)[0]==original
+    with pytest.raises(MemoryError):p.admit_batches(None,None,original,256,109)
+
+
 def test_parallel_receipts_finish_before_ordered_seal(monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
     from threading import Event,Lock

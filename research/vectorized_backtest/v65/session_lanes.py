@@ -237,13 +237,12 @@ class Worker:
         try:
             if missing:
                 if device.type=='cuda':
-                    from .performance import memory_budget
-                    budget=memory_budget(item,population,batches,c.get('replay_time_block',256))
+                    from .performance import admit_batches
+                    batches,budget=admit_batches(item,population,batches,c.get('replay_time_block',256),c['lane_memory_bytes'])
+                    self.batch_progress['total_local_batches']=len(batches)
                     from .publication import write_json
                     write_json(Path(c['output'])/'memory-admission'/f'{generation}-{day}.json',
                         dict(budget,lane_memory_bytes=c['lane_memory_bytes']))
-                    if budget['required_bytes']>c['lane_memory_bytes']:
-                        raise MemoryError(f"Compact replay needs {budget['required_bytes']} bytes; lane admits {c['lane_memory_bytes']}")
                 if not c.get('retain_session_residency') or item.device!=device:
                     self.emit(day,stage='Upload session',market_load_seconds=market_load_seconds)
                     self.staging.activate([(day,item)],device)

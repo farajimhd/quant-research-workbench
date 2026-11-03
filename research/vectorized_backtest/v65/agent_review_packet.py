@@ -7,6 +7,34 @@ from .agent_intervention import POLICY,evidence
 from .publication import write_json
 
 
+def prior_reviews(root,generation):
+    """First full training outcome for every previously admitted manual cohort."""
+    rows=[];root=Path(root)
+    for path in sorted((root/'agent-reviews/decisions').glob('generation-*.json')):
+        target=int(path.stem.split('-')[-1])
+        if target>generation:continue
+        folder=root/path.stem;receipt=folder/'agent-intervention.json'
+        if not (folder/'complete.json').exists() or not receipt.exists():continue
+        decision=json.loads(path.read_bytes());package=decision['package']
+        if package is None:continue
+        seal=json.loads((folder/'complete.json').read_bytes())
+        from .distributed_assets import sha
+        if sha(receipt)!=seal['agent_intervention_sha256']:raise ValueError('Intervention receipt changed')
+        admitted=json.loads(receipt.read_bytes())
+        if admitted['decision_sha256']!=sha(path):raise ValueError('Intervention decision changed')
+        evidence(root,target);source,_=evidence(root,package['source_generation'])
+        current=json.loads((folder/'training.json').read_bytes());parent=json.loads((source/'training.json').read_bytes())
+        ci={s:i for i,s in enumerate(current['ids'])};pi={s:i for i,s in enumerate(parent['ids'])}
+        for serial,item in zip(admitted['new_ids'],package['offspring']):
+            i,j=ci[serial],pi[item['parent']]
+            values={k:dict(offspring=current['panel'][k][i],parent=parent['panel'][k][j])
+                    for k in ('score','net_pnl','closed_positions','profitable_sessions','net_excluding_best_session')}
+            rows.append(dict(review_epoch=package['review_epoch'],generation=target,serial=serial,
+                parent=item['parent'],hypothesis=item['hypothesis'],training=values,
+                beat_parent_score=values['score']['offspring']>values['score']['parent']))
+    return rows
+
+
 def export(root,job,generation,out):
     folder,binding=evidence(root,generation)
     training=json.loads((folder/'training.json').read_bytes())
@@ -51,6 +79,7 @@ def export(root,job,generation,out):
         population=len(ids),sessions=len(days),profitable_candidates=int((net.sum(0)>0).sum()))
     out=Path(out);out.mkdir(parents=True,exist_ok=True)
     write_json(out/'packet.json',packet)
+    write_json(out/'prior-interventions.json',prior_reviews(root,generation))
     write_json(out/'parents.json',[dict(serial=ids[i],payload=population['population'][i],record=records[i],
         sessions={d:{k:v[i] for k,v in sessions['sessions'][d].items() if isinstance(v,list) and len(v)==len(ids)} for d in days}) for i in selected])
     write_json(out/'package-template.json',dict(version=POLICY['version'],scope='training',

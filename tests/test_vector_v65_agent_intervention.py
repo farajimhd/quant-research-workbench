@@ -17,7 +17,7 @@ def case(tmp_path):
     ids=pedigree.birth([fresh,elite],11,[(-1,-1)]*2,['fresh_mutation','parent_mutation'])
     folder=tmp_path/'generation-0010';folder.mkdir()
     values={'population.json':dict(ids=old.tolist(),population=[parent.payload()]),
-            'training.json':{},'evaluated-pedigree.json':[pedigree.records[0]],'session-metrics.json':{}}
+            'training.json':dict(ids=[0],panel={'score':[3.]}),'evaluated-pedigree.json':[pedigree.records[0]],'session-metrics.json':{}}
     for name,value in values.items():write_json(folder/name,value)
     write_json(folder/'complete.json',dict(population_sha256=sha(folder/'population.json'),
         training_sha256=sha(folder/'training.json'),evaluated_pedigree_sha256=sha(folder/'evaluated-pedigree.json'),

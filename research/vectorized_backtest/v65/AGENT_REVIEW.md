@@ -5,6 +5,16 @@ of ten generations. Use `agent_review_packet` to export a compact training-only
 packet. Read only its packet, selected parents and training traces. Validation
 must never inform parent choice, edits, hypotheses, acceptance or retries.
 
+Read `prior-interventions.json` before designing another cohort. It compares each
+earlier manual offspring's first full training replay against its source parent.
+Inspect the ordinary-mutation controls and failed hypotheses as well as winners;
+do not repeatedly propose edits that failed. Existing training-only
+`offspring-audit.json` and reproduction operator outcomes supply earlier
+evolution history. Operator groups overlap and are observational comparisons.
+Future moves inside training sessions may inform offline diagnosis and edits,
+but offspring inputs and execution must remain causal. Never encode future
+prices, date-specific outcomes or validation observations into a candidate.
+
 An agent reviews the evidence and writes a package using the exported template.
 This is not an automatic weight-tuning algorithm. Legal network structure,
 weights, routing and policy genes may change; feature/execution contracts may

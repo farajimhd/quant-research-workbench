@@ -50,3 +50,20 @@ def memory_budget(item,population,batches,block):
     return dict(required_bytes=required,resident_bytes=resident,context_headroom_bytes=context,
         packed_bytes=packed,workspace_bytes=workspace,projection_bytes=projection,
         output_bytes=outputs,price_reference_bytes=prices,cpu_episode_ledger_gpu_bytes=0)
+
+
+def admit_batches(item,population,batches,block,limit):
+    """Split work, never candidates or results, when evolving graphs grow."""
+    original=len(batches);batches=[list(b) for b in batches]
+    while True:
+        budget=memory_budget(item,population,batches,block)
+        if budget['required_bytes']<=limit:
+            return batches,dict(budget,original_batches=original,admitted_batches=len(batches))
+        if all(len(b)==1 for b in batches):
+            raise MemoryError(f"One-candidate compact replay needs {budget['required_bytes']} bytes; lane admits {limit}")
+        smaller=[]
+        for batch in batches:
+            cut=(len(batch)+1)//2
+            smaller.append(batch[:cut])
+            if cut<len(batch):smaller.append(batch[cut:])
+        batches=smaller
