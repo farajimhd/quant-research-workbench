@@ -44,9 +44,11 @@ and gradient norm cap 0.5. A `--candidate` may initialize from a fully reconstru
 direct-edit checkpoint. No validation selection takes place. The account
 continues across rollouts and resets only after a valid full-session terminal.
 Artifacts are under `<runtime>/rl-trading/v2/head-refine-20261103/<name>`;
-rollout checkpoints retain account/optimizer/RNG state, but the command does not
-expose automatic resume. `STOP` in the run or campaign root stops after a
-committed rollout. Training returns describe a changing policy. Once a run is
+rollout checkpoints retain account/optimizer/RNG state. Version-2 refinement runs
+support `--resume` with identical arguments, source and runtime contracts; earlier
+version-1 runs are not silently migrated. Any uncommitted metric suffix is retained
+separately. `STOP` in the run or campaign root stops after a committed rollout;
+remove it before resume. Training returns describe a changing policy. Once a run is
 complete, `weight_edit.py --refined-run <run>` replays its frozen checkpoint on
 parent training dates, without further edits, for actual candidate assessment.
 

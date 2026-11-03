@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import date
 from torch.distributions import Beta, Bernoulli, Categorical
 
-from research.rl_trading.v2 import head_refine
+from research.rl_trading.v2 import head_refine, weight_edit
 from research.rl_trading.v1.common import bounds, digest
 from research.rl_trading.v2.config import Config
 from research.rl_trading.v2.data import MarketSession, DATA_VERSION
@@ -190,3 +190,91 @@ def test_runner_commits_continuous_synthetic_account_across_rollouts(tmp_path, m
     for key, value in original.items():
         if key.split('.')[0] not in head_refine.HEADS:
             assert torch.equal(value, saved['policy'][key])
+
+    # Stop exactly after a committed rollout, then retain/roll back an orphaned
+    # metric suffix and resume the same account with identical stochastic updates.
+    resumed_root = root.parent/'resumed'
+    original_write = head_refine.write
+
+    def stop_after_commit(path, value):
+        original_write(path, value)
+        if path == resumed_root/'rollouts'/'000001.json':
+            (resumed_root/'STOP').write_text('synthetic stop', encoding='utf-8')
+
+    resume_args = ['--parent', str(parent), '--name', 'resumed', '--dates', day,
+                   '--device', 'cpu', '--rollout', '8', '--batch-size', '4']
+    monkeypatch.setattr(head_refine, 'write', stop_after_commit)
+    assert head_refine.main(resume_args) == 2
+    assert read(resumed_root/'status.json')['status'] == 'stopped'
+    partial = torch.load(resumed_root/'checkpoint_latest.pt', weights_only=False)
+    assert partial['environment']['t'] == 8 and partial['iteration'] == 1
+    assert partial['completed'] == []
+    # Retain the stop receipt but remove its active signal for the resumed call.
+    (resumed_root/'STOP').rename(resumed_root/'STOP.handled')
+    monkeypatch.setattr(head_refine, 'write', original_write)
+    orphan = {'uncommitted': True}
+    write(resumed_root/'rollouts'/'000002.json', orphan)
+    prior_opens = len(opened)
+    with pytest.raises(ValueError, match='identical source, data, device and update'):
+        head_refine.main([*resume_args, '--resume', '--lr', '0.00002'])
+    assert len(opened) == prior_opens
+    monkeypatch.setattr(head_refine, 'code_identity', lambda: {'synthetic_test': 'changed'})
+    with pytest.raises(ValueError, match='identical source, data, device and update'):
+        head_refine.main([*resume_args, '--resume'])
+    assert len(opened) == prior_opens
+    monkeypatch.setattr(head_refine, 'code_identity', lambda: {'synthetic_test': True})
+    assert head_refine.main([*resume_args, '--resume']) == 0
+    resumed = torch.load(resumed_root/'checkpoint_latest.pt', weights_only=False)
+
+    def exact_tree(actual, expected):
+        if isinstance(expected, torch.Tensor):
+            assert torch.equal(actual, expected)
+        elif isinstance(expected, np.ndarray):
+            np.testing.assert_array_equal(actual, expected)
+        elif isinstance(expected, dict):
+            assert actual.keys() == expected.keys()
+            for key in expected:
+                exact_tree(actual[key], expected[key])
+        elif isinstance(expected, (tuple, list)) or type(expected).__name__ == 'deque':
+            assert len(actual) == len(expected)
+            for a, b in zip(actual, expected):
+                exact_tree(a, b)
+        else:
+            assert actual == expected
+
+    for key in ('policy', 'optimizer', 'environment', 'torch_rng', 'numpy_rng',
+                'shuffle_rng', 'date', 'completed', 'iteration'):
+        exact_tree(resumed[key], saved[key])
+    for index in (1, 2):
+        expected_metric = read(root/'rollouts'/f'{index:06d}.json')
+        actual_metric = read(resumed_root/'rollouts'/f'{index:06d}.json')
+        expected_metric.pop('elapsed_seconds')
+        actual_metric.pop('elapsed_seconds')
+        assert actual_metric == expected_metric
+    archived = list((resumed_root/'uncommitted').glob('*/000002.json'))
+    assert len(archived) == 1 and read(archived[0]) == orphan
+    # A completed resume skips bank reads and repairs a metric publication lost
+    # after its checkpoint commit, using the metric retained in that checkpoint.
+    (resumed_root/'rollouts'/'000002.json').rename(resumed_root/'metric-preserved.json')
+    prior_opens = len(opened)
+    assert head_refine.main([*resume_args, '--resume']) == 0
+    assert len(opened) == prior_opens
+    assert read(resumed_root/'rollouts'/'000002.json') == resumed['last_result']
+    # Final assessment must replay the frozen learned weights, not the changing
+    # training account return, with no additional editing or validation access.
+    monkeypatch.setattr(weight_edit, 'output_root', lambda: tmp_path/'outputs')
+    monkeypatch.setattr(weight_edit, 'code_identity', lambda: {'synthetic_test': True})
+    assert weight_edit.main(['--parent', str(parent), '--name', 'frozen-refinement',
+        '--dates', day, '--device', 'cpu', '--refined-run', str(root)]) == 0
+    evaluated = tmp_path/'outputs'/'weight-edit-20261103'/'frozen-refinement'
+    frozen = torch.load(evaluated/'candidate.pt', weights_only=False)
+    assert all(torch.equal(v, frozen['policy'][k]) for k,v in saved['policy'].items())
+    assert read(evaluated/day/'result.json')['full_session']
+    assert read(evaluated/'manifest.json')['validation_access'] is False
+    # Provenance rejection happens before another bank is opened.
+    original_opens = len(opened)
+    write(root/'status.json', {'status': 'running'})
+    with pytest.raises(ValueError, match='must finish'):
+        weight_edit.main(['--parent', str(parent), '--name', 'not-frozen', '--dates', day,
+                         '--device', 'cpu', '--refined-run', str(root)])
+    assert len(opened) == original_opens
