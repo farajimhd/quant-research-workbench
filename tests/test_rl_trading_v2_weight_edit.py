@@ -52,6 +52,35 @@ def test_edit_changes_only_requested_bias_entries_and_does_not_alias_source():
     assert sum(int((edited[key] != original[key]).sum()) for key in original) == 3
 
 
+def test_history_scale_is_exactly_a_projection_scale_and_leaves_other_weights_unchanged():
+    policy = PortfolioPolicy(3, width=8, heads=2)
+    original = {k:v.clone() for k,v in policy.state_dict().items()}
+    x = torch.randn(5, 16)
+    before = policy.history(x).detach()
+    edited = weight_edit.edited_state(original, history_scale=.1)
+    policy.load_state_dict(edited)
+    torch.testing.assert_close(policy.history(x), before*.1)
+    for key in original:
+        if not key.startswith('history.'):
+            assert torch.equal(original[key], edited[key])
+
+
+def test_attention_probe_recovers_uniform_attention(tmp_path):
+    policy = PortfolioPolicy(3, width=8, heads=2).eval()
+    with torch.no_grad():
+        attention = policy.market.layers[0].self_attn
+        attention.in_proj_weight.zero_()
+        attention.in_proj_bias.zero_()
+    config = replace(Config(), history_seconds=4, min_volume_60s=0, min_trades_60s=0,
+                     liquidation_buffer_seconds=2)
+    result = weight_edit.replay(policy, synthetic_session(), config, 'cpu', 17, tmp_path, max_steps=1)
+    stats = result['samples'][0]['activations']['attention']
+    assert stats['valid_keys'] == 4
+    assert stats['mean_entropy'] == pytest.approx(np.log(4))
+    assert stats['mean_max_probability'] == pytest.approx(.25)
+    assert stats['mean_account_probability'] == pytest.approx(.25)
+
+
 @pytest.mark.parametrize('field', ['close_bias', 'reduce_bias', 'gate_bias'])
 @pytest.mark.parametrize('value', [float('nan'), float('inf'), -float('inf'), 8.01, -8.01])
 def test_edit_rejects_invalid_offsets(field, value):

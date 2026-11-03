@@ -34,6 +34,11 @@ head with context-independent stochastic Beta distributions of concentration
 1000. STOP and TARGET are normalized coordinates within the unchanged Config
 bounds, not raw price percentages. This explicit intervention zeros only the
 sizing head weights and analytically sets its biases; the manifest records it.
+`--history-scale` explicitly scales only the history projection weight and bias
+(default 1). Sampled attention diagnostics include entropy and maximum weight;
+for a non-unit scale they also measure the unscaled-history counterfactual at
+the same current account/market state. That counterfactual is an attention probe,
+not a replay result for the original policy.
 
 `head_refine.py` provides a separate training-only PPO pass with the temporal,
 history, position, account and market encoder frozen. It caches detached contexts

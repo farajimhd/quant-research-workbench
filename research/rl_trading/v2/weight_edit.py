@@ -24,15 +24,19 @@ from research.rl_trading.v2.io import read, write, file_hash, code_identity, out
 from research.rl_trading.v2.model import PortfolioPolicy, collate
 
 
-def edited_state(state, *, close_bias=0., reduce_bias=0., gate_bias=0., size_means=None):
+def edited_state(state, *, close_bias=0., reduce_bias=0., gate_bias=0., size_means=None, history_scale=1.):
     """Add explicit log-odds offsets; preserve every other tensor exactly."""
     values = (close_bias, reduce_bias, gate_bias)
     if not all(np.isfinite(v) and abs(v) <= 8 for v in values):
         raise ValueError('Bias offsets must be finite and within +/-8')
+    if not np.isfinite(history_scale) or not .01 <= history_scale <= 10:
+        raise ValueError('History scale must be finite and within [0.01,10]')
     result = {key: value.detach().cpu().clone() for key, value in state.items()}
     result['action_type.bias'][2] += close_bias
     result['action_type.bias'][1] += reduce_bias
     result['trade_gate.bias'][0] += gate_bias
+    result['history.weight'].mul_(history_scale)
+    result['history.bias'].mul_(history_scale)
     if size_means is not None:
         means = np.asarray(size_means, dtype=np.float64)
         if means.shape != (3,) or not np.isfinite(means).all() or np.any(means <= .002) or np.any(means >= .998):
@@ -46,7 +50,7 @@ def edited_state(state, *, close_bias=0., reduce_bias=0., gate_bias=0., size_mea
     return result
 
 
-def replay(policy, session, config, device, seed, root, *, max_steps=0, resume=False):
+def replay(policy, session, config, device, seed, root, *, max_steps=0, resume=False, history_scale=1.):
     """Replay the unchanged stochastic policy contract, retaining diagnostic rows."""
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -74,12 +78,15 @@ def replay(policy, session, config, device, seed, root, *, max_steps=0, resume=F
         fills_offset = saved['fills_offset']
         prior_elapsed = saved['elapsed_seconds']
     activation = {}
+    layer_values = {}
     capture = [False]
     handles = []
     def hook(name):
         def record(module, inputs, result):
             if capture[0]:
                 v = result.detach().float()
+                if name in ('history', 'position'):
+                    layer_values[name] = v
                 activation[name] = dict(mean=float(v.mean()), std=float(v.std(correction=0)),
                                         maximum=float(v.abs().max()))
                 if name == 'actor':
@@ -88,6 +95,33 @@ def replay(policy, session, config, device, seed, root, *, max_steps=0, resume=F
     for name in ('temporal', 'history', 'position', 'account', 'market',
                  'actor', 'action_type', 'trade_gate', 'size', 'critic'):
         handles.append(getattr(policy, name).register_forward_hook(hook(name)))
+    def attention_probe(module, inputs):
+        if not capture[0]:
+            return
+        tokens = inputs[0]
+        attention = policy.market.layers[0].self_attn
+        b, n, width = tokens.shape
+        valid = torch.cat((torch.ones((b,1),dtype=torch.bool,device=tokens.device), batch['valid']),dim=1)
+        def measure(value):
+            q, k, _ = torch.nn.functional.linear(value, attention.in_proj_weight,
+                                                 attention.in_proj_bias).chunk(3, dim=-1)
+            heads = attention.num_heads
+            q = q.reshape(b,n,heads,width//heads).transpose(1,2)
+            k = k.reshape(b,n,heads,width//heads).transpose(1,2)
+            logits = (q @ k.transpose(-1,-2))/((width//heads)**.5)
+            probs = logits.masked_fill(~valid[:,None,None,:], -torch.inf).softmax(dim=-1)
+            entropy = -(probs*probs.clamp_min(1e-30).log()).sum(dim=-1)
+            denominator = valid.sum()*heads
+            return dict(mean_entropy=float((entropy*valid[:,None,:]).sum()/denominator),
+                mean_max_probability=float((probs.max(dim=-1).values*valid[:,None,:]).sum()/denominator),
+                mean_account_probability=float((probs[...,0]*valid[:,None,:]).sum()/denominator),
+                valid_keys=int(valid.sum()))
+        activation['attention'] = measure(tokens)
+        if history_scale != 1.:
+            position = layer_values['position']
+            unscaled = layer_values['history'].reshape_as(position)/history_scale+position
+            activation['attention_reference_unscaled'] = measure(torch.cat((tokens[:,:1],unscaled),dim=1))
+    handles.append(policy.market.register_forward_pre_hook(attention_probe))
     fills_path = root/'fills.jsonl'
     try:
         with fills_path.open('r+' if resume else 'w+', encoding='utf-8') as fills, torch.inference_mode():
@@ -155,6 +189,7 @@ def main(argv=None):
     parser.add_argument('--gate-bias', type=float, default=0.)
     parser.add_argument('--size-means', type=float, nargs=3,
                         help='Normalized allocation/stop/target Beta means; concentration 1000')
+    parser.add_argument('--history-scale', type=float, default=1.)
     parser.add_argument('--max-steps', type=int, default=0, help='Diagnostic only; never selection evidence')
     parser.add_argument('--resume', action='store_true')
     parser.add_argument('--refined-run', type=Path, help='Frozen training-only head refinement to evaluate')
@@ -179,7 +214,7 @@ def main(argv=None):
     refinement = None
     source_state = saved['policy']
     if args.refined_run:
-        if any((args.close_bias, args.reduce_bias, args.gate_bias)) or args.size_means is not None:
+        if any((args.close_bias, args.reduce_bias, args.gate_bias)) or args.size_means is not None or args.history_scale != 1.:
             raise ValueError('Evaluate a refined checkpoint without additional edits')
         refined_root = args.refined_run.resolve()
         if read(refined_root/'status.json').get('status') != 'complete':
@@ -205,7 +240,8 @@ def main(argv=None):
     config = Config(**{f.name: manifest['config'][f.name] for f in fields(Config)})
     policy = PortfolioPolicy(**manifest['model']).to(args.device)
     state = edited_state(source_state, close_bias=args.close_bias,
-                         reduce_bias=args.reduce_bias, gate_bias=args.gate_bias, size_means=args.size_means)
+                         reduce_bias=args.reduce_bias, gate_bias=args.gate_bias, size_means=args.size_means,
+                         history_scale=args.history_scale)
     policy.load_state_dict(state)
     root = output_root()/'weight-edit-20261103'/args.name
     root.mkdir(parents=True, exist_ok=args.resume)
@@ -216,6 +252,7 @@ def main(argv=None):
         train=[train[d] for d in args.dates], validation_access=False,
         offsets=dict(close=args.close_bias, reduce=args.reduce_bias, gate=args.gate_bias),
         size_means=args.size_means, size_concentration=1000 if args.size_means is not None else None,
+        history_scale=args.history_scale,
         refinement=refinement,
         changed_parameters=changes, seed=args.seed, device=args.device,
         max_steps=args.max_steps, code=code_identity())
@@ -240,7 +277,7 @@ def main(argv=None):
                 raise ValueError('Parent data binding changed')
             write(root/'status.json', dict(status='replaying', active=day))
             replay(policy, session, config, args.device, args.seed, target, max_steps=args.max_steps,
-                   resume=args.resume and (target/'replay_state.pt').exists())
+                   resume=args.resume and (target/'replay_state.pt').exists(), history_scale=args.history_scale)
             del session
         write(root/'status.json', dict(status='complete', completed=args.dates,
                                       diagnostic_only=bool(args.max_steps)))

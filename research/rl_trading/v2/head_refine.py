@@ -186,7 +186,8 @@ def initial_policy(parent, manifest, candidate):
             raise ValueError('Candidate training binding mismatch')
         offsets = provenance['offsets']
         reconstructed = edited_state(state, close_bias=offsets['close'], reduce_bias=offsets['reduce'],
-            gate_bias=offsets['gate'], size_means=provenance.get('size_means'))
+            gate_bias=offsets['gate'], size_means=provenance.get('size_means'),
+            history_scale=provenance.get('history_scale', 1.))
         if reconstructed.keys() != edited['policy'].keys() or any(
                 not torch.equal(v, edited['policy'][k].cpu()) for k, v in reconstructed.items()):
             raise ValueError('Candidate weights do not match declared edit')
