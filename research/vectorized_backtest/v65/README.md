@@ -1,5 +1,8 @@
 # V65: ARTE multiscale shards with V64 diversity selection
 
+Planned follow-up: [next-version requirements and audit backlog](NEXT_VERSION.md).
+These requirements do not change the completed V65 campaign.
+
 An opt-in `initial_multiplier=6` job pins `founder_pool.SETTINGS`: 3,072 random
 graphs, 1,536 parameterized templates and 1,536 trigger/filter combinations.
 All 6,144 distinct genomes receive full training replay at generation zero.
