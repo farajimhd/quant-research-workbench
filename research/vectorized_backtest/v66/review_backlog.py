@@ -33,6 +33,8 @@ def reconcile(packet,out,job):
                 endpoints=review['endpoints'],checks=review['checks'],status='investigation_required',
                 completion_rule='All endpoints and ten checks have supported outcomes; full training comparison before admission.'))
         # Fresh source binding is separate; persistent evidence is never discarded per epoch.
+        write_json(folder/'endpoint-contract.json',dict(parent_sha256=review['parent_sha256'],
+            endpoints=review['endpoints'],instruction='Interpret catalog units/bounds and transforms, never infer raw prices from names.'))
         write_json(folder/'current-source.json',dict(serial=parent['serial'],generation=source['source_generation'],
             packet=str(packet),parents_sha256=sha(packet/'parents.json'),job=str(job),job_sha256=sha(job)))
         rows.append(dict(serial=parent['serial'],key=key,task=str(task),endpoints=len(review['endpoints'])))

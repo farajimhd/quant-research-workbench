@@ -155,3 +155,10 @@ check resources first, and verify all training days before combining results.
 No automatic operator grid or automatic tested labels are permitted. Process
 the persistent backlog through replay, trace interpretation, robustness and
 qualified publication; missing evidence remains an explicit active task.
+
+Interpret every input using endpoint-contract.json/catalog unit, raw bounds,
+channel transform and availability mask. An absolute-transformed channel does
+not mean an absolute market price: ARTE daily high inputs are signed ratios.
+Do not prove sign restrictions or remove a network from its feature name.
+The17006 disabled-exit comparison is an ablation, not a proven dead-code removal;
+even identical observed replay is evidence limited to that replay's coverage.

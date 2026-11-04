@@ -45,7 +45,8 @@ def variants(parent):
         result.append((label,construct(replace(parent,policy=replace(parent.policy,price_program=prices.payload())))))
     control,_=mutation(np.random.default_rng(17006),parent,1)
     result.append(('ordinary_control',construct(control)))
-    # Specific proof for17006: absolute positive-price cross cannot exceed zero.
+    # Diagnostic ablation only: catalog daily-high inputs are signed ratios.
+    # Their names do not establish positive-price domains or dead-code proof.
     from .genome import INPUTS,CATALOG,Network,Neuron
     from .authority import ALLOWED
     exit_net=parent.networks['exit'];nodes=exit_net.nodes
@@ -57,8 +58,8 @@ def variants(parent):
             and nodes[11].weights[0]>=0 and nodes[12].op=='whole_and'
             and INPUTS+11 in nodes[12].sources and exit_net.threshold>=0):
         disabled=Network((Neuron((ALLOWED[0],),(0.,),0.,op='identity'),),0.,0,0.,0.)
-        result.append(('remove_impossible_exit',construct(replace(parent,networks=dict(parent.networks,exit=disabled)))))
-    else:raise ValueError('Positive-price crossing simplification proof does not match parent')
+        result.append(('disable_exit_experiment',construct(replace(parent,networks=dict(parent.networks,exit=disabled)))))
+    else:raise ValueError('Exit ablation experiment does not match selected parent')
     return result
 
 
@@ -123,9 +124,11 @@ def configured_variants(parent,serial,comparisons=None):
 def endpoint_layout(members):
     from .strategy_mix import leaves
     from .lineage import program_key
+    from .review_contract import input_contract
     return {label:[dict(branch=i,program_sha256=program_key(branch),
                        networks={name:dict(nodes=len(net.nodes),threshold=net.threshold,
-                           size_source=net.size_source,size_weight=net.size_weight,size_bias=net.size_bias)
+                           size_source=net.size_source,size_weight=net.size_weight,size_bias=net.size_bias,
+                           inputs=input_contract(net))
                            for name,net in branch.networks.items()},
                        prices=branch.payload()['policy']['price_program'],minimum_age=branch.minimum_age)
                    for i,branch in enumerate(leaves(member))] for label,member in members}

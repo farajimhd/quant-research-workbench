@@ -28,6 +28,14 @@ def test_zero_net_trades_count_as_active(tmp_path):
     assert row['breadth']['ticker_coverage'] is None
 
 
+def test_price_named_feature_retains_signed_ratio_contract():
+    from research.vectorized_backtest.v66.genome import CATALOG
+    source=next(i for i,f in enumerate(CATALOG) if f.name=='arte.trade.86400000ms.lag2.high')
+    contract=rc.input_contract(Network((Neuron((source,),(1.,),0.,op='cross'),)))
+    assert contract[0]['unit']=='ratio' and contract[0]['lower']<0
+    assert contract[0]['channel']=='absolute_transformed'
+
+
 def test_incomplete_reviews_cannot_publish(tmp_path):
     _,review,package=setup(tmp_path)
     with pytest.raises(ValueError):rc.validate_coverage(tmp_path,package,review)

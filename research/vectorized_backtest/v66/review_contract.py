@@ -16,6 +16,19 @@ CHECKS = ('semantics', 'inputs', 'routing', 'ownership', 'entry_funnel',
           'robustness', 'prior_outcomes')
 
 
+def input_contract(network):
+    from .genome import CATALOG,MARKET_INPUTS,INPUTS
+    rows=[]
+    for source in sorted({s for n in network.nodes for s in n.sources if s<INPUTS}):
+        if source>=MARKET_INPUTS:
+            rows.append(dict(source=source,kind='reserved_state',index=source-MARKET_INPUTS));continue
+        feature=CATALOG[source%len(CATALOG)]
+        rows.append(dict(source=source,name=feature.name,unit=feature.unit,
+                         lower=feature.lower,upper=feature.upper,mask=feature.mask,
+                         channel=('absolute_transformed','cross_sectional_relative','availability')[source//len(CATALOG)]))
+    return rows
+
+
 def diagnose(parent):
     from .genome import Individual
     from .strategy_mix import leaves
@@ -28,7 +41,8 @@ def diagnose(parent):
         for name, network in branch.networks.items():
             endpoints[f'branch.{i}.network.{name}'] = dict(
                 status='untested', evidence=[], reason='', nodes=len(network.nodes),
-                threshold=network.threshold, size_source=network.size_source)
+                threshold=network.threshold, size_source=network.size_source,
+                inputs=input_contract(network))
         for name, expression in branch.payload()['policy']['price_program'].items():
             endpoints[f'branch.{i}.price.{name}'] = dict(
                 status='untested', evidence=[], reason='', expression=expression)
