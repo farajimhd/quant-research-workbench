@@ -220,3 +220,19 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -u research/rl_trading/v7/experiments/entry_tree_policy.py --output D:/TradingML/runtimes/rl-trading/v7/entry-tree-policy-v1
 python -B -u research/rl_trading/v7/experiments/entry_tree_policy_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-tree-policy-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/entry-tree-policy-dev --dates 2026-07-01 2026-08-10
 ```
+
+`entry_temporal_tree.py` keeps that classifier fixed and adds six statistics per
+native window: close slope at scheduled positions, close location within the
+high/low range, adjacent-close RMS change, direction persistence over three
+consecutive cells, and recent-minus-older mean log activity and count. Each has
+its own validity mask, giving 204 inputs in total. Native half boundaries remain
+fixed; padding is excluded and gaps are never bridged. This tests information
+omitted by the original summaries without searching window lengths or thresholds.
+Replay checks the sealed temporal arrays against the current clock, membership
+and market features, while using the account's current cash and cost inputs.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/entry_temporal_tree.py --output D:/TradingML/runtimes/rl-trading/v7/entry-temporal-tree-v1
+python -B -u research/rl_trading/v7/experiments/entry_temporal_tree_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-temporal-tree-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/entry-temporal-tree-dev --dates 2026-07-01 2026-08-10
+```
