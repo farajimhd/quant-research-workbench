@@ -46,15 +46,54 @@ they are not evidence that simplification improves out-of-sample profitability.
 Further candidate-audit findings should distinguish confirmed contract defects,
 provable inefficiency, and trading hypotheses requiring independent evaluation.
 
+## Entry-branch ownership and mandatory admission boundary
+
+User-directed next-version requirements recorded on 2026-11-04. These are
+execution-contract changes, separate from semantics-preserving canonicalization;
+the completed V65 artifacts remain immutable.
+
+- Bind an entry order to its originating branch when submitted; retain that
+  identity through partial fills. On first fill, that branch owns the position's
+  exit, add, reduce, stop-update and price instructions until fully closed.
+- Management does not require the owner's entry condition to remain true. Do
+  not switch ownership to another qualifying branch or fall back to branch zero.
+  Persist ownership in checkpoints and order/position receipts. Cancel residual
+  orders appropriately before resetting ownership and admitting a new episode.
+- Independent lifecycle exits (stop/target execution, session end and existing
+  rank-loss rules) remain executor-owned. Ownership is execution state, not an
+  implicit new neural input.
+- Enforce a global spread gate outside candidate logic, shared by all execution
+  paths. Initial engineering defaults: positive finite bid and ask, ask >= bid,
+  spread = ask - bid <= USD 0.05, AND spread / bid <= 0.01. Thus the permitted
+  spread is min(USD 0.05, 1% of bid). These are conservative starting limits,
+  not performance-tuned or empirically qualified optimal values.
+- Apply the gate to new entries and additions, at submission and each attempted
+  fill, including residual partial orders. A failed gate permits no further
+  exposure-increasing fill. No genome, branch, crossover, mutation, price rule
+  or agent intake can relax it. Version and freeze limits in the job contract.
+- Never use the spread gate to block exits, reductions, protective liquidation
+  or order cancellation. Specify residual-order handling and record rejection
+  reasons and counts rather than hiding skipped fills.
+- Require proposed initial stops to be positive and <= current bid - USD 0.03;
+  reject invalid entries rather than silently moving their stops. Respect the
+  applicable tick grid. This does not replace the spread gate or decide whether
+  later stop updates may loosen protection.
+
+Qualification must exercise boundary equality, tick rounding, missing/crossed
+quotes, pending and partial orders, adds, owner changes attempted by routing,
+restart/resume, and exit availability during wide spreads. Compare unchanged
+controls using training-only replay before adopting the new executable version.
+Quote provenance/freshness and trade/quote disagreement still require their own
+investigation; passing a spread test is not proof of quote validity.
+
 ## Additional investigation backlog from the completed campaign
 
 These are review findings and proposed comparisons, not approval to change
 execution or selection policy. Evidence is retained under the campaign runtime
 in `candidate-audit-20261104` (training only).
 
-- Make routed management ownership explicit: the compact executor recomputes
-  the first eligible entry branch each clock, falling back to branch zero when
-  none qualifies. Compare this with persistent entry-branch ownership.
+- Measure the effect of the approved entry-branch ownership contract against
+  V65's per-clock entry routing and branch-zero fallback.
 - Specify whether stop updates may loosen risk. Current updates replace the
   stop rather than enforcing a monotonic trailing stop. Audit actual loosening
   events before claiming a performance effect.
