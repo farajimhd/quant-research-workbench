@@ -127,8 +127,8 @@ def test_canonical_graph_gpu_actions_and_reduce_size_are_exact():
     from research.vectorized_backtest.v66.runtime import configure_caches
     from research.vectorized_backtest.v66.genome import sample
     from research.vectorized_backtest.v66.network import NetworkPlan
-    from research.vectorized_backtest.v66.network_cuda import market_batch
     configure_caches('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v66/unit-compiler')
+    from research.vectorized_backtest.v66.network_cuda import market_batch
     x,y=ALLOWED[:2];base=sample(np.random.default_rng(218),1)[0];members=[]
     for op in ('whole_and','whole_or','whole_xor','whole_xnor'):
         # Unknown biased operands and a known sibling expose mask-changing rewrites.
