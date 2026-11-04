@@ -27,6 +27,8 @@ from research.rl_trading.v7.train import source_identity
 
 
 def replay_session(session, scorer, config=Config(), notify=None):
+    if hasattr(scorer, 'for_session'):
+        scorer = scorer.for_session(session)
     env = CostEnvironment(session, config)
     schedule = set(sampled_seconds(session.day)[::scorer.row_step].tolist())
     fills, decisions = [], []

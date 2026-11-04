@@ -147,3 +147,27 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -u research/rl_trading/v7/experiments/entry_net.py --output D:/TradingML/runtimes/rl-trading/v7/entry-net-v1 --device cuda
 python -B -u research/rl_trading/v7/experiments/entry_net_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-net-v1 --forecast D:/TradingML/runtimes/rl-trading/v7/forecast-seed1917/checkpoint_best.pt --output D:/TradingML/runtimes/rl-trading/v7/entry-net-three-days --dates 2026-01-05 2026-04-01 2026-08-10
 ```
+
+## Ordered historical bars
+
+`temporal_data.py` preserves native OHLC/activity sequences at the same five-minute
+entry grid. Seven windows are right-aligned to 60 cells, with separate field
+masks and no imputation. It verifies all existing summary values and current
+scanner admissions before sealing each day. Daily positions are historical-day
+ordinals; other windows retain the shared completed-clock semantics.
+
+`temporal_net.py` starts from fresh weights. Width-32 attention encodes ordered
+bars within each window, combines timeframes and current costs, then compares
+current candidates with the account context. It predicts a residual over known
+current-quote costs, using the same 120/30 internal split and epoch-zero baseline.
+The scorer binds all temporal receipts and, during account replay, selects only
+the current sampled clock after verifying market features and membership.
+Replay opens causal arrays only. The shared CLI's `--forecast` argument is
+accepted for compatibility but is not read or reused by this temporal model.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/temporal_data.py
+python -B -u research/rl_trading/v7/experiments/temporal_net.py --output D:/TradingML/runtimes/rl-trading/v7/temporal-net-v1 --device cuda
+python -B -u research/rl_trading/v7/experiments/temporal_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/temporal-net-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/temporal-net-three-days --dates 2026-01-05 2026-04-01 2026-08-10
+```

@@ -63,6 +63,19 @@ def test_nonfinite_eligible_score_fails_closed():
         replay_session(session(), Scorer(float('nan')))
 
 
+def test_session_bound_scorer_is_used():
+    bound_days = []
+
+    class SessionScorer:
+        def for_session(self, prepared):
+            bound_days.append(prepared.day)
+            return Scorer(-1.)
+
+    result = replay_session(session(), SessionScorer())
+    assert bound_days == ['2026-01-05']
+    assert result['valid_terminal'] and result['entries'] == 0
+
+
 def test_actual_main_sealed_resume_and_hash_guard(monkeypatch, tmp_path):
     opened = []
     sample = session()
