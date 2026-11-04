@@ -111,7 +111,7 @@ def export(root,job,generation,out):
         rows.append(dict(serial=ids[i],program_sha256=records[i]['program_sha256'],
             family=records[i].get('founder_groups',[]),nodes=records[i].get('node_count'),
             score=float(score[i]),net=float(net[:,i].sum()),without_best=float(net[:,i].sum()-net[:,i].max()),
-            profitable_sessions=int((net[:,i]>0).sum()),active_sessions=int((net[:,i]!=0).sum()),
+            profitable_sessions=int((net[:,i]>0).sum()),active_sessions=sum(sessions['sessions'][d]['closed_positions'][i]>0 for d in days),
             trades=panel['closed_positions'][i],blocked=panel.get('blocked_requests',[None]*len(ids))[i],
             best=[dict(day=days[j],net=float(net[j,i])) for j in best],
             worst=[dict(day=days[j],net=float(net[j,i])) for j in worst],
@@ -129,6 +129,8 @@ def export(root,job,generation,out):
     write_json(out/'package-template.json',dict(version=rules['version'],scope='training',
         review_epoch=packet['review_epoch'],source_generation=generation,training_sha256=job['training_sha256'],
         evidence=binding,rationale='',offspring=[]))
+    from .review_contract import export_coverage
+    export_coverage(out)
     return packet
 
 

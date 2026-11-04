@@ -63,3 +63,45 @@ default and at most one isolated reviewer if a concrete question needs it.
 Report admissions/failures, not repetitive status. Stop reviewing when the
 campaign finishes or the user stops it. Local scheduling requires the app and
 computer to remain available; delayed reviews never stall replay.
+
+## Mandatory endpoint review contract (v66-endpoint-review-v1)
+
+The exporter writes endpoint-review-template.json for every selected parent and
+branch. Copy it to endpoint-review.json and investigate every network endpoint,
+price endpoint, sizing, input dependencies, routing and ownership. Each check
+must have a reason and either hashed packet-local training evidence or an explicit
+untested/not-applicable limitation. Never call a summary-only review complete.
+
+For each candidate, reconstruct the training entry funnel: eligible observations,
+signals, invalid/missing prices, requests, fills and closed trades, by session and
+ticker. Admission counters overlap and do not account for every pre-order failure;
+missing telemetry is unknown. Trace missing swings, stop/target relations, spread,
+size and affordability separately. Inspect winning, losing, repeated-loss and
+boundary management paths. Audit arithmetic domains, nonfinite/overflow behavior,
+impossible predicates, ignored parameters, duplicate/dead expressions, masks,
+causality, branch ownership, stop <= bid-.03 and the mandatory500bps boundary.
+
+Report all-eligible and traded denominators for ticker/session profitability,
+activity, win rate, drawdown, turnover and profit concentration, plus chronological
+subperiods. Greater than50% profitable coverage is a reported objective, not a
+new survival rule or guarantee. Zero-profit trading sessions remain active.
+Run justified training-only cost/spread/threshold comparisons; label accounting
+stress separately from execution replay. Do not tune using validation.
+
+For every supported mismatch, prioritize a causal offspring repair with expected
+behavior, tradeoffs and falsification. Suppressing invalid signals alone does not
+recover missed trades. Preserve parents and compare full training replay with
+frozen parents and ordinary controls. Review prior failures, survival, descendants
+and duplicate behavior each epoch; do not repeat unsupported edits. Keep normal
+1024 reproduction and20% exploration unchanged; aim192repairs/64controls, report
+shortfalls without padding. Replay never waits for this investigation.
+
+Publish ONLY with python -B -m research.vectorized_backtest.v66.review_contract
+--out PACKET_DIRECTORY --job ACTIVE_JOB --publish. This checks all selected
+parent identities, endpoint coverage, evidence hashes, plans and package validity
+before atomic intake. Proposed parents must have no untested endpoints/checks.
+Deferred/rejected parents must state limitations; an empty package is allowed but
+must not be described as an exhaustive completed investigation. Save traces under
+the packet directory and use {path,sha256} references. Do not bypass this publisher
+with ad-hoc writes. It is an off-lane publication gate, not an optimizer hot-path
+change. Use a separately receipted review deployment for existing pinned campaigns.
