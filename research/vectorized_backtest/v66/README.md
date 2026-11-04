@@ -3,13 +3,13 @@
 V66 is a source-isolated successor to V65. It pins management to the entry-order
 branch through the whole episode, enforces a 500-bps bid-relative spread ceiling
 on entries/additions and a USD 0.03 initial-stop margin below bid, and reserves
-20% of reproduction slots for score-independent uniform parent exploration.
+20% of crossover/parent-mutation slots for score-independent uniform parent exploration.
 Risk-reducing orders remain executable during wide spreads. Candidate filters
 can be stricter than the global ceiling. Species capacity no longer forces
 dissimilar candidates into an existing group.
 
 The shared constructor normalizes ignored bridge/sizing parameters, shares exact
-subexpressions, simplifies repeated-operand Boolean bridges, and uses conservative
+subexpressions, simplifies repeated-operand XOR/XNOR bridges, and uses conservative
 range analysis to reject impossible entries and compact disabled management.
 Repeated arithmetic edges are legal after sharing: operand order and separate
 float32 additions are preserved rather than algebraically reassociated. Mutable
@@ -26,7 +26,7 @@ with the same chronological training/validation data split; validation remains
 reporting-only. All profiling and test artifacts belong in the runtime root.
 
 Planned follow-up: [next-version requirements and audit backlog](NEXT_VERSION.md).
-These requirements do not change the completed V66 campaign.
+The completed V65 campaign remains unchanged.
 
 An opt-in `initial_multiplier=6` job pins `founder_pool.SETTINGS`: 3,072 random
 graphs, 1,536 parameterized templates and 1,536 trigger/filter combinations.

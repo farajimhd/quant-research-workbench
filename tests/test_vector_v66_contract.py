@@ -61,7 +61,9 @@ def test_exact_expression_sharing_and_ignored_bridge_genes():
                  Neuron((INPUTS+1,INPUTS+3),(.3,-.6),.2,op='whole_or')))
     got=network(net,'entry')
     assert len(got.nodes)<len(net.nodes)
-    assert got.nodes[-1].op=='decision' and got.nodes[-1].weights==(.5,) and got.nodes[-1].bias==0
+    # AND/OR cannot become decision: decision zeroes an unknown operand,
+    # while Boolean bridges expose its value to downstream operators.
+    assert got.nodes[-1].op=='whole_or' and got.nodes[-1].weights==(1.,1.) and got.nodes[-1].bias==0
     assert network(got,'entry')==got
 
 
@@ -70,3 +72,44 @@ def test_impossible_entries_rejected_disabled_management_compacted():
     with pytest.raises(ValueError,match='impossible entry'):network(net,'entry')
     got=network(net,'exit');assert len(got.nodes)==1 and got.nodes[0].weights==(0.,)
     with pytest.raises(ValueError):network(replace(net,nodes=(replace(net.nodes[0],weights=(float('nan'),)),)),'exit')
+
+
+def test_sharing_exposes_impossible_head_in_one_construction():
+    x=ALLOWED[0]
+    net=Network((Neuron((x,),(1.,),0.,op='identity'),
+                 Neuron((x,),(1.,),0.,op='identity'),
+                 Neuron((INPUTS,INPUTS+1),(1.,1.),0.,op='whole_xor')),threshold=.1)
+    with pytest.raises(ValueError,match='impossible entry'):network(net,'entry')
+    got=network(net,'exit')
+    assert len(got.nodes)==1 and network(got,'exit')==got
+
+
+def test_canonical_graph_gpu_actions_and_reduce_size_are_exact():
+    import torch
+    if not torch.cuda.is_available():pytest.skip('CUDA required')
+    from research.vectorized_backtest.v66.runtime import configure_caches
+    from research.vectorized_backtest.v66.genome import sample
+    from research.vectorized_backtest.v66.network import NetworkPlan
+    from research.vectorized_backtest.v66.network_cuda import market_batch
+    configure_caches('D:/TradingML/runtimes/vectorized_backtest/torch_backtest_v66/unit-compiler')
+    x,y=ALLOWED[:2];base=sample(np.random.default_rng(218),1)[0];members=[]
+    for op in ('whole_and','whole_or','whole_xor','whole_xnor'):
+        # Unknown biased operands and a known sibling expose mask-changing rewrites.
+        net=Network((Neuron((x,),(1.,),.7,op='identity'),Neuron((x,),(1.,),.7,op='identity'),
+                     Neuron((INPUTS,INPUTS+1),(0.,-.3),.2,op=op),
+                     Neuron((y,),(1.,),0.,op='identity'),
+                     Neuron((INPUTS+2,INPUTS+3),(1.,1.),0.,op='whole_or')),size_source=2)
+        raw=replace(base,networks={s:net for s in base.networks}).validate()
+        fixed=replace(raw,networks={s:network(net,s) for s in raw.networks}).validate()
+        members.extend((raw,fixed))
+    plan=NetworkPlan(members,'cuda');plan.prepare(len(members),5)
+    try:
+        t=17;c=len(plan.columns);torch.manual_seed(217)
+        values=torch.rand((t,5,3*c),device='cuda')*2-1
+        valid=torch.rand((t,5,c),device='cuda')>.5
+        work=torch.empty((t,plan.total_nodes,5),device='cuda');known=torch.empty_like(work,dtype=torch.bool)
+        signals,ratios=market_batch(plan,values,valid,torch.ones((t,5),device='cuda',dtype=torch.bool),work,known,
+                                   torch.arange(5,device='cuda',dtype=torch.int32)[None].expand(t,-1))
+        torch.testing.assert_close(signals[:,::2],signals[:,1::2],rtol=0,atol=0)
+        torch.testing.assert_close(ratios[:,::2,...,2],ratios[:,1::2,...,2],rtol=0,atol=0)
+    finally:plan.close()

@@ -29,6 +29,10 @@ def interval(node, prior):
     if node.op in ('whole_size','whole_xnor_size'):
         return min(0.,ranges[2][0],ranges[3][0]),max(0.,ranges[2][1],ranges[3][1])
     terms=[(min(w*a,w*b),max(w*a,w*b)) for (a,b),w in zip(ranges,map(float,map(np.float32,node.weights)))]
+    magnitude=[max(abs(a),abs(b)) for a,b in terms]
+    if node.op=='product' and math.prod(magnitude)>1e30:raise ValueError('Unbounded product intermediate')
+    if node.op=='attention' and any(magnitude[0]*magnitude[i]>1e30 for i in range(1,len(magnitude),2)):
+        raise ValueError('Unbounded attention intermediate')
     b=float(np.float32(node.bias));lo=b+sum(a for a,c in terms);hi=b+sum(c for a,c in terms)
     if not math.isfinite(lo+hi) or max(abs(lo),abs(hi))>1e30:raise ValueError('Unbounded arithmetic intermediate')
     if node.op=='linear':return outward(lo,hi)
@@ -42,6 +46,16 @@ def interval(node, prior):
 
 @lru_cache(maxsize=8192)
 def network(net,stage):
+    # Sharing can expose a previously hidden impossible threshold; reach a
+    # fixed point before hashing, with a strict finite simplification budget.
+    for _ in range(len(net.nodes)+3):
+        result=_network_once(net,stage)
+        if result==net:return result
+        net=result
+    raise ValueError('Canonicalization failed to reach a fixed point')
+
+
+def _network_once(net,stage):
     from .genome import INPUTS,Network,Neuron,prune
     # Validate original domains before any rewrite can conceal an invalid op.
     net.validate()
@@ -56,29 +70,22 @@ def network(net,stage):
         source=ALLOWED[0]
         return Network((Neuron((source,),(0.,),0.,op='identity'),),0.,0,0.,0.).validate()
     nodes=[];mapping={};seen={}
-    # Avoid creating repeated edges, whose combination could change rounding.
-    conflicts={i:set() for i in range(len(net.nodes))}
-    for n in net.nodes:
-        refs=[s-INPUTS for s in n.sources if s>=INPUTS]
-        for a in refs:conflicts[a].update(x for x in refs if x!=a)
-    represented={}
+    # Keep repeated edges separate to preserve float32 operation order.
     for i,n in enumerate(net.nodes):
         src=tuple(INPUTS+mapping[s-INPUTS] if s>=INPUTS else s for s in n.sources)
         weights=(1.,)*len(src) if n.op in IGNORED else n.weights
         bias=0. if n.op in IGNORED else n.bias
         op=n.op
-        if op in BOOL and src[0]==src[1]:
+        if op in ('whole_xor','whole_xnor') and src[0]==src[1]:
             # Same operand has the same availability mask; preserve that mask.
-            if op in ('whole_and','whole_or'):op='decision';weights=(.5,);bias=0.
-            else:
-                bias=1. if op=='whole_xnor' else 0.;op='linear';weights=(0.,)
+            bias=1. if op=='whole_xnor' else 0.;op='linear';weights=(0.,)
             src=src[:1]
         key=(op,src,weights,bias)
         previous=seen.get(key)
         if previous is not None:
-            mapping[i]=previous;represented[previous].append(i)
+            mapping[i]=previous
         else:
-            mapping[i]=len(nodes);seen[key]=len(nodes);represented[len(nodes)]=[i]
+            mapping[i]=len(nodes);seen[key]=len(nodes)
             nodes.append(replace(n,sources=src,weights=weights,bias=bias,op=op))
     root=mapping[len(net.nodes)-1];size=mapping[net.size_source] if net.size_source>=0 else root
     # If an earlier shared root precedes a live size head, leave this uncommon

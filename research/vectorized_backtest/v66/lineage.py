@@ -194,7 +194,6 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
     exploration_rng=Proposal(root_key,(generation,'uniform-parents')).generator
     exploration_pool=[int(exploration_rng.choice(v)) for _,v in sorted(exploration_groups.items())]
     exploration_plan=balanced(cross_budget,[.2,.8],generation)==0
-    exploration_requests=0
     children=[];parents=[];ops=[];metadata=[];duplicates=0;fallbacks=0;invalid_crossovers=0;whole_rejections={}
     def fresh(reason,case=None):
         nonlocal duplicates
@@ -276,7 +275,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
             slot=cross_slot;whole=bool(whole_plan[slot]);wanted=1 if whole else int(sibling_plan[group]);count=min(wanted,left)
             # Do not let a sibling group consume a separately scheduled whole slot.
             for j in range(1,count):
-                if whole_plan[slot+j]!=whole or growth_plan[slot+j]:count=j;break
+                if whole_plan[slot+j]!=whole or growth_plan[slot+j] or exploration_plan[slot+j]!=exploration_plan[slot]:count=j;break
             sibling_requests[wanted]+=1;group+=1;left-=count;route='within' if route_plan[slot]==0 else 'between';pair=None
             for attempt in range(config.mate_attempts):
                 if not (exploration_pool if exploration_plan[slot] else pool):break
