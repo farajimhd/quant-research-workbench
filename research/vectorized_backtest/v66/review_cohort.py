@@ -95,7 +95,7 @@ def run(plan_path,job_path,out,shard_index,shard_count):
     write_json(out/'spec.json',spec)
     cfg=config(job,'workstation','training');cfg.update(output=str(out/'replay'),stop_roots=[str(out),str(out.parent)],
         batch_size=len(plan['members']),maximum_replay_batch_size=len(plan['members']),host_prepare_workers=1,
-        host_prefetch=False,maximum_host_sessions=2,host_reserve_gib=64.,host_admission_gib=4.,lane_memory_bytes=8*2**30,
+        host_prefetch=True,host_prefetch_depth=1,maximum_host_sessions=2,host_reserve_gib=64.,host_admission_gib=4.,lane_memory_bytes=8*2**30,
         retain_session_residency=False,reuse_results=False,prefetch_transfer=False,replay_transfer_mode='synchronous',
         replay_time_block=256,execution_diagnostics=True,compile_cache_root=str(out),indexed_results=True,
         diagnostic_feature_workers=4)
@@ -107,7 +107,7 @@ def run(plan_path,job_path,out,shard_index,shard_count):
     Inference.__call__=observed
     try:
         worker=Worker(cfg,queue.Queue(maxsize=32),0)
-        for day in spec['days']:
+        for day_index,day in enumerate(spec['days']):
             day_start=time.perf_counter();path=out/'days'/f'{day}.json'
             write_json(out/'state.json',dict(status='running',pid=os.getpid(),completed=completed,total=len(spec['days']),current_day=day,updated_epoch=time.time()))
             if path.exists():
@@ -115,7 +115,8 @@ def run(plan_path,job_path,out,shard_index,shard_count):
                 if saved['spec_sha256']!=sha(out/'spec.json'):raise ValueError('Session identity changed')
                 receipt=read_verified(saved['receipt'],saved['receipt_sha256'])
             else:
-                observer=Observer();worker.run(day,None,plan['members'],1,token,widths[day])
+                next_day=spec['days'][day_index+1] if day_index+1<len(spec['days']) else None
+                observer=Observer();worker.run(day,next_day,plan['members'],1,token,widths[day])
                 rp=out/'replay/generation-0001'/day/'receipt.json';receipt=read_verified(rp)
                 saved=dict(spec_sha256=sha(out/'spec.json'),receipt=str(rp),receipt_sha256=sha(rp),endpoints=observer.finish())
             if receipt['split']!='training' or receipt['validation_opened'] or receipt['population_sha256']!=token or receipt['execution']!=job['execution']:
