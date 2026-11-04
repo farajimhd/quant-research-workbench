@@ -98,7 +98,8 @@ def run(plan_path,job_path,out,shard_index,shard_count):
         host_prefetch=True,host_prefetch_depth=1,maximum_host_sessions=2,host_reserve_gib=64.,host_admission_gib=4.,lane_memory_bytes=8*2**30,
         retain_session_residency=False,reuse_results=False,prefetch_transfer=False,replay_transfer_mode='synchronous',
         replay_time_block=256,execution_diagnostics=True,compile_cache_root=str(out),indexed_results=True,
-        diagnostic_feature_workers=4)
+        diagnostic_feature_workers=4,
+        review_feature_cache=str(Path(job['campaign'])/'phase-2/global/agent-reviews/feature-cache'))
     training=read_verified(job['training'],job['training_sha256']);manifest=read_verified(training['shard_manifest'],training['shard_manifest_sha256'])
     widths={s['day']:len(s['selected']) for s in manifest['sessions']}
     original=Inference.__call__;observer=Observer();worker=None;completed=[];started=time.time()

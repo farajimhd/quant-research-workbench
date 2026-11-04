@@ -197,3 +197,12 @@ The agent must interpret bounded summaries and traces, finish every check and
 publish only through review_contract. Preserve failed hypotheses and the
 existing score-independent mutation controls. Do not fill unsupported repair
 slots or treat observed equivalent behavior as additional financial diversity.
+
+The review-only feature cache retains derived completed-bar arrays beneath the
+campaign's agent-reviews/feature-cache, capped at160GiB with a200GiB free-space
+reserve. Its key binds sealed source identity, feature implementation and exact
+requests; every hit rechecks source seals, source bytes and cached-array hashes.
+It never caches candidate execution outcomes or skips replay. Optimizer defaults
+remain uncached. Corruption or exhausted storage fails explicitly; no eviction,
+source fallback or alternate storage is allowed. Profile cache miss/hit against
+uncached arrays before enabling a new review deployment.

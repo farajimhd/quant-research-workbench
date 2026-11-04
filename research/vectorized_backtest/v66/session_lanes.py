@@ -114,7 +114,8 @@ class Worker:
             feature_cache=Path(c['feature_cache'])/day if c['feature_cache'] else None,
             indicator_root=Path(c['indicator_root'])/day if c.get('indicator_root') else None,
             enriched_root=Path(c['enriched_root'])/day if c.get('enriched_root') else None,
-            feature_workers=c.get('diagnostic_feature_workers',1)),
+            feature_workers=c.get('diagnostic_feature_workers',1),
+            review_feature_cache=c.get('review_feature_cache')),
             resident=torch.device(c['device']).type=='cuda')
         actual='validation' if item.receipt.get('validation_opened') else 'training'
         if actual!=c.get('split','training'):

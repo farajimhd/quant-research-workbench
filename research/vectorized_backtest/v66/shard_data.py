@@ -23,7 +23,7 @@ def listing_records(names):
 
 class SessionData(Lifecycle):
     def __init__(self, root, history=None, *, device='cpu', maximum_gib=4.,
-                 manifest=None, feature_ticks=None, feature_workers=1, **kwargs):
+                 manifest=None, feature_ticks=None, feature_workers=1, review_feature_cache=None, **kwargs):
         if not isinstance(feature_workers,int) or not 1<=feature_workers<=4:
             raise ValueError('Feature preparation requires one to four bounded workers')
         start=time.perf_counter();root=Path(root)
@@ -142,7 +142,14 @@ class SessionData(Lifecycle):
         self._context(times,cols,slots,source,dollar60)
         scalar_seconds=time.perf_counter()-scalar_started;window_started=time.perf_counter()
         tickers=np.array(self.tickers,dtype=object)[cols]
-        self.shard_values=materialize(session,tickers,clocks[times]*1000000,self.market['mark'])
+        cache_receipt=None
+        if review_feature_cache is None:
+            self.shard_values=materialize(session,tickers,clocks[times]*1000000,self.market['mark'])
+        else:
+            if self.receipt['validation_opened']:raise ValueError('Review feature cache is training-only')
+            from .review_feature_cache import materialize_cached
+            self.shard_values,cache_receipt=materialize_cached(review_feature_cache,session,self.identity,
+                tickers,clocks[times]*1000000,self.market['mark'])
         host=dict(execution,observed=observed,membership=membership,history_ids=self.bank['ids'])
         self.host_tensors={k:torch.from_numpy(np.ascontiguousarray(v)) for k,v in host.items()}
         self.tensors=self.host_tensors;self.bytes=sum(v.numel()*v.element_size() for v in self.host_tensors.values())
@@ -151,6 +158,7 @@ class SessionData(Lifecycle):
             valid_cells=int(execution['quote_valid'].sum()),listings=u,feature_points=p,
             load_seconds=time.perf_counter()-start,execution_seconds=execution_seconds,
             scalar_seconds=scalar_seconds,window_seconds=time.perf_counter()-window_started)
+        if cache_receipt is not None:self.quote_coverage['review_feature_cache']=cache_receipt
         paths=[Path(manifest),session.root/'source.json',session.root/'scanner'/session.day/'complete.json']
         for day,name in session.verified_files:paths.append(session.root/'bars'/day/(name+'.parquet'))
         self.file_stats={str(p):(p.stat().st_size,p.stat().st_mtime_ns) for p in paths}
