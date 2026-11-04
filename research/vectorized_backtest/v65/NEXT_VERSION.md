@@ -117,6 +117,28 @@ but must not become independent definitions of validity.
 
 ## Additional investigation backlog from the completed campaign
 
+### Score-independent parent exploration
+
+User requested a score-independent random parent route for both crossover and
+parent mutation. Reserve an explicit configurable fraction of those requests
+for seeded uniform sampling from the current valid, evaluated population,
+without score ranking or a profitability cutoff. The fraction remains a design
+parameter; 20% is an initial recommendation, not a user-approved fixed value.
+Keep existing fresh and elite slot budgets unchanged. Select both crossover
+parents through the exploration route when that route is chosen, subject to
+explicit structural and ancestry compatibility checks.
+
+Use canonical duplicates as one sampling unit with score-independent choice of
+representative so redundant copies do not gain sampling weight. Do not silently
+reuse score-ranked or ticker-ranked pools, activity gates, or score-selected
+representatives for this route. Record the pool, seed, selection route, rejected
+pair reasons and bounded retry/fallback counts. All children still pass the
+central construction gate, full training replay and ordinary survival selection;
+random parent choice does not guarantee offspring retention. Compare exploration
+fractions with unchanged controls using training-only evidence.
+
+### Remaining investigations
+
 These are review findings and proposed comparisons, not approval to change
 execution or selection policy. Evidence is retained under the campaign runtime
 in `candidate-audit-20261104` (training only).
