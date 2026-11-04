@@ -548,6 +548,11 @@ class Model:
         rows=sorted_rows(rows,self.sort,reverse!=self.reverse)
         return rows
     def key(self,key,height=40):
+        if key=='z':
+            self.view='interventions';self.intervention_epoch=None;self.intervention_child=None;self.selection=0;return
+        if self.view=='interventions':
+            from .progress_interventions import key as intervention_key
+            intervention_key(self,key,height);return
         if key=='y' or (self.view=='global_splits' and (key=='5' or (key in ('\r','\n') and self.selection==4))):
             self.remember();self.view='quality';self.selection=0;return
         if self.view.startswith('quality'):
@@ -623,6 +628,9 @@ class Model:
             else:self.selected=row;self.view='detail';self.detail_page=0;self.selection=0
 
 def render(model,width,height):
+    if model.view=='interventions':
+        from .progress_interventions import render as intervention_render
+        return intervention_render(model,width,height)
     if model.view.startswith('quality'):
         from .quality_panel import render as quality_render
         return quality_render(model,width,height)
@@ -888,7 +896,7 @@ def render(model,width,height):
     if model.view=='global_splits':keys='1 Training (live) | 2 Validation (live) | 3 Initial | 4 Full results | 5 Quality\nFull results: latest completed generation, all configured sessions.\nArrows: select | Enter: open | Validation is display-only.\nEsc: back | G: global sessions | Q: close panel'
     keys=keys.replace('Q: close panel','3 / I: initial founders | Q: close panel').replace('Q: close','I: initial founders | Q: close').replace('Q close','I initial | Q close')
     keys=keys.replace('Q close','Y quality | Q close').replace('Q: close','Y: quality | Q: close')
-    layout['keys'].update(Text(keys))
+    layout['keys'].update(Text(keys+' | Z: manual interventions'))
     return layout
 
 def main():
