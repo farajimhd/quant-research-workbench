@@ -64,11 +64,13 @@ the completed V65 artifacts remain immutable.
   implicit new neural input.
 - Enforce a global spread gate outside candidate logic, shared by all execution
   paths. Revised per user feedback: positive finite bid and ask, ask >= bid,
-  spread_bps = 10000 * (ask - bid) / bid <= 100. There is no fixed-dollar
-  spread ceiling. The initial 100-bps limit corresponds to USD 0.01 at a USD 1
-  bid, USD 0.10 at USD 10, and USD 1 at USD 100. This is an initial engineering
-  ceiling, not a claim about typical liquid-market spreads or an empirically
-  qualified optimal value. Keep the bid denominator explicit and consistent.
+  spread_bps = 10000 * (ask - bid) / bid <= 500. There is no fixed-dollar
+  spread ceiling. The user-specified 500-bps (5%) maximum corresponds to USD
+  0.05 at a USD 1 bid, USD 0.50 at USD 10, and USD 5 at USD 100. Candidate
+  networks may impose stricter spread filters within this boundary, but cannot
+  override or relax the global ceiling. This maximum is not a target spread or
+  a claim of empirically qualified profitability. Keep the bid denominator
+  explicit and consistent.
 - Apply the gate to new entries and additions, at submission and each attempted
   fill, including residual partial orders. A failed gate permits no further
   exposure-increasing fill. No genome, branch, crossover, mutation, price rule
@@ -87,6 +89,31 @@ restart/resume, and exit availability during wide spreads. Compare unchanged
 controls using training-only replay before adopting the new executable version.
 Quote provenance/freshness and trade/quote disagreement still require their own
 investigation; passing a spread test is not proof of quote validity.
+
+## Mandatory construction gate for every generated candidate
+
+User clarified that validity and efficiency must be enforced for all generated
+candidates, including crossover and mutation results. Use the shared central
+authority as the final gate for founders, immigrants, crossover, mutation and
+agent-supplied offspring; operator-local checks may reject bad proposals early
+but must not become independent definitions of validity.
+
+- Validate operator domains, finite bounded parameters/results where required,
+  input and edge contracts, availability semantics, and supported topology.
+- Canonicalize provably redundant expressions, constant logic, unreachable
+  decisions and execution-inactive genes before identity and budget checks.
+  Revalidate afterward; reject invalid results with explicit reasons and use
+  bounded retries without padding or weakening the contract.
+- Represent intentionally disabled management actions compactly; distinguish
+  these from invalid arithmetic and impossible entry logic. Do not invent a
+  replacement strategy or remove a branch merely because it was inactive on
+  observed training data.
+- Where a rewrite cannot be proved safe, retain the expression and expose the
+  unresolved case; never label an unsound rewrite as simplification. This gate
+  cannot promise discovery of every semantic equivalence in arbitrary graphs.
+- Qualification must cover every generation path, missing data, float32 and
+  threshold boundaries, temporal crossing semantics, effective sizing, price
+  rules and routing, with receipts for rejections and canonicalization.
 
 ## Additional investigation backlog from the completed campaign
 
