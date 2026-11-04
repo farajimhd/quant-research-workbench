@@ -52,7 +52,7 @@ def combine(root,job_path):
                 key=str(listing);by_ticker[key]=by_ticker.get(key,0.)+pnl
             for key,value in m.items():
                 if key.startswith('admission_'):counters[key]=counters.get(key,0)+value[i]
-        rows.append(dict(label=label,metrics={k:v[i] for k,v in totals.items()},
+        rows.append(dict(label=label,program_sha256=spec['members'][i]['program_sha256'],metrics={k:v[i] for k,v in totals.items()},
             breadth=dict(all_sessions=len(days),traded_sessions=int((trades>0).sum()),profitable_sessions=int((nets>0).sum()),
                 all_listing_ids=len(all_listings),profitable_listing_ids=sum(v>0 for v in by_ticker.values()),
                 traded_listing_ids=len(by_ticker)),months=monthly,
@@ -72,11 +72,24 @@ def combine(root,job_path):
                 bad.append(dict(day=day,metric='execution_order_journal'))
         equivalence[label]=dict(exact_episode_parity=not bad,differences=bad)
     correction=read_verified(root/'interpretation-correction.json') if (root/'interpretation-correction.json').exists() else None
-    result=dict(scope='training',sessions=len(days),members=rows,equivalence=equivalence,interpretation_correction=correction,
+    result=dict(scope='training',source_generation=spec['source_generation'],sessions=len(days),members=rows,equivalence=equivalence,interpretation_correction=correction,
                 evidence=[dict(day=d,path=v[0]['receipt'],sha256=v[0]['receipt_sha256']) for d,v in sorted(days.items())],
                 qualification='Measured comparisons only; endpoint interpretation and checked publication still required.')
     write_json(root/'combined-results.json',result)
     return result
+
+
+def history(root):
+    """Carry successful and failed completed experiments into subsequent reviews."""
+    rows=[]
+    for path in sorted((Path(root)/'agent-reviews/investigations').glob('*/*/combined-results.json')):
+        result=read_verified(path)
+        if result['scope']!='training':raise ValueError('Non-training investigation history')
+        rows.append(dict(path=str(path),sha256=sha(path),sessions=result['sessions'],
+            source_generation=result['source_generation'],interpretation_correction=result.get('interpretation_correction'),
+            comparisons=[dict(label=m['label'],program_sha256=m['program_sha256'],metrics=m['metrics'],breadth=m['breadth'])
+                         for m in result['members']]))
+    return rows
 
 
 if __name__=='__main__':

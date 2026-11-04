@@ -29,3 +29,13 @@ def test_reconcile_keeps_existing_work_and_old_epoch_candidates(tmp_path):
 def test_combiner_cannot_label_partial_investigation_complete(tmp_path):
     job=tmp_path/'job.json';job.write_text(json.dumps(dict(training_days=['2026-01-01'])))
     with pytest.raises(ValueError,match='incomplete'):combine(tmp_path,job)
+
+
+def test_failed_experiment_is_carried_into_review_history(tmp_path):
+    from research.vectorized_backtest.v66.investigation_results import history
+    p=tmp_path/'agent-reviews/investigations/7/run/combined-results.json';p.parent.mkdir(parents=True)
+    p.write_text(json.dumps(dict(scope='training',source_generation=20,sessions=150,
+        members=[dict(label='failed_repair',program_sha256='child',metrics={'net_pnl':-100},breadth={})])))
+    rows=history(tmp_path)
+    assert rows[0]['comparisons'][0]['metrics']['net_pnl']==-100
+    assert len(rows[0]['sha256'])==64

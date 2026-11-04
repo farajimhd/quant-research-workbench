@@ -167,3 +167,6 @@ For any proposed parent, every declared endpoint and check must be tested with
 hashed evidence. Inactive endpoints still need an explained/tested inactivity
 result; not_applicable is not a substitute. Empty completed packages likewise
 require tested coverage throughout. Unfinished investigations stay in the backlog.
+Read exported investigation-history.json alongside prior-interventions.json:
+completed failed off-lane experiments are retained even when no child was admitted.
+Do not repeat them without a new causal rationale and evidence.

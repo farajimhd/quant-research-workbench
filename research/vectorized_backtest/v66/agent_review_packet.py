@@ -124,6 +124,8 @@ def export(root,job,generation,out):
     out=Path(out);out.mkdir(parents=True,exist_ok=True)
     write_json(out/'packet.json',packet)
     write_json(out/'prior-interventions.json',prior_reviews(root,generation))
+    from .investigation_results import history
+    write_json(out/'investigation-history.json',history(root))
     write_json(out/'parents.json',[dict(serial=ids[i],payload=population['population'][i],record=records[i],
         sessions={d:{k:v[i] for k,v in sessions['sessions'][d].items() if isinstance(v,list) and len(v)==len(ids)} for d in days}) for i in selected])
     write_json(out/'package-template.json',dict(version=rules['version'],scope='training',
