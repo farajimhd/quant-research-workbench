@@ -250,3 +250,27 @@ python -B -u research/rl_trading/v7/experiments/entry_fast_replay.py --recipe we
 
 Omitting `--dates` evaluates all 150 training sessions. Available recipes are
 `weighted`, `tree` and `temporal-tree`; validation dates remain rejected.
+
+## Attribution-guided manual weight intervention
+
+`manual_weight_edit.py` measures exact final-head contributions on the first120
+fit days only. Within the top10 percent of eligible scores, it identifies an
+output neuron whose mean contribution is greater for losing than profitable
+examples in both chronological60-day halves, and whose mean contribution is
+positive in both. It selects the largest minimum contrast and halves that one
+outgoing weight. There is one fixed candidate, no optimizer, no gradient update,
+and no random perturbation sweep. This association does not establish a semantic
+interpretation of a neuron. An edit can improve fit and still harm development.
+
+The original checkpoint is retained. The edited bundle validates that exactly
+the declared scalar was halved and every other state tensor is unchanged.
+Development is evaluated separately after sealing the edit; it cannot select
+another intervention. `manual_weight_replay.py` uses the parity-checked frozen
+account replay, including current account inputs and the original execution rules.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/manual_weight_edit.py --output D:/TradingML/runtimes/rl-trading/v7/manual-weight-edit-v1
+python -B -u research/rl_trading/v7/experiments/manual_weight_edit.py --output D:/TradingML/runtimes/rl-trading/v7/manual-weight-edit-v1 --evaluate-development
+python -B -u research/rl_trading/v7/experiments/manual_weight_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/manual-weight-edit-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/manual-weight-edit-replay
+```
