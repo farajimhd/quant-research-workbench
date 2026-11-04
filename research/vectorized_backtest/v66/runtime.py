@@ -32,13 +32,22 @@ ROOT = Path("D:/TradingML/runtimes")
 DEFAULT = ROOT / "vectorized_backtest" / "torch_backtest_v66"
 
 
+def windows_path(path):
+    """Extended filesystem spelling; receipts keep ordinary portable paths."""
+    path=Path(path)
+    if os.name!='nt':return path
+    value=str(path.resolve())
+    if value.startswith('\\\\?\\'):return Path(value)
+    return Path('\\\\?\\UNC\\'+value[2:] if value.startswith('\\\\') else '\\\\?\\'+value)
+
+
 def require_runtime(path):
     root, target = ROOT.resolve(), Path(path).resolve()
     if not root.is_dir() or not target.is_relative_to(root) or target == root:
         raise ValueError(
             "Required output is beneath D:/TradingML/runtimes; no alternate root"
         )
-    target.mkdir(parents=True, exist_ok=True)
+    windows_path(target).mkdir(parents=True, exist_ok=True)
     return target
 
 

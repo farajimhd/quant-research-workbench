@@ -6,7 +6,7 @@ from hashlib import sha256
 import time,uuid,json,os
 import numpy as np
 import polars as pl
-from research.vectorized_backtest.v66.runtime import require_runtime
+from research.vectorized_backtest.v66.runtime import require_runtime,windows_path
 
 
 def write_json(path,value):
@@ -14,7 +14,7 @@ def write_json(path,value):
     # filesystem boundary. Receipts retain their portable ordinary paths.
     path=Path(path);require_runtime(path.parent)
     raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False)
-    target=Path('\\\\?\\'+str(path.resolve())) if os.name=='nt' else path
+    target=windows_path(path)
     temporary=target.with_name(uuid.uuid4().hex+'.tmp')
     try:
         temporary.write_text(raw,encoding='utf8')
@@ -31,7 +31,7 @@ COLUMNS=('listing','kind','requested_quantity','filled_quantity','filled_notiona
 
 class Journal:
     def __init__(self,root,population,identity):
-        self.root=Path(root)/uuid.uuid4().hex;self.root.mkdir(parents=True)
+        self.root=Path(root)/uuid.uuid4().hex;windows_path(self.root).mkdir(parents=True)
         self.identity=identity;self.population=population
         self.pool=ThreadPoolExecutor(max_workers=1,thread_name_prefix='order-journal')
         self.pending=deque();self.pages=[];self.serial=0;self.wait_seconds=0.;self.closed=False
@@ -43,9 +43,9 @@ class Journal:
         frame=pl.DataFrame(dict(candidate=candidates,**{name:data[:,i] for i,name in enumerate(COLUMNS)}))
         frame=frame.with_columns(pl.col('listing','kind').cast(pl.Int64))
         name=f'orders-{serial:05d}.parquet';path=self.root/name;temp=path.with_suffix('.partial')
-        frame.write_parquet(temp,compression='zstd');temp.replace(path)
+        frame.write_parquet(windows_path(temp),compression='zstd');windows_path(temp).replace(windows_path(path))
         h=sha256()
-        with path.open('rb') as f:
+        with windows_path(path).open('rb') as f:
             for block in iter(lambda:f.read(2**20),b''):h.update(block)
         self.pages.append(dict(file=name,sha256=h.hexdigest(),rows=len(data)))
         offset=0
