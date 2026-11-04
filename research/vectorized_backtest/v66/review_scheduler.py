@@ -46,7 +46,7 @@ def serve(active_path,review_root,initial_packet=None):
                 states=[read_verified(Path(run['out'])/f'shard-{i}'/'state.json') if (Path(run['out'])/f'shard-{i}'/'state.json').exists() else {} for i in range(4)]
                 live=any(alive(w) for w in run['workers'])
                 run['sessions_completed']=sum(len(s.get('completed',[])) for s in states)
-                if all(s.get('status')=='complete' for s in states):
+                if all(s.get('status')=='complete' for s in states) and not live:
                     run.update(status='ready_for_interpretation',finished_epoch=time.time())
                 elif not live:run.update(status='failed',errors=[s.get('error','worker exited without completion') for s in states if s.get('status')!='complete'])
             if any(r['status']=='failed' for r in state['runs']):
