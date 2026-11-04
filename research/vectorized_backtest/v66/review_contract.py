@@ -82,6 +82,9 @@ def validate_coverage(out, package, review):
     proposed = {x['parent'] for x in package['offspring']}
     if not proposed <= set(expected):
         raise ValueError('Unreviewed offspring parent')
+    if not proposed and any(c['status']=='untested' for r in rows
+                            for c in [*r['endpoints'].values(),*r['checks'].values()]):
+        raise ValueError('Investigation unfinished: persist progress and resume; no empty intake')
     for row in rows:
         original = expected[row['serial']]
         if row['parent_sha256'] != original['parent_sha256']:

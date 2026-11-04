@@ -20,7 +20,7 @@ This is not an automatic weight-tuning algorithm. Legal network structure,
 weights, routing and policy genes may change; feature/execution contracts may
 not. Explain each offspring's hypothesis and its parent identity. Include
 ordinary mutations as controls when useful. Do not claim improvement before
-full replay. An empty reviewed package is valid.
+full replay. An empty reviewed package is valid only after investigations are finished and no proposals qualify.
 
 Review 256 distinct active candidates, explicitly including evolved champions,
 descendants, session specialists and repairable losing strategies. The v2 exporter
@@ -100,8 +100,35 @@ Publish ONLY with python -B -m research.vectorized_backtest.v66.review_contract
 --out PACKET_DIRECTORY --job ACTIVE_JOB --publish. This checks all selected
 parent identities, endpoint coverage, evidence hashes, plans and package validity
 before atomic intake. Proposed parents must have no untested endpoints/checks.
-Deferred/rejected parents must state limitations; an empty package is allowed but
+Deferred/rejected parents must state limitations; an empty package with any untested check is rejected and
 must not be described as an exhaustive completed investigation. Save traces under
 the packet directory and use {path,sha256} references. Do not bypass this publisher
 with ad-hoc writes. It is an off-lane publication gate, not an optimizer hot-path
 change. Use a separately receipted review deployment for existing pinned campaigns.
+
+
+### Finish investigations instead of closing them as deferred
+Persist active investigations under agent-reviews/investigations/<parent>/ with
+immutable spec.json, per-session hashed receipts and state.json. Resume incomplete
+work on each follow-up, even between review epochs. Prioritize17006 until its
+entry/price diagnosis and supported repair comparisons reach a measured outcome.
+An epoch deadline never means an incomplete investigation is a completed review.
+Do not submit empty intakes to clear the schedule while checks remain untested.
+
+Use candidate_investigation for the diagnosed17006 swing-price comparison: it
+runs unchanged full chronological execution with an observing wrapper, parent,
+stop fallback, target fallback, combined fallback and ordinary control. It records
+pre-order reasons, every action network's activity/known/nonfinite counts and
+per-ticker signal coverage, plus order journals and episode metrics. Parent replay
+must match frozen training receipts; fail closed on differences. All150 training
+days are required for the final comparison. Missing data or failure remains an
+active actionable investigation, not permission to weaken endpoint checks.
+
+Inspect actual results, intervention tradeoffs, ticker/session profit breadth,
+chronological subperiods and robustness before claiming a repair. Save exact
+payloads and tests. A measured unsuccessful repair is a completed experiment;
+an unrun comparison is not. Propose at most one child per parent for normal full
+training replay/selection. If the original source epoch expires, rebind only an
+identical current parent program to fresh sealed evidence; otherwise follow the
+nearest relevant current descendant with a new explicit comparison. Never forge
+recency, modify old packages or overwrite evaluated genomes.

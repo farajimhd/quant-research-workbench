@@ -30,14 +30,14 @@ def test_zero_net_trades_count_as_active(tmp_path):
 
 def test_incomplete_reviews_cannot_publish(tmp_path):
     _,review,package=setup(tmp_path)
-    with pytest.raises(ValueError,match='incomplete'):rc.validate_coverage(tmp_path,package,review)
+    with pytest.raises(ValueError):rc.validate_coverage(tmp_path,package,review)
 
 
 def test_honest_deferral_but_not_untested_offspring(tmp_path):
     row,review,package=setup(tmp_path)
     row['decision']='defer'
     for c in [*row['endpoints'].values(),*row['checks'].values()]:c['reason']='No trace available'
-    assert rc.validate_coverage(tmp_path,package,review)['deferred']==1
+    with pytest.raises(ValueError,match='unfinished'):rc.validate_coverage(tmp_path,package,review)
     row['decision']='repair';package['offspring']=[dict(parent=7)]
     with pytest.raises(ValueError,match='untested'):rc.validate_coverage(tmp_path,package,review)
 
@@ -45,7 +45,7 @@ def test_honest_deferral_but_not_untested_offspring(tmp_path):
 def test_omitted_endpoint_and_changed_identity_rejected(tmp_path):
     row,review,package=setup(tmp_path)
     row['endpoints'].pop(next(iter(row['endpoints'])))
-    with pytest.raises(ValueError,match='coverage'):rc.validate_coverage(tmp_path,package,review)
+    with pytest.raises(ValueError):rc.validate_coverage(tmp_path,package,review)
     review['parents_sha256']='changed'
     with pytest.raises(ValueError,match='identity'):rc.validate_coverage(tmp_path,package,review)
 
