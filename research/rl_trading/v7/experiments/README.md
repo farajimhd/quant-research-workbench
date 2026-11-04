@@ -188,3 +188,19 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -u research/rl_trading/v7/experiments/temporal_policy.py --output D:/TradingML/runtimes/rl-trading/v7/temporal-policy-v1 --device cuda
 python -B -u research/rl_trading/v7/experiments/temporal_policy_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/temporal-policy-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/temporal-policy-three-days --dates 2026-01-05 2026-04-01 2026-08-10
 ```
+
+`temporal_weighted_policy.py` tests payoff-weighted binary cross entropy instead
+of softmax expected payoff. A profitable missed entry retains a gradient even
+when its predicted entry probability is near zero. Labels are the sign of net
+payoff, weighted by its absolute magnitude; eligible zero-payoff observations
+remain in the denominator with zero loss weight. The current-cost offset stays
+in the score. Scores represent independent binary logits, not dollar forecasts.
+The same internal split, strict greedy-payoff selection and WAIT baseline apply.
+Both fit and development greedy metrics are saved to distinguish failure to fit
+from failure to generalize. This remains supervised counterfactual research.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/temporal_weighted_policy.py --output D:/TradingML/runtimes/rl-trading/v7/temporal-weighted-policy-v1 --device cuda
+python -B -u research/rl_trading/v7/experiments/temporal_weighted_policy_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/temporal-weighted-policy-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/temporal-weighted-policy-three-days --dates 2026-01-05 2026-04-01 2026-08-10
+```
