@@ -19,13 +19,24 @@ def due(job,generation):
 
 
 @contextmanager
-def locked(review):
+def locked(review, *, timeout=120.):
+    import errno
     import msvcrt
     review=Path(review);review.mkdir(parents=True,exist_ok=True)
     with (review/'window.lock').open('a+b') as handle:
-        handle.seek(0)
-        if not handle.read(1):handle.write(b'1');handle.flush()
-        handle.seek(0);msvcrt.locking(handle.fileno(),msvcrt.LK_LOCK,1)
+        # Windows permits locking beyond EOF. Never read/write the lock byte:
+        # another process may already own it, including during first creation.
+        deadline=time.monotonic()+timeout
+        while True:
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES,errno.EAGAIN,errno.EDEADLK):raise
+                if time.monotonic()>=deadline:
+                    raise TimeoutError('Review publication lock did not release') from error
+                time.sleep(.05)
         try:yield
         finally:handle.seek(0);msvcrt.locking(handle.fileno(),msvcrt.LK_UNLCK,1)
 

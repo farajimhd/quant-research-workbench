@@ -9,6 +9,36 @@ from research.vectorized_backtest.v66.identity import digest
 from research.vectorized_backtest.v66.resume_authority import accept_checkpoint, global_predecessor
 
 
+def hold_review_lock(path, ready, release):
+    with w.locked(path):
+        ready.set()
+        if not release.wait(15):raise RuntimeError('Test release missing')
+
+
+def test_windows_publisher_contention_and_empty_lock(tmp_path):
+    import multiprocessing
+    from threading import Timer
+    context=multiprocessing.get_context('spawn')
+    for existing_byte in (False,True):
+        root=tmp_path/str(existing_byte);root.mkdir()
+        if existing_byte:(root/'window.lock').write_bytes(b'1')
+        ready=context.Event();release=context.Event()
+        child=context.Process(target=hold_review_lock,args=(root,ready,release));child.start()
+        timer=None
+        try:
+            assert ready.wait(10)
+            with pytest.raises(TimeoutError):
+                with w.locked(root,timeout=.1):pytest.fail('Concurrent lock acquired')
+            timer=Timer(.2,release.set);timer.start()
+            with w.locked(root):pass
+        finally:
+            release.set()
+            if timer:timer.join()
+            child.join(10)
+            if child.is_alive():child.terminate();child.join();pytest.fail('Child stuck')
+        assert child.exitcode==0
+
+
 def test_bounded_live_wait_and_restart_keep_resources(tmp_path):
     job=dict(campaign=str(tmp_path),phase2_generations=300,review_window=w.SETTINGS)
     root=tmp_path/'global';root.mkdir()
