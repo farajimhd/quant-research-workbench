@@ -170,3 +170,30 @@ require tested coverage throughout. Unfinished investigations stay in the backlo
 Read exported investigation-history.json alongside prior-interventions.json:
 completed failed off-lane experiments are retained even when no child was admitted.
 Do not repeat them without a new causal rationale and evidence.
+
+### Persistent cohort scheduling and throughput
+Run one exclusive review_scheduler service under the workstation's interactive
+scheduled-task account, with active-run.json as optimizer/job authority. It polls
+sealed generations every ten seconds, verifies diagnostic PID and creation time,
+and freezes the newest due cohort without waiting for a chat heartbeat. Never
+launch duplicate cohort workers from a heartbeat. An existing running review
+must finish its frozen evidence; record missed epochs without forging recency.
+
+review_cohort shares each training session load across all configured parents
+and explicitly justified children in one bounded batch, with at most four
+disjoint session lanes. review_observer reduces telemetry on the device before
+transfer. Neither mechanism changes execution, observations, qualification,
+fitness, selection, or the optimizer process. All frozen parents must reproduce
+their source receipts, and all training sessions must complete. Use
+review_cohort_results to verify the complete union and summarize comparisons.
+Its output is evidence, not automatic approval or a tested endpoint label.
+
+Measure wall time, session-load time and replay time against the actual duration
+of five optimizer generations. Report a missed throughput target explicitly;
+do not promise cadence from worker launch alone. Scheduling cannot guarantee
+completion if available compute is insufficient. Maintain resource admission,
+resume evidence and surface failures; never weaken coverage to meet a deadline.
+The agent must interpret bounded summaries and traces, finish every check and
+publish only through review_contract. Preserve failed hypotheses and the
+existing score-independent mutation controls. Do not fill unsupported repair
+slots or treat observed equivalent behavior as additional financial diversity.
