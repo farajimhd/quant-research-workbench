@@ -45,6 +45,20 @@ def variants(parent):
         result.append((label,construct(replace(parent,policy=replace(parent.policy,price_program=prices.payload())))))
     control,_=mutation(np.random.default_rng(17006),parent,1)
     result.append(('ordinary_control',construct(control)))
+    # Specific proof for17006: absolute positive-price cross cannot exceed zero.
+    from .genome import INPUTS,CATALOG,Network,Neuron
+    from .authority import ALLOWED
+    exit_net=parent.networks['exit'];nodes=exit_net.nodes
+    if (len(nodes)==13 and nodes[10].op=='cross' and nodes[10].weights==(1.,)
+            and nodes[10].bias==0 and len(nodes[10].sources)==1
+            and nodes[10].sources[0]<len(CATALOG)
+            and CATALOG[nodes[10].sources[0]].name=='arte.trade.86400000ms.lag2.high'
+            and nodes[11].op=='decision' and nodes[11].sources==(INPUTS+10,)
+            and nodes[11].weights[0]>=0 and nodes[12].op=='whole_and'
+            and INPUTS+11 in nodes[12].sources and exit_net.threshold>=0):
+        disabled=Network((Neuron((ALLOWED[0],),(0.,),0.,op='identity'),),0.,0,0.,0.)
+        result.append(('remove_impossible_exit',construct(replace(parent,networks=dict(parent.networks,exit=disabled)))))
+    else:raise ValueError('Positive-price crossing simplification proof does not match parent')
     return result
 
 
@@ -86,7 +100,7 @@ class Observer:
                 for name,mask in masks.items():r[name]+=int((mask&(slots==col)).sum())
 
 
-def run(job_path,source_generation,serial,out):
+def run(job_path,source_generation,serial,out,shard_index=0,shard_count=1):
     from .agent_intervention import evidence
     from .genome import Individual
     from .authority import construct
@@ -99,13 +113,16 @@ def run(job_path,source_generation,serial,out):
     import torch
     out=Path(out);out.mkdir(parents=True,exist_ok=True)
     job=read_verified(job_path);root=Path(job['campaign'])/'phase-2/global'
+    if not 1<=shard_count<=4 or not 0<=shard_index<shard_count:raise ValueError('Invalid bounded diagnostic shard')
+    days=job['training_days'][shard_index::shard_count]
     folder,binding=evidence(root,source_generation)
     pop=read_verified(folder/'population.json');index=pop['ids'].index(serial)
     parent=Individual.restore(pop['population'][index]);construct(parent)
     members=variants(parent);payload=[m.payload() for _,m in members];token=digest(payload)
     spec=dict(version='v66-candidate-investigation-v1',serial=serial,source_generation=source_generation,
         evidence=binding,training_sha256=job['training_sha256'],job_sha256=sha(job_path),runner_sha256=sha(__file__),
-        execution=job['execution'],members=[dict(label=label,program_sha256=program_key(m),payload=m.payload()) for label,m in members],
+        execution=job['execution'],days=days,shard_index=shard_index,shard_count=shard_count,
+        members=[dict(label=label,program_sha256=program_key(m),payload=m.payload()) for label,m in members],
         comparison='Stop fallback, target fallback, both; unchanged parent and seeded ordinary-mutation control. No threshold search.',
         acceptance='Full training score/net and chronological/session breadth versus parent; no claim from inactivity alone. Preserve all execution guards. Target available can also change targets when a valid swing lies below ask; quantify outcomes, do not call it behavior-preserving.',
         validation_used=False)
@@ -131,7 +148,7 @@ def run(job_path,source_generation,serial,out):
     started=time.time()
     try:
         worker=Worker(cfg,events,0)
-        for day in job['training_days']:
+        for day in days:
             path=out/'days'/f'{day}.json'
             if path.exists():
                 saved=read_verified(path)
@@ -139,7 +156,7 @@ def run(job_path,source_generation,serial,out):
                 receipt=read_verified(saved['receipt'],saved['receipt_sha256'])
             else:
                 observer.rows={}
-                write_json(out/'state.json',dict(status='running',serial=serial,current_day=day,completed=completed,total=len(job['training_days']),updated_epoch=time.time(),pid=os.getpid()))
+                write_json(out/'state.json',dict(status='running',serial=serial,current_day=day,completed=completed,total=len(days),updated_epoch=time.time(),pid=os.getpid()))
                 worker.run(day,None,payload,1,token,widths[day])
                 receipt_path=out/'replay/generation-0001'/day/'receipt.json';receipt=read_verified(receipt_path)
                 write_json(path,dict(spec_sha256=sha(spec_path),receipt=str(receipt_path),receipt_sha256=sha(receipt_path),endpoints=observer.rows))
@@ -152,13 +169,13 @@ def run(job_path,source_generation,serial,out):
             parity.append(day)
             metrics=receipt['metrics'];panel=aggregate([metrics],Objective(**job['objective']));panels.append(dict(_session_panel=panel,_summary_objective=(job['objective']['drawdown_weight'],job['objective']['loss_weight'])))
             completed.append(day)
-            write_json(out/'state.json',dict(status='running',serial=serial,completed=completed,total=len(job['training_days']),updated_epoch=time.time(),pid=os.getpid(),parent_parity=len(parity)))
+            write_json(out/'state.json',dict(status='running',serial=serial,completed=completed,total=len(days),updated_epoch=time.time(),pid=os.getpid(),parent_parity=len(parity)))
             print(json.dumps(dict(day=day,completed=len(completed),net=metrics['net_pnl'],trades=metrics['closed_positions'])),flush=True)
         result=serializable(aggregate(panels,Objective(**job['objective'])))
         write_json(out/'summary.json',dict(spec_sha256=sha(spec_path),labels=[label for label,_ in members],training=result,days=completed,parent_parity=parity,seconds=time.time()-started,validation_used=False))
-        write_json(out/'state.json',dict(status='complete',serial=serial,completed=completed,total=len(job['training_days']),updated_epoch=time.time(),pid=os.getpid(),parent_parity=len(parity)))
+        write_json(out/'state.json',dict(status='complete',serial=serial,completed=completed,total=len(days),updated_epoch=time.time(),pid=os.getpid(),parent_parity=len(parity)))
     except BaseException as error:
-        write_json(out/'state.json',dict(status='failed',serial=serial,completed=completed,total=len(job['training_days']),updated_epoch=time.time(),error=str(error),pid=os.getpid()))
+        write_json(out/'state.json',dict(status='failed',serial=serial,completed=completed,total=len(days),updated_epoch=time.time(),error=str(error),pid=os.getpid()))
         raise
     finally:
         Inference.__call__=original
@@ -167,5 +184,6 @@ def run(job_path,source_generation,serial,out):
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--job',required=True);p.add_argument('--generation',type=int,required=True)
-    p.add_argument('--serial',type=int,required=True);p.add_argument('--out',required=True);a=p.parse_args()
-    run(a.job,a.generation,a.serial,a.out)
+    p.add_argument('--serial',type=int,required=True);p.add_argument('--out',required=True)
+    p.add_argument('--shard-index',type=int,default=0);p.add_argument('--shard-count',type=int,default=1);a=p.parse_args()
+    run(a.job,a.generation,a.serial,a.out,a.shard_index,a.shard_count)
