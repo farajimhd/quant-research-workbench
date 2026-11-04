@@ -51,6 +51,10 @@ def serve(active_path,review_root,initial_packet=None):
                 elif not live:run.update(status='failed',errors=[s.get('error','worker exited without completion') for s in states if s.get('status')!='complete'])
             if any(r['status']=='failed' for r in state['runs']):
                 state['status']='review_failure_requires_investigation';write_json(status_path,state);time.sleep(10);continue
+            for run in state['runs']:
+                if run['status']=='ready_for_interpretation' and not (Path(run['out'])/'combined-results.json').exists():
+                    from .review_cohort_results import combine
+                    combine(run['out'],job_path)
             if checkpoint['completed']>=300:
                 state['status']='campaign_complete';write_json(status_path,state);break
             consumed={int(e) for e in checkpoint.get('agent_reviews',{})};interval=policy(job)['interval']

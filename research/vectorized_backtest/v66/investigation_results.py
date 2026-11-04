@@ -89,6 +89,16 @@ def history(root):
             source_generation=result['source_generation'],interpretation_correction=result.get('interpretation_correction'),
             comparisons=[dict(label=m['label'],program_sha256=m['program_sha256'],metrics=m['metrics'],breadth=m['breadth'])
                          for m in result['members']]))
+    for path in sorted((Path(root)/'agent-reviews/service').glob('epoch-*/combined-results.json')):
+        result=read_verified(path);plan=read_verified(path.parent/'plan.json')
+        if result['scope']!='training' or result['validation_used']:raise ValueError('Non-training cohort history')
+        labels={}
+        for record in plan['records']:
+            labels[record['parent_index']]=(f"parent:{record['serial']}",record['parent_sha256'])
+            if record['child_index'] is not None:labels[record['child_index']]=(f"{record['decision']}:{record['serial']}",record['child_sha256'])
+        rows.append(dict(path=str(path),sha256=sha(path),sessions=result['sessions'],source_generation=result['source_generation'],
+            interpretation_correction=None,comparisons=[dict(label=labels[m['index']][0],program_sha256=labels[m['index']][1],
+                metrics=dict(net_pnl=m['net'],closed_positions=m['trades'],winning_positions=m['wins']),breadth=m['breadth']) for m in result['members']]))
     return rows
 
 
