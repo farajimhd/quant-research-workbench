@@ -8,6 +8,19 @@ from research.vectorized_backtest.v66.canonical import network
 from research.vectorized_backtest.v66.price_program import entry_guard
 
 
+def test_random_parent_schedule_covers_crossover_and_mutation_independently():
+    from research.vectorized_backtest.v66.lineage import exploration_slots
+    from research.vectorized_backtest.v66.schedule import balanced
+    for generation in (1,2,40,300):
+        mask=exploration_slots(717,generation,np.random.default_rng(51))
+        repeat=exploration_slots(717,generation,np.random.default_rng(51))
+        growth=balanced(717,[.2,.8],generation)==0
+        np.testing.assert_array_equal(mask,repeat)
+        assert abs(mask.sum()-717*.2)<=1
+        assert (mask&growth).any() and (mask&~growth).any()
+        assert (~mask&growth).any() and (~mask&~growth).any()
+
+
 def run(sig,owners,quotes,prices,cuts=()):
     n=len(sig);slots=np.full((n,5),-1,np.int32);slots[:,0]=0
     signals=np.zeros((n,2,5),np.int16);signals[:,:,0]=sig

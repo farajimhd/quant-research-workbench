@@ -22,6 +22,12 @@ def program_key(member):
     return sha256(json.dumps(value,sort_keys=True,separators=(',',':')).encode()).hexdigest()
 
 
+def exploration_slots(size,generation,rng):
+    # Independent ordering prevents the 20% exploration mask from exactly
+    # matching the existing 20% growth-only operator mask.
+    return rng.permutation(balanced(size,[.2,.8],generation)==0)
+
+
 @dataclass(frozen=True)
 class Selection:
     ancestry_generations:int=3
@@ -193,7 +199,7 @@ def next_population(rng,population,ids,pedigree,rank,generation,config=Selection
         exploration_groups.setdefault(program_key(population[int(i)]),[]).append(int(i))
     exploration_rng=Proposal(root_key,(generation,'uniform-parents')).generator
     exploration_pool=[int(exploration_rng.choice(v)) for _,v in sorted(exploration_groups.items())]
-    exploration_plan=balanced(cross_budget,[.2,.8],generation)==0
+    exploration_plan=exploration_slots(cross_budget,generation,exploration_rng)
     children=[];parents=[];ops=[];metadata=[];duplicates=0;fallbacks=0;invalid_crossovers=0;whole_rejections={}
     def fresh(reason,case=None):
         nonlocal duplicates

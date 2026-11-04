@@ -1,8 +1,9 @@
-# Requirements for the version following V66
+# V66 requirements and remaining investigations
 
-Status: planned, not implemented. User approved recording this requirement on
+Status: execution and construction requirements implemented in V66; the remaining
+investigation section is explicitly deferred. User approved these requirements on
 2026-11-04 after inspection of candidate 286812 from the completed 300-generation
-V66 campaign. This does not authorize modifying that campaign or its genomes.
+V65 campaign. This does not authorize modifying that campaign or its genomes.
 
 ## Semantics-preserving construction canonicalization
 
@@ -35,7 +36,7 @@ silently change the V64 diversity or fitness rules as part of canonicalization.
 
 ## Evidence motivating the requirement
 
-V66 validates bounds, allowed inputs, topology, and graph reachability. Reachable
+V65 validates bounds, allowed inputs, topology, and graph reachability. Reachable
 nodes can still feed impossible decisions. Whole-network composition shares
 identical complete branches but does not generally deduplicate overlapping
 subgraphs. Exact training-record grouping does not simplify individual genomes.
@@ -50,7 +51,7 @@ provable inefficiency, and trading hypotheses requiring independent evaluation.
 
 User-directed next-version requirements recorded on 2026-11-04. These are
 execution-contract changes, separate from semantics-preserving canonicalization;
-the completed V66 artifacts remain immutable.
+the completed V65 artifacts remain immutable.
 
 - Bind an entry order to its originating branch when submitted; retain that
   identity through partial fills. On first fill, that branch owns the position's
@@ -143,7 +144,7 @@ execution or selection policy. Evidence is retained under the campaign runtime
 in `candidate-audit-20261104` (training only).
 
 - Measure the effect of the approved entry-branch ownership contract against
-  V66's per-clock entry routing and branch-zero fallback.
+  V65's per-clock entry routing and branch-zero fallback.
 - Specify whether stop updates may loosen risk. Current updates replace the
   stop rather than enforcing a monotonic trailing stop. Audit actual loosening
   events before claiming a performance effect.
