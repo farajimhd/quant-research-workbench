@@ -6,9 +6,9 @@ from research.vectorized_backtest.v66.review_cohort_results import combine
 
 
 def test_complete_union_and_child_differences(tmp_path):
-    job=tmp_path/'job.json';root=tmp_path/'cohort';folder=root/'shard-0'
+    job=tmp_path/'job.json';root=tmp_path/'agent-reviews/service/epoch-0035';folder=root/'shard-0'
     write_json(job,dict(training_days=['2026-01-05','2026-02-02'],execution={'x':1}))
-    plan=dict(scope='training',validation_used=False,job_sha256=sha(job),members=[{},{}],records=[dict(serial=1,parent_index=0,child_index=1)],source_generation=36,review_epoch=35)
+    plan=dict(scope='training',validation_used=False,job_sha256=sha(job),members=[{},{}],records=[dict(serial=1,parent_index=0,child_index=1,parent_sha256='parent',child_sha256='child',decision='control')],source_generation=36,review_epoch=35)
     write_json(root/'plan.json',plan)
     spec=dict(days=['2026-01-05','2026-02-02'],plan_sha256=sha(root/'plan.json'),job_sha256=sha(job),code_sha256='frozen')
     write_json(folder/'spec.json',spec)
@@ -27,5 +27,10 @@ def test_complete_union_and_child_differences(tmp_path):
     assert result['members'][0]['breadth']['all_listing_ids']==2
     assert len(result['comparisons']['1'])==2
     assert 'order_journal' in result['comparisons']['1'][0]['differences']
+    from research.vectorized_backtest.v66.investigation_results import history
+    carried=history(tmp_path)
+    assert len(carried)==1
+    assert [r['label'] for r in carried[0]['comparisons']]==['parent:1','control:1']
+    assert carried[0]['comparisons'][1]['metrics']['net_pnl']==2
     write_json(folder/'state.json',dict(status='complete',completed=spec['days'][:1],parent_parity=1))
     with pytest.raises(ValueError,match='Incomplete'):combine(root,job)
