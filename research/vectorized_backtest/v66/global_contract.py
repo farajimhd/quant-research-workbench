@@ -13,6 +13,8 @@ STRATEGY_CONTRACT=dict(branch_ownership='entry-order-through-close-v1',maximum_s
 
 
 def check(job):
+    from .review_window import enabled
+    enabled(job)
     from .agent_intervention import check_policy
     check_policy(job)
     from .fresh_design import SETTINGS

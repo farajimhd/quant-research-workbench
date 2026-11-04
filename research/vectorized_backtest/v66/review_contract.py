@@ -135,6 +135,8 @@ def validate_coverage(out, package, review):
 
 
 def publish(out, job):
+    from .review_window import enabled
+    if enabled(job):return publish_window(out,job)
     from .agent_intervention import validate_package
     out = Path(out); root = Path(job['campaign'])/'phase-2/global'
     package = json.loads((out/'package.json').read_bytes())
@@ -152,6 +154,38 @@ def publish(out, job):
     write_json(out/'review-qualification.json', receipt)
     write_json(inbox/f"epoch-{package['review_epoch']:04d}.json", package)
     return receipt
+
+
+def publish_window(out,job):
+    from .review_window import locked
+    from .review_notes import validate,VERSION as NOTE_VERSION
+    from .agent_intervention import validate_package
+    out=Path(out);root=Path(job['campaign'])/'phase-2/global';review=root/'agent-reviews'
+    with locked(review):
+        window=json.loads((out/'window.json').read_bytes())
+        package=json.loads((out/'package.json').read_bytes())
+        notes=json.loads((out/'review-notes.json').read_bytes())
+        if (window['status']!='reviewing' or time.time()>=window['deadline_epoch']
+            or package['review_epoch']!=window['review_epoch']
+            or package['source_generation']!=window['source_generation']):raise ValueError('Review window closed or source changed')
+        state=json.loads((root/'checkpoint.json').read_bytes())['state']
+        if state['completed']!=window['source_generation']:raise ValueError('Optimizer no longer at reviewed boundary')
+        inbox=review/'inbox';inbox.mkdir(exist_ok=True)
+        if str(package['review_epoch']) in state.get('agent_reviews',{}) or any(
+            str(json.loads(p.read_bytes())['review_epoch']) not in state.get('agent_reviews',{}) for p in inbox.glob('*.json')):
+            raise ValueError('Review consumed or another intake pending')
+        summary=validate(out,package,notes)
+        # Reuse normal authority; no parent replay, synthetic campaign or extra gate.
+        validate_package(root,job,package,state['completed']+1)
+        if time.time()>=window['deadline_epoch']:raise ValueError('Review deadline reached during qualification')
+        receipt=dict(**summary,version=NOTE_VERSION,review_sha256=sha(out/'review-notes.json'),
+            package_sha256=sha(out/'package.json'),checked_epoch=time.time(),evaluation='normal next-generation replay')
+        write_json(out/'review-qualification.json',receipt)
+        write_json(inbox/f"epoch-{package['review_epoch']:04d}.json",package)
+        window.update(status='submitted' if package['offspring'] else 'no_proposals',closed_epoch=time.time(),
+            proposed=len(package['offspring']),reviewed=summary['reviewed'],screened=summary['screened'],reason=notes['summary'])
+        write_json(out/'window.json',window);write_json(review/'active-window.json',dict(window,packet=str(out)))
+        return receipt
 
 
 if __name__ == '__main__':

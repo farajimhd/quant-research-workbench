@@ -144,7 +144,8 @@ class Global(Evolution):
         # processes, compiler caches and bounded CPU market residency.
         from time import perf_counter
         release_started=perf_counter()
-        self.split_lanes[role].release_plans()
+        from .review_window import due
+        if not due(self.job,generation):self.split_lanes[role].release_plans()
         self.publish(split_release_role=role,split_release_seconds=perf_counter()-release_started)
         return [r['metrics'] for r in results],{r['day']:r['ref'] for r in results}
 

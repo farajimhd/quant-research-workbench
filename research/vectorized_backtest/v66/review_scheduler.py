@@ -39,6 +39,8 @@ def serve(active_path,review_root,initial_packet=None):
     try:
         while not (review_root/'SCHEDULER_STOP').exists():
             active=read_verified(active_path);job_path=active['job'];job=read_verified(job_path)
+            if job.get('review_window'):
+                raise RuntimeError('Replay review scheduler retired: optimizer owns bounded evidence-review windows')
             root=Path(job['campaign'])/'phase-2/global';checkpoint=read_verified(root/'checkpoint.json')['state']
             state.update(completed_generation=checkpoint['completed'],updated_epoch=time.time())
             for run in state['runs']:

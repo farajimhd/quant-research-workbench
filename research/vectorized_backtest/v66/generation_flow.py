@@ -20,6 +20,11 @@ def evolve(c,root,train,valid,contract,state,members,ids,pedigree,rng,species,pr
     if not completed < limit <= c.job['phase2_generations']:raise ValueError('Invalid qualification generation bound')
     try:
         for generation in range(completed+1,limit+1):
+            from .review_window import due,wait_for_review
+            if due(c.job,generation-1):
+                if last is not None:c.sealed_generation=last.result()['generation']
+                c.stage='Bounded manual review; sessions retained'
+                wait_for_review(root,c.job,generation-1,c.publish)
             from .agent_intervention import apply as apply_review
             members,ids,consumed,intervention=apply_review(root,c.job,generation,members,ids,pedigree,consumed)
             if intervention is not None:snapshot=Snapshot(members)

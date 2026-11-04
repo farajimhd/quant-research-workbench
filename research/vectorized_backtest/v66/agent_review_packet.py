@@ -131,8 +131,13 @@ def export(root,job,generation,out):
     write_json(out/'package-template.json',dict(version=rules['version'],scope='training',
         review_epoch=packet['review_epoch'],source_generation=generation,training_sha256=job['training_sha256'],
         evidence=binding,rationale='',offspring=[]))
-    from .review_contract import export_coverage
-    export_coverage(out)
+    from .review_window import enabled
+    if enabled(job):
+        from .review_notes import export as export_notes
+        export_notes(out)
+    else:
+        from .review_contract import export_coverage
+        export_coverage(out)
     return packet
 
 

@@ -21,6 +21,12 @@ def global_predecessor(job):
     if not path.is_file() or sha(path)!=transition.get('predecessor_job_sha256'):raise ValueError('Global predecessor changed')
     old=json.loads(path.read_bytes())
     mutable={'source_sha256','code','commit','deployment','resume_transition','result_cache_transition'}
+    if transition.get('review_window_change'):
+        from .review_window import SETTINGS
+        if (old.get('review_window') is not None or job.get('review_window')!=SETTINGS
+            or transition['review_window_change']!=dict(before=None,after=SETTINGS)):
+            raise ValueError('Unapproved review window transition')
+        mutable.add('review_window')
     if transition.get('generation_extension'):
         if (transition['generation_extension']!={'from':200,'to':300}
             or old.get('phase2_generations')!=200 or job.get('phase2_generations')!=300):
@@ -83,6 +89,8 @@ def accept_checkpoint(job,path,saved,expected):
         bound=job['resume_transition'].get('global_checkpoint',{})
         if sha(path)!=bound.get('checkpoint_sha256') or saved['state_sha256']!=bound.get('state_sha256') or digest(saved['contract'])!=bound.get('contract_sha256'):raise ValueError('Global checkpoint differs from bound receipt')
         actual=dict(saved['contract'],source_sha256=expected['source_sha256'])
+        if job['resume_transition'].get('review_window_change'):
+            actual['review_window']=job['review_window']
         if job['resume_transition'].get('generation_extension'):
             if saved['contract'].get('generations')!=200 or not 0<=saved['state']['completed']<200:
                 raise ValueError('Generation extension requires an unfinished 200-generation checkpoint')

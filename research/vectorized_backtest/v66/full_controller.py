@@ -50,6 +50,7 @@ def checkpoint_contract(job,train,valid):
     contract['fresh_design']=SETTINGS
     contract['strategy_contract']=job['strategy_contract']
     if job.get('agent_intervention'):contract['agent_intervention']=job['agent_intervention']
+    if job.get('review_window'):contract['review_window']=job['review_window']
     contract['profit_targets']={k:job[k] for k in ('ticker_target','session_target')}
     if job.get('validation_schedule')=='concurrent-training-only-v1':contract['validation']='display-only; isolated training-only reproduction concurrent with replay'
     return contract

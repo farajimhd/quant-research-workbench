@@ -82,6 +82,7 @@ def run(plan_path,job_path,out,shard_index,shard_count):
     from .runtime import code_hash
     if not 1<=shard_count<=4 or not 0<=shard_index<shard_count:raise ValueError('Invalid diagnostic shard')
     plan=read_verified(plan_path);job=read_verified(job_path);out=Path(out);out.mkdir(parents=True,exist_ok=True)
+    if job.get('review_window'):raise ValueError('Separate cohort replay is disabled for bounded evidence reviews')
     if plan['job_sha256']!=sha(job_path) or plan['scope']!='training' or plan['validation_used']:raise ValueError('Cohort scope changed')
     if not 1<=len(plan['members'])<=512:raise ValueError('Cohort exceeds normal bounded review capacity')
     folder,binding=evidence(Path(job['campaign'])/'phase-2/global',plan['source_generation'])

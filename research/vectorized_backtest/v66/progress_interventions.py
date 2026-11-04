@@ -28,6 +28,14 @@ def index(root):
         p=read_verified(path);epoch=p['review_epoch']
         rows[epoch]=dict(epoch=epoch,source=p['source_generation'],count=len(p['offspring']),
             status='Pending',generation=None,rationale=p['rationale'])
+    for path in sorted(review.glob('epoch-*/window.json')):
+        w=read_verified(path);epoch=w['review_epoch'];old=rows.get(epoch,{})
+        labels={'preparing':'Preparing evidence','reviewing':'Reviewing; sessions retained',
+                'submitted':'Submitted; awaiting admission','no_proposals':'Reviewed; no proposals',
+                'timed_out':'Window timed out'}
+        rows[epoch]=dict(epoch=epoch,source=w['source_generation'],count=w.get('proposed',old.get('count',0)),
+            status=labels[w['status']],generation=None,rationale=w.get('reason',old.get('rationale','Existing training evidence; no separate replay.')),
+            reviewed=w.get('reviewed'),screened=w.get('screened'),deadline_epoch=w.get('deadline_epoch'))
     for path in sorted((review/'decisions').glob('generation-*.json')):
         decision=read_verified(path);p=decision.get('package')
         if p is None:continue
@@ -39,7 +47,7 @@ def index(root):
         from .distributed_assets import sha
         if receipt['decision_sha256']!=sha(path):raise ValueError('Intervention decision changed')
         rows[p['review_epoch']]=dict(epoch=p['review_epoch'],source=p['source_generation'],
-            count=len(p['offspring']),status='Sealed' if p['offspring'] else 'Deferred / no offspring',
+            count=len(p['offspring']),status='Evaluated' if p['offspring'] else 'Reviewed / no offspring',
             generation=generation,rationale=p['rationale'])
     return sorted(rows.values(),key=lambda r:r['epoch'],reverse=True)
 
@@ -53,7 +61,16 @@ def measured(root,generation,serials):
 
 def cohort(root,epoch):
     root=Path(root);item=next(r for r in index(root) if r['epoch']==epoch)
-    if item['generation'] is None:return dict(**item,children=[])
+    if item['generation'] is None:
+        packet=root/'agent-reviews'/f'epoch-{epoch:04d}'
+        path=packet/'package.json'
+        if not path.exists():return dict(**item,children=[])
+        package=read_verified(path);parents={p['serial']:p for p in read_verified(packet/'parents.json')}
+        children=[dict(serial=f"proposal:{p['parent']}",parent=p['parent'],
+            kind='Control' if p['hypothesis'].startswith('control:') else 'Repair',
+            hypothesis=p['hypothesis'],changes=changes(parents[p['parent']]['payload'],p['payload']),
+            parent_metrics={},history=[]) for p in package['offspring']]
+        return dict(**item,children=children)
     generation=item['generation'];folder=root/f'generation-{generation:04d}'
     seal=read_verified(folder/'complete.json')
     receipt=read_verified(folder/'agent-intervention.json',seal['agent_intervention_sha256'])
@@ -120,6 +137,7 @@ def fmt(x):return '-' if x is None else f'{x:,.2f}'
 
 def detail_lines(child):
     lines=['Hypothesis: '+child['hypothesis'],'Exact genome changes:']+child['changes']
+    if not child['history']:return lines+['Not admitted/evaluated yet; performance is unavailable, not zero.']
     for role in ('training','validation'):
         parent=child['parent_metrics'].get(role,{})
         lines.append(f"Parent {role}: net ${fmt(parent.get('net_pnl'))}; trades {fmt(parent.get('closed_positions'))}; win {fmt(parent.get('win_rate'))}%; profitable sessions {parent.get('profitable_sessions','-')}/{parent.get('coverage','-')}")
@@ -135,7 +153,7 @@ def detail_lines(child):
 def render(model,width,height):
     data=get(model);layout=Layout();layout.split_column(Layout(name='head',size=4),Layout(name='body'),Layout(name='keys',size=3))
     epoch=getattr(model,'intervention_epoch',None);child=getattr(model,'intervention_child',None)
-    layout['head'].update(Text('V66 MANUAL INTERVENTIONS'+(f' | review {epoch}' if epoch is not None else '')+(f' | candidate {child}' if child is not None else '')+'\nTraining guides edits; validation shown only for reporting. Parent comparisons use frozen source generation.\n'+(getattr(model,'intervention_error',None) or 'Sealed replay results; absent IDs are not zero profit. Refresh every 15 seconds.'),style='cyan'))
+    layout['head'].update(Text('V66 MANUAL INTERVENTIONS'+(f' | review {epoch}' if epoch is not None else '')+(f' | candidate {child}' if child is not None else '')+'\nTraining guides edits; validation shown only for reporting. Parent comparisons use frozen source generation.\n'+(getattr(model,'intervention_error',None) or 'Proposals await normal replay; missing results are unavailable. Refresh every 15 seconds.'),style='cyan'))
     table=Table(expand=True);limit=max(1,height-12);start=model.selection//limit*limit
     if data is None:table.add_column('Status');table.add_row('Loading intervention history…')
     elif child is not None:
@@ -143,15 +161,17 @@ def render(model,width,height):
         table.add_column('Exact edits and generation results',overflow='fold')
         for line in lines[model.selection:model.selection+max(1,limit//3)]:table.add_row(Text(line))
     elif isinstance(data,list):
-        for label in ('Review','Source gen','Admitted gen','Offspring','Status'):table.add_column(label)
-        for i,r in enumerate(data[start:start+limit],start):table.add_row(str(r['epoch']),str(r['source']),str(r['generation'] or '-'),str(r['count']),r['status'],style='bold yellow on blue' if i==model.selection else None)
-        if not data:table.add_row('-','-','-','0','No manual reviews yet')
+        for label in ('Review','Source gen','Admitted gen','Offspring','Status','Reviewed','Time left'):table.add_column(label)
+        for i,r in enumerate(data[start:start+limit],start):
+            remaining=f"{max(0,int(r['deadline_epoch']-time.time()))}s" if r.get('deadline_epoch') and r['status'].startswith('Reviewing') else '-'
+            table.add_row(str(r['epoch']),str(r['source']),str(r['generation'] or '-'),str(r['count']),r['status'],str(r['reviewed']) if r.get('reviewed') is not None else '-',remaining,style='bold yellow on blue' if i==model.selection else None)
+        if not data:table.add_row('-','-','-','0','No manual reviews yet','-','-')
     elif not data['children']:
         table.add_column('Review outcome');table.add_row(Text(data['rationale']))
     else:
         for label in ('Child','Parent','Type','First gen','Train net $','Delta parent $','Val net $','Edits'):table.add_column(label)
         for i,r in enumerate(data['children'][start:start+limit],start):
-            first=r['history'][0];m=first['metrics'] or {};train=m.get('training',{});parent=r['parent_metrics'].get('training',{})
+            first=r['history'][0] if r['history'] else dict(generation='pending',metrics={});m=first['metrics'] or {};train=m.get('training',{});parent=r['parent_metrics'].get('training',{})
             delta=train['net_pnl']-parent['net_pnl'] if 'net_pnl' in train and 'net_pnl' in parent else None
             table.add_row(str(r['serial']),str(r['parent']),r['kind'],str(first['generation']),fmt(train.get('net_pnl')),fmt(delta),fmt(m.get('validation',{}).get('net_pnl')),str(len(r['changes'])),style='bold yellow on blue' if i==model.selection else None)
     layout['body'].update(Panel(table,title='Review epochs' if epoch is None else 'Changes and outcomes',padding=0))
