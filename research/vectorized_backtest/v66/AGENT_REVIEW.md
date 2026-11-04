@@ -132,3 +132,26 @@ training replay/selection. If the original source epoch expires, rebind only an
 identical current parent program to fresh sealed evidence; otherwise follow the
 nearest relevant current descendant with a new explicit comparison. Never forge
 recency, modify old packages or overwrite evaluated genomes.
+
+### Apply the workflow to every configured candidate
+Run review_backlog --packet PACKET --job ACTIVE_JOB --out REVIEW_ROOT/backlog
+after export. This inventories every selected parent's actual branches, networks,
+price endpoints and ten checks, with an immutable identity bound to training,
+execution and objective configuration. Reconcile each epoch without resetting
+unfinished work; current source bindings are separate from accumulated evidence.
+Inventory creation is not investigation completion. Start with17006, then continue
+the remaining configured candidates; do not substitute the17006 experiment for
+the general process.
+
+candidate_investigation defaults to --profile configured for any candidate and
+runs its unchanged parent plus a seeded ordinary control using the active job.
+Use --comparisons FILE for manually justified exact repair payloads, parent hash,
+hypothesis, expected_change, tradeoff and falsification. It records every actual
+leaf's network thresholds/sizing, minimum ages and price expressions in spec.json;
+per-leaf program hashes link observer telemetry even for routed candidates.
+The specialized --profile17006 is only for17006's predefined experiment (spell
+the CLI option as --profile 17006). Bound simultaneous diagnostic shards to four,
+check resources first, and verify all training days before combining results.
+No automatic operator grid or automatic tested labels are permitted. Process
+the persistent backlog through replay, trace interpretation, robustness and
+qualified publication; missing evidence remains an explicit active task.
