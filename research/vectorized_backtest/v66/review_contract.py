@@ -94,6 +94,7 @@ def validate_coverage(out, package, review):
     if len(rows) != len(expected) or {r['serial'] for r in rows} != set(expected):
         raise ValueError('Every selected parent requires one review')
     proposed = {x['parent'] for x in package['offspring']}
+    verified_files = {}
     if not proposed <= set(expected):
         raise ValueError('Unreviewed offspring parent')
     if not proposed and any(c['status']!='tested' for r in rows
@@ -114,7 +115,10 @@ def validate_coverage(out, package, review):
                 raise ValueError('Tested claim needs evidence')
             for ref in check['evidence']:
                 path = (out/ref['path']).resolve()
-                if not path.is_relative_to(out.resolve()) or sha(path) != ref['sha256']:
+                if not path.is_relative_to(out.resolve()):
+                    raise ValueError('Review evidence missing, outside packet, or changed')
+                if path not in verified_files:verified_files[path] = sha(path)
+                if verified_files[path] != ref['sha256']:
                     raise ValueError('Review evidence missing, outside packet, or changed')
         if row['serial'] in proposed:
             if row['decision'] not in ('repair', 'control') or not original['canonical']:
@@ -123,6 +127,10 @@ def validate_coverage(out, package, review):
                 raise ValueError('Offspring parent has untested coverage: every declared endpoint/check needs tested evidence, including inactive endpoints')
             if not all(row[k].strip() for k in ('hypothesis','expected_change','tradeoff','falsification')):
                 raise ValueError('Offspring requires falsifiable repair/control plan')
+    # Evidence can be shared by thousands of endpoints. Hash each distinct file
+    # once, then recheck the complete set to reject changes during validation.
+    for path, fingerprint in verified_files.items():
+        if sha(path) != fingerprint:raise ValueError('Review evidence changed during validation')
     return dict(reviewed=len(rows), proposed=len(proposed), deferred=sum(r['decision']=='defer' for r in rows))
 
 

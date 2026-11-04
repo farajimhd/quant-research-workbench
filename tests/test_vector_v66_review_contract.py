@@ -70,3 +70,25 @@ def test_not_applicable_cannot_bypass_proposed_endpoint_investigation(tmp_path):
     for c in [*row['endpoints'].values(),*row['checks'].values()]:
         c.update(status='not_applicable',reason='No observed activity',evidence=[])
     with pytest.raises(ValueError,match='untested'):rc.validate_coverage(tmp_path,package,review)
+
+
+def test_shared_evidence_is_verified_twice_and_concurrent_change_rejected(tmp_path,monkeypatch):
+    row,review,package=setup(tmp_path);row['decision']='reject'
+    path=tmp_path/'evidence.json';path.write_text('measured')
+    fingerprint=rc.sha(path)
+    for item in [*row['endpoints'].values(),*row['checks'].values()]:
+        item.update(status='tested',reason='Measured',evidence=[dict(path=path.name,sha256=fingerprint)])
+    original=rc.sha;calls=[]
+    def counted(p):
+        if p==path:calls.append(p)
+        return original(p)
+    monkeypatch.setattr(rc,'sha',counted)
+    rc.validate_coverage(tmp_path,package,review)
+    assert len(calls)==2
+    def changed(p):
+        value=original(p)
+        if p==path:path.write_text('changed during validation')
+        return value
+    monkeypatch.setattr(rc,'sha',changed)
+    with pytest.raises(ValueError,match='changed during validation'):
+        rc.validate_coverage(tmp_path,package,review)
