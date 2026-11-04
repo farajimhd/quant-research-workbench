@@ -236,3 +236,17 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -u research/rl_trading/v7/experiments/entry_temporal_tree.py --output D:/TradingML/runtimes/rl-trading/v7/entry-temporal-tree-v1
 python -B -u research/rl_trading/v7/experiments/entry_temporal_tree_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-temporal-tree-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/entry-temporal-tree-dev --dates 2026-07-01 2026-08-10
 ```
+
+`entry_fast_replay.py` accelerates these frozen policies by skipping only flat,
+nonpending, unscheduled WAIT clocks. Equity stays constant across such intervals.
+Every held second, action and terminal transition still uses the original
+environment step. The acceleration source and rule are bound into replay
+authority. This is evaluation-only; it must not replace PPO trajectory collection.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/entry_fast_replay.py --recipe weighted --bundle D:/TradingML/runtimes/rl-trading/v7/temporal-weighted-policy-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/weighted-fast-all150
+```
+
+Omitting `--dates` evaluates all 150 training sessions. Available recipes are
+`weighted`, `tree` and `temporal-tree`; validation dates remain rejected.
