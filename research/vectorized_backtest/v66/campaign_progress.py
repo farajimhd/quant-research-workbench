@@ -198,6 +198,8 @@ class Model:
         return self.strength_cache[key]
     def global_snapshot(self):
         target=self.global_root();state=self.status();generation=state.get('completed_generations',0)
+        # The asynchronous bootstrap fallback is not an authoritative generation.
+        if 'updated_epoch' not in state and 'owner' not in state:return self.global_data
         # Execution restarts preserve the generation counter, but predecessor
         # financial seals stay in their original execution-contract directory.
         if not (target/'global'/f'generation-{generation:04d}'/'complete.json').exists():return self.global_data
@@ -214,6 +216,18 @@ class Model:
                 finally:self.global_loading=None
             self.global_thread=threading.Thread(target=collect,daemon=True);self.global_thread.start()
         return self.global_data
+    def performance(self,generation):
+        from .progress_performance import load
+        root=self.global_root()/'global';key=('performance',str(root),generation)
+        self.performance_error=None
+        if not (root/f'generation-{generation:04d}'/'complete.json').exists():return {}
+        try:
+            if self.io:return self.io.request(key,'research.vectorized_backtest.v66.progress_performance','load',root,generation) or {}
+            if getattr(self,'performance_key',None)!=key:
+                self.performance_data=load(root,generation);self.performance_key=key
+            return self.performance_data
+        except (OSError,ValueError,KeyError,IndexError) as error:
+            self.performance_error=str(error);return {}
     def timing(self,path,state,running=False,complete=False):
         """Immutable seal durations are loaded once; active elapsed is approximate."""
         day=Path(path).name
@@ -621,6 +635,9 @@ def render(model,width,height):
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
     table=Table(expand=True,padding=(0,0));limit=max(1,height-head_size-9);start=model.selection//limit*limit
+    show_performance=model.view in ('ranking','global_ranking','candidates','founders') and not model.day
+    if show_performance:
+        limit=max(1,(limit-6)//3);start=model.selection//limit*limit
     if model.view=='overview':
         nodes,rows,stopped=model.snapshot();done=sum(r['state']=='complete' for r in rows)
         stage='STOPPED' if stopped else ' | '.join(f"{n}: {s.get('status','unavailable')} ({len(s.get('active_sessions',[])) if s.get('status')=='session-stage' else 0} active)" for n,s in nodes.items())
@@ -849,6 +866,17 @@ def render(model,width,height):
         header=Text(f'V66 FULL RESULTS | Completed generation {generation or "loading"} | {len(model.job["training_days"])} training + {len(model.job["validation_days"])} validation sessions\nRanked by training score; validation display-only | Snapshot stays fixed while browsing | A: choose path',style='bright_cyan')
         if not model.full_data:header.append('\nLoading complete saved results in background; live partial results are excluded.',style='bright_yellow')
         if model.global_error:header.append('\n'+model.global_error,style='bright_red')
+    if show_performance:
+        from rich.console import Group
+        from .progress_performance import table as performance_table
+        visible=rows[start:start+limit]
+        generations={r.get('last_evaluated_generation',r.get('generation')) for r in visible}
+        generation=next(iter(generations)) if len(generations)==1 else None
+        values=model.performance(generation) if isinstance(generation,int) else {}
+        note=f'Sealed generation {generation if generation is not None else "mixed/unavailable"} | Win % = winning / closed positions; profit sessions = positive net / covered of configured; validation display-only'
+        if getattr(model,'performance_error',None):note+=' | ERROR: '+model.performance_error
+        elif not values:note+=' | awaiting sealed performance'
+        table=Group(table,Text(note,style='cyan'),performance_table(visible,values,model.selection,start,{role:len(model.job.get(role+'_days',[])) for role in ('training','validation')}))
     layout['head'].update(header)
     names={'global_splits':'ALL GLOBAL > TRAINING / VALIDATION','ranking':'ALL GLOBAL '+model.aggregate_role.upper()+' CANDIDATES' if model.aggregate_mode else 'SESSION CANDIDATES','operators':'GROUPS > CROSSOVER TECHNIQUE','families':'GROUPS > FOUNDER FAMILY','methods':'GROUPS > MIXING METHOD','global_sessions':'GLOBAL SESSION RESULTS','candidates':'GROUP > '+str(model.filter[1])+' > CANDIDATES' if model.filter else 'ALL CANDIDATES'}
     if getattr(model,'initial_mode',False):caption='INITIAL FOUNDERS | V66 training scores | '+caption
