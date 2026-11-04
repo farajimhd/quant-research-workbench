@@ -23,7 +23,9 @@ def listing_records(names):
 
 class SessionData(Lifecycle):
     def __init__(self, root, history=None, *, device='cpu', maximum_gib=4.,
-                 manifest=None, feature_ticks=None, **kwargs):
+                 manifest=None, feature_ticks=None, feature_workers=1, **kwargs):
+        if not isinstance(feature_workers,int) or not 1<=feature_workers<=4:
+            raise ValueError('Feature preparation requires one to four bounded workers')
         start=time.perf_counter();root=Path(root)
         if manifest is None:
             raise ValueError('V66 requires an explicit sealed shared-shard manifest')
@@ -91,7 +93,8 @@ class SessionData(Lifecycle):
         self.enriched_values=np.full((p,len(NAMES)),np.nan,np.float32)
         dollar60=np.zeros(p,np.float64)
         # Bounded per-ticker history scratch; retain points used by inference only.
-        for col,ticker in enumerate(self.tickers):
+        def prepare_column(pair):
+            col,ticker=pair
             points=np.flatnonzero(cols==col);targets=times[points]
             frame=trade.filter(pl.col('ticker')==ticker).sort('time_us')
             if not frame.height:raise ValueError('Scanner ticker has no trade bars: '+ticker)
@@ -100,7 +103,7 @@ class SessionData(Lifecycle):
                 obs=frame['price_valid'].to_numpy()==1;ext=frame['extremes_valid'].to_numpy()==1
                 observed[ix,col]=obs
                 for side in self.raw_extremes:self.raw_extremes[side][ix,col]=np.where(obs&ext,frame[side].to_numpy(),np.nan)
-                continue
+                return
             base,ind,own,dense,obs,ext=scalar_features(frame,clocks,targets,origin)
             # Same elapsed 10-second activity window, only when the previous
             # session actually stored this ticker. No coarse-bar approximation.
@@ -128,6 +131,14 @@ class SessionData(Lifecycle):
                 np.where(ext,dense['high'],np.nan),np.where(ext,dense['low'],np.nan),obs,dense['notional'],targets=targets)
             for k in ('volume','notional','trade_count'):self.market[k][points]=dense[k][targets]
             dollar60[points]=rolling_sum(dense['notional'],60)[targets]
+        # Every task owns disjoint listing columns and sparse feature rows.
+        # Cross-sectional context is computed only after the complete join.
+        if feature_workers==1:
+            for pair in enumerate(self.tickers):prepare_column(pair)
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=feature_workers,thread_name_prefix='v66-features') as pool:
+                for _ in pool.map(prepare_column,enumerate(self.tickers)):pass
         self._context(times,cols,slots,source,dollar60)
         scalar_seconds=time.perf_counter()-scalar_started;window_started=time.perf_counter()
         tickers=np.array(self.tickers,dtype=object)[cols]
