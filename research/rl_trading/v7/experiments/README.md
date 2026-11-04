@@ -171,3 +171,20 @@ python -B -u research/rl_trading/v7/experiments/temporal_data.py
 python -B -u research/rl_trading/v7/experiments/temporal_net.py --output D:/TradingML/runtimes/rl-trading/v7/temporal-net-v1 --device cuda
 python -B -u research/rl_trading/v7/experiments/temporal_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/temporal-net-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/temporal-net-three-days --dates 2026-01-05 2026-04-01 2026-08-10
 ```
+
+`temporal_policy.py` tests a different objective using the same sealed inputs:
+maximize expected labeled entry payoff over five currently eligible candidates
+and WAIT. This is supervised full-information counterfactual learning, not PPO
+or realized account reward. It initializes the temporal body, resets the final
+head to the all-WAIT greedy baseline, and uses a fixed softmax scale and entropy
+term. The output is a policy score, not a calibrated dollar forecast.
+Selection maximizes greedy internal-development payoff per sampled decision;
+WAIT contributes zero and ties retain the earlier checkpoint. An all-WAIT winner
+does not meet a positive-profit target. Account replay remains necessary because
+independent labeled entries may overlap.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/temporal_policy.py --output D:/TradingML/runtimes/rl-trading/v7/temporal-policy-v1 --device cuda
+python -B -u research/rl_trading/v7/experiments/temporal_policy_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/temporal-policy-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/temporal-policy-three-days --dates 2026-01-05 2026-04-01 2026-08-10
+```
