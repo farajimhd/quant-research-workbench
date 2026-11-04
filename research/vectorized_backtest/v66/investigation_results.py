@@ -15,6 +15,9 @@ def combine(root,job_path):
     root=Path(root);job=read_verified(job_path);days={};spec=None;panels=[]
     for folder in sorted(root.glob('shard-*')):
         current=read_verified(folder/'spec.json')
+        state=read_verified(folder/'state.json')
+        if state['status']!='complete' or state.get('parent_parity')!=len(current['days']):
+            raise ValueError('Investigation incomplete or parent parity unverified: '+folder.name)
         if current['validation_used'] or current['job_sha256']!=sha(job_path):raise ValueError('Investigation scope changed')
         if spec is not None and any(digest(current[k])!=digest(spec[k]) for k in
                 ('members','source_generation','evidence','execution','training_sha256','runner_sha256')):
@@ -68,7 +71,8 @@ def combine(root,job_path):
             if any(orders[0][k]!=orders[i][k] for k in ('orders','sha256')):
                 bad.append(dict(day=day,metric='execution_order_journal'))
         equivalence[label]=dict(exact_episode_parity=not bad,differences=bad)
-    result=dict(scope='training',sessions=len(days),members=rows,equivalence=equivalence,
+    correction=read_verified(root/'interpretation-correction.json') if (root/'interpretation-correction.json').exists() else None
+    result=dict(scope='training',sessions=len(days),members=rows,equivalence=equivalence,interpretation_correction=correction,
                 evidence=[dict(day=d,path=v[0]['receipt'],sha256=v[0]['receipt_sha256']) for d,v in sorted(days.items())],
                 qualification='Measured comparisons only; endpoint interpretation and checked publication still required.')
     write_json(root/'combined-results.json',result)
