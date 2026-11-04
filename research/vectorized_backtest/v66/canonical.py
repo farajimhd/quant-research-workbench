@@ -30,7 +30,11 @@ def interval(node, prior):
         return min(0.,ranges[2][0],ranges[3][0]),max(0.,ranges[2][1],ranges[3][1])
     terms=[(min(w*a,w*b),max(w*a,w*b)) for (a,b),w in zip(ranges,map(float,map(np.float32,node.weights)))]
     magnitude=[max(abs(a),abs(b)) for a,b in terms]
-    if node.op=='product' and math.prod(magnitude)>1e30:raise ValueError('Unbounded product intermediate')
+    if node.op=='product':
+        product=1.
+        for term in magnitude:
+            product*=term
+            if product>1e30:raise ValueError('Unbounded product intermediate')
     if node.op=='attention' and any(magnitude[0]*magnitude[i]>1e30 for i in range(1,len(magnitude),2)):
         raise ValueError('Unbounded attention intermediate')
     b=float(np.float32(node.bias));lo=b+sum(a for a,c in terms);hi=b+sum(c for a,c in terms)

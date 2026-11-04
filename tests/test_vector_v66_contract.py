@@ -21,6 +21,13 @@ def test_random_parent_schedule_covers_crossover_and_mutation_independently():
         assert (~mask&growth).any() and (~mask&~growth).any()
 
 
+def test_product_rejects_overflow_before_a_later_zero_operand():
+    from research.vectorized_backtest.v66.canonical import interval
+    node=Neuron((INPUTS,INPUTS+1,INPUTS+2),(1.,1.,1.),0.,op='product')
+    with pytest.raises(ValueError,match='product intermediate'):
+        interval(node,[(1e20,1e20),(1e20,1e20),(0.,0.)])
+
+
 def run(sig,owners,quotes,prices,cuts=()):
     n=len(sig);slots=np.full((n,5),-1,np.int32);slots[:,0]=0
     signals=np.zeros((n,2,5),np.int16);signals[:,:,0]=sig
