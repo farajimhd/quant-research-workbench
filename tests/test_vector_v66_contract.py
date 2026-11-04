@@ -28,6 +28,23 @@ def test_product_rejects_overflow_before_a_later_zero_operand():
         interval(node,[(1e20,1e20),(1e20,1e20),(0.,0.)])
 
 
+def test_operators_return_canonical_children_before_identity_and_genealogy():
+    from research.vectorized_backtest.v66.genome import sample
+    from research.vectorized_backtest.v66.authority import construct
+    from research.vectorized_backtest.v66.composition import mutation,cross
+    rng=np.random.default_rng(62)
+    entry=Network((Neuron((ALLOWED[0],),(1.,),0.,op='identity'),))
+    parents=[construct(replace(m,networks=dict(m.networks,entry=entry))) for m in sample(rng,2)]
+    accepted={mutation:0,cross:0}
+    for operator in accepted:
+        for _ in range(16):
+            try:child,meta=operator(rng,parents[0],1 if operator is mutation else parents[1])
+            except (ValueError,RuntimeError):continue
+            assert child.payload()==construct(child).payload()
+            accepted[operator]+=1
+        assert accepted[operator]>0
+
+
 def run(sig,owners,quotes,prices,cuts=()):
     n=len(sig);slots=np.full((n,5),-1,np.int32);slots[:,0]=0
     signals=np.zeros((n,2,5),np.int16);signals[:,:,0]=sig
