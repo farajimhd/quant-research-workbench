@@ -63,10 +63,12 @@ the completed V65 artifacts remain immutable.
   rank-loss rules) remain executor-owned. Ownership is execution state, not an
   implicit new neural input.
 - Enforce a global spread gate outside candidate logic, shared by all execution
-  paths. Initial engineering defaults: positive finite bid and ask, ask >= bid,
-  spread = ask - bid <= USD 0.05, AND spread / bid <= 0.01. Thus the permitted
-  spread is min(USD 0.05, 1% of bid). These are conservative starting limits,
-  not performance-tuned or empirically qualified optimal values.
+  paths. Revised per user feedback: positive finite bid and ask, ask >= bid,
+  spread_bps = 10000 * (ask - bid) / bid <= 100. There is no fixed-dollar
+  spread ceiling. The initial 100-bps limit corresponds to USD 0.01 at a USD 1
+  bid, USD 0.10 at USD 10, and USD 1 at USD 100. This is an initial engineering
+  ceiling, not a claim about typical liquid-market spreads or an empirically
+  qualified optimal value. Keep the bid denominator explicit and consistent.
 - Apply the gate to new entries and additions, at submission and each attempted
   fill, including residual partial orders. A failed gate permits no further
   exposure-increasing fill. No genome, branch, crossover, mutation, price rule
