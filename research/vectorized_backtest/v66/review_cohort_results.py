@@ -58,8 +58,9 @@ def combine(root, job_path):
                     target=aggregate['tickers'].setdefault(ticker,{})
                     for name,count in counts.items():target[name]=target.get(name,0)+count
                 # Keep actual traces for each chronological subperiod; full traces remain in hashed daily evidence.
-                if not any(t['day'][:7]==day[:7] for t in aggregate['traces']):
-                    aggregate['traces'].append(dict(day=day,columns=value['trace_columns'],events=value['bounded_traces']))
+                missing={name:sample for name,sample in value['bounded_traces'].items()
+                    if not any(t['day'][:7]==day[:7] and name in t['events'] for t in aggregate['traces'])}
+                if missing:aggregate['traces'].append(dict(day=day,columns=value['trace_columns'],events=missing))
     if days!=set(job['training_days']):raise ValueError('Full training union missing')
     for row in rows:
         row['sessions'].sort(key=lambda s:s['day'])
