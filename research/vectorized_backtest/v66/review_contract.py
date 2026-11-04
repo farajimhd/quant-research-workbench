@@ -96,7 +96,7 @@ def validate_coverage(out, package, review):
     proposed = {x['parent'] for x in package['offspring']}
     if not proposed <= set(expected):
         raise ValueError('Unreviewed offspring parent')
-    if not proposed and any(c['status']=='untested' for r in rows
+    if not proposed and any(c['status']!='tested' for r in rows
                             for c in [*r['endpoints'].values(),*r['checks'].values()]):
         raise ValueError('Investigation unfinished: persist progress and resume; no empty intake')
     for row in rows:
@@ -119,8 +119,8 @@ def validate_coverage(out, package, review):
         if row['serial'] in proposed:
             if row['decision'] not in ('repair', 'control') or not original['canonical']:
                 raise ValueError('Unqualified parent')
-            if any(c['status'] == 'untested' for c in [*row['endpoints'].values(), *row['checks'].values()]):
-                raise ValueError('Offspring parent has untested coverage')
+            if any(c['status'] != 'tested' for c in [*row['endpoints'].values(), *row['checks'].values()]):
+                raise ValueError('Offspring parent has untested coverage: every declared endpoint/check needs tested evidence, including inactive endpoints')
             if not all(row[k].strip() for k in ('hypothesis','expected_change','tradeoff','falsification')):
                 raise ValueError('Offspring requires falsifiable repair/control plan')
     return dict(reviewed=len(rows), proposed=len(proposed), deferred=sum(r['decision']=='defer' for r in rows))

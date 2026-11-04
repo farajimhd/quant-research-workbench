@@ -63,3 +63,10 @@ def test_fabricated_evidence_rejected(tmp_path):
     for c in [*row['endpoints'].values(),*row['checks'].values()]:
         c.update(status='tested',reason='Measured',evidence=[])
     with pytest.raises(ValueError,match='evidence'):rc.validate_coverage(tmp_path,package,review)
+
+
+def test_not_applicable_cannot_bypass_proposed_endpoint_investigation(tmp_path):
+    row,review,package=setup(tmp_path);row['decision']='repair';package['offspring']=[dict(parent=7)]
+    for c in [*row['endpoints'].values(),*row['checks'].values()]:
+        c.update(status='not_applicable',reason='No observed activity',evidence=[])
+    with pytest.raises(ValueError,match='untested'):rc.validate_coverage(tmp_path,package,review)

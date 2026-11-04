@@ -162,3 +162,8 @@ not mean an absolute market price: ARTE daily high inputs are signed ratios.
 Do not prove sign restrictions or remove a network from its feature name.
 The17006 disabled-exit comparison is an ablation, not a proven dead-code removal;
 even identical observed replay is evidence limited to that replay's coverage.
+
+For any proposed parent, every declared endpoint and check must be tested with
+hashed evidence. Inactive endpoints still need an explained/tested inactivity
+result; not_applicable is not a substitute. Empty completed packages likewise
+require tested coverage throughout. Unfinished investigations stay in the backlog.
