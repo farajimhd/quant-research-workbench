@@ -204,3 +204,19 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -u research/rl_trading/v7/experiments/temporal_weighted_policy.py --output D:/TradingML/runtimes/rl-trading/v7/temporal-weighted-policy-v1 --device cuda
 python -B -u research/rl_trading/v7/experiments/temporal_weighted_policy_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/temporal-weighted-policy-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/temporal-weighted-policy-three-days --dates 2026-01-05 2026-04-01 2026-08-10
 ```
+
+`entry_tree_policy.py` provides one fixed histogram-boosted tree comparison:
+200 iterations, 15 leaves, minimum 100 samples per leaf, learning rate 0.05 and
+L2 regularization 10. It uses the same payoff weights but the existing 112
+summary/cost features plus eight account values; it does not use ordered bars.
+Thus the comparison changes representation as well as learner. Only the final
+candidate is compared with WAIT on the internal development set, with no sweep.
+Completed runs have verified model/data/source seals and can be reopened using
+`--resume`; interrupted fits require a new output directory. No forecast weights
+are opened. Pickle loading is restricted to hash-verified local runtime bundles.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -u research/rl_trading/v7/experiments/entry_tree_policy.py --output D:/TradingML/runtimes/rl-trading/v7/entry-tree-policy-v1
+python -B -u research/rl_trading/v7/experiments/entry_tree_policy_replay.py --bundle D:/TradingML/runtimes/rl-trading/v7/entry-tree-policy-v1 --forecast unused --output D:/TradingML/runtimes/rl-trading/v7/entry-tree-policy-dev --dates 2026-07-01 2026-08-10
+```
