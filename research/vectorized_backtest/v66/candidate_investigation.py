@@ -43,7 +43,8 @@ def variants(parent):
         prices=replace(base,stop=replace(base.stop,operation='available',other='bid') if stop else base.stop,
                        target=replace(base.target,operation='available',other='ask') if target else base.target)
         result.append((label,construct(replace(parent,policy=replace(parent.policy,price_program=prices.payload())))))
-    result.append(('ordinary_control',construct(mutation(np.random.default_rng(17006),parent,1))))
+    control,_=mutation(np.random.default_rng(17006),parent,1)
+    result.append(('ordinary_control',construct(control)))
     return result
 
 
