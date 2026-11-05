@@ -1,4 +1,5 @@
 """Bounded two-session, complete-founder-cohort throughput and parity check."""
+from research.vectorized_backtest.v66.receipt_storage import read as read_receipt
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,time
@@ -145,7 +146,7 @@ def main():
             rows.append(dict(day=day,batches=len(timing),gpu_replay_seconds=sum(t['replay_seconds'] for t in timing),timings=timing))
         # Compare complete published financial evidence, not the compact subset
         # retained by the controller solely for selection and behavior.
-        published=[json.loads((c.root/'replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics'] for day in days]
+        published=[read_receipt((c.root/'replays/training/generation-0001'/day/'receipt.json'))['metrics'] for day in days]
         report=dict(population=len(members),population_sha256=c.cohort_snapshot.token,maximum_batch=args.maximum_batch,days=days,
                     two_session_return_seconds=returned-started,two_session_published_seconds=time.perf_counter()-started,sessions=rows,
                     metrics_sha256=digest([financial_evidence(p) for p in published]),initial_replay_target_seconds=45)
@@ -158,7 +159,7 @@ def main():
         report['full_cache']=full_cache
         report['warm_return_seconds']=warm_return_seconds
         if args.repeat_warm:
-            warm=[json.loads((c.root/'replays/training/generation-0002'/day/'receipt.json').read_bytes())['metrics'] for day in days]
+            warm=[read_receipt((c.root/'replays/training/generation-0002'/day/'receipt.json'))['metrics'] for day in days]
             report['warm_exact_financial_parity']=digest([financial_evidence(p) for p in warm])==digest([financial_evidence(p) for p in published])
             report['warm_timings']=[json.loads((c.root/'replays/training/generation-0002'/day/'timings.json').read_bytes()) for day in days]
             if not report['warm_exact_financial_parity']:raise ValueError('Warm replay financial parity failed')
@@ -179,7 +180,7 @@ def main():
         if args.compare:
             expected=[]
             for day in days:
-                original=json.loads((args.compare/'phase-2/replays/training/generation-0001'/day/'receipt.json').read_bytes())['metrics']
+                original=read_receipt((args.compare/'phase-2/replays/training/generation-0001'/day/'receipt.json'))['metrics']
                 baseline=json.loads((args.compare/'profile.json').read_bytes()) if (args.compare/'profile.json').exists() else None
                 if baseline and baseline['population_sha256']==c.cohort_snapshot.token:
                     expected.append(original)

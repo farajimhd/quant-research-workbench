@@ -9,6 +9,8 @@ from research.vectorized_backtest.v66.runtime import require_runtime
 
 
 def write_json(path, value):
+    from .receipt_storage import encode
+    value=encode(path,value)
     # Validate/encode before creating a temporary artifact. Keep the standard
     # encoder's floats, arbitrary-size integers and non-finite rejection.
     raw = json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)

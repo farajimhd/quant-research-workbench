@@ -1,5 +1,22 @@
 # V66: canonical construction, owned management and bounded admission
 
+Replay receipts now store metrics as lossless, compressed JSON (`v66-zlib-json-v1`).
+Paired training/probe receipts use relative, SHA256-bound views of the combined
+receipt instead of copying its metric arrays. Read receipts through
+`receipt_storage.read` or `progress_sessions.read_verified`; raw `json.loads`
+reads only the storage envelope. Legacy inline metrics remain supported.
+The panel, result-cache restoration and completed-replay continuation expand the
+same format and reject damaged sources. Historical sealed receipts are not migrated.
+
+Order journals coalesce pages up to an 8 MiB uncompressed threshold (plus one
+incoming page), retaining candidate order, counts and hashes. A partial page is
+flushed before the completion receipt is written. Existing journal readers and
+legacy journal pages remain compatible. Every order and metric remains available.
+
+Before removing a retired source campaign, preserve its source-job manifest at
+`CAMPAIGN/source-authority/SHA256.json`. The contract accepts this location only
+when the original path is absent and the bytes match the job's original hash.
+
 V66 is a source-isolated successor to V65. It pins management to the entry-order
 branch through the whole episode, enforces a 500-bps bid-relative spread ceiling
 on entries/additions and a USD 0.03 initial-stop margin below bid, and reserves

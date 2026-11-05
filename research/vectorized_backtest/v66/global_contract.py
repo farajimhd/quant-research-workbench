@@ -12,6 +12,14 @@ STRATEGY_CONTRACT=dict(branch_ownership='entry-order-through-close-v1',maximum_s
     feature_data='arte-premarket-shards-v1; completed multiscale windows; top5 trade count')
 
 
+def source_job_path(job):
+    """An archived source manifest is accepted only under its original exact hash."""
+    original=Path(job['source_job'])
+    path=original if original.exists() else Path(job['campaign'])/'source-authority'/(job['source_job_sha256']+'.json')
+    if sha(path)!=job['source_job_sha256']:raise ValueError('source_job changed')
+    return path
+
+
 def check(job):
     from .review_window import enabled
     enabled(job)
@@ -34,7 +42,7 @@ def check(job):
     if job['machines']['workstation']['session_workers']!=performance['session_workers']:raise ValueError('Replay worker metadata differs')
     if job['machines']['workstation'].get('hostname')!='DESKTOP-SAAI85T':raise ValueError('Pinned workstation hostname required')
     if job.get('neural_tile',64)!=64:raise ValueError('Global campaigns require the parity-verified 64-lane neural tile')
-    for key in ('training','validation','source_job','initialization_probe'):
+    for key in ('training','validation','initialization_probe'):
         if sha(job[key])!=job[key+'_sha256']:raise ValueError(key+' changed')
     train=json.loads(Path(job['training']).read_bytes())['days'];valid=json.loads(Path(job['validation']).read_bytes())['days']
     if len(set(train))!=150 or len(set(valid))!=38 or max(train)>=min(valid):raise ValueError('Certified chronological 150/38 split required')
@@ -47,7 +55,7 @@ def check(job):
     if job.get('founder_restart'):raise ValueError('V60 requires fresh candidates')
     if job['ticker_parent_fraction']!=.25 or job['selection_risk_caps'] is not False:raise ValueError('Parent selection changed')
     if job.get('fresh_initial_replay')!='v66-fresh-founders-v1':raise ValueError('V60 requires a fresh founder replay')
-    original=json.loads(Path(job['source_job']).read_bytes())
+    original=json.loads(source_job_path(job).read_bytes())
     expected=dict(original['execution'],risk_limits_enabled=False)
     if job.get('fresh_initial_replay'):
         if job['fresh_initial_replay']!='v66-fresh-founders-v1' or job.get('execution_restart'):raise ValueError('Fresh crossing/order-state initialization cannot inherit genomes')

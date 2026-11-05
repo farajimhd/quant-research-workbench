@@ -16,7 +16,8 @@ def strength(rows):
 def read_verified(path,expected=None):
     raw=Path(path).read_bytes()
     if expected is not None and hashlib.sha256(raw).hexdigest()!=expected:raise ValueError('Sealed global evidence changed: '+str(path))
-    return json.loads(raw)
+    from .receipt_storage import decode
+    return decode(path,json.loads(raw))
 
 def population_metadata(path):
     """Read the canonical publisher's ID prefix/token suffix, not 500 MB of graphs."""

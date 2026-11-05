@@ -51,7 +51,8 @@ def restore(job, role, days, token):
         ref = record['receipts'][day]; path = Path(ref['receipt'])
         if sha(path) != ref['receipt_sha256']:
             raise ValueError('Founder receipt changed: '+day)
-        receipt = json.loads(path.read_bytes())
+        from .receipt_storage import read
+        receipt = read(path)
         if (receipt['day'] != day or receipt['split'] != role or
             receipt['population_sha256'] != token or not receipt['full_session'] or
             receipt['execution'] != job['execution'] or receipt['validation_opened'] != (role == 'validation') or

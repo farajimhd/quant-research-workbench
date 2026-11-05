@@ -1,4 +1,5 @@
 """Bounded real-shard qualification; never starts or changes a campaign."""
+from research.vectorized_backtest.v66.receipt_storage import read as read_receipt
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
 os.environ.setdefault('NUMBA_NUM_THREADS','4')
@@ -50,7 +51,7 @@ def main():
             manifest=json.loads((Path(job['dataset'])/'training.json').read_bytes())
             width=len(next(x['selected'] for x in manifest['sessions'] if x['day']==day))
             started=time.perf_counter();result=worker.run(day,None,payload,1,digest(payload),width)
-            metrics=json.loads((root/'replays/generation-0001'/day/'receipt.json').read_bytes())['metrics']
+            metrics=read_receipt((root/'replays/generation-0001'/day/'receipt.json'))['metrics']
             panel=aggregate([metrics])
             row=dict(day=day,candidates=args.count,wall_seconds=time.perf_counter()-started,timings=result['timings'],
                      traded=int(np.count_nonzero(panel['closed_positions'])),profitable=int(np.count_nonzero(panel['net_pnl']>0)),

@@ -146,7 +146,9 @@ class Model:
         path=Path(path);key=str(path)
         try:
             stamp=(path.stat().st_mtime_ns,path.stat().st_size)
-            if key not in self.cache or self.cache[key][0]!=stamp:self.cache[key]=(stamp,json.loads(path.read_bytes()))
+            if key not in self.cache or self.cache[key][0]!=stamp:
+                from .receipt_storage import read
+                self.cache[key]=(stamp,read(path))
             if len(self.cache)>64:self.cache.pop(next(iter(self.cache)))
             return self.cache[key][1]
         except (OSError,ValueError) as error:

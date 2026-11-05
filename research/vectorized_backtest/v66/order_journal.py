@@ -37,22 +37,31 @@ class Journal:
         self.pending=deque();self.pages=[];self.serial=0;self.wait_seconds=0.;self.closed=False
         self.counts=np.zeros(population,dtype=np.int64)
         self.hashes=[sha256() for _ in range(population)]
+        self.frames=[];self.frame_bytes=0
 
     def write(self,serial,ids,counts,data):
         candidates=np.repeat(ids,counts)
         frame=pl.DataFrame(dict(candidate=candidates,**{name:data[:,i] for i,name in enumerate(COLUMNS)}))
         frame=frame.with_columns(pl.col('listing','kind').cast(pl.Int64))
-        name=f'orders-{serial:05d}.parquet';path=self.root/name;temp=path.with_suffix('.partial')
-        frame.write_parquet(windows_path(temp),compression='zstd');windows_path(temp).replace(windows_path(path))
-        h=sha256()
-        with windows_path(path).open('rb') as f:
-            for block in iter(lambda:f.read(2**20),b''):h.update(block)
-        self.pages.append(dict(file=name,sha256=h.hexdigest(),rows=len(data)))
+        if len(frame):
+            self.frames.append(frame);self.frame_bytes+=frame.estimated_size()
+            if self.frame_bytes>=8*2**20:self.flush()
         offset=0
         for index,count in zip(ids,counts):
             end=offset+int(count)
             if count:self.hashes[int(index)].update(data[offset:end].tobytes(order='C'))
             self.counts[int(index)]+=int(count);offset=end
+
+    def flush(self):
+        if not self.frames:return
+        frame=pl.concat(self.frames);name=f'orders-{len(self.pages):05d}.parquet'
+        path=self.root/name;temp=path.with_suffix('.partial')
+        frame.write_parquet(windows_path(temp),compression='zstd');windows_path(temp).replace(windows_path(path))
+        h=sha256()
+        with windows_path(path).open('rb') as f:
+            for block in iter(lambda:f.read(2**20),b''):h.update(block)
+        self.pages.append(dict(file=name,sha256=h.hexdigest(),rows=len(frame)))
+        self.frames=[];self.frame_bytes=0
 
     def submit(self,ids,counts,data):
         # Two bounded CPU pages can overlap replay. Backpressure is measured,
@@ -74,4 +83,5 @@ class Journal:
         self.closed=True
         try:
             for future in self.pending:future.result()
+            self.flush()
         finally:self.pool.shutdown(wait=True,cancel_futures=True)

@@ -16,7 +16,8 @@ def read_results(path,requested_keys=None):
     if record.get('format')=='v57-receipt-index-v1':
         raw=Path(record['receipt']).read_bytes()
         if hashlib.sha256(raw).hexdigest()!=record['receipt_sha256']:raise ValueError('Indexed result receipt integrity mismatch')
-        receipt=json.loads(raw);keys=receipt['program_keys'];metrics=receipt['metrics']
+        from .receipt_storage import decode
+        receipt=decode(record['receipt'],json.loads(raw));keys=receipt['program_keys'];metrics=receipt['metrics']
         if receipt['result_identity']!=record['identity'] or any(len(v)!=len(keys) for v in metrics.values()):raise ValueError('Indexed result alignment changed')
         wanted=None if requested_keys is None else set(requested_keys)
         record['results']={key:{k:v[i] for k,v in metrics.items() if k!='result_reused'}

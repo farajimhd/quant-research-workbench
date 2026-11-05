@@ -110,7 +110,8 @@ class Evolution(Controller):
             else:self.lanes.generation(days,members,generation,token)
         result=[];refs={}
         for day in days:
-            p=out/f'generation-{generation:04d}'/day/'receipt.json';receipt=json.loads(p.read_bytes())
+            from .receipt_storage import read
+            p=out/f'generation-{generation:04d}'/day/'receipt.json';receipt=read(p)
             if receipt['day']!=day or receipt['population_sha256']!=token or not receipt['full_session'] or receipt['execution']!=self.job['execution'] or receipt['split']!=role or receipt['validation_opened']!=(role=='validation') or any(x is not None for x in receipt['case_owners']):raise ValueError('Financial replay receipt differs')
             result.append(receipt['metrics']);refs[day]=dict(receipt=str(p),receipt_sha256=sha(p))
         return result,refs

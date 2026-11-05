@@ -11,7 +11,8 @@ def read(path):
     for attempt in range(12):
         try:
             from .status_snapshot import expand
-            return expand(path,json.loads(Path(path).read_bytes()))
+            from .receipt_storage import read as read_receipt
+            return expand(path,read_receipt(path))
         except PermissionError:
             if attempt==11:raise
             time.sleep(.01*(attempt+1))

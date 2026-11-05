@@ -27,7 +27,8 @@ def restore(job,out,role,days,generation,token,population):
         if isinstance(expected,dict):path=Path(expected['path']);expected=expected['sha256']
         raw=path.read_bytes();receipt_hash=hashlib.sha256(raw).hexdigest()
         if receipt_hash!=expected:raise ValueError('Completed replay continuation receipt changed')
-        r=json.loads(raw)
+        from .receipt_storage import decode
+        r=decode(path,json.loads(raw))
         if r['day']!=day or r['split']!=role or r['population_sha256']!=token or not r['full_session'] or r['execution']!=job['execution'] or r['validation_opened']!=(role=='validation') or len(r['case_owners'])!=population or any(x is not None for x in r['case_owners']):raise ValueError('Completed replay continuation identity changed')
         if len(r['metrics']['net_pnl'])!=population:raise ValueError('Completed replay population differs')
         result.append(r['metrics']);refs[day]=dict(receipt=str(path),receipt_sha256=receipt_hash)

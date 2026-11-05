@@ -25,7 +25,8 @@ def initial_caches(checkpoint,state,output,job):
         for day,bound in rows.items():
             receipt=Path(bound['receipt'])
             if sha(receipt)!=bound['receipt_sha256']:raise ValueError('Initial replay receipt changed')
-            value=json.loads(receipt.read_bytes());identity=value['result_identity']
+            from .receipt_storage import read
+            value=read(receipt);identity=value['result_identity']
             if value['day']!=day or identity['split']!=split:raise ValueError('Initial replay scope changed')
             target=output/'phase-2/replays'/split/'result-cache'/(day+'.json')
             write_json(target,dict(format='v57-receipt-index-v1',identity=identity,

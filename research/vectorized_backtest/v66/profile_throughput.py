@@ -70,9 +70,10 @@ def main():
     rows=[]
     for day in days:
         receipt=root/'replays/generation-0001'/day/'receipt.json'
-        value=json.loads(receipt.read_bytes());metrics=comparable(value['metrics'])
+        from .receipt_storage import read
+        value=read(receipt);metrics=comparable(value['metrics'])
         if a.reference:
-            old=json.loads((a.reference/'replays/generation-0001'/day/'receipt.json').read_bytes())
+            old=read(a.reference/'replays/generation-0001'/day/'receipt.json')
             reference=comparable(old['metrics'])
             different=[k for k in set(metrics)|set(reference) if metrics.get(k)!=reference.get(k)]
             if different:raise ValueError(f'Exact parity failed {day}: {different}')
