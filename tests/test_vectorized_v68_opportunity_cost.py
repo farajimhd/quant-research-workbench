@@ -25,6 +25,11 @@ def test_pair_eligibility_excludes_impossible_quote_but_preserves_entry_window()
     assert target.filter(pl.col('pair')==1)['clock'].to_list()==[0,1]
 
 
+def test_terminal_liquidation_clock_is_not_an_entry_opportunity():
+    market=item();market.supervision[0][-1,0]=2;market.supervision[1][-1,0]=4
+    assert 4 not in entries(market)['pair'].to_list()
+
+
 def test_actual_aligned_fills_count_once_per_pair():
     metrics={'net_pnl':[0.,0.],'execution_orders':[[order(),order(),order(kind=2)],[]]}
     apply(metrics,item())

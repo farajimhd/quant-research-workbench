@@ -20,7 +20,8 @@ def entries(item):
     def array(name):
         value = host[name]
         return value.numpy() if hasattr(value, 'numpy') else value
-    clock, listing = np.nonzero((actions == 2) & (pairs >= 0) & array('membership'))
+    decision_window=np.arange(len(actions))[:,None] < len(actions)-1
+    clock, listing = np.nonzero((actions == 2) & (pairs >= 0) & array('membership') & decision_window)
     table = pl.DataFrame(dict(clock=clock, listing=listing, pair=pairs[clock, listing]))
     bid, ask = array('bid')[clock, listing], array('ask')[clock, listing]
     possible = (array('quote_valid')[clock, listing] & (bid > INITIAL_STOP_BID_MARGIN)
