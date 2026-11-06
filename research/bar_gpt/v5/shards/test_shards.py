@@ -1,0 +1,143 @@
+"""Focused format, restart, sampling and live SELECT-only SQL checks.
+
+Run with python -B -m unittest research.bar_gpt.v5.shards.test_shards.
+Set BARGPT_LIVE_TESTS=1 to exercise synthetic events inside ClickHouse SELECTs;
+these tests do not create tables or alter canonical data.
+"""
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
+import io
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import numpy as np
+from rich.console import Console
+
+from . import sql
+from .contract import SAMPLE_DTYPE, digest, pack
+from .progress import render
+from .source import arrow, client, preflight
+from .storage import BAR_DTYPE, Budget, publish, verify_receipt
+
+
+class FormatTests(unittest.TestCase):
+    def test_atomic_mmap_and_receipt_reuse(self):
+        runtime = Path("D:/TradingML/runtimes/bar_gpt/tests")
+        runtime.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=runtime) as temporary:
+            samples = pack(np.ones((3, 64, 21)), np.ones((3, 64, 21), dtype=np.uint8),
+                           np.tile(np.arange(1, 65), (3, 1)), 100000, 0)
+            budget = Budget(10**7)
+            metadata = dict(identity="test")
+            result = publish(temporary, samples, np.empty(0, dtype=BAR_DTYPE), metadata, budget, 16384)
+            self.assertEqual(result["samples"], 3)
+            self.assertEqual(len(result["files"]), 4)
+            first = np.load(Path(temporary)/"samples-0000.npy", mmap_mode="r", allow_pickle=False)
+            np.testing.assert_array_equal(first["values"][0], samples["values"][0])
+            first._mmap.close()  # Release the Windows file handle before cleanup.
+            used = budget.used
+            self.assertEqual(publish(temporary, samples, np.empty(0, dtype=BAR_DTYPE),
+                                     metadata, budget, 16384), result)
+            self.assertEqual(budget.used, used)
+            with self.assertRaises(ValueError):
+                verify_receipt(temporary, "different")
+
+    def test_budget_is_atomic(self):
+        budget = Budget(100)
+        with ThreadPoolExecutor(8) as pool:
+            admitted = list(pool.map(budget.reserve, [30]*20))
+        self.assertEqual(sum(admitted), 3)
+        self.assertEqual(budget.reserved, 90)
+
+    def test_pack_rejects_nonmonotonic_clocks(self):
+        with self.assertRaises(ValueError):
+            pack(np.zeros((1,64,21)), np.ones((1,64,21), dtype=np.uint8),
+                 np.zeros((1,64), dtype=np.int64), 100000, 0)
+
+    def test_dst_is_explicit(self):
+        self.assertEqual(sql.clock("2024-03-11",4)-sql.clock("2024-03-08",4),
+                         (3*24-1)*3600*1000000)
+
+    def test_panel_normal_and_compact_plain_output(self):
+        for width in (70, 110):
+            stream = io.StringIO()
+            console = Console(file=stream, width=width, force_terminal=False)
+            console.print(render(dict(state="running", updated=0, bytes=500, target_bytes=1000,
+                workers=[dict(id=i, ticker="LONG.TICKER",day="2025-10-10",phase="query",done=20,total=250)
+                         for i in range(1,7)], failed=[]), width))
+            text = stream.getvalue()
+            self.assertIn("stale", text)
+            self.assertNotIn("\x1b", text)
+            self.assertLessEqual(max(map(len, text.splitlines())), width)
+
+
+@unittest.skipUnless(os.environ.get("BARGPT_LIVE_TESTS") == "1", "Live SELECT tests opt in")
+class SqlTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.client = client()
+        cls.rules = preflight(cls.client)["rules"]
+
+    @classmethod
+    def tearDownClass(cls):
+        if getattr(cls.client, "_bar_arrow_connection", None):
+            cls.client._bar_arrow_connection.close()
+        cls.client.close()
+
+    def fixture(self, events, initial=2):
+        """Events: (offset_us, kind, ask/trade cents, bid cents, condition IDs)."""
+        opened = sql.clock("2019-01-03", 4)
+        columns = ("ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64,"
+                   "price_primary_int UInt32,price_secondary_int UInt32,size_primary Float32,"
+                   "size_secondary Float32,condition_token_1 UInt8,condition_token_2 UInt8,"
+                   "condition_token_3 UInt8,condition_token_4 UInt8,condition_token_5 UInt8")
+        data = []
+        for ordinal, (offset, kind, price, bid, tokens) in enumerate(events):
+            token_values = list(tokens) + [0]*(5-len(tokens))
+            data.append("("+",".join(map(str, ["'TEST'",ordinal,kind,opened+offset,
+                                               price,bid,10,20,*token_values]))+")")
+        raw = f"SELECT * FROM values('{columns}',"+",".join(data)+")"
+        with patch.object(sql, "source", return_value=raw), patch.object(sql,"seed_for",return_value=0):
+            statement = sql.day_query("TEST","2019-01-03",[],self.rules,initial,0,100)
+        statement = statement.replace("ORDER BY g.frame,g.bucket FORMAT ArrowStream",
+            "WHERE g.frame=1000000 AND g.bucket<3 ORDER BY g.frame,g.bucket FORMAT ArrowStream")
+        return arrow(self.client, statement, "bargpt-v5-test-"+digest(events)[:16])
+
+    def token(self, family, modifier):
+        return next(int(r["token_id"]) for r in self.rules
+                    if r["source_family"] == family and int(r["modifier_int"]) == modifier)
+
+    def test_boundary_transitions_and_repeated_messages(self):
+        normal = self.token("cta_security_status",100)
+        halt = self.token("cta_security_status",102)
+        resume = self.token("cta_security_status",116)
+        f = self.fixture([(-1,0,0,0,[normal]), (0,0,0,0,[halt]),
+            (100000,0,1200,1100,[]), (200000,0,0,0,[resume]),
+            (300000,0,0,0,[halt]), (400000,0,0,0,[halt]),
+            (500000,1,1150,0,[]), (1000000,0,0,0,[resume])])
+        values = f["values"].to_list(); valid = f["valid"].to_list()
+        self.assertEqual(values[0][-3:], [0,1,2])
+        self.assertEqual(values[1][-3:], [1,0,0])
+        self.assertEqual(valid[0][-3:], [1,1,1])
+        self.assertAlmostEqual(values[0][0],11.5)
+        self.assertEqual(values[0][6:10], [11]*4)
+        self.assertEqual(values[0][12:16], [12]*4)
+        self.assertEqual(values[0][5],1)
+        self.assertEqual(values[0][11],1)
+        self.assertEqual(values[0][17],1)
+
+    def test_unknown_is_not_normal_and_conflicts_invalidate(self):
+        halt = self.token("cta_security_status",102)
+        resume = self.token("cta_security_status",103)
+        f = self.fixture([(0,0,0,0,[halt]), (1500000,0,0,0,[halt,resume])])
+        self.assertEqual(f["valid"][0].to_list()[-3:], [0,1,0])
+        self.assertEqual(f["valid"][1].to_list()[-3:], [1,0,0])
+        self.assertEqual(f["values"][0].to_list()[-1], 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

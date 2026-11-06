@@ -1,0 +1,90 @@
+# Combined-bar pretraining shards
+
+This package is engineering only. It does not change or import the v5 model.
+It reads `market_sip_compact.events_YYYY` through frozen
+`events_ticker_day_index FINAL` bounds. It never opens historical flatfiles,
+creates ClickHouse tables, or launches training.
+
+## Fixed sample format
+
+Each `.npy` file contains an array of structured records, directly readable
+with `np.load(path, mmap_mode='r', allow_pickle=False)`. One record contains:
+
+* `values`: Float32 `[64,21]`: trade OHLC/volume/count, bid OHLC/closing size/count,
+  ask OHLC/closing size/count, halted-open, halted-close, halt-start count.
+* `valid`: UInt8 `[64,21]`, separate per-field evidence masks.
+* `end_us`: Int64 `[64]`, UTC completed-bar clocks.
+* `timeframe_us`: Int64 scalar: 100ms, 1s, 10s, 1m, 1h, or 1d.
+* `split`: UInt8: 0 training, 1 development from 2025-10-01.
+
+These are final **unscaled** model-input arrays, not fitted normalized features.
+Float32 rounding is intentional; exact source observations remain in canonical
+ClickHouse. Future scaling and artificial masking belong in vectorized/GPU batch
+operations. The loader need not aggregate, join, decode Parquet, or construct
+windows. Price adjustment, identity remapping, and a training loader are not
+implemented here. Symbols never join across ticker-year jobs.
+
+Use only files named in valid `receipt.json` publications, never arbitrary
+directory globs while a campaign is writing. Shards are capped at 32 MiB by
+default, uncompressed for mmap and asynchronous prefetch. Small ticker-day
+shards are allowed. Shuffle shard references and batches in the future loader;
+the corpus does not pretend adjacent samples are independent.
+
+## Extraction and sampling
+
+Ticker-years are deterministically shuffled within years, then interleaved
+across 2019–2025. All historical index symbols are candidates, independent of
+scanner membership, later returns, or labels. This is ticker-year sampling,
+not event-weighted random ordinal sampling or a claim of certified instrument
+identity. Each worker processes trading sessions chronologically so halt state
+and coarse context can be carried without rereading prior days repeatedly.
+
+ClickHouse aggregates one sparse 100ms base, rolls up sufficient statistics,
+and returns selected **dense** windows plus 16 hourly bars and one daily bar.
+Sessions are XNYS trading dates, 04:00–20:00 New York, including early-close
+dates under that explicitly extended-hours definition. Daily means the full
+extended session, not a regular-hours daily candle. DST changes UTC boundaries.
+
+Fine frames use a deterministic random offset in 0–63, then nonoverlapping
+64-bar blocks with 10% retention. All complete nonoverlapping coarse windows
+are retained because they are scarce. Frame counts are exposed; equal storage
+by timeframe is not forced through duplication. Coarse windows are packed by
+NumPy across sessions but never across a missing ticker-day, year, or split.
+Remainders shorter than 64 are not samples. Empty scheduled bars remain in
+windows; missing ticker-days are recorded with explicit reasons.
+
+Halt state follows source-observed halt/resume token mappings from the shared
+market-signals implementation. Open is before `[start,end)`, close is after
+events before `end`. Count is known 0→1 transitions, not repeated messages.
+Unknown initial state or conflicting status is masked; silence never means
+resumed. No news or LULD-state channels are added. State evidence is independent
+of price eligibility. Trade eligibility uses the shared condition dictionary;
+quote bars use structurally valid bid/ask pairs. These use finalized canonical
+event semantics, not a claim of fully reconstructed historical correction pairs.
+
+## Operation
+
+```powershell
+python -B -u research/bar_gpt/v5/run_shards.py --workers 6 --io-workers 2
+python -B -m research.bar_gpt.v5.shards.progress
+```
+
+Default output: `D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v1`.
+The limit is 1,000,000,000,000 bytes, with a 100 GB free-space reserve. A final
+batch can leave the dataset slightly below the cap. Exhaustion is reported
+honestly rather than duplicating samples to reach an artificial size.
+Source metadata and checkpoint overhead are additional small operating costs.
+
+Use a separate output for pilots, e.g. `--tickers AAAU --years 2019 --max-days 70
+--max-jobs 1 --target-bytes 2000000000`. Contract changes require a new output
+directory; resume checks the frozen dictionary, code, inventory, and receipts.
+An OS lock prevents concurrent controllers. Each query worker queues at most
+two writes; the shared disk pool bounds I/O concurrency. Queries have explicit
+memory, thread, timeout, and result-size limits. Network failures retry up to
+three attempts; other failures drain and publish a failed status.
+
+Create `STOP` in the output root to stop admission and drain current work.
+Remove it before resume with the same command. `progress.json` is refreshed
+every second during extraction; the observer shows stale snapshots explicitly.
+`complete.json` seals a ticker-year; `result.json` distinguishes scope completion,
+budget termination, interruption, inventory exhaustion, and failure.
