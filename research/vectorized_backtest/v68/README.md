@@ -59,8 +59,10 @@ Use 1,024-candidate batches, 12 concurrent session lanes, all 188 sessions in RA
 and the existing 128 GiB reserve. Startup prepares training then validation,
 with one CPU loader per lane and four global startup slots, to bound transient
 feature-build memory. Profiling admits all sessions before the benchmark, using
-the same production admission method. Upload arenas use exact aligned capacity,
-and completed splits release unused pinned-host cache allocations while keeping
+the same production admission method. GPU uploads temporarily register existing
+resident CPU storage pages, merge overlapping ranges, and wait for DMA completion
+before unregistering. This avoids a duplicate pinned upload arena. Completed
+splits release unused pinned-host cache allocations while keeping
 all prepared replay inputs resident. Pair tables are prepared once per resident
 session on CPU and are never candidate features or GPU inputs. Cost attribution
 runs in the compiled execution loop with deduplicated pair counters. Saved founder

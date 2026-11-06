@@ -16,6 +16,19 @@ from research.vectorized_backtest.v68.base_io_pipeline import TransferStaging as
 
 
 class TransferStaging(_TransferStaging):
+    def activate(self,ready,device):
+        """Upload existing resident bytes without allocating a duplicate arena."""
+        import torch
+        device=torch.device(device)
+        if device.type!='cuda':return super().activate(ready,device)
+        from .registered_upload import registered
+        from .capture_lifecycle import cuda_host_allocation
+        for _,data in ready:
+            groups=[data.host_tensors,data.resident_features.host]
+            with cuda_host_allocation,registered(groups,torch.cuda.cudart()):
+                try:activate_nonblocking(data,device)
+                finally:torch.cuda.synchronize(device)
+
     def stage(self,data,slot):
         """Keep the existing copy path, allocating only its exact aligned size."""
         import torch
