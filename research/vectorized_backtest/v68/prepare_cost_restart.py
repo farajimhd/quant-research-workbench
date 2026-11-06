@@ -41,6 +41,7 @@ def prepare(source,output,code):
         job.pop(key,None)
     job['machines']={k:dict(v,code=str(code)) for k,v in old['machines'].items()}
     job['host_loading']=dict(old['host_loading'],workers=1)
+    job['host_load_slots']=4
     # Preserve the archived upstream source manifest under its original hash.
     from .global_contract import source_job_path
     authority=source_job_path(old);target=output/'source-authority'/(old['source_job_sha256']+'.json')

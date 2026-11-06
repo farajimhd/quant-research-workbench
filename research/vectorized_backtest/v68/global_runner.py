@@ -17,7 +17,7 @@ class Global(Evolution):
         self.split_lanes={};self.worker.deferred_writes=[];self.published_receipts=[]
         import multiprocessing
         context=multiprocessing.get_context('spawn')
-        self.host_load_slots=context.BoundedSemaphore(32)
+        self.host_load_slots=context.BoundedSemaphore(job.get('host_load_slots',4))
         self.host_load_counts=context.Array('q',[0,0,0,0],lock=True)
 
     def close_lanes(self):
@@ -28,17 +28,23 @@ class Global(Evolution):
         self.split_lanes.clear()
         if errors:raise errors[0]
 
-    def prepare_resident_sessions(self):
+    def prepare_resident_sessions(self,split_days=None):
         """Admit every train/validation input before evolution; no labels in inference."""
         from .session_lanes import prime_sessions
         from .publication import write_json
         import psutil,time
+        if split_days is None:split_days={role:self.job[role+'_days'] for role in ('training','validation')}
+        else:
+            if set(split_days)!={'training','validation'}:raise ValueError('Both resident splits required')
+            for role,days in split_days.items():
+                if len(days)!=len(set(days)) or not set(days)<=set(self.job['assets'][role]):
+                    raise ValueError('Resident preparation outside certified split')
         self.stage='Prepare all-session RAM residency';self.publish()
         started=time.perf_counter();records=[]
         for role in ('training','validation'):
             lanes=self.get_lanes(role);pending=[]
             for lane,pool in enumerate(lanes.pools):
-                pending.append(pool.submit(prime_sessions,self.job[role+'_days'][lane::self.workers]))
+                pending.append(pool.submit(prime_sessions,split_days[role][lane::self.workers]))
             # Keep startup's transient feature-build memory bounded. Replay
             # concurrency is unchanged once both complete splits are resident.
             records.extend(future.result() for future in pending)
@@ -46,7 +52,7 @@ class Global(Evolution):
                     workers=records,available_gib=psutil.virtual_memory().available/2**30,
                     seconds=time.perf_counter()-started,labels_cpu_only=True)
         write_json(self.root/'all-session-residency.json',report)
-        expected=sum(len(self.job[r+'_days']) for r in ('training','validation'))
+        expected=sum(len(split_days[r]) for r in ('training','validation'))
         if report['sessions']!=expected or report['deferred']:
             raise MemoryError('All-session RAM residency is required before evolution')
         if report['available_gib']<self.job['machines']['workstation']['reserve_gib']:

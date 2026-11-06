@@ -4,6 +4,19 @@ import pytest
 from research.vectorized_backtest.v68.global_runner import Global
 
 
+@pytest.mark.parametrize('slots',[0,1,3,64,4.0,True])
+def test_invalid_global_startup_slot_count_fails_closed(slots):
+    from research.vectorized_backtest.v68.global_contract import check
+    with pytest.raises(ValueError,match='startup load slots'):check({'host_load_slots':slots})
+
+
+def test_explicit_admission_cannot_cross_certified_split(tmp_path):
+    model=object.__new__(Global);model.root=tmp_path
+    model.job={'assets':{'training':{'a':{}},'validation':{'b':{}}}}
+    with pytest.raises(ValueError,match='certified split'):
+        model.prepare_resident_sessions({'training':['b'],'validation':['b']})
+
+
 @pytest.mark.parametrize('deferred',[False,True])
 def test_admission_finishes_training_before_validation_and_rejects_deferral(tmp_path,monkeypatch,deferred):
     import psutil

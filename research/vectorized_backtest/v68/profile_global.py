@@ -90,6 +90,8 @@ def main():
     thread=__import__('threading').Thread(target=c.pump,daemon=True);thread.start()
     started=time.perf_counter()
     try:
+        if args.prefetch_all_sessions:
+            c.prepare_resident_sessions({role:job[role+'_days'] for role in ('training','validation')})
         panels,refs=c.evaluate('training',days,members,1)
         returned=time.perf_counter();reproduction_seconds=None
         cold_return_seconds=returned-started
@@ -131,18 +133,11 @@ def main():
         publication_wait_seconds=time.perf_counter()-publication_wait_started
         full_cache=None
         if args.prefetch_all_sessions:
-            from .session_lanes import prime_sessions
-            c.stage='Qualify all-session RAM residency';c.publish()
-            prepared=[]
-            for role in ('training','validation'):
-                futures=[]
-                for lane,pool in enumerate(c.get_lanes(role).pools):
-                    futures.append(pool.submit(prime_sessions,job[role+'_days'][lane::job['global_session_workers']]))
-                prepared.extend(future.result() for future in futures)
             import psutil
+            full_cache=json.loads((c.root/'all-session-residency.json').read_bytes())
             with c.host_load_counts.get_lock():counts=list(c.host_load_counts)
-            full_cache=dict(sessions=sum(r['ready'] for r in prepared),deferred=[d for r in prepared for d in r['deferred']],
-                available_gib=psutil.virtual_memory().available/2**30,load_counts=counts,workers=prepared)
+            full_cache.update(admission_available_gib=full_cache['available_gib'],
+                available_gib=psutil.virtual_memory().available/2**30,load_counts=counts)
             if full_cache['sessions']!=188 or full_cache['deferred']:raise ValueError('All-session RAM residency did not qualify')
             if full_cache['available_gib']<128:raise MemoryError('All-session residency breached RAM reserve')
         rows=[]

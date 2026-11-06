@@ -57,7 +57,9 @@ not an independent final holdout.
 
 Use 1,024-candidate batches, 12 concurrent session lanes, all 188 sessions in RAM,
 and the existing 128 GiB reserve. Startup prepares training then validation,
-with one CPU loader per lane, to bound transient feature-build memory. Pair tables are prepared once per resident
+with one CPU loader per lane and four global startup slots, to bound transient
+feature-build memory. Profiling admits all sessions before the benchmark, using
+the same production admission method. Pair tables are prepared once per resident
 session on CPU and are never candidate features or GPU inputs. Cost attribution
 runs in the existing CPU result handoff; no extra market replay is required.
 

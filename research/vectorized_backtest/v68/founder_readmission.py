@@ -25,6 +25,13 @@ def verify_replay_sources(code):
                     if isinstance(node,ast.ClassDef) and node.name=='Global':
                         node.body=[method for method in node.body if not
                             (isinstance(method,ast.FunctionDef) and method.name=='prepare_resident_sessions')]
+                        for method in node.body:
+                            if isinstance(method,ast.FunctionDef) and method.name=='__init__':
+                                for statement in method.body:
+                                    if (isinstance(statement,ast.Assign) and len(statement.targets)==1
+                                        and isinstance(statement.targets[0],ast.Attribute)
+                                        and statement.targets[0].attr=='host_load_slots'):
+                                        statement.value=ast.Constant(value='startup-load-semaphore')
                 return ast.dump(tree,include_attributes=False)
             a,b=without_admission(a),without_admission(b)
         if a!=b:raise ValueError('Founder replay/input implementation changed: '+original.name)
