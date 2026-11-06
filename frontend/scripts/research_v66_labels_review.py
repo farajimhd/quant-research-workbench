@@ -46,6 +46,19 @@ def main():
                         assert scope.locator('.research-stacked-detail[open]').count()==0
                         with page.expect_response(lambda r:'/v66/labels/chart?' in r.url and 'phase=1b' in r.url):
                             scope.get_by_label('V66 label phase',exact=True).select_option('1b')
+                        # Inspect the actual 1b evidence before timeline navigation
+                        # intentionally opens the preserved 1a comparison segment.
+                        if charts[-1][1]['label_version']=='v66-hindsight-execution-spread-sidecar-v3':
+                            data=charts[-1][1]
+                            assert all(r['quote_source']=='execution_liquidity' for r in data['labels'])
+                            assert all(r['action']=='UNLABELLED' for r in data['labels'] if not r['economic_label_valid'])
+                            scope.get_by_text('Session & episode values',exact=True).click()
+                            evidence=scope.locator('.research-candle-values')
+                            expect(evidence.get_by_text('Certified execution liquidity · standing book',exact=True)).to_be_visible()
+                            expect(evidence.get_by_text('Quote age · seconds',exact=True)).to_be_visible()
+                            expect(evidence.get_by_text('Economic label evidence',exact=True)).to_be_visible()
+                            evidence.screenshot(path=str(output/(name+'-evidence.png')))
+                            scope.get_by_text('Session & episode values',exact=True).click()
                         timeline=scope.get_by_role('region',name='Episode grouping chart')
                         box=timeline.locator('[role=button][data-selected=true]').first
                         box.wait_for(timeout=60000)
