@@ -129,7 +129,7 @@ def test_controller_handoff_retains_supervision_and_score():
              episode_profits=[[100.]],episode_entry_clocks=[[0]],episode_exit_clocks=[[4]],
              episode_listings=[[0]],open_episode_listings=[[]],open_episode_realized=[[]],
              label_reward=[50.],label_penalty=[5.],label_entry_errors=[1.],
-             label_ticker_reward=[[50.]],label_ticker_penalty=[[5.]])
+             label_ticker_reward=[[50.]],label_ticker_penalty=[[5.]],label_ticker_capture_bonus=[[0.]])
     a=aggregate([m]);handed=compact(m);b=aggregate([handed])
     assert a['score'][0]==45.
     for key in a:np.testing.assert_array_equal(a[key],b[key])

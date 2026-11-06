@@ -11,7 +11,7 @@ SCALARS=('blocked_requests','net_pnl','drawdown','closed_positions','winning_pos
          'label_entry_errors','label_exit_errors','label_late_notional_seconds',
          'label_opportunities','label_captured','label_missed','label_missed_penalty','label_capture_bonus')
 LEDGERS=('episode_profits','episode_entry_clocks','episode_exit_clocks','episode_listings','open_episode_listings','open_episode_realized',
-         'label_ticker_reward','label_ticker_penalty')
+         'label_ticker_reward','label_ticker_penalty','label_ticker_capture_bonus')
 
 
 def compact(metrics):
@@ -24,7 +24,7 @@ def compact(metrics):
         if len(metrics[key])!=n:raise ValueError('Controller ledger alignment changed')
         rows=[]
         for row in metrics[key]:
-            values=np.asarray(row,dtype=np.float64 if key in ('episode_profits','open_episode_realized','label_ticker_reward','label_ticker_penalty') else np.int64)
+            values=np.asarray(row,dtype=np.float64 if key in ('episode_profits','open_episode_realized','label_ticker_reward','label_ticker_penalty','label_ticker_capture_bonus') else np.int64)
             values.flags.writeable=False;rows.append(values)
         result[key]=rows
     if 'ticker_score' in metrics:result['ticker_score']=metrics['ticker_score']

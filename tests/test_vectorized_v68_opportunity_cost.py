@@ -66,6 +66,17 @@ def test_absolute_cost_and_relative_fitness_reconcile_across_sessions():
     assert not result['parent_eligible'].any()
 
 
+def test_handoff_preserves_per_ticker_capture_credit_in_behavior_keys():
+    from research.vectorized_backtest.v68.controller_metrics import SCALARS,LEDGERS,compact
+    from research.vectorized_backtest.v68.behavior_selection import session_keys
+    metrics={key:[0.,0.] for key in SCALARS}
+    metrics.update({key:[[],[]] for key in LEDGERS})
+    metrics['label_ticker_capture_bonus']=[[2.5,0.],[0.,2.5]]
+    handed=compact(metrics)
+    np.testing.assert_array_equal(handed['label_ticker_capture_bonus'][0],[2.5,0.])
+    assert session_keys(handed)[0]!=session_keys(handed)[1]
+
+
 def test_shared_journal_deduplicates_across_pages_and_rejects_corruption(tmp_path):
     from research.vectorized_backtest.v68.order_journal import Journal
     journal=Journal(tmp_path,2,{'test':'pair-deduplication'})
