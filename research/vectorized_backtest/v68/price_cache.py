@@ -12,7 +12,9 @@ class Runs:
 
     def decode(self):
         # Compare/store integer bits: preserve signed zero and every NaN payload.
-        return np.repeat(self.values,self.lengths).view(np.float64).reshape(self.shape[::-1]).T
+        # PricePlan stacks these arrays into a bank addressed as contiguous by
+        # its fused GPU kernel. A transposed view changes that bank's strides.
+        return np.repeat(self.values,self.lengths).view(np.float64).reshape(self.shape[::-1]).T.copy(order='C')
 
     @property
     def nbytes(self):

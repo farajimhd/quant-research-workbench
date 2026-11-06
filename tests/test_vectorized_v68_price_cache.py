@@ -15,6 +15,7 @@ def test_column_runs_preserve_every_float_bit_and_layout(view):
     assert encoded.nbytes<value.nbytes/10
     decoded=encoded.decode()
     assert decoded.shape==value.shape
+    assert decoded.flags.c_contiguous
     np.testing.assert_array_equal(decoded.view(np.uint64),value.view(np.uint64))
 
 
@@ -68,3 +69,22 @@ def test_founder_source_guard_permits_only_cache_representation(tmp_path):
     verify_replay_sources(tmp_path)
     path.write_text(text.replace('width=left+right+1','width=left+right+2'))
     with pytest.raises(ValueError,match='price_references.py'):verify_replay_sources(tmp_path)
+
+
+def test_price_plan_keeps_contiguous_gpu_bank_after_warm_cache_decode():
+    from research.vectorized_backtest.v68.price_references import PricePlan
+    from research.vectorized_backtest.v68.price_program import Prices,Expression
+    n=400;slots=np.tile(np.arange(5),(n,1))
+    low=np.repeat(np.arange(80,dtype=float),5)[:,None]+100+10*np.arange(5)[None,:]
+    data=SimpleNamespace(device='cpu',raw_extremes={'low':low,'high':low+2},
+        arrays={'clocks':np.arange(n)+1790000017},
+        host_tensors={k:SimpleNamespace(numpy=lambda v=v:v) for k,v in
+                      {'mark':low+1,'bid':low+.5,'ask':low+1.5}.items()})
+    prices=Prices(stop=Expression('rolling.low.5'),target=Expression('swing.high.1.1'))
+    members=[SimpleNamespace(policy=SimpleNamespace(price_program=prices.payload()))]
+    cold=PricePlan(members,data,slots)
+    assert isinstance(data.v67_price_reference_cache.records['ask'],Runs)
+    warm=PricePlan(members,data,slots)
+    # The fused GPU kernel uses flat contiguous-bank addresses.
+    assert cold.bank.is_contiguous() and warm.bank.is_contiguous()
+    np.testing.assert_array_equal(cold.bank.numpy().view(np.uint64),warm.bank.numpy().view(np.uint64))
