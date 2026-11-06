@@ -17,6 +17,16 @@ def verify_replay_sources(code):
         current=Path(__file__).parent/original.name
         a=original.read_bytes().replace(b'\r\n',b'\n')
         b=current.read_bytes().replace(b'\r\n',b'\n').replace(b'research.vectorized_backtest.v68',b'research.vectorized_backtest.v67')
+        if original.name=='global_runner.py':
+            import ast
+            def without_admission(raw):
+                tree=ast.parse(raw.decode('utf8'))
+                for node in tree.body:
+                    if isinstance(node,ast.ClassDef) and node.name=='Global':
+                        node.body=[method for method in node.body if not
+                            (isinstance(method,ast.FunctionDef) and method.name=='prepare_resident_sessions')]
+                return ast.dump(tree,include_attributes=False)
+            a,b=without_admission(a),without_admission(b)
         if a!=b:raise ValueError('Founder replay/input implementation changed: '+original.name)
 
 

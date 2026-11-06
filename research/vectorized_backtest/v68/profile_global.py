@@ -133,11 +133,12 @@ def main():
         if args.prefetch_all_sessions:
             from .session_lanes import prime_sessions
             c.stage='Qualify all-session RAM residency';c.publish()
-            futures=[]
+            prepared=[]
             for role in ('training','validation'):
+                futures=[]
                 for lane,pool in enumerate(c.get_lanes(role).pools):
                     futures.append(pool.submit(prime_sessions,job[role+'_days'][lane::job['global_session_workers']]))
-            prepared=[future.result() for future in futures]
+                prepared.extend(future.result() for future in futures)
             import psutil
             with c.host_load_counts.get_lock():counts=list(c.host_load_counts)
             full_cache=dict(sessions=sum(r['ready'] for r in prepared),deferred=[d for r in prepared for d in r['deferred']],

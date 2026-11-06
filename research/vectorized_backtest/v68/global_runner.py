@@ -34,12 +34,14 @@ class Global(Evolution):
         from .publication import write_json
         import psutil,time
         self.stage='Prepare all-session RAM residency';self.publish()
-        started=time.perf_counter();pending=[]
+        started=time.perf_counter();records=[]
         for role in ('training','validation'):
-            lanes=self.get_lanes(role)
+            lanes=self.get_lanes(role);pending=[]
             for lane,pool in enumerate(lanes.pools):
                 pending.append(pool.submit(prime_sessions,self.job[role+'_days'][lane::self.workers]))
-        records=[future.result() for future in pending]
+            # Keep startup's transient feature-build memory bounded. Replay
+            # concurrency is unchanged once both complete splits are resident.
+            records.extend(future.result() for future in pending)
         report=dict(sessions=sum(r['ready'] for r in records),deferred=[d for r in records for d in r['deferred']],
                     workers=records,available_gib=psutil.virtual_memory().available/2**30,
                     seconds=time.perf_counter()-started,labels_cpu_only=True)
