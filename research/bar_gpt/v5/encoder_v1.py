@@ -6,9 +6,11 @@ is the decoder's only market-information path; there are no bar/column skip path
 """
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 
 @dataclass(frozen=True)
@@ -23,17 +25,52 @@ class EncoderConfig:
     decoder_layers: int = 2
     decoder_heads: int = 4
     dropout: float = 0.1
+    attention: str = "sdpa"
+    attention_dropout: float | None = None  # None preserves the original attention dropout.
 
 
-def blocks(width: int, heads: int, feedforward: int, depth: int, dropout: float) -> nn.ModuleList:
+@lru_cache(maxsize=1)
+def compiled_flex():
+    """Compile lazily once; an unavailable compiler fails explicitly rather than falling back."""
+    from torch.nn.attention.flex_attention import flex_attention
+    return torch.compile(flex_attention, dynamic=False)
+
+
+class AttentionBlock(nn.TransformerEncoderLayer):
+    """Preserve PyTorch block parameters while exposing an optional compiled Flex backend."""
+
+    def __init__(self, width, heads, feedforward, dropout, backend, attention_dropout):
+        super().__init__(width, heads, feedforward, dropout, activation="gelu", batch_first=True, norm_first=True)
+        if backend not in {"sdpa", "flex"}:
+            raise ValueError("Attention backend must be sdpa or flex.")
+        self.backend = backend
+        self.self_attn.dropout = dropout if attention_dropout is None else attention_dropout
+        if backend == "flex" and self.self_attn.dropout != 0:
+            raise ValueError("FlexAttention requires explicit attention_dropout=0; residual dropout is unchanged.")
+
+    def forward(self, hidden: Tensor) -> Tensor:
+        """Full bidirectional attention over packed [B,L,D]; no dense masking placeholders."""
+        if self.backend == "sdpa":
+            return super().forward(hidden)  # PyTorch uses SDPA with need_weights=False.
+        normalized = self.norm1(hidden)
+        batch, length, width = normalized.shape
+        heads = self.self_attn.num_heads
+        qkv = F.linear(normalized, self.self_attn.in_proj_weight, self.self_attn.in_proj_bias)
+        query, key, value = qkv.reshape(batch, length, 3, heads, width//heads).permute(2, 0, 3, 1, 4).unbind(0)
+        attended = compiled_flex()(query, key, value)  # [B,H,L,D/H], fused forward/backward kernels.
+        attended = attended.transpose(1, 2).reshape(batch, length, width)
+        hidden = hidden + self.dropout1(self.self_attn.out_proj(attended))
+        update = self.linear2(self.dropout(self.activation(self.linear1(self.norm2(hidden)))))
+        return hidden + self.dropout2(update)
+
+
+def blocks(width: int, heads: int, feedforward: int, depth: int, dropout: float,
+           backend="sdpa", attention_dropout=None) -> nn.ModuleList:
     """Build independent pre-LayerNorm bidirectional blocks, each [B,L,D] -> [B,L,D]."""
     if min(width, heads, feedforward, depth) < 1 or width % heads:
         raise ValueError("Positive dimensions and width divisible by heads are required.")
     return nn.ModuleList([
-        nn.TransformerEncoderLayer(
-            width, heads, feedforward, dropout, activation="gelu",
-            batch_first=True, norm_first=True,
-        ) for _ in range(depth)
+        AttentionBlock(width, heads, feedforward, dropout, backend, attention_dropout) for _ in range(depth)
     ])  # Construct separately so layers do not start as identical deep copies.
 
 
@@ -55,7 +92,8 @@ class ColumnEncoderV1(nn.Module):
         self.time = nn.Linear(64 * 9 * 2, config.width)  # Values + masks -> one context token.
         self.summary = nn.Parameter(torch.zeros(1, 1, config.width))  # Shared learned readout query.
         nn.init.normal_(self.summary, std=0.02)
-        self.blocks = blocks(config.width, config.heads, config.feedforward, config.layers, config.dropout)
+        self.blocks = blocks(config.width, config.heads, config.feedforward, config.layers, config.dropout,
+                             config.attention, config.attention_dropout)
         self.norm = nn.LayerNorm(config.width)  # Normalize only the exported representation.
 
     def forward(self, visible: Tensor, valid: Tensor, feature_ids: Tensor,
@@ -91,7 +129,8 @@ class ColumnDecoderV1(nn.Module):
         self.summary = nn.Linear(config.width, width)  # Bottleneck [B,D] -> [B,d].
         self.time = nn.Linear(64 * 9 * 2, width)  # Known target timing, not market evidence.
         self.identity = nn.Embedding(21, width)  # Requested column queries [B,M] -> [B,M,d].
-        self.blocks = blocks(width, config.decoder_heads, width * 4, config.decoder_layers, config.dropout)
+        self.blocks = blocks(width, config.decoder_heads, width * 4, config.decoder_layers, config.dropout,
+                             config.attention, config.attention_dropout)
         self.output = nn.Sequential(nn.LayerNorm(width), nn.Linear(width, 64))
 
     def forward(self, embedding: Tensor, hidden_ids: Tensor, time: Tensor, time_valid: Tensor) -> Tensor:

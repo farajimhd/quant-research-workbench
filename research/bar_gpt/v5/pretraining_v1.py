@@ -99,6 +99,10 @@ class PreparedBatch:
     time: Tensor
     time_valid: Tensor
 
+    def pin_memory(self) -> "PreparedBatch":
+        """Let DataLoader's pinning thread prepare asynchronous GPU transfers."""
+        return PreparedBatch(**{field.name: getattr(self, field.name).pin_memory() for field in fields(self)})
+
     def to(self, device: torch.device | str, *, pin_memory: bool = False) -> "PreparedBatch":
         """Transfer only packed tensors; optionally pin CPU buffers for CUDA transfer."""
         moved = {}
@@ -164,6 +168,8 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
     columns, evidence = scaled.transpose(1, 2), valid.transpose(1, 2)  # [B,21,64].
     visible_index = feature_ids[..., None].expand(-1, -1, 64)
     hidden_index = hidden_ids[..., None].expand(-1, -1, 64)
+    if masked and not evidence.gather(1, hidden_index).any():
+        raise ValueError("Batch has no observed hidden reconstruction targets.")
     return PreparedBatch(
         columns.gather(1, visible_index), evidence.gather(1, visible_index), feature_ids, hidden_ids,
         columns.gather(1, hidden_index), evidence.gather(1, hidden_index),

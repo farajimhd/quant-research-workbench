@@ -33,7 +33,7 @@ def reconstruction_loss(predictions: Tensor, batch: PreparedBatch) -> tuple[Tens
     SmoothL1(beta=1). Average valid observations per feature, then equally average
     features present in the batch. Invalid source evidence never becomes a target.
     """
-    if predictions.shape != batch.targets.shape or not batch.target_valid.any():
+    if predictions.shape != batch.targets.shape or batch.targets.numel() == 0:
         raise ValueError("Reconstruction requires matching predictions and observed hidden targets.")
     binary = ((batch.hidden_ids == 18) | (batch.hidden_ids == 19))[..., None]
     continuous = F.smooth_l1_loss(predictions, batch.targets, reduction="none")
@@ -48,7 +48,8 @@ def reconstruction_loss(predictions: Tensor, batch: PreparedBatch) -> tuple[Tens
         0, batch.hidden_ids.flatten(), batch.target_valid.sum(-1).flatten(),
     )
     present = counts > 0
-    loss = (sums / counts.clamp_min(1))[present].mean()
+    # Fixed-size arithmetic avoids a CUDA synchronization for boolean indexing.
+    loss = ((sums / counts.clamp_min(1)) * present).sum() / present.sum().clamp_min(1)
     return loss, sums.detach(), counts.detach()
 
 
