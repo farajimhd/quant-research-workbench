@@ -6,20 +6,21 @@ import polars as pl
 from research.rl_trading.v6.saved_label_audit import read_json, mapped, runtime, verified_local
 from research.rl_trading.v6 import price_action_opportunities as algorithm
 from .contract import VERSION, SCOPE
+from research.market_labels.v2.contract import VERSION as SPREAD_VERSION
 
 
 def published():
     registry=Path(os.environ.get('V66_LABEL_REGISTRY',str(runtime()/'v66-active-labels.json')))
     active=read_json(registry)
-    if active['version']!=VERSION:raise ValueError('Wrong V66 label registry')
+    if active['version'] not in (VERSION,SPREAD_VERSION):raise ValueError('Wrong V66 label registry')
     path=mapped(active['dataset']);dataset=read_json(path,active['sha256'])
-    if dataset['version']!=VERSION or not dataset['full_inventory'] or dataset['status']!='verified_review_only':raise ValueError('Incomplete V66 review dataset')
+    if dataset['version']!=active['version'] or not dataset['full_inventory'] or dataset['status']!='verified_review_only':raise ValueError('Incomplete V66 review dataset')
     return active,dataset,path.parent
 
 
 def catalog():
     active,dataset,_=published()
-    return dict(dataset_sha256=active['sha256'],supports_combined=True,scope=dataset['scope'],days=[dict(**d,invalid_price_rows=d['excluded_rows']) for d in dataset['days']])
+    return dict(dataset_sha256=active['sha256'],label_version=dataset['version'],supports_combined=True,scope=dataset['scope'],days=[dict(**d,invalid_price_rows=d['excluded_rows']) for d in dataset['days']])
 
 
 def session(day):
@@ -57,12 +58,15 @@ def product(day,identity,phase='1a'):
     frames=dict(labels=labels,**{name:read_frame(root,proof,name+'.parquet',identity) for name in ('episodes','pairs','trades')})
     decisions=read_frame(root,proof,'decisions.parquet',identity)
     pairs=frames['pairs'].join(decisions.select('listing_id','pair_id','selected','selection_reason','selection_score','allocation_ratio','group_id'),on=['listing_id','pair_id'],how='left',validate='1:1')
-    meta=dict(day=day,ticker=identity,listing_id=identity,session='V66 premarket 04:00–09:30 ET',version=VERSION,
+    if proof['version']==SPREAD_VERSION:
+        pairs=pairs.join(decisions.select('listing_id','pair_id',pl.col('time_us').alias('selected_entry_us'),pl.col('entry_target_us').alias('selected_target_us'),
+            pl.col('ask').alias('selected_entry_ask'),pl.col('target_bid').alias('selected_target_bid'),'score_threshold'),on=['listing_id','pair_id'],how='left',validate='1:1')
+    meta=dict(day=day,ticker=identity,listing_id=identity,session='V66 premarket 04:00–09:30 ET',version=proof['version'],quote_audit=proof.get('quote_audit'),
         config=proof['config'],selection=proof['selection'],begin_us=proof['begin_us'],finish_us=proof['finish_us'],
         dataset_sha256=active['sha256'],observed_price_candles=labels.height,consumed_activity_rows=item['source_rows'],omitted_invalid_price_rows=item['excluded_rows'],
         absent_second_slots=19800-item['source_rows'],approximate_volume=None,trades=frames['trades'].height,total_price_pnl=float(frames['trades']['price_pnl'].sum()),
         both_opportunities=int(labels['both_opportunities'].sum()),actions=labels.group_by('action').len().sort('action').to_dicts(),
-        pairs=pairs.to_dicts(),price_source=str(root/item['file']),scope=SCOPE,
+        pairs=pairs.to_dicts(),price_source=str(root/item['file']),scope=proof.get('scope',SCOPE),
         semantics='Saved '+phase+' targets; V66 session-reset MACD; premarket-only hindsight. Reference price P&L is 1a, not fills or a 1b portfolio.',
         exclusions=read_frame(root,proof,'excluded.parquet',identity).group_by('reason').len().to_dicts())
     return meta,frames
@@ -91,6 +95,16 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
     if phase=='1b':
         shown=shown.with_columns(pl.when(pl.col('episode_selected')==False).then(pl.lit('WAIT')).otherwise(pl.col('action')).alias('action'),
             pl.when(pl.col('episode_selected')==False).then(pl.lit(1.)).otherwise(pl.col('label_value')).alias('label_value'))
+        if proof['version']==SPREAD_VERSION:
+            selected=pl.col('episode_selected').fill_null(False)
+            entry=selected & pl.col('spread_entry_eligible')
+            exit_=selected & pl.col('spread_exit_eligible')
+            if view=='combined':action=window['action']
+            elif view=='reference':action=pl.col('reference_action')
+            elif view=='flat':action=pl.when(entry).then(pl.lit('ENTRY')).otherwise(pl.lit('WAIT'))
+            else:action=pl.when(exit_).then(pl.lit('EXIT')).when(selected & pl.col('exit_gain').is_not_null()).then(pl.lit('HOLD')).otherwise(pl.lit('WAIT'))
+            shown=shown.with_columns(action.alias('action')).with_columns(
+                pl.when(selected & ~pl.col('spread_quote_valid').fill_null(False)).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'))
     if view=='held':
         shown=shown.with_columns(pl.when(pl.col('exit_gain').is_null() | ((pl.col('episode_selected')!=True).fill_null(True) if phase=='1b' else pl.lit(False))).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'))
     candles=[dict(time=r['time_us']//1_000_000-1,endTime=r['time_us']//1_000_000,isClosed=True,**{k:r[k] for k in ('open','high','low','close')}) for r in window.iter_rows(named=True)]
@@ -99,7 +113,7 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
         values=window['macd_line']-window['macd_signal'] if column=='macd_histogram' else window[column]
         oscillator.append(dict(column=column,label=name,paneKey='macd',style='histogram' if column=='macd_histogram' else 'line',color=color,lineWidth=1,data=[dict(time=int(t)//1_000_000-1,value=float(v)) for t,v in zip(window['time_us'],values)]))
     regions=[dict(start=r['start_us']//1_000_000-1,end=r['end_us']//1_000_000-1,color='var(--success)' if r['direction']==1 else 'var(--danger)',label='') for r in frames['episodes'].filter((pl.col('start_us')<end)&(pl.col('end_us')>start)).iter_rows(named=True)]
-    return dict(ticker=listing_id,candles=candles,labels=shown.to_dicts(),oscillator_series=oscillator,regions=regions,start_us=start,end_us=end,
+    return dict(ticker=listing_id,label_version=proof['version'],candles=candles,labels=shown.to_dicts(),oscillator_series=oscillator,regions=regions,start_us=start,end_us=end,
         context_candles=0,session_candles=window.height,offset=offset,previous_offset=max(0,offset-120),next_offset=offset+window.height,
         previous_available=offset>0,next_available=offset+window.height<n,dataset_sha256=proof['dataset_sha256'],quality_threshold=.9)
 

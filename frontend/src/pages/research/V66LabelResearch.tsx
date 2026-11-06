@@ -6,7 +6,7 @@ import { PriceActionResearch } from "./PriceActionResearch";
 import { LoadingState } from "../../app/components/LoadingState";
 import { researchClock as clock } from "./researchChart";
 
-type Catalog = { dataset_sha256: string; days: { day: string; role: string; valid_rows: number; excluded_rows: number; selected_pairs: number }[] };
+type Catalog = { dataset_sha256: string; label_version?: string; days: { day: string; role: string; valid_rows: number; excluded_rows: number; selected_pairs: number }[] };
 type Listing = { listing_id: string; ticker: string; valid_rows: number; excluded_rows: number };
 type Decision = { listing_id: string; pair_id: number; selected: boolean; selection_reason: string; time_us: number | null; entry_target_us: number | null; selection_score: number | null; allocation_ratio: number; group_id: number | null; active_count: number | null };
 type Market = { dataset_sha256: string; total: number; rows: Decision[]; groups: { group_id: number; start_us: number; end_us: number; members: number }[] };
@@ -59,7 +59,7 @@ export function V66LabelResearch() {
   const index = choices.findIndex(x => x.ticker === ticker);
   return <div className="research-path-shell research-v66-workspace">
     <div className="research-controls research-saved-selection">
-      <strong>V66 labels</strong>
+      <strong>V66 labels{catalog?.label_version?.includes('spread') ? " · spread-aware 1b" : ""}</strong>
       <label>Session<select aria-label="V66 label session" value={day} onChange={e => { setDay(e.target.value); setOffset(0); setFocus(null); setGroup(""); }}>{catalog?.days.map(d => <option key={d.day} value={d.day}>{d.day} · {d.role}</option>)}</select></label>
       <label>Phase<select aria-label="V66 label phase" value={phase} onChange={e => { setPhase(e.target.value); setFocus(null); }}><option value="1a">1a · Opportunities</option><option value="1b">1b · Selection & sizing</option></select></label>
       <label>Find ticker<input aria-label="Find V66 ticker" value={search} onChange={e => { setSearch(e.target.value); setOffset(0); }}/></label>
