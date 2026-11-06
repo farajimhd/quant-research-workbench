@@ -6,7 +6,7 @@ import { useResearchState } from "./researchState";
 import "./TeacherResearch.css";
 
 export function ResearchWorkspacePage() {
-  const [savedPath, setPath] = useResearchState("path", "saved-labels");
+  const [savedPath, setPath] = useResearchState("path", new URLSearchParams(window.location.search).get("research") === "v66-labels" ? "v66-labels" : "saved-labels");
   const path = savedPath === "v66-labels" ? "v66-labels" : savedPath === "market-preview" ? "market-preview" : "saved-labels";
   const [v66Visited, setV66Visited] = useState(path === "v66-labels");
   const [savedVisited, setSavedVisited] = useState(path === "saved-labels");

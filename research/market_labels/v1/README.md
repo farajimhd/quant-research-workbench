@@ -4,6 +4,10 @@ This offline sidecar adapts the existing RL V6 `price_action_opportunities`
 (1a) and `market_teacher_preview` / `market_teacher_dataset` (1b) authorities.
 No optimizer, existing RL publication, or sealed market shard is modified.
 The new Research path is **Research → V66 labels · 1a / 1b**.
+The direct app route is `/?research=v66-labels#research-workspace`. Choose the
+phase, session and ticker; in 1b, expand the selection table and click a pair
+to jump to its saved entry candles. The existing flat/held/reference views,
+liquidity audit, quality/gain inspector and fullscreen chart remain available.
 
 The source is the V66 `2026-top5-v1` manifest pair: 150 training and 38
 validation sessions. All stored ticker-union candles are considered, not only

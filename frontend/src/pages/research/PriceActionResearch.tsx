@@ -31,16 +31,16 @@ const number = (value: number | null | undefined) => value == null ? "—" : val
 const count = (value: number | null | undefined) => value == null ? "—" : value.toLocaleString("en-US");
 const titles = { architecture: "Price-action algorithm", analytics: "Session & episode values", chart: "Price-action candles & labels" };
 
-export function PriceActionResearch({ saved }: { saved?: { day: string; listing_id: string; dataset_sha256: string; supports_combined: boolean; v66?: boolean; phase?: string } }) {
-  const prefix = saved ? `saved-labels:${saved.v66 ? saved.phase + ":" : ""}${saved.dataset_sha256}:${saved.day}:${saved.listing_id}` : "price-action";
+export function PriceActionResearch({ saved }: { saved?: { day: string; listing_id: string; dataset_sha256: string; supports_combined: boolean; v66?: boolean; phase?: string; pair_id?: number; start_us?: number } }) {
+  const prefix = saved ? `saved-labels:${saved.v66 ? saved.phase + ":" + (saved.pair_id ?? "") + ":" : ""}${saved.dataset_sha256}:${saved.day}:${saved.listing_id}` : "price-action";
   const endpoint = saved?.v66 ? "/api/research/models/v66/labels" : saved ? "/api/research/models/v6/saved-labels" : "/api/research/models/v6/price-action";
   const [experiment, setExperiment] = useState<Experiment | null>(null);
   const [chart, setChart] = useState<Window | null>(null), [error, setError] = useState("");
   const [attempt, setAttempt] = useState(0), [busy, setBusy] = useState(true);
-  const [start, setStart] = useResearchState<number | null>(`${prefix}:actual-candles:start`, null);
+  const [start, setStart] = useResearchState<number | null>(`${prefix}:actual-candles:start`, saved?.start_us ?? null);
   const [offset, setOffset] = useResearchState(`${prefix}:actual-candles:offset`, 0);
   const [showLevels, setShowLevels] = useResearchState(`${prefix}:model-levels`, true);
-  const [pairId, setPairId] = useResearchState(`${prefix}:pair`, 1);
+  const [pairId, setPairId] = useResearchState(`${prefix}:pair`, saved?.pair_id ?? 1);
   const [selectedClock, setSelectedClock] = useResearchState<number | null>(`${prefix}:clock`, null);
   const [threshold, setThreshold] = useResearchState(`${prefix}:v2:threshold`, .9);
   const [view, setView] = useResearchState(`${prefix}:v3:view`, saved && !saved.supports_combined ? "flat" : "combined");

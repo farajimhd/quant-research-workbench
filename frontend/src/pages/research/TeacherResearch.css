@@ -79,3 +79,8 @@
 
 .research-grouping-surface { cursor: grab; touch-action: pan-y; user-select: none; }
 .research-v66-decisions { max-height: 35vh; overflow: auto; }
+.research-v66-market { margin: 0 16px .75rem; }
+.research-v66-decisions table { width: 100%; border-collapse: collapse; font-size: .75rem; font-variant-numeric: tabular-nums; }
+.research-v66-decisions :is(th, td) { padding: .5rem .65rem; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
+.research-v66-decisions :is(th, td):first-child, .research-v66-decisions :is(th, td):nth-child(2) { text-align: left; }
+.research-v66-decisions thead { color: var(--muted-foreground); }
