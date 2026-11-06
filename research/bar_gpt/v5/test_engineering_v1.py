@@ -158,6 +158,45 @@ def test_trace_entrypoint(inventory, tmp_path):
     assert "CUDA" in (output / "small-b16-w0-bf16-operators.txt").read_text()
 
 
+def test_epoch_cosine_endpoints_and_resume():
+    """Warmup and final-epoch LR must survive serialization exactly."""
+    from research.bar_gpt.v5.campaign_v1 import EpochCosine
+    schedule = EpochCosine(1e-3, 5e-5, 50, 1000)
+    assert 5e-5 < schedule.value() < 1e-3
+    schedule.updates = 999
+    assert schedule.value() == pytest.approx(1e-3)
+    schedule.updates, schedule.epoch = 1000, 49
+    assert schedule.value() == pytest.approx(5e-5)
+    restored = EpochCosine(1, 1, 1, 1)
+    restored.load_state_dict(schedule.state_dict())
+    assert restored.value() == schedule.value()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_full_campaign_coverage_and_resume(inventory, tmp_path):
+    """Two tiny full epochs exercise validation, best/last files, LR state and exact epoch resume."""
+    from research.bar_gpt.v5.run_v1 import main
+    common = ["--mode", "train", "--split-manifest", str(tmp_path / "split.json"),
+              "--model", "small", "--batch-size", "16", "--workers", "0",
+              "--train-steps", "0", "--validation-steps", "0", "--epochs", "2",
+              "--scheduler", "cosine", "--learning-rate", ".001", "--warmup-updates", "2",
+              "--metrics-every", "4", "--loss-every", "2", "--wandb-mode", "disabled",
+              "--source-revision", "synthetic-test"]
+    assert main(common + ["--output", str(tmp_path / "campaign")]) == 0
+    original = torch.load(tmp_path / "campaign/checkpoint_last.pt", weights_only=False)
+    assert original["epoch"] == 2 and original["step"] == 16
+    assert original["scheduler"]["updates"] == 16
+    assert original["history"][0]["training"]["samples"] == 128
+    assert original["history"][0]["validation"]["samples"] == 32
+    assert (tmp_path / "campaign/checkpoint_best.pt").is_file()
+    assert main(common + ["--output", str(tmp_path / "campaign-resume"), "--resume",
+                          str(tmp_path / "campaign/checkpoint_epoch_001.pt")]) == 0
+    resumed = torch.load(tmp_path / "campaign-resume/checkpoint_last.pt", weights_only=False)
+    assert resumed["scheduler"] == original["scheduler"]
+    for name, tensor in original["model"].items():
+        torch.testing.assert_close(tensor, resumed["model"][name], rtol=0, atol=0)
+
+
 def test_flex_block_layout_matches_sdpa(monkeypatch):
     """Verify QKV/layout/gradient equivalence independently of optional compiler installation."""
     from research.bar_gpt.v5 import encoder_v1

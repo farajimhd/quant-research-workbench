@@ -28,6 +28,9 @@ def render(state: dict, width: int = 100):
     done, total = state.get("done", 0), state.get("total", 0)
     stage = Text(f"{state.get('stage', 'waiting for controller')} | {done:,}/{total:,} | "
                  f"trial {state.get('trial', 0)}/{state.get('trials', 0)}")
+    if "epochs" in state:
+        stage = Text(f"{state.get('stage')} | epoch {state.get('epoch', 0)}/{state['epochs']} | "
+                     f"batch {done:,}/{total:,} (candidate upper bound)")
     metrics = state.get("metrics", {})
     summary = Text(f"{metrics.get('samples_per_second', 0):,.0f} samples/s | "
                    f"GPU {state.get('gpu_util', 0):.0f}% | allocated {metrics.get('peak_gib', 0):.2f} GiB | "
@@ -51,6 +54,11 @@ def render(state: dict, width: int = 100):
     worker_count = len(state.get("workers", []))
     detail = Text(f"Workers: {worker_count}; showing first {min(worker_count, 8 if width >= 90 else 4)}. "
                   "All worker counters are saved in the run directory.")
+    if "epochs" in state:
+        rate = state.get("learning_rate")
+        best = state.get("best_validation")
+        detail.append(f"\nLR: {rate:.6g}" if rate is not None else "\nLR: pending")
+        detail.append(f" | Best validation: {best:.6f}" if best is not None else " | Best validation: pending")
     return Group(title, configuration, stage, ProgressBar(total=max(1, total), completed=done),
                  summary, workers, detail, comparisons, error)
 

@@ -55,6 +55,11 @@ def arguments(argv=None):
     parser.add_argument("--model", choices=tuple(CONFIGURATIONS), default="base")
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--scheduler", choices=("constant", "cosine"), default="constant")
+    parser.add_argument("--min-learning-rate", type=float, default=5e-5)
+    parser.add_argument("--warmup-updates", type=int, default=1000)
+    parser.add_argument("--metrics-every", type=int, default=1000)
+    parser.add_argument("--loss-every", type=int, default=10)
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--train-steps", type=int, default=1000, help="Bounded training steps per epoch; 0 explicitly requests a full epoch.")
     parser.add_argument("--validation-steps", type=int, default=8)
@@ -67,7 +72,7 @@ def arguments(argv=None):
     parser.add_argument("--panel", action="store_true")
     parser.add_argument("--refine", action="store_true", help="Also compare worker counts and FP32 for the fastest configuration.")
     args = parser.parse_args(argv)
-    if min(args.steps, args.seconds, args.batch_size, args.epochs, args.validation_steps, args.checkpoint_every) < 1 or min(args.warmup, args.train_steps) < 0:
+    if min(args.steps, args.seconds, args.batch_size, args.epochs, args.metrics_every, args.loss_every) < 1 or min(args.warmup, args.train_steps, args.validation_steps, args.checkpoint_every, args.warmup_updates) < 0:
         parser.error("Step, duration, epoch, and batch limits must be positive.")
     if not 0 <= args.workers <= 32 or not 1 <= args.prefetch <= 4:
         parser.error("workers must be 0..32; prefetch must be 1..4.")
@@ -77,6 +82,10 @@ def arguments(argv=None):
         parser.error("FlexAttention requires explicit --attention-dropout 0 for an honest SDPA comparison.")
     if args.attention_dropout is not None and not 0 <= args.attention_dropout < 1:
         parser.error("attention-dropout must be in [0,1).")
+    if args.scheduler == "cosine" and not 0 < args.min_learning_rate <= args.learning_rate:
+        parser.error("Cosine rates must satisfy 0 < minimum <= initial learning rate.")
+    if args.scheduler == "constant" and (args.validation_steps == 0 or args.checkpoint_every == 0):
+        parser.error("Full validation and epoch-only checkpoints require the cosine campaign runner.")
     return args
 
 
@@ -233,6 +242,9 @@ def profile(args, manifest, stats, reporter):
 
 def train(args, manifest, stats, reporter):
     """Explicit bounded epochs with atomic checkpoints and deterministic data/masking resume."""
+    if args.scheduler == "cosine":
+        from .campaign_v1 import train_campaign
+        return train_campaign(args, manifest, stats, reporter)
     torch.manual_seed(args.seed)
     model = MaskedAutoencoderV1(replace(CONFIGURATIONS[args.model], attention=args.attention,
                                        attention_dropout=args.attention_dropout)).cuda()

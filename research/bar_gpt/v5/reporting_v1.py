@@ -23,6 +23,9 @@ class Reporter:
                               run_name=root.name, config=config, run_dir=root, mode=mode,
                               timeout_seconds=30, capture_console=False)
         self.state["wandb_url"] = getattr(self.run, "url", None)
+        if self.run:
+            self.run.define_metric("global_step")
+            self.run.define_metric("*", step_metric="global_step")
         self.thread = threading.Thread(target=self._observe, name="mae-status", daemon=True)
         self.thread.start()
 
@@ -64,7 +67,8 @@ class Reporter:
         with (self.root / "metrics.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(dict(step=step, **metrics), allow_nan=False) + "\n")
         if self.run:
-            self.run.log(metrics, step=step)
+            # A separate W&B row index permits delayed loss uploads and validation at a fixed train step.
+            self.run.log(dict(metrics, global_step=step))
 
     def finish(self, state="complete", error=None):
         self.stop.set()
