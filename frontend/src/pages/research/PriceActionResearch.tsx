@@ -76,8 +76,8 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
       const spread = saved.phase !== "1a" && p.selected_entry_us != null;
       const entryTime = focused ? saved.start_us! / 1e6 - 1 : ((spread ? p.selected_entry_us : p.reference_entry_us) ?? 0) / 1e6 - 1;
       const exitTime = focused ? saved.end_us! / 1e6 - 1 : ((spread ? p.selected_target_us : p.reference_exit_us) ?? 0) / 1e6 - 1;
-      const entryPrice = focused ? chart?.candles.find(c => c.time === entryTime)?.close ?? null : spread ? p.selected_entry_ask ?? null : p.reference_entry_price;
-      const exitPrice = focused ? chart?.candles.find(c => c.time === exitTime)?.close ?? null : spread ? p.selected_target_bid ?? null : p.reference_exit_price;
+      const entryPrice = spread ? p.selected_entry_ask ?? null : focused ? chart?.candles.find(c => c.time === entryTime)?.close ?? null : p.reference_entry_price;
+      const exitPrice = spread ? p.selected_target_bid ?? null : focused ? chart?.candles.find(c => c.time === exitTime)?.close ?? null : p.reference_exit_price;
       return entryTime >= 0 && exitTime > entryTime && entryPrice != null && exitPrice != null
         ? [{ id: String(p.pair_id), entryTime, exitTime, entryPrice, exitPrice }] : [];
     }) : [],
@@ -86,7 +86,7 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
       position: r.action === "EXIT" ? "aboveBar" : "belowBar", size: .5,
       shape: r.action === "ENTRY" ? "arrowUp" : r.action === "EXIT" ? "arrowDown" : "circle",
       color: r.action === "ENTRY" ? "var(--success)" : r.action === "EXIT" ? "var(--danger)" : r.action === "HOLD" ? "var(--info)" : "var(--muted-foreground)",
-      text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : `${r.label_value?.toFixed(3) ?? ""}${r.action === "ENTRY" && r.entry_horizon_seconds != null ? ` · ${r.entry_horizon_seconds}s` : r.action === "HOLD" && r.hold_horizon_seconds != null ? ` · ${r.hold_horizon_seconds}s` : ""}`,
+      text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : saved?.phase === "1c" ? `${r.label_value?.toFixed(3)} · ${r.remaining_duration_seconds ?? "—"}s remaining` : `${r.label_value?.toFixed(3) ?? ""}${r.action === "ENTRY" && r.entry_horizon_seconds != null ? ` · ${r.entry_horizon_seconds}s` : r.action === "HOLD" && r.hold_horizon_seconds != null ? ` · ${r.hold_horizon_seconds}s` : ""}`,
       secondaryText: r.action === "ENTRY" ? (saved?.v66 && saved.phase !== "1a" && r.spread_discounted_gain != null ? r.spread_discounted_gain : r.entry_gain).toFixed(4) : (r.action === "EXIT" || (r.action === "HOLD" && holdNumbers)) && r.exit_gain != null ? (saved?.v66 && saved.phase !== "1a" && r.bid != null && r.selected_entry_ask != null ? r.bid-r.selected_entry_ask : r.exit_gain).toFixed(4) : undefined })) }), [chart, holdNumbers, saved, experiment]);
   if (!experiment) return <div className="research-page">{error ? <div className="canvas-inline-error" role="alert">{error}<button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Retry experiment</button></div> : <LoadingState label="Loading saved price-action experiment" />}</div>;
   return <ResearchCanvas stacked={saved?.v66} storageKey={saved ? prefix : "price-action:NVDA:2026-07-31"} titles={titles}

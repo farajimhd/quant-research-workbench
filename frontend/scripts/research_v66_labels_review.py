@@ -132,6 +132,10 @@ def main():
                             assert exits[0]['position_state_before']==1 and exits[0]['position_state_after']==0
                             assert entries[0]['position_age_seconds']==exits[0]['remaining_duration_seconds']==0
                             assert all(r['action']==r['action_1c'] for r in trajectory)
+                            entry_line=chart.locator(f'.chart-position-price-line.entry[data-position-pair="{pair_1c}"]')
+                            exit_line=chart.locator(f'.chart-position-price-line.exit[data-position-pair="{pair_1c}"]')
+                            assert float(entry_line.get_attribute('data-position-price'))==entries[0]['ask']
+                            assert float(exit_line.get_attribute('data-position-price'))==exits[0]['bid']
                             expect(chart.get_by_label('Opportunity label view',exact=True)).to_be_disabled()
                             chart.scroll_into_view_if_needed()
                             page.screenshot(path=str(output/(name+'-trajectory.png')))
