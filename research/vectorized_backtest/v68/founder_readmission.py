@@ -17,6 +17,33 @@ def verify_replay_sources(code):
         current=Path(__file__).parent/original.name
         a=original.read_bytes().replace(b'\r\n',b'\n')
         b=current.read_bytes().replace(b'\r\n',b'\n').replace(b'research.vectorized_backtest.v68',b'research.vectorized_backtest.v67')
+        if original.name in ('compact_execution.py','compact_replay.py'):
+            import ast
+            class WithoutCaptureTracking(ast.NodeTransformer):
+                def visit_FunctionDef(self,node):
+                    if node.name in ('_one','advance') and node.args.args[-1].arg=='capture_state':
+                        node.args.args.pop()
+                        if node.args.defaults:node.args.defaults.pop()
+                    return self.generic_visit(node)
+                def visit_If(self,node):
+                    if ast.dump(node.test)==ast.dump(ast.parse('capture_state is not None',mode='eval').body):return None
+                    return self.generic_visit(node)
+                def visit_Call(self,node):
+                    if isinstance(node.func,ast.Name) and node.func.id in ('_one','advance'):
+                        node.args=[arg for arg in node.args if not (isinstance(arg,ast.Name) and arg.id=='capture_state')]
+                    return self.generic_visit(node)
+                def visit_Assign(self,node):
+                    if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id=='capture_state':return None
+                    return self.generic_visit(node)
+                def visit_ImportFrom(self,node):
+                    return None if node.module=='opportunity_cost' else node
+                def visit_Expr(self,node):
+                    if (isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name)
+                        and node.value.func.id=='apply' and any(k.arg=='captured_counts' for k in node.value.keywords)):return None
+                    return self.generic_visit(node)
+            def without_capture(raw):
+                return ast.dump(WithoutCaptureTracking().visit(ast.parse(raw.decode('utf8'))),include_attributes=False)
+            a,b=without_capture(a),without_capture(b)
         if original.name in ('global_runner.py','session_lanes.py','io_pipeline.py'):
             import ast
             def without_admission(raw):

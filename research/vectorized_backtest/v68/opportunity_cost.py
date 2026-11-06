@@ -46,6 +46,22 @@ def captured(orders, targets):
             .select('candidate', 'listing', 'pair').unique())
 
 
+def make_state(item,candidates):
+    """Read-only pair index plus private per-candidate capture bookkeeping."""
+    from numba import types
+    from numba.typed import Dict
+    if not hasattr(item,'opportunity_lookup'):
+        mapping=Dict.empty(key_type=types.int64,value_type=types.int64)
+        for index,(listing,pair) in enumerate(entries(item).select('listing','pair').unique().iter_rows()):
+            mapping[np.int64(listing)*np.int64(4294967296)+np.int64(pair)]=np.int64(index)
+        item.opportunity_lookup=mapping
+    mapping=item.opportunity_lookup
+    membership=item.host_tensors['membership']
+    if hasattr(membership,'numpy'):membership=membership.numpy()
+    return (mapping,np.zeros((candidates,len(mapping)),np.bool_),
+            np.zeros((candidates,len(item.listing_ids)),np.int64),membership)
+
+
 def counts(refs, targets, listings):
     """Scan each shared journal once, preserving candidate-index bindings."""
     result = np.zeros((len(refs), listings), np.int64)
@@ -84,15 +100,20 @@ def counts(refs, targets, listings):
     return result
 
 
-def apply(metrics, item):
+def apply(metrics, item, captured_counts=None):
     if 'label_captured' in metrics:
         raise ValueError('Opportunity costs must be applied exactly once')
     targets = entries(item); u = len(item.listing_ids); b = len(metrics['net_pnl'])
     unique = targets.select('listing', 'pair').unique()
     opportunities = np.bincount(unique['listing'].to_numpy(), minlength=u)
-    caught = counts(metrics['execution_orders'], targets, u)
+    if captured_counts is None:
+        caught = counts(metrics['execution_orders'], targets, u)
+    else:
+        raw=np.asarray(captured_counts)
+        if raw.dtype.kind not in ('i','u'):raise ValueError('Integral native capture counts required')
+        caught=raw.astype(np.int64,copy=False)
     missed = opportunities[None, :] - caught
-    if caught.shape != (b, u) or np.any(missed < 0):
+    if caught.shape != (b, u) or np.any(caught < 0) or np.any(missed < 0):
         raise ValueError('Captured entries exceed the fixed opportunity set')
     metrics.update(label_opportunities=[int(opportunities.sum())]*b,
                    label_captured=caught.sum(1).tolist(), label_missed=missed.sum(1).tolist(),

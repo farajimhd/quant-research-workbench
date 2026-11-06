@@ -21,6 +21,8 @@ def replay(item,members,plan,execution,progress=None):
     buffers=state(b,u)
     if not hasattr(item,'supervision'):raise ValueError('V67 replay requires approved 1b targets')
     supervised=supervision_state(b,u)
+    from .opportunity_cost import make_state,apply
+    capture_state=make_state(item,b)
     compare=getattr(item,'profile_baseline_execution',False)
     baseline_buffers=None
     if compare:
@@ -68,7 +70,7 @@ def replay(item,members,plan,execution,progress=None):
             else:profile['baseline_compile_seconds']=profile.get('baseline_compile_seconds',0.)+elapsed
         before=len(advance.signatures)
         started=time.perf_counter()
-        result=advance(*args,*buffers,*costs,item.supervision,supervised)
+        result=advance(*args,*buffers,*costs,item.supervision,supervised,capture_state)
         elapsed=time.perf_counter()-started
         if compare:
             if len(advance.signatures)==before:
@@ -196,6 +198,7 @@ def replay(item,members,plan,execution,progress=None):
         for column,name in enumerate(('price_unavailable','entry_unaffordable','add_unaffordable',
                                       'reduce_size','stop_unavailable','stop_relation'),16):
             metrics['admission_abstain_'+name]=diag[:,column].tolist()
+        apply(metrics,item,captured_counts=capture_state[2])
         profile.update(total_replay_seconds=time.perf_counter()-began,
                        native_signatures_added=len(advance.signatures)-native_signatures_before,
                        average_execution_tickers_per_candidate=float(stats[:,17].sum()/max(1,stats[:,15].sum())),

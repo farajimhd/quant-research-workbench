@@ -14,6 +14,9 @@ from .publication_lane import Lane
 from .identity import digest
 from research.vectorized_backtest.v68.publication import write_json
 
+COST_FIELDS=('label_opportunities','label_captured','label_missed','label_missed_penalty',
+             'label_capture_bonus','label_ticker_capture_bonus','ticker_score')
+
 
 def financial_evidence(metrics):
     """Ignore only destination paths; retain order contents hashes and counts."""
@@ -31,6 +34,7 @@ def main():
     parser.add_argument('--offset',type=int,default=0);parser.add_argument('--count',type=int,default=1024)
     parser.add_argument('--neural-tile',type=int,default=64,choices=(32,64,128,256))
     parser.add_argument('--compare',type=Path);parser.add_argument('--reproduce',action='store_true')
+    parser.add_argument('--compare-cost',type=Path,help='Exact same-cohort saved cost reference for implementation parity')
     parser.add_argument('--founders',type=Path);parser.add_argument('--founders-sha256')
     parser.add_argument('--mixed',action='store_true',help='Evenly spaced fresh-founder sample; no outcome-based selection')
     parser.add_argument('--diagnostics',action='store_true',help='Bounded GPU trace and CPU reproduction profile; not a timing acceptance run')
@@ -163,8 +167,7 @@ def main():
             report['warm_exact_financial_parity']=digest([financial_evidence(p) for p in warm])==digest([financial_evidence(p) for p in published])
             report['warm_timings']=[json.loads((c.root/'replays/training/generation-0002'/day/'timings.json').read_bytes()) for day in days]
             if not report['warm_exact_financial_parity']:raise ValueError('Warm replay financial parity failed')
-            cost_keys=('label_opportunities','label_captured','label_missed','label_missed_penalty',
-                       'label_capture_bonus','label_ticker_capture_bonus','ticker_score')
+            cost_keys=COST_FIELDS
             report['warm_exact_cost_parity']=digest([{k:p[k] for k in cost_keys} for p in warm])==digest([{k:p[k] for k in cost_keys} for p in published])
             if not report['warm_exact_cost_parity']:raise ValueError('Warm opportunity cost parity failed')
         report['publication_final_wait_seconds']=publication_wait_seconds
@@ -195,6 +198,12 @@ def main():
             report['exact_financial_parity']=digest(expected)==digest(actual_evidence)
             if not report['exact_financial_parity']:
                 report['differences']={day:[k for k in actual if actual[k]!=prior[k]] for day,actual,prior in zip(days,actual_evidence,expected)}
+        if args.compare_cost:
+            previous=json.loads((args.compare_cost/'profile.json').read_bytes())
+            if previous['population_sha256']!=c.cohort_snapshot.token:raise ValueError('Cost reference cohort differs')
+            reference=[read_receipt(args.compare_cost/'phase-2/replays/training/generation-0001'/day/'receipt.json')['metrics'] for day in days]
+            report['exact_cost_reference_parity']=digest([{k:p[k] for k in COST_FIELDS} for p in published])==digest([{k:p[k] for k in COST_FIELDS} for p in reference])
+            if not report['exact_cost_reference_parity']:raise ValueError('Native capture counts differ from saved journal-derived costs')
         write_json(root/'profile.json',report);print(json.dumps(report),flush=True)
         if report.get('exact_financial_parity') is False:raise ValueError('Financial parity failed')
     finally:

@@ -22,7 +22,7 @@ D_WIDTH=23  # Additional cause counters reconcile to the two suppression totals.
 @njit(nogil=True)
 def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
          positions,orders,books,active,lookup,counts,stats,diagnostics,
-         entry_dollars,add_dollars,fee_per_share,minimum_fee,cost,terminal_at,labels,supervised):
+         entry_dollars,add_dollars,fee_per_share,minimum_fee,cost,terminal_at,labels,supervised,capture_state):
     records=[(0.,)*9 for _ in range(0)]
     episodes=[(0.,)*5 for _ in range(0)]
     p=positions[candidate];o=orders[candidate];book=books[candidate]
@@ -173,6 +173,15 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
                         p[u,14]=0.
                         score[u,0]=score[u,10] if action==2 and pair==int(score[u,10]) else -1
                         score[u,1]=score[u,11] if score[u,0]>=0 else -1
+                        if capture_state is not None:
+                            if (score[u,0]>=0 and clock<terminal_at
+                                and capture_state[3][int(o[u,6]),u] and capture_state[3][clock,u]):
+                                key=np.int64(u)*np.int64(4294967296)+np.int64(score[u,0])
+                                if key in capture_state[0]:
+                                    captured_index=capture_state[0][key]
+                                    if not capture_state[1][candidate,captured_index]:
+                                        capture_state[1][candidate,captured_index]=True
+                                        capture_state[2][candidate,u]+=1
                         score[u,2]=0.;score[u,3]=0.
                         p[u,5]=p[u,4];p[u,6]=clock;p[u,2]=o[u,9];p[u,3]=o[u,10]
                         p[u,12]=o[u,14]
@@ -224,13 +233,13 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
 
 @njit(nogil=True,parallel=True)
 def advance(start,slots,signals,ratios,prices,owners,abstain,quotes,positions,orders,books,
-            active,lookup,counts,stats,diagnostics,entry,addition,fee,minimum,cost,terminal,labels,supervised):
+            active,lookup,counts,stats,diagnostics,entry,addition,fee,minimum,cost,terminal,labels,supervised,capture_state=None):
     b=len(positions)
     records=[[(0.,)*9 for _ in range(0)] for _ in range(b)]
     episodes=[[(0.,)*5 for _ in range(0)] for _ in range(b)]
     for i in prange(b):
         records[i],episodes[i]=_one(i,start,slots,signals,ratios,prices,owners,abstain,quotes,
-            positions,orders,books,active,lookup,counts,stats,diagnostics,entry,addition,fee,minimum,cost,terminal,labels,supervised)
+            positions,orders,books,active,lookup,counts,stats,diagnostics,entry,addition,fee,minimum,cost,terminal,labels,supervised,capture_state)
     return records,episodes
 
 

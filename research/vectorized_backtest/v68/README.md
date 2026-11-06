@@ -63,7 +63,9 @@ the same production admission method. Upload arenas use exact aligned capacity,
 and completed splits release unused pinned-host cache allocations while keeping
 all prepared replay inputs resident. Pair tables are prepared once per resident
 session on CPU and are never candidate features or GPU inputs. Cost attribution
-runs in the existing CPU result handoff; no extra market replay is required.
+runs in the compiled execution loop with deduplicated pair counters. Saved founder
+rescoring uses verified journals; live replay does not rescan journals for costs.
+No extra market replay is required.
 
 Run the launcher help with bytecode disabled:
 

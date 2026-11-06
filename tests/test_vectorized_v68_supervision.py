@@ -6,7 +6,7 @@ from research.vectorized_backtest.v68 import compact_execution as kernel
 from research.vectorized_backtest.v68.supervision import SETTINGS
 
 
-def replay(actions, signals, prices=None, *, pairs=None, chunks=False, candidates=2,target=1000.):
+def replay(actions, signals, prices=None, *, pairs=None, chunks=False, candidates=2,target=1000.,capture=False):
     n=len(actions);u=5;b=candidates
     slots=np.tile(np.arange(u,dtype=np.int32),(n,1))
     sig=np.zeros((n,b,u),np.int16);sig[:,:,0]=np.asarray(signals)[:,None]
@@ -29,15 +29,37 @@ def replay(actions, signals, prices=None, *, pairs=None, chunks=False, candidate
     labels=(action,pair,deadline);state=kernel.state(b,u);old=baseline.state(b,u);score=kernel.supervision_state(b,u)
     records=[[] for _ in range(b)];episodes=[[] for _ in range(b)]
     old_records=[[] for _ in range(b)];old_episodes=[[] for _ in range(b)]
+    capture_state=None
+    if capture:
+        from types import SimpleNamespace
+        from research.vectorized_backtest.v68.opportunity_cost import make_state,entries,counts
+        item=SimpleNamespace(supervision=labels,listing_ids=np.arange(u),host_tensors=dict(
+            membership=np.ones((n,u),bool),bid=book[1],ask=book[2],ask_size=book[5],quote_valid=book[6]))
+        capture_state=make_state(item,b)
     for start,end in ([(i,i+1) for i in range(n)] if chunks else [(0,n)]):
         args=(start,slots[start:end],sig[start:end],ratios[start:end],refs[start:end],owners[start:end],abstain[start:end],tuple(v[start:end] for v in book))
-        a,z=kernel.advance(*args,*state,1000.,200.,.005,0.,0.,n-1,labels,score)
+        a,z=kernel.advance(*args,*state,1000.,200.,.005,0.,0.,n-1,labels,score,capture_state)
         aa,zz=baseline.advance(*args,*old,1000.,200.,.005,0.,0.,n-1)
         for i in range(b):
             records[i].extend(a[i]);episodes[i].extend(z[i]);old_records[i].extend(aa[i]);old_episodes[i].extend(zz[i])
     for actual,prior in zip(state,old):np.testing.assert_array_equal(actual,prior)
     assert records==old_records and episodes==old_episodes
+    if capture:
+        np.testing.assert_array_equal(capture_state[2],counts(records,entries(item),u))
+        return score,episodes,state,capture_state[2]
     return score,episodes,state
+
+
+@pytest.mark.parametrize('chunks',[False,True])
+@pytest.mark.parametrize('actions,signals,expected',[
+    ([2,3,3,4,1],[1,0,0,2,0],1),
+    ([1,2,3,4,1],[1,0,0,2,0],0),
+    ([0,0,0,0,0],[1,0,0,2,0],0),
+    ([2,2,2,2,2,2,4,1],[1,2,0,0,1,0,2,0],1),
+])
+def test_native_capture_matches_journal_and_preserves_accounting(actions,signals,expected,chunks):
+    *_,caught=replay(actions,signals,capture=True,chunks=chunks)
+    assert caught[:,0].tolist()==[expected,expected]
 
 
 def test_aligned_profit_and_exact_execution_parity():
