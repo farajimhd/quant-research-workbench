@@ -1,0 +1,74 @@
+"""Explicit immutable V67 training-receipt reuse for a new founder admission."""
+import json
+from pathlib import Path
+from .distributed_assets import sha
+
+
+def verify_replay_sources(code):
+    """Reject any replay/input change beyond namespace-only relocation."""
+    scoring={'campaign_progress.py','campaign_runner.py','controller_metrics.py',
+             'founder_readmission.py','full_common.py','generation_flow.py','global_contract.py',
+             'identity.py','prepare_selection_restart.py','restored_summary.py','resume_authority.py',
+             'robust_score.py','run_train.py','session_pipeline.py','supervision.py','ticker_selection.py',
+             'profile_global.py'}
+    source=Path(code)/'research/vectorized_backtest/v67'
+    for original in source.iterdir():
+        if original.suffix not in ('.py','.json') or original.name in scoring:continue
+        current=Path(__file__).parent/original.name
+        a=original.read_bytes().replace(b'\r\n',b'\n')
+        b=current.read_bytes().replace(b'\r\n',b'\n').replace(b'research.vectorized_backtest.v68',b'research.vectorized_backtest.v67')
+        if a!=b:raise ValueError('Founder replay/input implementation changed: '+original.name)
+
+
+def verify_cache_bindings(job,bound):
+    original=bound.get('result_caches',{});current=job.get('result_cache_transition',{})
+    if current==original:return
+    # Later source-only resumes add current replay indexes; original founder
+    # authority stays immutable, and new indexes must belong to the pinned source.
+    from .resume_authority import global_predecessor
+    previous=global_predecessor(job)
+    prior=previous.get('result_cache_transition',{})
+    if previous.get('founder_readmission')!=bound:
+        raise ValueError('Founder readmission authority changed on resume')
+    if any(current.get(k)!=v for mapping in (original,prior) for k,v in mapping.items()):
+        raise ValueError('Founder/prior cache bindings changed')
+    if any(v.get('source')!=previous['source_sha256'] for k,v in current.items() if k not in prior):
+        raise ValueError('New cache binding is not from the pinned predecessor source')
+
+
+def verify(job):
+    bound=job['founder_readmission']
+    if bound.get('version')!='v68-saved-founder-rescore-v1':raise ValueError('Unknown founder readmission')
+    path=Path(bound['predecessor_job'])
+    if sha(path)!=bound['predecessor_job_sha256']:raise ValueError('Founder predecessor changed')
+    old=json.loads(path.read_bytes())
+    if old['version']!='v67-global-v1' or old['initial_multiplier']!=6:raise ValueError('Sixfold V67 founders required')
+    for key in ('training_sha256','validation_sha256','training_days','validation_days','asset_sha256',
+                'execution','objective','concentration_coefficient','selection','founder_pool',
+                'initialization_probe_sha256','strategy_contract','seed','population','initial_multiplier'):
+        if job[key]!=old[key]:raise ValueError('Founder readmission changes '+key)
+    if old.get('score_version')!='saved-1b-entry-profit-and-request-penalties-v2':raise ValueError('Expected approved V67 objective')
+    if old['supervision']['sha256']!=job['supervision']['sha256']:raise ValueError('Founder label authority changed')
+    founders=Path(old['campaign'])/'fresh-founders.json'
+    if str(founders)!=bound['founders'] or sha(founders)!=bound['founders_sha256']:raise ValueError('Founder genomes changed')
+    expected={f'{role}/0/{day}' for role in ('training','validation') for day in old[role+'_days']}
+    if set(bound['completed_replays'])!=expected:raise ValueError('Complete split-bound founder receipts required')
+    for role in ('training','validation'):
+        for day in old[role+'_days']:
+            item=bound['completed_replays'][f'{role}/0/{day}']
+            if Path(item['path'])!=Path(old['campaign'])/f'phase-2/replays/{role}/generation-0000'/day/'receipt.json':
+                raise ValueError('Founder receipt path changed')
+    verify_cache_bindings(job,bound)
+    verify_replay_sources(old['code'])
+    return old
+
+
+def seed(job):
+    old=verify(job);state=json.loads(Path(job['founder_readmission']['founders']).read_bytes())
+    if state['source_sha256']!=old['source_sha256'] or state['validation_opened'] or len(state['population'])!=6144:
+        raise ValueError('Founder state authority changed')
+    if any(v is not None for v in state['sources']):raise ValueError('Imported expert founders forbidden')
+    from .genome import Individual
+    from .founder_pool import validate
+    for p in state['population']:validate(Individual.restore(p))
+    return dict(state,source_sha256=job['source_sha256'],readmission=job['founder_readmission'])
