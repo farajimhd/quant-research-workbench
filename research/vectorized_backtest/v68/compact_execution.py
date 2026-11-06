@@ -266,9 +266,14 @@ def warmup():
     quotes=tuple(np.ones((1,5),dtype=bool if i==6 else np.float64) for i in range(7))
     labels=(np.zeros((1,5),np.int8),np.full((1,5),-1,np.int32),np.full((1,5),-1,np.int32))
     for array in labels:array.flags.writeable=False
+    from types import SimpleNamespace
+    from .opportunity_cost import make_state
+    item=SimpleNamespace(supervision=labels,listing_ids=np.arange(5),host_tensors=dict(
+        membership=quotes[6],bid=quotes[1],ask=quotes[2],ask_size=quotes[5],quote_valid=quotes[6]))
+    capture_state=make_state(item,1)
     advance(0,slots,np.zeros(shape,np.int16),np.ones((*shape,3)),np.ones((*shape,5)),
         np.zeros(shape,np.int64),np.zeros(shape,bool),quotes,*state(1,5),1000.,200.,0.,0.,0.,1,
-        labels,supervision_state(1,5))
+        labels,supervision_state(1,5),capture_state)
     from .price_references import confirmed_selected
     source=np.ones((3,5));rows,columns=np.nonzero(np.isfinite(source))
     confirmed_selected(source,np.tile(slots,(3,1)),rows,columns,1,1,True)

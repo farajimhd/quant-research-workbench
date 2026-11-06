@@ -21,6 +21,7 @@ def verify_replay_sources(code):
             import ast
             class WithoutCaptureTracking(ast.NodeTransformer):
                 def visit_FunctionDef(self,node):
+                    if node.name=='warmup':return None
                     if node.name in ('_one','advance') and node.args.args[-1].arg=='capture_state':
                         node.args.args.pop()
                         if node.args.defaults:node.args.defaults.pop()

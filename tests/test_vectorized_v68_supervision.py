@@ -62,6 +62,13 @@ def test_native_capture_matches_journal_and_preserves_accounting(actions,signals
     assert caught[:,0].tolist()==[expected,expected]
 
 
+def test_warmup_compiles_the_capture_enabled_replay_signature():
+    kernel.warmup()
+    before=len(kernel.advance.signatures)
+    replay([2,3,3,4,1],[1,0,0,2,0],capture=True)
+    assert len(kernel.advance.signatures)==before
+
+
 def test_aligned_profit_and_exact_execution_parity():
     score,episodes,_=replay([2,3,3,4,1],[1,0,0,2,0])
     assert score[0,0,6]==pytest.approx(episodes[0][0][0])
