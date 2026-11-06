@@ -10,6 +10,7 @@ from pathlib import Path
 import platform
 import socket
 import subprocess
+import sys
 import time
 
 import torch
@@ -50,11 +51,12 @@ def arguments(argv=None):
     parser.add_argument("--precision", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--attention", choices=("sdpa", "flex"), default="sdpa")
     parser.add_argument("--attention-dropout", type=float)
+    parser.add_argument("--triton-root", type=Path, help="Optional isolated Triton package directory for FlexAttention.")
     parser.add_argument("--model", choices=tuple(CONFIGURATIONS), default="base")
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--train-steps", type=int, default=1000, help="Explicit bounded training scope per epoch.")
+    parser.add_argument("--train-steps", type=int, default=1000, help="Bounded training steps per epoch; 0 explicitly requests a full epoch.")
     parser.add_argument("--validation-steps", type=int, default=8)
     parser.add_argument("--checkpoint-every", type=int, default=100)
     parser.add_argument("--trace", action="store_true", help="Capture a short operator trace; its timing includes profiler overhead.")
@@ -65,17 +67,29 @@ def arguments(argv=None):
     parser.add_argument("--panel", action="store_true")
     parser.add_argument("--refine", action="store_true", help="Also compare worker counts and FP32 for the fastest configuration.")
     args = parser.parse_args(argv)
-    if min(args.steps, args.seconds, args.batch_size, args.epochs, args.train_steps, args.validation_steps, args.checkpoint_every) < 1 or args.warmup < 0:
+    if min(args.steps, args.seconds, args.batch_size, args.epochs, args.validation_steps, args.checkpoint_every) < 1 or min(args.warmup, args.train_steps) < 0:
         parser.error("Step, duration, epoch, and batch limits must be positive.")
     if not 0 <= args.workers <= 32 or not 1 <= args.prefetch <= 4:
         parser.error("workers must be 0..32; prefetch must be 1..4.")
     if args.resume and args.mode != "train":
         parser.error("Resume applies only to explicit training runs.")
+    if args.attention == "flex" and args.attention_dropout != 0:
+        parser.error("FlexAttention requires explicit --attention-dropout 0 for an honest SDPA comparison.")
+    if args.attention_dropout is not None and not 0 <= args.attention_dropout < 1:
+        parser.error("attention-dropout must be in [0,1).")
     return args
 
 
 def main(argv=None):
     args = arguments(argv)
+    if args.triton_root:
+        package = args.triton_root.resolve()
+        if not (package / "triton" / "__init__.py").is_file():
+            raise ValueError("The supplied isolated Triton package is absent.")
+        sys.path.insert(0, str(package))
+        compiler = package / "triton" / "runtime" / "tcc" / "tcc.exe"
+        if os.name == "nt" and compiler.is_file():
+            os.environ.setdefault("CC", str(compiler))  # Target installs are outside sysconfig's automatic search.
     torch.set_num_threads(2)
     root = Path("D:/TradingML/runtimes").resolve()
     args.output = args.output.resolve()
@@ -200,6 +214,8 @@ def profile(args, manifest, stats, reporter):
             gc.collect()
             torch.cuda.empty_cache()
         results.append(entry)
+        reporter.update(stage="trial complete", done=entry.get("consumed_batches", 0),
+                        total=entry.get("consumed_batches", 0), metrics=entry)
         write_json(args.output / "results.json", dict(kind="short-profiling-not-quality-evaluation", results=results))
         reporter.update(results=results)
         reporter.log({"profile/"+key: value for key, value in entry.items() if isinstance(value, (int, float))}, index*10000+9999)
@@ -224,6 +240,7 @@ def train(args, manifest, stats, reporter):
     epoch, cursor, step = 0, 0, 0
     contract = dict(split_hash=manifest["manifest_hash"], model=asdict(model.config), batch=args.batch_size,
                     data_order="eligible-stream-v1",
+                    train_steps=args.train_steps,
                     workers=args.workers, precision=args.precision, seed=args.seed,
                     median=stats.median.tolist(), scale=stats.scale.tolist())
     if args.resume:
@@ -235,13 +252,15 @@ def train(args, manifest, stats, reporter):
         epoch, cursor, step = checkpoint["epoch"], checkpoint["cursor"], checkpoint["step"]
         torch.set_rng_state(checkpoint["rng"])
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
-        if cursor >= args.train_steps:
+        if args.train_steps and cursor >= args.train_steps:
             epoch, cursor = epoch+1, 0
         if epoch >= args.epochs:
             raise ValueError("Checkpoint already completed the requested epoch scope; increase --epochs explicitly.")
     history = []
 
     def save_checkpoint(saved_epoch, saved_cursor, saved_step):
+        if not torch.stack([torch.isfinite(parameter).all() for parameter in model.parameters()]).all():
+            raise FloatingPointError("Refusing to publish nonfinite model weights; prior checkpoint is preserved.")
         checkpoint = dict(contract=contract, model=model.state_dict(), optimizer=optimizer.state_dict(),
                           epoch=saved_epoch, cursor=saved_cursor, step=saved_step, rng=torch.get_rng_state(),
                           cuda_rng=torch.cuda.get_rng_state_all())
@@ -253,7 +272,8 @@ def train(args, manifest, stats, reporter):
         loader = loader_for(args, manifest, stats, "train", args.batch_size, args.workers, epoch, cursor)
         reporter.update(config=dict(name=args.model, batch_size=args.batch_size, workers=args.workers,
                                     precision=args.precision, prefetch=args.prefetch), stage="training", epoch=epoch)
-        remaining = min(args.train_steps-cursor, len(loader))
+        scope = args.train_steps or loader.dataset.total
+        remaining = min(scope-cursor, len(loader))
         def checkpoint_step(consumed):
             if consumed % args.checkpoint_every == 0:
                 save_checkpoint(epoch, cursor+consumed, step+consumed)
@@ -265,7 +285,7 @@ def train(args, manifest, stats, reporter):
             close_loader(loader)
         cursor += metrics["consumed_batches"]
         step += metrics["consumed_batches"]
-        completed = metrics["exhausted"] or cursor >= min(args.train_steps, loader.dataset.total)
+        completed = metrics["exhausted"] or cursor >= min(scope, loader.dataset.total)
         if completed:
             epoch, cursor = epoch+1, 0
         save_checkpoint(epoch, cursor, step)

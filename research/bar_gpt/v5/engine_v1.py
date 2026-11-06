@@ -68,6 +68,8 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
     began = time.perf_counter()
     batches = CudaBatches(loader)
     startup_seconds = time.perf_counter() - began
+    if reporter:
+        reporter.update(stage="warmup / attention compilation" if warmup else "measuring", done=0, total=warmup+steps)
     events, losses = [], []
     sums = torch.zeros(21, device="cuda", dtype=torch.float64)
     counts = torch.zeros(21, device="cuda", dtype=torch.int64)
@@ -85,6 +87,8 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
                 torch.cuda.synchronize()
                 begin_measure = time.perf_counter()
                 wait_start = batches.wait_seconds
+                if reporter:
+                    reporter.update(stage="measuring training" if training else "measuring validation")
             try:
                 batch = batches.pop()
             except StopIteration:

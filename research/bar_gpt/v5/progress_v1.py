@@ -45,7 +45,9 @@ def render(state: dict, width: int = 100):
     for item in state.get("results", [])[-5:]:
         comparisons.add_row(item.get("label", "-"), f"{item.get('samples_per_second', 0):,.0f}",
                             f"{item.get('peak_gib', 0):.2f}", item.get("status", "-"))
-    error = Text(str(state.get("error", "")), style="red")
+    message = str(state.get("error") or "")
+    limit = max(120, width*2)
+    error = Text(message[:limit] + (" ... full error in progress.json" if len(message) > limit else ""), style="red")
     worker_count = len(state.get("workers", []))
     detail = Text(f"Workers: {worker_count}; showing first {min(worker_count, 8 if width >= 90 else 4)}. "
                   "All worker counters are saved in the run directory.")

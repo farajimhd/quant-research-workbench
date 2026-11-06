@@ -306,6 +306,11 @@ def make_loader(dataset: ShardBatches, workers: int = 8, prefetch: int = 2) -> D
     """Bound ready batches to workers*prefetch and pin only prepared CPU tensors."""
     if not 0 <= workers <= 32 or not 1 <= prefetch <= 4:
         raise ValueError("Workers must be 0..32; prefetch must be 1..4.")
+    if isinstance(dataset, EligibleStream):
+        lanes = max(1, workers)
+        dataset.total = sum(math.ceil(sum(item["stop"]-item["start"] for item in dataset.entries[lane::lanes])
+                                      / dataset.batch_size) for lane in range(lanes))
+        # A per-lane upper bound retains EVERY worker's partial tail, not just one global tail.
     options = dict(batch_size=None, num_workers=workers, pin_memory=torch.cuda.is_available(), worker_init_fn=worker_init,
                    generator=torch.Generator().manual_seed(dataset.seed + dataset.epoch))
     if workers:

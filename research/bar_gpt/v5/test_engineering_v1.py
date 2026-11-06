@@ -104,6 +104,16 @@ def test_spawn_workers_and_cleanup(inventory):
     assert all(not worker.is_alive() for worker in loader._iterator._workers)
 
 
+def test_every_eligible_worker_tail_is_retained(inventory):
+    manifest, stats = inventory
+    loader = make_loader(EligibleStream(manifest, "train", stats, 25), workers=4)
+    try:
+        assert len(loader) == 8  # Four lanes each yield 25+7, rather than six global batches.
+        assert sum(len(batch.visible) for batch in loader) == 128
+    finally:
+        close_loader(loader)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
 def test_actual_cuda_training_path(inventory):
     manifest, stats = inventory
@@ -134,6 +144,18 @@ def test_training_entrypoint_checkpoint_and_resume(inventory, tmp_path):
     assert main(common + ["--output", str(tmp_path / "resumed"), "--resume", str(checkpoint), "--epochs", "2"]) == 0
     resumed = torch.load(tmp_path / "resumed" / "checkpoint.pt", map_location="cpu", weights_only=False)
     assert resumed["epoch"] == 2 and resumed["step"] > saved["step"]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_trace_entrypoint(inventory, tmp_path):
+    """Verify actual operator-table and Chrome-trace publication, not merely CLI parsing."""
+    from research.bar_gpt.v5.run_v1 import main
+    output = tmp_path / "trace-run"
+    assert main(["--output", str(output), "--split-manifest", str(tmp_path / "split.json"),
+                 "--models", "small", "--batches", "16", "--workers", "0", "--warmup", "4",
+                 "--steps", "4", "--trace", "--wandb-mode", "disabled", "--source-revision", "synthetic-test"]) == 0
+    assert (output / "small-b16-w0-bf16-trace.json").stat().st_size > 0
+    assert "CUDA" in (output / "small-b16-w0-bf16-operators.txt").read_text()
 
 
 def test_flex_block_layout_matches_sdpa(monkeypatch):
