@@ -2,6 +2,7 @@
 import numpy as np
 from numba import njit
 from .price_program import REFERENCES
+from .price_cache import PriceCache
 
 
 @njit(nogil=True)
@@ -33,7 +34,7 @@ def confirmed_selected(source,slots,rows,columns,left,right,is_low):
 class References:
     def __init__(self,data,slots):
         self.data=data;self.slots=np.asarray(slots)
-        if not hasattr(data,'v67_price_reference_cache'):data.v67_price_reference_cache={}
+        if not hasattr(data,'v67_price_reference_cache'):data.v67_price_reference_cache=PriceCache()
         self.cache=data.v67_price_reference_cache
         self.times=np.arange(len(slots))[:,None]
 

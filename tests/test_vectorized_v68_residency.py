@@ -153,8 +153,8 @@ def test_memory_admission_counts_actual_output_queue(monkeypatch):
     assert large['context_headroom_bytes']==small['context_headroom_bytes']
 
 
-@pytest.mark.parametrize('available,reserve,trim',[(129.,128.,True),(132.,128.,False),(200.,256.,True)])
-def test_pinned_cache_trim_respects_configured_physical_headroom(monkeypatch,available,reserve,trim):
+@pytest.mark.parametrize('available',[129.,132.,200.])
+def test_completed_split_always_trims_unused_pinned_cache(monkeypatch,available):
     import psutil,torch
     from research.vectorized_backtest.v68.io_pipeline import TransferStaging
     calls=[]
@@ -162,6 +162,6 @@ def test_pinned_cache_trim_respects_configured_physical_headroom(monkeypatch,ava
     monkeypatch.setattr(torch._C,'_host_emptyCache',lambda:calls.append('trim'))
     staging=TransferStaging()
     try:
-        assert staging.release_completed(reserve)==0
-        assert calls==(['trim'] if trim else [])
+        assert staging.release_completed()==0
+        assert calls==['trim']
     finally:staging.close()

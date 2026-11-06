@@ -64,13 +64,19 @@ resident CPU storage pages, merge overlapping ranges, and wait for DMA completio
 before unregistering. Completion events retain registrations through asynchronous
 handoff, without a device-wide wait before inference. This avoids a duplicate
 pinned upload arena. Completed
-splits trim unused pinned-host allocations when free RAM approaches the configured
-reserve (with 2 GiB headroom); otherwise packet allocations remain reusable. Keep
+splits trim unused pinned-host allocations before the next split. Keep
 all prepared replay inputs resident. Pair tables are prepared once per resident
 session on CPU and are never candidate features or GPU inputs. Cost attribution
 runs in the compiled execution loop with deduplicated pair counters. Saved founder
 rescoring uses verified journals; live replay does not rescan journals for costs.
 No extra market replay is required.
+
+Cached price-reference arrays use lossless column-wise runs when that saves at
+least 25% of their bytes. Integer-bit encoding preserves signed zero and NaN
+payloads; incompressible arrays retain their original storage. Reference formulas,
+clock alignment, candidate prices, and saved founder authority remain unchanged.
+Admission alone does not qualify peak RAM: replay every training and validation
+session before accepting full-residency memory usage for a new campaign.
 
 Output queues retain at most the original 2,048 independent clocks: eight
 256-clock packets or four 512-clock packets. GPU admission uses the same actual

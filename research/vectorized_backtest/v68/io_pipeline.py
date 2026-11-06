@@ -87,7 +87,7 @@ class TransferStaging(_TransferStaging):
             return staged
         return self.pool.submit(copy)
 
-    def release_completed(self,reserve_gib=128.):
+    def release_completed(self):
         """Completed uploads need no pinned arena during chronological replay."""
         import torch
         self._release_registered()
@@ -96,10 +96,7 @@ class TransferStaging(_TransferStaging):
             if slot['event'] is not None:slot['event'].synchronize()
             if slot['buffer'] is not None:released+=slot['buffer'].numel()
             slot['buffer']=None;slot['event']=None
-        # Retain reusable packet buffers when physical RAM permits. Trimming
-        # every split forces a fresh CUDA host allocation on the next replay.
-        # The installed API frees only inactive allocations, never live inputs.
-        import psutil
-        if psutil.virtual_memory().available < (reserve_gib+2.)*2**30:
-            torch._C._host_emptyCache()
+        # The installed allocator API releases only unused pinned blocks.
+        # Retaining them did not improve matched throughput and adds RAM pressure.
+        torch._C._host_emptyCache()
         return released

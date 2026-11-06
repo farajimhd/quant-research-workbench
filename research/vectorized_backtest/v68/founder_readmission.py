@@ -17,6 +17,11 @@ def verify_replay_sources(code):
         current=Path(__file__).parent/original.name
         a=original.read_bytes().replace(b'\r\n',b'\n')
         b=current.read_bytes().replace(b'\r\n',b'\n').replace(b'research.vectorized_backtest.v68',b'research.vectorized_backtest.v67')
+        if original.name=='price_references.py':
+            # Only the private cache representation changes; all reference math
+            # and price evaluation remain byte-identical to the founder replay.
+            b=b.replace(b'from .price_cache import PriceCache\n',b'').replace(
+                b'data.v67_price_reference_cache=PriceCache()',b'data.v67_price_reference_cache={}')
         if original.name in ('compact_execution.py','compact_replay.py'):
             import ast
             class WithoutCaptureTracking(ast.NodeTransformer):
@@ -78,14 +83,6 @@ def verify_replay_sources(code):
                                 method.body=[statement for statement in method.body if not
                                     (isinstance(statement,ast.Expr) and isinstance(statement.value,ast.Call)
                                      and ast.dump(statement.value.func)==ast.dump(ast.parse('self._release_registered',mode='eval').body))]
-                                # Cache retention is a physical-RAM scheduling
-                                # policy; normalize only the new trim predicate.
-                                last=method.body[-2]
-                                if isinstance(last,ast.If) and 'reserve_gib' in ast.unparse(last.test):
-                                    method.body[-2:-1]=last.body
-                                    method.body=[s for s in method.body if not
-                                        (isinstance(s,ast.Import) and any(n.name=='psutil' for n in s.names))]
-                                    method.args.defaults=[];method.args.args=method.args.args[:1]
                     if isinstance(node,ast.ClassDef) and node.name=='Global':
                         node.body=[method for method in node.body if not
                             (isinstance(method,ast.FunctionDef) and method.name=='prepare_resident_sessions')]
