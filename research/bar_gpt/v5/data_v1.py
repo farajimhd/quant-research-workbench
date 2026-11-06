@@ -227,6 +227,7 @@ class EligibleStream(IterableDataset):
         self.stats, self.batch_size, self.seed, self.epoch = stats, batch_size, seed, epoch
         self.start_batch, self.telemetry = start_batch, telemetry
         self.replay_cursor = start_batch  # Controller replays the ordered loader prefix, including uneven lane tails.
+        self.counters = torch.zeros((32, 3), dtype=torch.int64).share_memory_()  # One writer per worker row.
         self.total = math.ceil(sum(item["stop"]-item["start"] for item in self.entries)/batch_size)
 
     def __len__(self):
@@ -240,14 +241,20 @@ class EligibleStream(IterableDataset):
         pieces = []
         began = time.perf_counter()
         verified = set()
+        last_report = 0.
 
         def publish(stage):
+            nonlocal last_report
+            self.counters[physical] = torch.tensor([scanned, excluded, completed])
+            if stage != "lane complete" and time.perf_counter()-last_report < 1:
+                return  # High-rate shard reads must not turn telemetry into synchronous disk work.
             if self.telemetry:
                 write_json(Path(self.telemetry)/f"worker-{physical:02d}.json", dict(
                     id=physical, lane=lane, stage=stage, batches=completed, scanned_candidates=scanned,
                     excluded_no_price=excluded, prepare_ms=(time.perf_counter()-began)*1000,
                     updated=time.time(),
                 ))
+                last_report = time.perf_counter()
 
         def pack(rows):
             # Lane-local sequence identifies the batch independently of scheduling/prefetch timing.

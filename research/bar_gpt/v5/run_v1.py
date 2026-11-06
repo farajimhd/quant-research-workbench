@@ -162,7 +162,7 @@ def profile(args, manifest, stats, reporter):
                                          batches=0, updated=time.time()))
         label = f"{name}-b{batch}-w{workers}-{precision}"
         reporter.update(stage="starting loader/model", trial=index+1, trials=len(plans), done=0,
-                        total=args.warmup+args.steps,
+                        total=args.warmup+args.steps, metrics={},
                         config=dict(name=name, batch_size=batch, workers=workers, precision=precision, prefetch=args.prefetch))
         torch.manual_seed(args.seed)
         model = MaskedAutoencoderV1(replace(CONFIGURATIONS[name], attention=args.attention,
@@ -187,23 +187,19 @@ def profile(args, manifest, stats, reporter):
                                     seconds_limit=args.seconds, stop_path=args.output / "STOP", profiler=profiler)
             if args.trace:
                 (args.output / (label+"-operators.txt")).write_text(
-                    profiler.key_averages().table(sort_by="self_cuda_time_total", row_limit=25), encoding="utf-8")
+                    profiler.key_averages().table(sort_by="self_device_time_total", row_limit=25), encoding="utf-8")
             entry.update(metrics, status="complete")
         except torch.cuda.OutOfMemoryError:
             entry.update(status="out_of_memory", peak_gib=torch.cuda.max_memory_allocated()/2**30)
         finally:
             close_loader(loader)
+            scanned, excluded, prepared = loader.dataset.counters.sum(0).tolist()
+            entry.update(scanned_candidates=scanned, excluded_no_price=excluded, prepared_batches=prepared,
+                         exclusions_scope="scanned candidates including prefetched/unconsumed rows, not whole-corpus totals")
             del loader, optimizer, model
             gc.collect()
             torch.cuda.empty_cache()
         results.append(entry)
-        # Counts cover scanned/prefetched candidates, not a claim about the whole corpus.
-        scanned = excluded = 0
-        for worker_file in (args.output / "workers").glob("worker-*.json"):
-            worker_state = json.loads(worker_file.read_text())
-            scanned += worker_state.get("scanned_candidates", 0)
-            excluded += worker_state.get("excluded_no_price", 0)
-        entry.update(scanned_candidates=scanned, excluded_no_price=excluded)
         write_json(args.output / "results.json", dict(kind="short-profiling-not-quality-evaluation", results=results))
         reporter.update(results=results)
         reporter.log({"profile/"+key: value for key, value in entry.items() if isinstance(value, (int, float))}, index*10000+9999)

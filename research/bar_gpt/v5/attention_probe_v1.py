@@ -39,7 +39,7 @@ def main():
         results.append(dict(length=length, seconds_including_compile=time.perf_counter()-began,
                             max_output_difference=float((actual-expected).abs().max()),
                             max_gradient_difference=max(float((left.grad-right.grad).abs().max()) for left, right in zip(copies, inputs))))
-        write_json(args.output / "parity.json", dict(status="passed", results=results))
+        write_json(args.output / "parity.json", dict(status="passed" if len(results) == 4 else "running", results=results))
         print(results[-1], flush=True)
 
 
