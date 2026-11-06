@@ -689,6 +689,7 @@ export type ChartTimelineEvent = {
 };
 
 export type ChartPayload = {
+  position_ranges?: Array<{ id: string; entryTime: number; exitTime: number; entryPrice: number; exitPrice: number }>;
   /** Timeframe of the loaded candles, which may lag the selected toolbar value. */
   timeframe?: string;
   candles: Candle[];
@@ -978,6 +979,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
   const priceLayerRef = useRef<HTMLDivElement | null>(null);
   const [labelingChart, setLabelingChart] = useState<IChartApi | null>(null);
   const referenceLayerRef = useRef<HTMLDivElement | null>(null);
+  const positionRangeLayerRef = useRef<HTMLDivElement | null>(null);
   const timelineEventLayerRef = useRef<HTMLDivElement | null>(null);
   const priceChartRef = useRef<IChartApi | null>(null);
   const candleRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -2110,6 +2112,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
       );
     });
     drawReferenceLine(chart, referenceLayerRef.current, currentPayload.candles, showReferenceLineRef.current ? referenceRef.current : null);
+    drawPositionRanges(chart, candleRef.current, positionRangeLayerRef.current, currentPayload.candles, currentPayload.position_ranges ?? []);
     drawTimelineEvents(chart, timelineEventLayerRef.current, currentPayload.timeline_events ?? []);
   }
 
@@ -2542,6 +2545,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <div className="chart-pane-canvas" ref={priceRef} />
             {labeling && labelingChart ? <ChartLabelOverlay chart={labelingChart} candles={payload?.candles ?? []} editor={labeling} /> : null}
             <div className="chart-reference-stack-layer" ref={referenceLayerRef} />
+            <div className="chart-reference-stack-layer chart-position-range-layer" ref={positionRangeLayerRef} />
             <div className="chart-timeline-event-layer" ref={timelineEventLayerRef}>
               {(payload?.timeline_events ?? []).map((event) => (
                 <span
@@ -8708,6 +8712,46 @@ function xForAnnotationTime(chart: IChartApi, time: number, candles: Array<{ tim
     return chart.timeScale().timeToCoordinate(candles[leftIndex].time as Time);
   }
   return null;
+}
+
+function drawPositionRanges(chart: IChartApi, series: ISeriesApi<"Candlestick"> | null, layer: HTMLDivElement | null, candles: Candle[], ranges: NonNullable<ChartPayload["position_ranges"]>) {
+  if (!layer) return;
+  layer.replaceChildren();
+  if (!series || !candles.length || !ranges.length) return;
+  const paneHeight = chart.panes()[0]?.getHeight() ?? 0;
+  layer.style.height = `${Math.max(0, paneHeight - 2 * layer.offsetTop)}px`;
+  const leftAxis = chart.priceScale("left").width();
+  const plotRight = chart.timeScale().width();
+  for (const range of ranges) {
+    if (range.exitTime < candles[0].time || range.entryTime > candles.at(-1)!.time) continue;
+    const start = xForAnnotationTime(chart, Math.max(range.entryTime, candles[0].time), candles);
+    const end = xForAnnotationTime(chart, Math.min(range.exitTime, candles.at(-1)!.time), candles);
+    if (start == null || end == null || end < 0 || start > plotRight) continue;
+    const left = leftAxis + Math.max(0, start) - layer.offsetLeft;
+    const right = leftAxis + Math.min(plotRight, end) - layer.offsetLeft;
+    if (right <= left) continue;
+    const difference = range.exitPrice - range.entryPrice;
+    const delta = `${difference >= 0 ? "+" : "−"}$${Math.abs(difference).toFixed(4)}/share`;
+    for (const [kind, price, label] of [
+      ["entry", range.entryPrice, `#${range.id} Entry $${range.entryPrice.toFixed(4)}`],
+      ["exit", range.exitPrice, `#${range.id} Exit $${range.exitPrice.toFixed(4)} · Δ ${delta}`],
+    ] as const) {
+      const y = series.priceToCoordinate(price);
+      if (y == null || y < 0 || y > paneHeight) continue;
+      const line = document.createElement("div");
+      line.className = `chart-position-price-line ${kind}`;
+      line.dataset.positionPair = range.id;
+      line.dataset.positionPrice = String(price);
+      line.dataset.positionKind = kind;
+      line.style.left = `${left}px`;
+      line.style.width = `${right-left}px`;
+      line.style.top = `${Number(y)-layer.offsetTop}px`;
+      const caption = document.createElement("span");
+      caption.textContent = label;
+      line.appendChild(caption);
+      layer.appendChild(line);
+    }
+  }
 }
 
 function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candles: Candle[], reference?: ChartReference | null) {

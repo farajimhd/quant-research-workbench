@@ -65,6 +65,13 @@ def main():
                         assert first<=30 and len(clocks)-last-1<=30
                         assert any(r['pair_id']==pair_id for r in data['labels'])
                         assert all(r['action']==r['action_1a'] for r in data['labels'])
+                        position=chart.locator(f'.chart-position-price-line[data-position-pair="{pair_id}"]')
+                        expect(position).to_have_count(2)
+                        entry_price=data['candles'][first]['close'];exit_price=data['candles'][last]['close']
+                        assert float(chart.locator(f'.chart-position-price-line.entry[data-position-pair="{pair_id}"]').get_attribute('data-position-price'))==entry_price
+                        assert float(chart.locator(f'.chart-position-price-line.exit[data-position-pair="{pair_id}"]').get_attribute('data-position-price'))==exit_price
+                        difference=exit_price-entry_price
+                        expect(position.locator('span').filter(has_text='Δ')).to_have_text(f'#{pair_id} Exit ${exit_price:.4f} · Δ +${difference:.4f}/share')
                         page.wait_for_function("""() => {
                             const lines=[...document.querySelectorAll('.research-stacked-chart [data-reference-boundary]')];
                             return lines.length===2 && lines.every(e=>getComputedStyle(e).borderLeftStyle==='dashed' && e.offsetLeft>=0 && e.offsetLeft<=e.parentElement.clientWidth);

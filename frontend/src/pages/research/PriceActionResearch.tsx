@@ -71,13 +71,22 @@ export function PriceActionResearch({ saved }: { saved?: { day: string; listing_
   const pair = experiment?.pairs.find(p => p.pair_id === pairId);
   const row = chart?.labels.find(r => r.time_us === selectedClock) ?? chart?.labels.find(r => r.action === "ENTRY") ?? chart?.labels[0];
   const payload = useMemo<ChartPayload>(() => ({ candles: chart?.candles ?? [], volume: [], overlay_series: chart?.overlay_series ?? [],
+    position_ranges: saved?.v66 ? (experiment?.pairs ?? []).filter(p => saved.phase !== "1b" || p.selected).flatMap(p => {
+      const focused = p.pair_id === saved.pair_id && saved.start_us != null && saved.end_us != null;
+      const entryTime = focused ? saved.start_us! / 1e6 - 1 : (p.reference_entry_us ?? 0) / 1e6 - 1;
+      const exitTime = focused ? saved.end_us! / 1e6 - 1 : (p.reference_exit_us ?? 0) / 1e6 - 1;
+      const entryPrice = focused ? chart?.candles.find(c => c.time === entryTime)?.close ?? null : p.reference_entry_price;
+      const exitPrice = focused ? chart?.candles.find(c => c.time === exitTime)?.close ?? null : p.reference_exit_price;
+      return entryTime >= 0 && exitTime > entryTime && entryPrice != null && exitPrice != null
+        ? [{ id: String(p.pair_id), entryTime, exitTime, entryPrice, exitPrice }] : [];
+    }) : [],
     oscillator_series: chart?.oscillator_series ?? [], regions: (chart?.regions ?? []).map(r => ({ ...r, color: researchBandColor(r.color) })),
     markers: (chart?.labels ?? []).filter(r => !["UNLABELLED","CONTEXT"].includes(r.action)).map((r, i) => ({ id: `price-action-${i}`, time: (r.time_us/1e6-1) as UTCTimestamp,
       position: r.action === "EXIT" ? "aboveBar" : "belowBar", size: .5,
       shape: r.action === "ENTRY" ? "arrowUp" : r.action === "EXIT" ? "arrowDown" : "circle",
       color: r.action === "ENTRY" ? "var(--success)" : r.action === "EXIT" ? "var(--danger)" : r.action === "HOLD" ? "var(--info)" : "var(--muted-foreground)",
       text: r.action === "WAIT" || (r.action === "HOLD" && !holdNumbers) ? "" : `${r.label_value?.toFixed(3) ?? ""}${r.action === "ENTRY" && r.entry_horizon_seconds != null ? ` · ${r.entry_horizon_seconds}s` : r.action === "HOLD" && r.hold_horizon_seconds != null ? ` · ${r.hold_horizon_seconds}s` : ""}`,
-      secondaryText: r.action === "ENTRY" ? r.entry_gain.toFixed(4) : (r.action === "EXIT" || (r.action === "HOLD" && holdNumbers)) && r.exit_gain != null ? r.exit_gain.toFixed(4) : undefined })) }), [chart, holdNumbers, saved]);
+      secondaryText: r.action === "ENTRY" ? r.entry_gain.toFixed(4) : (r.action === "EXIT" || (r.action === "HOLD" && holdNumbers)) && r.exit_gain != null ? r.exit_gain.toFixed(4) : undefined })) }), [chart, holdNumbers, saved, experiment]);
   if (!experiment) return <div className="research-page">{error ? <div className="canvas-inline-error" role="alert">{error}<button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Retry experiment</button></div> : <LoadingState label="Loading saved price-action experiment" />}</div>;
   return <ResearchCanvas stacked={saved?.v66} storageKey={saved ? prefix : "price-action:NVDA:2026-07-31"} titles={titles}
     icons={{ architecture: <Network size={14} />, analytics: <Microscope size={14} />, chart: <ChartCandlestick size={14} /> }}
