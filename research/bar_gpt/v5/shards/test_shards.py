@@ -11,6 +11,9 @@ import io
 import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -18,13 +21,71 @@ import numpy as np
 from rich.console import Console
 
 from . import sql
-from .contract import SAMPLE_DTYPE, digest, pack
+from .contract import SAMPLE_DTYPE, digest, pack, write_json, file_hash
+from .recovery import resolve_binding
 from .progress import render
 from .source import arrow, client, preflight
 from .storage import BAR_DTYPE, Budget, publish, verify_receipt
 
 
 class FormatTests(unittest.TestCase):
+    def test_real_windows_reader_lock_retries_atomic_publication(self):
+        runtime = Path("D:/TradingML/runtimes/bar_gpt/tests")
+        runtime.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=runtime) as temporary:
+            path = Path(temporary) / "progress.json"
+            write_json(path, {"version": 1})
+            # FILE_SHARE_READ deliberately omits DELETE, matching the sharing
+            # conflict raised by a reader during os.replace on Windows/SMB.
+            program = '''import ctypes,sys,time
+from ctypes import wintypes
+k=ctypes.WinDLL('kernel32',use_last_error=True)
+k.CreateFileW.argtypes=[wintypes.LPCWSTR,wintypes.DWORD,wintypes.DWORD,ctypes.c_void_p,wintypes.DWORD,wintypes.DWORD,wintypes.HANDLE]
+k.CreateFileW.restype=wintypes.HANDLE
+k.CloseHandle.argtypes=[wintypes.HANDLE]
+h=k.CreateFileW(sys.argv[1],0x80000000,1,None,3,0,None)
+if h==wintypes.HANDLE(-1).value: raise ctypes.WinError(ctypes.get_last_error())
+print('locked',flush=True)
+time.sleep(.4)
+k.CloseHandle(h)
+'''
+            child = subprocess.Popen([sys.executable, "-B", "-u", "-c", program, str(path)],
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(child.stdout.readline().strip(), "locked")
+                began = time.monotonic()
+                write_json(path, {"version": 2})
+                self.assertGreater(time.monotonic()-began, .25)
+                self.assertEqual(path.read_text().count('"version": 2'), 1)
+                self.assertEqual(child.wait(timeout=5), 0)
+            finally:
+                if child.poll() is None:
+                    child.terminate(); child.wait(timeout=5)
+                child.stdout.close(); child.stderr.close()
+
+    def test_recovery_preserves_binding_and_rejects_data_changes(self):
+        import json
+        runtime = Path("D:/TradingML/runtimes/bar_gpt/tests")
+        runtime.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=runtime) as temporary:
+            root = Path(temporary)
+            baseline = root / "research/bar_gpt/v5/shards/contract.py"
+            baseline.parent.mkdir(parents=True)
+            current_file = Path(__file__).with_name("contract.py")
+            baseline.write_bytes(current_file.read_bytes())
+            old = dict(width=64, code={"contract.py": file_hash(baseline), "source.py": "unchanged"})
+            current = dict(width=64, code={**old["code"], "build.py": "reviewed-controller-fix"})
+            saved = dict(contract=old, binding=digest(old))
+            receipt = root / "resume.json"
+            write_json(receipt, dict(old_binding=saved["binding"], new_contract_hash=digest(current),
+                                    new_code=current["code"], baseline_root=str(root)))
+            self.assertEqual(resolve_binding(saved, current, receipt), saved["binding"])
+            changed = dict(current, width=128)
+            with self.assertRaises(ValueError):
+                resolve_binding(saved, changed, receipt)
+            with self.assertRaises(ValueError):
+                resolve_binding(saved, current, None)
+
     def test_atomic_mmap_and_receipt_reuse(self):
         runtime = Path("D:/TradingML/runtimes/bar_gpt/tests")
         runtime.mkdir(parents=True, exist_ok=True)

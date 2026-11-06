@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+import time
 
 import numpy as np
 
@@ -50,11 +51,25 @@ def file_hash(path):
 
 
 def write_json(path, value):
-    """Atomically replace a small status/receipt file on the same volume."""
+    """Atomically publish JSON, tolerating brief Windows/SMB reader locks.
+
+    Never delete the destination to force publication: readers must see either
+    the old complete document or the new one. Permanent permission failures
+    still propagate after a bounded retry; callers decide whether the document
+    is required data evidence or merely best-effort progress telemetry.
+    """
     path = Path(path)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, sort_keys=True, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError as error:
+            if getattr(error, "winerror", None) not in (5, 32, 33) or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.05)
 
 
 def pack(values, valid, ends, frame, development):

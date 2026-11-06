@@ -19,6 +19,7 @@ from . import source
 from .contract import CHANNELS, FRAMES, SAMPLE_DTYPE, VERSION, digest, file_hash, write_json
 from .sql import clock, day_query
 from .storage import BAR_DTYPE, Budget, coarse_samples, publish, unpack_bars, verify_receipt
+from .recovery import resolve_binding
 
 
 class Status:
@@ -210,6 +211,8 @@ def main(argv=None):
     parser.add_argument("--seed", type=int, default=20261106)
     parser.add_argument("--endpoint")
     parser.add_argument("--source-revision", default="working-tree")
+    parser.add_argument("--resume-code-receipt", type=Path,
+                        help="Audited engineering-only migration; preserve existing data seals.")
     parser.add_argument("--tickers", default="")
     parser.add_argument("--years", default="2019,2020,2021,2022,2023,2024,2025")
     parser.add_argument("--max-days", type=int, default=0, help="Pilot only; separate output root.")
@@ -248,14 +251,24 @@ def campaign(args, years):
     total = 0
     active = {}
     interrupted = False
+    status_publish_errors = 0
 
     def snapshot():
-        write_json(args.output / "progress.json", dict(
+        nonlocal status_publish_errors
+        payload = dict(
             status.snapshot(), state=state, pid=os.getpid(), updated=time.time(),
             elapsed=time.time()-started, bytes=budget.used, reserved=budget.reserved,
             target_bytes=budget.limit, jobs_total=total, jobs_completed=completed,
             jobs_active=len(active), jobs_queued=max(0,total-completed-len(active)-len(failed)),
-            failed=failed, output=str(args.output)))
+            failed=failed, output=str(args.output), status_publish_errors=status_publish_errors)
+        try:
+            write_json(args.output / "progress.json", payload)
+        except PermissionError:
+            # A busy observer must not abort correctly committed data work.
+            # Required contract/shard receipt failures still propagate normally.
+            status_publish_errors += 1
+            print(f"Progress publication blocked by a reader; retrying next update "
+                  f"(publication failures={status_publish_errors}).", flush=True)
 
     snapshot()
     c = source.client(args.endpoint, args.query_memory_gib)
@@ -279,15 +292,15 @@ def campaign(args, years):
                         transform="unscaled Float32; masks separate; no fitted normalization or augmentation",
                         evidence="canonical finalized events; no assertion of causal correction-pair reconstruction")
         binding = digest(contract)
-        write_json(args.output / "launch.json", dict(source_revision=args.source_revision,
-                   workers=args.workers, io_workers=args.io_workers, query_memory_gib=args.query_memory_gib,
-                   started=datetime.now(timezone.utc).isoformat(), pid=os.getpid(), binding=binding))
         path = args.output / "contract.json"
         if path.exists():
-            if json.loads(path.read_text())["binding"] != binding:
-                raise ValueError("Existing dataset contract differs; use a new output directory.")
+            binding = resolve_binding(json.loads(path.read_text()), contract, args.resume_code_receipt)
         else:
             write_json(path, dict(binding=binding, contract=contract))
+        write_json(args.output / "launch.json", dict(source_revision=args.source_revision,
+                   workers=args.workers, io_workers=args.io_workers, query_memory_gib=args.query_memory_gib,
+                   started=datetime.now(timezone.utc).isoformat(), pid=os.getpid(), binding=binding,
+                   current_code=contract["code"], resume_code_receipt=str(args.resume_code_receipt)))
         state = "inventory"; snapshot()
         jobs = source.plan(c, args.output, args.seed, tuple(filter(None, args.tickers.split(","))), years)
         if args.max_jobs:

@@ -88,3 +88,12 @@ Remove it before resume with the same command. `progress.json` is refreshed
 every second during extraction; the observer shows stale snapshots explicitly.
 `complete.json` seals a ticker-year; `result.json` distinguishes scope completion,
 budget termination, interruption, inventory exhaustion, and failure.
+
+Windows/SMB readers can briefly deny atomic JSON replacement. Publication now
+retries these sharing conflicts for up to ten seconds. If only progress remains
+locked, extraction continues and reports `status_publish_errors`; failures to
+publish required shard receipts still stop the run. An engineering-only recovery
+may use `--resume-code-receipt`: this explicit audit pins exact old/new code,
+checks unchanged data parameters and extraction/storage hashes, and preserves
+the original contract binding and all sealed shard identities. It is not a
+general override for changed sample semantics.
