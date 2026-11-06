@@ -115,6 +115,32 @@ def main():
                         group_id=band.get_attribute('aria-label').split()[-1]
                         band.press('Enter')
                         expect(scope.get_by_label('V66 overlap group',exact=True)).to_have_value(group_id)
+                        if 'trajectory' in charts[-1][1]['label_version']:
+                            with page.expect_response(lambda r:'/v66/labels/chart?' in r.url and 'phase=1c' in r.url):
+                                scope.get_by_label('V66 label phase',exact=True).select_option('1c')
+                            box=timeline.locator('[role=button][data-selected=true]').first
+                            pair_1c=int(box.get_attribute('aria-label').split()[-1])
+                            with page.expect_response(lambda r:'/v66/labels/chart?' in r.url and 'segment_end_us=' in r.url and 'phase=1c' in r.url):
+                                box.press('Enter')
+                            expect(chart.locator('[data-reference-boundary]')).to_have_count(2)
+                            trajectory=charts[-1][1]['labels']
+                            selected=[r for r in trajectory if r['position_id_1c']==pair_1c]
+                            entries=[r for r in selected if r['action']=='ENTRY']
+                            exits=[r for r in selected if r['action']=='EXIT']
+                            assert len(entries)==len(exits)==1
+                            assert entries[0]['position_state_before']==0 and entries[0]['position_state_after']==1
+                            assert exits[0]['position_state_before']==1 and exits[0]['position_state_after']==0
+                            assert entries[0]['position_age_seconds']==exits[0]['remaining_duration_seconds']==0
+                            assert all(r['action']==r['action_1c'] for r in trajectory)
+                            expect(chart.get_by_label('Opportunity label view',exact=True)).to_be_disabled()
+                            chart.scroll_into_view_if_needed()
+                            page.screenshot(path=str(output/(name+'-trajectory.png')))
+                            scope.get_by_text('Session & episode values',exact=True).click()
+                            scope.get_by_label('Price-action candle',exact=True).select_option(str(entries[0]['time_us']))
+                            evidence=scope.locator('.research-candle-values')
+                            expect(evidence.get_by_text('Position age · seconds / 1s candles',exact=True)).to_be_visible()
+                            expect(evidence.get_by_text('Remaining duration · seconds / 1s candles',exact=True)).to_be_visible()
+                            evidence.screenshot(path=str(output/(name+'-trajectory-evidence.png')))
                         records.append(dict(theme=theme,scale=scale,viewport=size,ticker=ticker,pair_id=pair_id,candles=len(clocks),before=first,after=len(clocks)-last-1,geometry=geometry))
                         context.close()
         finally:browser.close()

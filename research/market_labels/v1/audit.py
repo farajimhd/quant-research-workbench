@@ -8,7 +8,8 @@ from research.rl_trading.v6 import price_action_opportunities as algorithm
 from .contract import VERSION, SCOPE
 from research.market_labels.v2.contract import VERSION as SPREAD_VERSION
 from research.market_labels.v3.contract import VERSION as EXECUTION_VERSION
-SPREAD_VERSIONS=(SPREAD_VERSION,EXECUTION_VERSION)
+from research.market_labels.v4.contract import VERSION as TRAJECTORY_VERSION
+SPREAD_VERSIONS=(SPREAD_VERSION,EXECUTION_VERSION,TRAJECTORY_VERSION)
 
 
 def published():
@@ -22,7 +23,7 @@ def published():
 
 def catalog():
     active,dataset,_=published()
-    return dict(dataset_sha256=active['sha256'],label_version=dataset['version'],supports_combined=True,scope=dataset['scope'],days=[dict(**d,invalid_price_rows=d['excluded_rows']) for d in dataset['days']])
+    return dict(dataset_sha256=active['sha256'],label_version=dataset['version'],supports_combined=True,supports_1c=dataset['version']==TRAJECTORY_VERSION,scope=dataset['scope'],days=[dict(**d,invalid_price_rows=d['excluded_rows']) for d in dataset['days']])
 
 
 def session(day):
@@ -50,13 +51,17 @@ def read_frame(root,proof,name,identity=None):
 
 
 def product(day,identity,phase='1a'):
-    if phase not in ('1a','1b'):raise ValueError('Unknown label phase')
+    if phase not in ('1a','1b','1c'):raise ValueError('Unknown label phase')
     active,proof,root=session(day)
     item=next((r for r in proof['listings'] if r['listing_id']==identity),None)
     if item is None:raise ValueError('Ticker not in V66 session')
     if not item['valid_rows']:raise ValueError('Ticker has no valid warmed-up label candles; see exclusion count')
     labels=read_frame(root,proof,item['file'])
     if phase=='1a':labels=labels.with_columns(pl.col('action_1a').alias('action'),pl.col('reference_action_1a').alias('reference_action'),pl.col('label_value_1a').alias('label_value'))
+    if phase=='1c':
+        if proof['version']!=TRAJECTORY_VERSION:raise ValueError('1c is not published')
+        labels=labels.with_columns(pl.col('action_1c').alias('action'),pl.col('action_1c').alias('reference_action'),
+            pl.col('label_value_1c').alias('label_value'),pl.col('teacher_probabilities_1c').alias('teacher_probabilities'))
     frames=dict(labels=labels,**{name:read_frame(root,proof,name+'.parquet',identity) for name in ('episodes','pairs','trades')})
     decisions=read_frame(root,proof,'decisions.parquet',identity)
     pairs=frames['pairs'].join(decisions.select('listing_id','pair_id','selected','selection_reason','selection_score','allocation_ratio','group_id'),on=['listing_id','pair_id'],how='left',validate='1:1')
@@ -67,7 +72,7 @@ def product(day,identity,phase='1a'):
         config=proof['config'],selection=proof['selection'],begin_us=proof['begin_us'],finish_us=proof['finish_us'],
         dataset_sha256=active['sha256'],observed_price_candles=labels.height,consumed_activity_rows=item['source_rows'],omitted_invalid_price_rows=item['excluded_rows'],
         absent_second_slots=19800-item['source_rows'],approximate_volume=None,trades=frames['trades'].height,total_price_pnl=float(frames['trades']['price_pnl'].sum()),
-        both_opportunities=int(labels['both_opportunities'].sum()),actions=labels.group_by('action').len().sort('action').to_dicts(),
+        both_opportunities=0 if phase=='1c' else int(labels['both_opportunities'].sum()),actions=labels.group_by('action').len().sort('action').to_dicts(),
         pairs=pairs.to_dicts(),price_source=str(root/item['file']),scope=proof.get('scope',SCOPE),
         semantics='Saved '+phase+' targets; V66 session-reset MACD; premarket-only hindsight. Reference price P&L is 1a, not fills or a 1b portfolio.',
         exclusions=read_frame(root,proof,'excluded.parquet',identity).group_by('reason').len().to_dicts())
@@ -110,11 +115,12 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
             shown=shown.with_columns(pl.when(pl.col('action')=='ENTRY').then(pl.col('entry_quality'))
                 .when(pl.col('action')=='EXIT').then(pl.col('exit_quality')).when(pl.col('action')=='HOLD').then(1-pl.col('exit_quality').fill_null(0))
                 .when(pl.col('action')=='WAIT').then(1.).otherwise(None).alias('label_value'))
-    if phase=='1b' and proof['version']==EXECUTION_VERSION:
+    if phase=='1b' and proof['version'] in (EXECUTION_VERSION,TRAJECTORY_VERSION):
         shown=shown.with_columns(pl.when(~pl.col('economic_label_valid')).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'),
             pl.when(~pl.col('economic_label_valid')).then(None).otherwise(pl.col('label_value')).alias('label_value'))
     if view=='held':
         shown=shown.with_columns(pl.when(pl.col('exit_gain').is_null() | ((pl.col('episode_selected')!=True).fill_null(True) if phase=='1b' else pl.lit(False))).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'))
+    if phase=='1c':shown=window  # Saved hard trajectory; never reclassify opportunity windows.
     candles=[dict(time=r['time_us']//1_000_000-1,endTime=r['time_us']//1_000_000,isClosed=True,**{k:r[k] for k in ('open','high','low','close')}) for r in window.iter_rows(named=True)]
     oscillator=[]
     for column,name,color in [('macd_line','MACD','var(--primary)'),('macd_signal','Signal','var(--warning)'),('macd_histogram','Histogram','var(--muted-foreground)')]:
