@@ -40,9 +40,19 @@ def v66_chart(day: str, listing_id: str, start_us: int | None=None,
 
 
 @router.get('/v66/labels/market')
-def v66_market(day: str, search: str='', selection: Literal['all','selected','rejected']='all', offset: int=Query(0,ge=0)):
+def v66_market(day: str, search: str='', selection: Literal['all','selected','rejected']='all', offset: int=Query(0,ge=0), group_id: int | None=Query(None,ge=1)):
     from research.market_labels.v1 import audit
-    return read(audit.market,day,search,selection,offset)
+    return read(audit.market,day,search,selection,offset,group_id)
+
+
+@router.get('/v66/labels/timeline')
+def v66_timeline(day: str, start_us: int | None=None, seconds: int=Query(300,ge=60,le=3600),
+                 search: str='', include_rejected: bool=False, dataset_sha256: str | None=None):
+    from research.market_labels.v1 import audit
+    result=read(audit.timeline,day,start_us,seconds,search,include_rejected)
+    if dataset_sha256 is not None and result['dataset_sha256']!=dataset_sha256:
+        raise HTTPException(409,'V66 labels changed; reload the dataset')
+    return result
 
 @router.get('/v6/market-labels')
 def published_market_session(day: str):

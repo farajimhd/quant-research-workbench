@@ -13,6 +13,23 @@ from research.vectorized_backtest.v66.features import BASE
 
 
 class Labels(unittest.TestCase):
+    def test_timeline_half_open_overlap_and_filter_independent_score(self):
+        from research.market_labels.v1.audit import timeline_rows
+        rows=pl.DataFrame(dict(listing_id=['A','B','C','D'],pair_id=[1,2,3,4],
+            time_us=[1_000_000,20_000_000,80_000_000,10_000_000],
+            entry_target_us=[20_000_000,40_000_000,90_000_000,100_000_000],
+            selected=[True,True,True,False],selection_score=[.1,.2,.3,None],best_score=[.1,.2,.3,.4]))
+        groups=[dict(group_id=1,start_us=1_000_000,end_us=20_000_000,members=1),
+                dict(group_id=2,start_us=20_000_000,end_us=40_000_000,members=1)]
+        result=timeline_rows(rows,groups,0,100_000_000,20_000_000,60,include_rejected=True)
+        self.assertEqual([r['listing_id'] for r in result['rows']],['D','B'])
+        self.assertEqual([g['group_id'] for g in result['groups']],[2])
+        self.assertAlmostEqual(result['session_score_sum'],.6)
+        selected=timeline_rows(rows,groups,0,100_000_000,20_000_000,60,search='b')
+        self.assertEqual([r['ticker'] for r in selected['rows']],['B'])
+        self.assertAlmostEqual(selected['session_score_sum'],.6)
+        self.assertEqual(timeline_rows(rows,groups,0,100_000_000,200_000_000,60)['total'],0)
+
     def fixture(self,root,*,constant=False):
         day='2026-01-05';origin=origin_us(day);n=180
         close=np.ones(n)*5 if constant else 5+.2*np.sin(np.arange(n)/9)
@@ -85,6 +102,14 @@ class Labels(unittest.TestCase):
                 response=client.get('/api/research/models/v66/labels/market',params=dict(day=day,selection='selected'))
                 self.assertEqual(response.status_code,200,response.text)
                 self.assertTrue(all(r['selected'] for r in response.json()['rows']))
+                response=client.get('/api/research/models/v66/labels/timeline',params=dict(day=day,dataset_sha256='pinned',include_rejected=True))
+                self.assertEqual(response.status_code,200,response.text)
+                self.assertEqual(response.json()['dataset_sha256'],'pinned')
+                for row in response.json()['rows']:
+                    self.assertLess(row['time_us'],response.json()['end_us'])
+                    self.assertGreater(row['entry_target_us'],response.json()['start_us'])
+                response=client.get('/api/research/models/v66/labels/timeline',params=dict(day=day,dataset_sha256='stale'))
+                self.assertEqual(response.status_code,409)
 
 
 if __name__=='__main__':unittest.main()

@@ -4,10 +4,10 @@ import { researchApi } from "./researchApi";
 
 type Episode = {listing_id:string;ticker:string;pair_id:number;time_us:number;entry_target_us:number;selected:boolean;selection_reason:string;selection_score:number|null;best_score:number|null;group_id:number|null;allocation_ratio:number;entry_gain:number;close:number;score_threshold:number;start_us:number;reference_exit_us:number|null};
 type Group = {group_id:number;start_us:number;end_us:number;target_end_us:number;members:number};
-type Timeline = {start_us:number|null;end_us:number|null;begin_us:number|null;finish_us:number|null;rows:Episode[];groups:Group[];total:number;unavailable:number;truncated:boolean};
+type Timeline = {dataset_sha256?:string;session_score_sum?:number;start_us:number|null;end_us:number|null;begin_us:number|null;finish_us:number|null;rows:Episode[];groups:Group[];total:number;unavailable:number;truncated:boolean};
 const clock=(us:number)=>new Date(us/1000).toLocaleTimeString("en-GB",{timeZone:"America/New_York",hour12:false});
 const color=(id:number|null)=>id===null?"var(--muted-foreground)":`hsl(${(id*137.508)%360} 65% 48%)`;
-export function EpisodeGroupingChart({jobId,sessionScore,focusedGroup,onGroup,onInspect}:{jobId:string;sessionScore:number;focusedGroup:string;onGroup:(id:string)=>void;onInspect:(row:Episode)=>void}) {
+export function EpisodeGroupingChart({jobId,sessionScore,focusedGroup,onGroup,onInspect,savedV66}:{jobId:string;sessionScore:number;savedV66?:{day:string;datasetSha:string};focusedGroup:string;onGroup:(id:string)=>void;onInspect:(row:Episode)=>void}) {
  const surface=useRef<HTMLElement>(null);
  const gesture=useRef<{x:number;start:number;dragged:boolean}|null>(null);
  const suppressClick=useRef(false);
@@ -18,10 +18,10 @@ export function EpisodeGroupingChart({jobId,sessionScore,focusedGroup,onGroup,on
  useEffect(()=>{setStart(null);setData(null);},[jobId]);
  useEffect(()=>{
   const abort=new AbortController();setLoading(true);setError("");
-  const timer=window.setTimeout(()=>researchApi<Timeline>(`/api/research/models/v6/market-preview/timeline${query({job_id:jobId,start_us:start??undefined,seconds,search,include_rejected:rejected})}`,{signal:abort.signal,timeoutMs:300000})
-   .then(r=>{if(!abort.signal.aborted)setData(r);}).catch(e=>{if(!abort.signal.aborted)setError(String(e));}).finally(()=>{if(!abort.signal.aborted)setLoading(false);}),120);
+  const timer=window.setTimeout(()=>researchApi<Timeline>(`${savedV66 ? "/api/research/models/v66/labels/timeline" : "/api/research/models/v6/market-preview/timeline"}${query({job_id:savedV66?undefined:jobId,day:savedV66?.day,dataset_sha256:savedV66?.datasetSha,start_us:start??undefined,seconds,search,include_rejected:rejected})}`,{signal:abort.signal,timeoutMs:300000})
+   .then(r=>{if(!abort.signal.aborted){if(savedV66 && r.dataset_sha256!==savedV66.datasetSha)throw new Error("V66 labels changed; reload the dataset.");setData(r);}}).catch(e=>{if(!abort.signal.aborted)setError(String(e));}).finally(()=>{if(!abort.signal.aborted)setLoading(false);}),120);
   return()=>{window.clearTimeout(timer);abort.abort();};
- },[jobId,start,seconds,search,rejected]);
+ },[jobId,start,seconds,search,rejected,savedV66?.day,savedV66?.datasetSha]);
  const layout=useMemo(()=>{
   const ends:number[]=[];
   const rows=(data?.rows??[]).map(row=>{let lane=ends.findIndex(end=>end<=row.time_us);if(lane<0)lane=ends.length;ends[lane]=row.entry_target_us;return {...row,lane,score:row.selection_score??row.best_score??0};});
@@ -47,7 +47,7 @@ export function EpisodeGroupingChart({jobId,sessionScore,focusedGroup,onGroup,on
    <button className="button secondary compact" disabled={loading||!data} onClick={()=>{setStart(data!.begin_us);onGroup("");}}>Session start</button>
   </div>
   <label className="research-preview-compare"><input aria-label="Grouping chart rejected" type="checkbox" checked={rejected} onChange={e=>setRejected(e.target.checked)}/>Show positive-score rejected episodes</label>
-  <p className="research-grouping-summary"><strong>Session selected score sum: {(sessionScore*100).toLocaleString(undefined,{maximumFractionDigits:3})}%</strong><span>Sum of selected episode scores · whole session · not cash-weighted P&amp;L</span></p>
+  <p className="research-grouping-summary"><strong>Session selected score sum: {((savedV66 ? data?.session_score_sum ?? 0 : sessionScore)*100).toLocaleString(undefined,{maximumFractionDigits:3})}%</strong><span>Sum of selected episode scores · whole session · not cash-weighted P&amp;L</span></p>
   <details className="research-grouping-help"><summary>Chart guide</summary><p>Width = elapsed ENTRY-to-target time; height = score. Group bands span earliest ENTRY to latest target. Color = group, red = threshold rejected, gray = other rejected. Drag horizontally to pan; scroll to zoom. Lanes show overlaps. Click a box for candles or a band for its group. Dashed line = 0.1%; minimum visible height = 2px.</p></details>
   {error&&<p role="alert">{error}</p>}
   <p role="status">{loading?"Loading episode timeline…":data?.start_us?`${clock(axisStart)}–${clock(axisEnd)} ET · ${data.total.toLocaleString()} episodes · height maximum ${(layout.maxScore*100).toFixed(3)}%`:"No positive episodes"}</p>
@@ -66,8 +66,8 @@ export function EpisodeGroupingChart({jobId,sessionScore,focusedGroup,onGroup,on
    <div className="research-grouping-lanes"><svg width={width} viewBox={`0 0 ${width} ${layout.lanes*52+12}`} height={layout.lanes*52+12} role="group" aria-label="Episode score boxes">
     {ticks.map(t=><line key={t} x1={x(t)} x2={x(t)} y1={0} y2={layout.lanes*52+12}/>)}
     {Array.from({length:layout.lanes},(_,i)=><g key={i}><text x={6} y={i*52+35}>Lane {i+1}</text><line x1={70} x2={width-50} y1={i*52+46-height(.001)} y2={i*52+46-height(.001)} strokeDasharray="3 4"/></g>)}
-    {layout.rows.filter(r=>r.time_us<axisEnd&&r.entry_target_us>axisStart).map(r=><g key={`${r.listing_id}:${r.pair_id}`} role="button" tabIndex={0} aria-label={`Inspect ${r.ticker} pair ${r.pair_id}`} onClick={()=>onInspect(r)} onKeyDown={e=>activate(e,()=>onInspect(r))} opacity={focusedGroup&&focusedGroup!==String(r.group_id)?0.25:1}>
-     <title>{`${r.ticker} · pair ${r.pair_id}\n${clock(r.time_us)} → ${clock(r.entry_target_us)} · ${(r.entry_target_us-r.time_us)/1e6}s\nScore ${(r.score*100).toFixed(4)}% · gain $${r.entry_gain.toFixed(4)}/share\n${r.selected?`Group ${r.group_id} · ${(r.allocation_ratio*100).toFixed(3)}% cash`:r.selection_reason}`}</title>
+    {layout.rows.filter(r=>r.time_us<axisEnd&&r.entry_target_us>axisStart).map(r=><g key={`${r.listing_id}:${r.pair_id}`} role="button" data-selected={r.selected} tabIndex={0} aria-label={`Inspect ${r.ticker} pair ${r.pair_id}`} onClick={()=>onInspect(r)} onKeyDown={e=>activate(e,()=>onInspect(r))} opacity={focusedGroup&&focusedGroup!==String(r.group_id)?0.25:1}>
+     <title>{`${r.ticker} · pair ${r.pair_id}\n${clock(r.time_us)} → ${clock(r.entry_target_us)} · ${(r.entry_target_us-r.time_us)/1e6}s\nScore ${(r.score*100).toFixed(4)}% · gain $${r.entry_gain.toFixed(4)}/share\n${r.selected?`Group ${r.group_id} · ${(r.allocation_ratio*100).toFixed(3)}% relative allocation`:r.selection_reason}`}</title>
      <rect x={x(r.time_us)} y={r.lane*52+46-Math.max(2,height(r.score))} width={Math.max(2,x(r.entry_target_us)-x(r.time_us))} height={Math.max(2,height(r.score))} fill={r.selected?color(r.group_id):r.selection_reason==="below_score_threshold"?"var(--research-threshold-rejected)":"none"} fillOpacity={.65} stroke={r.selection_reason==="below_score_threshold"?"var(--research-threshold-rejected)":color(r.group_id)} strokeWidth={focusedGroup===String(r.group_id)?2:1} strokeDasharray={r.selected?undefined:"3 2"}/>
      {x(r.entry_target_us)-x(r.time_us)>55&&<text x={x(r.time_us)+2} y={r.lane*52+12}>{r.ticker}</text>}
     </g>)}

@@ -1,8 +1,9 @@
 """Real published V66 label review through the application's Research route."""
 import argparse
 import json
+import re
 from pathlib import Path
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, expect
 
 
 def main():
@@ -39,6 +40,26 @@ def main():
                         with page.expect_response(lambda r:'/v66/labels/chart?' in r.url and 'phase=1b' in r.url):
                             scope.get_by_label('V66 label phase',exact=True).select_option('1b')
                         scope.locator('.chart-shell').wait_for(timeout=300000)
+                        timeline=scope.get_by_role('region',name='Episode grouping chart')
+                        band=timeline.get_by_role('button',name=re.compile('^Inspect group ')).first
+                        band.wait_for(timeout=300000)
+                        timeline.get_by_label('Grouping chart scale',exact=True).select_option('log')
+                        group_id=band.get_attribute('aria-label').split()[-1]
+                        with page.expect_response(lambda r:'/v66/labels/market?' in r.url and 'group_id='+group_id in r.url):
+                            band.click()
+                        expect(scope.get_by_label('V66 overlap group',exact=True)).to_have_value(group_id)
+                        scope.get_by_label('V66 overlap group',exact=True).select_option('')
+                        scope.get_by_text('1b selection, overlap groups & relative sizing',exact=True).click()
+                        box=timeline.locator('[role=button][data-selected=true]').first
+                        selected_pair=int(box.get_attribute('aria-label').split()[-1])
+                        with page.expect_response(lambda r:'/v66/labels/chart?' in r.url and 'start_us=' in r.url and 'phase=1a' in r.url):
+                            box.click()
+                        scope.locator('.chart-shell').wait_for(timeout=300000)
+                        expect(scope.get_by_label('V66 label phase',exact=True)).to_have_value('1b')
+                        expect(scope.get_by_text('1a · V66 saved labels',exact=True)).to_be_visible()
+                        assert any(r['pair_id']==selected_pair for r in responses[-1]['labels'])
+                        assert all(r['action']==r['action_1a'] for r in responses[-1]['labels'])
+                        timeline.screenshot(path=str(output/(name+'-timeline.png')))
                         scope.get_by_text('1b selection, overlap groups & relative sizing',exact=True).click()
                         scope.get_by_label('V66 pair selection',exact=True).select_option('selected')
                         page.wait_for_function("document.querySelectorAll('.research-v66-decisions tbody tr').length > 0")

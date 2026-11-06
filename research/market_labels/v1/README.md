@@ -8,6 +8,12 @@ The direct app route is `/?research=v66-labels#research-workspace`. Choose the
 phase, session and ticker; in 1b, expand the selection table and click a pair
 to jump to its saved entry candles. The existing flat/held/reference views,
 liquidity audit, quality/gain inspector and fullscreen chart remain available.
+Phase 1b also shows the overlap timeline directly above the decision table.
+Boxes span saved ENTRY-to-target intervals, with separate overlap lanes and
+group bands. Pan/zoom, ticker filtering, linear/log score height and rejected
+opportunities use the existing Research timeline component. Clicking a selected
+box opens that ticker/pair's original **1a** labels in Price-action candles,
+while keeping the 1b timeline visible. Clicking a group band filters the table.
 
 The source is the V66 `2026-top5-v1` manifest pair: 150 training and 38
 validation sessions. All stored ticker-union candles are considered, not only

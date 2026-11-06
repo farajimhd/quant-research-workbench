@@ -84,3 +84,6 @@
 .research-v66-decisions :is(th, td) { padding: .5rem .65rem; border-bottom: 1px solid var(--border); text-align: right; white-space: nowrap; }
 .research-v66-decisions :is(th, td):first-child, .research-v66-decisions :is(th, td):nth-child(2) { text-align: left; }
 .research-v66-decisions thead { color: var(--muted-foreground); }
+.research-v66-workspace { overflow: auto; }
+.research-v66-workspace > .research-page { flex: 0 0 auto; height: auto; overflow: visible; }
+.research-v66-timeline .research-grouping-chart { margin: 0; }

@@ -96,8 +96,34 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
         previous_available=offset>0,next_available=offset+120<n,dataset_sha256=proof['dataset_sha256'],quality_threshold=.9)
 
 
-def market(day,search='',selection='all',offset=0):
+def market(day,search='',selection='all',offset=0,group_id=None):
     active,proof,root=session(day);rows=read_frame(root,proof,'decisions.parquet')
     if search:rows=rows.filter(pl.col('listing_id').str.to_uppercase().str.contains(search.upper(),literal=True))
     if selection!='all':rows=rows.filter(pl.col('selected')==(selection=='selected'))
+    if group_id is not None:rows=rows.filter(pl.col('group_id')==group_id)
     return dict(dataset_sha256=active['sha256'],groups=proof['groups'],total=rows.height,rows=rows.sort('time_us','listing_id',nulls_last=True).slice(offset,100).to_dicts())
+
+
+def timeline_rows(rows,groups,begin,finish,start_us=None,seconds=300,search='',include_rejected=False):
+    """Project saved half-open ENTRY/target intervals; no label recomputation."""
+    if not 60<=seconds<=3600:raise ValueError('Timeline window must be 60..3600 seconds')
+    selected=rows.filter(pl.col('selected'))
+    score_sum=float(selected['selection_score'].sum() or 0.)
+    positive=rows.filter(pl.coalesce('selection_score','best_score')>0)
+    first=positive['time_us'].min()
+    start=max(begin,start_us if start_us is not None else first or begin)
+    end=start+seconds*1_000_000
+    if not include_rejected:positive=positive.filter(pl.col('selected'))
+    if search:positive=positive.filter(pl.col('listing_id').str.to_uppercase().str.contains(search.upper(),literal=True))
+    unavailable=positive.filter(pl.col('entry_target_us').is_null() & pl.col('time_us').is_between(start,end,closed='left')).height
+    visible=positive.filter((pl.col('time_us')<end)&(pl.col('entry_target_us')>start)).sort('time_us','listing_id','pair_id')
+    visible=visible.with_columns(pl.col('listing_id').alias('ticker'))
+    visible_groups=[dict(g,target_end_us=g['end_us']) for g in groups if g['start_us']<end and g['end_us']>start]
+    return dict(start_us=start,end_us=end,begin_us=begin,finish_us=finish,rows=visible.head(5000).to_dicts(),groups=visible_groups,
+        total=visible.height,unavailable=unavailable,truncated=visible.height>5000,session_score_sum=score_sum)
+
+
+def timeline(day,start_us=None,seconds=300,search='',include_rejected=False):
+    active,proof,root=session(day)
+    result=timeline_rows(read_frame(root,proof,'decisions.parquet'),proof['groups'],proof['begin_us'],proof['finish_us'],start_us,seconds,search,include_rejected)
+    return dict(result,dataset_sha256=active['sha256'])
