@@ -185,6 +185,61 @@ function Assert-IPv4Literal {
     }
 }
 
+function Sync-ClickHouseHttpForward {
+    param([string]$Distro, [string]$LanIp, [string]$LaptopIp)
+
+    Assert-IPv4Literal -Name "ClickHouse HTTP LAN address" -Value $LanIp
+    Assert-IPv4Literal -Name "ClickHouse HTTP laptop address" -Value $LaptopIp
+    if (-not (Get-NetIPAddress -AddressFamily IPv4 -IPAddress $LanIp -ErrorAction SilentlyContinue)) {
+        throw "ClickHouse HTTP address $LanIp is not assigned to this workstation."
+    }
+    if ((Get-Service iphlpsvc).Status -ne "Running") {
+        throw "ClickHouse HTTP forwarding requires the Windows IP Helper service."
+    }
+    $WslAddresses = @(wsl -d $Distro -- ip -4 -o addr show dev eth0)
+    if ($LASTEXITCODE -ne 0) { throw "Could not inspect the WSL HTTP interface." }
+    $WslIpMatches = [regex]::Matches(($WslAddresses -join ' '), '\binet ([0-9.]+)/')
+    if ($WslIpMatches.Count -ne 1) { throw "Expected one WSL eth0 IPv4 address for HTTP forwarding." }
+    $WslIp = $WslIpMatches[0].Groups[1].Value
+    Assert-IPv4Literal -Name "ClickHouse HTTP WSL address" -Value $WslIp
+
+    $RuleName = "QuantWorkbench-ClickHouse-HTTP-18123"
+    $Rule = Get-NetFirewallRule -Name $RuleName -ErrorAction SilentlyContinue
+    if ($null -eq $Rule) {
+        New-NetFirewallRule -Name $RuleName -DisplayName "ClickHouse HTTP from Quant Workbench laptop only" `
+            -Direction Inbound -Action Allow -Enabled True -Profile Any -Protocol TCP `
+            -LocalAddress $LanIp -RemoteAddress $LaptopIp -LocalPort 18123 | Out-Null
+        $Rule = Get-NetFirewallRule -Name $RuleName -ErrorAction Stop
+    }
+    $Port = $Rule | Get-NetFirewallPortFilter
+    $Address = $Rule | Get-NetFirewallAddressFilter
+    if ($Rule.Enabled -ne "True" -or $Rule.Direction -ne "Inbound" -or $Rule.Action -ne "Allow" -or
+        $Port.Protocol -ne "TCP" -or $Port.LocalPort -ne "18123" -or
+        $Address.LocalAddress -ne $LanIp -or $Address.RemoteAddress -ne $LaptopIp) {
+        throw "ClickHouse HTTP firewall rule must allow only laptop $LaptopIp to $LanIp`:18123."
+    }
+    # Reapplying the exact forward also restores a saved but inactive listener.
+    # Do not reset portproxy or touch Keeper/other applications' forwards.
+    netsh interface portproxy add v4tov4 listenaddress=$LanIp listenport=18123 `
+        connectaddress=$WslIp connectport=8123 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not publish the restricted ClickHouse HTTP forward." }
+
+    $Ready = $false
+    for ($Attempt = 0; $Attempt -lt 10; $Attempt++) {
+        if (Get-NetTCPConnection -State Listen -LocalAddress $LanIp -LocalPort 18123 -ErrorAction SilentlyContinue) {
+            $Response = Invoke-WebRequest -UseBasicParsing -Uri "http://$LanIp`:18123/ping" -TimeoutSec 5
+            if ($Response.StatusCode -eq 200 -and $Response.Content.Trim() -eq "Ok.") {
+                $Ready = $true
+                break
+            }
+            throw "ClickHouse HTTP forward returned an unexpected ping response."
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    if (-not $Ready) { throw "ClickHouse HTTP forward is configured but has no active listener." }
+    Write-Host "ClickHouse HTTP ready: $LanIp`:18123 -> $WslIp`:8123; laptop $LaptopIp only."
+}
+
 function Assert-ClickHouseIdentifier {
     param(
         [string]$Name,
@@ -513,6 +568,8 @@ wsl -d $Distro -u root --cd / -- env @BootstrapEnv bash "$BootstrapScriptWsl"
 if ($LASTEXITCODE -ne 0) {
     throw "ClickHouse bootstrap failed in WSL distro '$Distro' with exit code $LASTEXITCODE."
 }
+
+Sync-ClickHouseHttpForward -Distro $Distro -LanIp $WorkstationLanIp -LaptopIp $QuantResearchWorkbenchIp
 
 if ($EffectiveEnableKeeperLanTls) {
     # Only the laptop's exact LAN address may reach the mTLS listener. Keep

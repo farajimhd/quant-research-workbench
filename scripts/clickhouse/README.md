@@ -30,6 +30,20 @@ do not forward Keeper's unauthenticated port to the LAN. The direct trading
 coordinator stays disabled until a secure client path with TLS/ACL and cold
 recovery tests is validated.
 
+The managed launcher refreshes Windows TCP `18123` forwarding to the current
+WSL `eth0` address on TCP `8123` after the Linux bootstrap succeeds. It binds
+only `CLICKHOUSE_WORKSTATION_LAN_IP` (default `192.168.0.21`) and validates a
+laptop-only firewall rule using `CLICKHOUSE_QUANT_RESEARCH_WORKBENCH_IP`.
+It fails if that local address, IP Helper, or the forwarded HTTP ping is not
+ready. Other forwards and Keeper ports are preserved. This avoids a stale
+WSL target or an inactive saved portproxy rule after a restart.
+
+Laptop services must use the permitted dedicated address, for example
+`REAL_LIVE_CLICKHOUSE_WRITE_URL=http://192.168.0.21:18123`. The workstation
+hostname may resolve to its other adapter, which this firewall does not allow.
+After startup, verify from the laptop as well as the workstation; a WSL-local
+ping alone does not establish laptop connectivity.
+
 After startup, verify through an authenticated ClickHouse account:
 
 ```sql
