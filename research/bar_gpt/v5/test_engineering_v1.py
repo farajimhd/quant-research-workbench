@@ -119,6 +119,23 @@ def test_actual_cuda_training_path(inventory):
     assert sum(result["target_counts"]) > 0
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_training_entrypoint_checkpoint_and_resume(inventory, tmp_path):
+    """Exercise the actual run module, checkpoint publication, validation, and next-epoch resume."""
+    from research.bar_gpt.v5.run_v1 import main
+    common = ["--mode", "train", "--split-manifest", str(tmp_path / "split.json"),
+              "--model", "small", "--batch-size", "16", "--workers", "0", "--train-steps", "2",
+              "--validation-steps", "1", "--checkpoint-every", "1", "--wandb-mode", "disabled",
+              "--source-revision", "synthetic-test"]
+    assert main(common + ["--output", str(tmp_path / "run")]) == 0
+    checkpoint = tmp_path / "run" / "checkpoint.pt"
+    saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    assert saved["epoch"] == 1 and saved["cursor"] == 0
+    assert main(common + ["--output", str(tmp_path / "resumed"), "--resume", str(checkpoint), "--epochs", "2"]) == 0
+    resumed = torch.load(tmp_path / "resumed" / "checkpoint.pt", map_location="cpu", weights_only=False)
+    assert resumed["epoch"] == 2 and resumed["step"] > saved["step"]
+
+
 def test_flex_block_layout_matches_sdpa(monkeypatch):
     """Verify QKV/layout/gradient equivalence independently of optional compiler installation."""
     from research.bar_gpt.v5 import encoder_v1

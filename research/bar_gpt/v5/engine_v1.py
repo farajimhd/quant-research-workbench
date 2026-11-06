@@ -54,7 +54,8 @@ class CudaBatches:
 
 
 def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precision="bf16",
-              training=True, reporter=None, log_base=0, seconds_limit=60, stop_path=None):
+              training=True, reporter=None, log_base=0, seconds_limit=60, stop_path=None,
+              on_step=None, profiler=None):
     """Run a bounded actual-loader window; return throughput, latency, losses, and evidence counts.
 
     Warmup is excluded from timing. CUDA events measure compute; wall time includes
@@ -101,6 +102,10 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
                 optimizer.step()
             end.record()
             consumed += 1
+            if on_step is not None:
+                on_step(consumed)  # Caller checkpoints only at its configured cadence.
+            if profiler is not None:
+                profiler.step()  # Diagnostic runs only; never compare trace overhead as ordinary throughput.
             if step >= warmup:
                 events.append((start, end))
                 losses.append(loss.detach())
@@ -121,7 +126,7 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
                 if not torch.isfinite(loss):
                     raise FloatingPointError("Nonfinite loss during measured run.")
                 elapsed = time.perf_counter() - (begin_measure or began)
-                metrics = dict(loss=float(loss), samples_per_second=samples/max(elapsed, 1e-9),
+                metrics = dict(loss=float(loss.detach()), samples_per_second=samples/max(elapsed, 1e-9),
                                peak_gib=torch.cuda.max_memory_allocated()/2**30,
                                loader_wait_pct=100*(batches.wait_seconds-(wait_start if begin_measure else 0))/max(elapsed, 1e-9))
                 reporter.update(stage="training" if training else "validation", done=step+1,
@@ -139,7 +144,8 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
         valid = counts > 0
         per_feature = sums/counts.clamp_min(1)
         result = dict(samples=samples, measured_steps=measured, consumed_batches=consumed, exhausted=exhausted,
-                      seconds=elapsed, startup_seconds=startup_seconds, samples_per_second=samples/elapsed,
+                      seconds=elapsed, startup_seconds=startup_seconds,
+                      warmup_seconds=begin_measure-began-startup_seconds, samples_per_second=samples/elapsed,
                       compute_ms_mean=float(milliseconds.mean()), compute_ms_p95=float(np.quantile(milliseconds, .95)),
                       compute_duty_pct=min(100., float(milliseconds.sum()/10/elapsed)),
                       loader_wait_pct=100*(batches.wait_seconds-wait_start)/elapsed,
@@ -149,6 +155,8 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
                       feature_mae=(mae_sums/counts.clamp_min(1)).cpu().tolist(),
                       feature_rmse=(squared_sums/counts.clamp_min(1)).sqrt().cpu().tolist(),
                       target_counts=counts.cpu().tolist())
+        for key in ("feature_loss", "feature_mae", "feature_rmse"):
+            result[key] = [value if count else None for value, count in zip(result[key], result["target_counts"])]
         if reporter:
             with reporter.lock:
                 readings = [reading for reading in reporter.gpu_samples if reading[0] >= begin_measure]

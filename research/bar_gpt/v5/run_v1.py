@@ -1,6 +1,7 @@
 """Bounded workstation profiling and explicit resumable MAE training entry point."""
 
 import argparse
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 import gc
 import json
@@ -55,6 +56,8 @@ def arguments(argv=None):
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--train-steps", type=int, default=1000, help="Explicit bounded training scope per epoch.")
     parser.add_argument("--validation-steps", type=int, default=8)
+    parser.add_argument("--checkpoint-every", type=int, default=100)
+    parser.add_argument("--trace", action="store_true", help="Capture a short operator trace; its timing includes profiler overhead.")
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--wandb-mode", choices=("online", "offline", "disabled"), default="online")
@@ -62,7 +65,7 @@ def arguments(argv=None):
     parser.add_argument("--panel", action="store_true")
     parser.add_argument("--refine", action="store_true", help="Also compare worker counts and FP32 for the fastest configuration.")
     args = parser.parse_args(argv)
-    if min(args.steps, args.seconds, args.batch_size, args.epochs, args.train_steps, args.validation_steps) < 1 or args.warmup < 0:
+    if min(args.steps, args.seconds, args.batch_size, args.epochs, args.train_steps, args.validation_steps, args.checkpoint_every) < 1 or args.warmup < 0:
         parser.error("Step, duration, epoch, and batch limits must be positive.")
     if not 0 <= args.workers <= 32 or not 1 <= args.prefetch <= 4:
         parser.error("workers must be 0..32; prefetch must be 1..4.")
@@ -153,6 +156,10 @@ def profile(args, manifest, stats, reporter):
         if (args.output / "STOP").exists():
             break
         name, batch, workers, precision = plans[index]
+        for worker_file in (args.output / "workers").glob("worker-*.json"):
+            identity = int(worker_file.stem.split("-")[1])
+            write_json(worker_file, dict(id=identity, stage="queued" if identity < workers else "inactive",
+                                         batches=0, updated=time.time()))
         label = f"{name}-b{batch}-w{workers}-{precision}"
         reporter.update(stage="starting loader/model", trial=index+1, trials=len(plans), done=0,
                         total=args.warmup+args.steps,
@@ -164,12 +171,23 @@ def profile(args, manifest, stats, reporter):
         loader = loader_for(args, manifest, stats, "train", batch, workers)
         entry = dict(label=label, model=name, batch_size=batch, workers=workers, precision=precision,
                      attention=args.attention, attention_dropout=model.config.attention_dropout,
+                     trace_enabled=args.trace,
                      parameters=sum(p.numel() for p in model.parameters()),
                      encoder_parameters=sum(p.numel() for p in model.encoder.parameters()))
         try:
-            metrics = run_steps(model, optimizer, loader, steps=args.steps, warmup=args.warmup,
-                                precision=precision, reporter=reporter, log_base=index*10000,
-                                seconds_limit=args.seconds, stop_path=args.output / "STOP")
+            trace = torch.profiler.profile(
+                activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+                schedule=torch.profiler.schedule(wait=3, warmup=1, active=3, repeat=1),
+                record_shapes=True, profile_memory=True,
+                on_trace_ready=lambda profiler: profiler.export_chrome_trace(str(args.output / (label+"-trace.json"))),
+            ) if args.trace else nullcontext()
+            with trace as profiler:
+                metrics = run_steps(model, optimizer, loader, steps=args.steps, warmup=args.warmup,
+                                    precision=precision, reporter=reporter, log_base=index*10000,
+                                    seconds_limit=args.seconds, stop_path=args.output / "STOP", profiler=profiler)
+            if args.trace:
+                (args.output / (label+"-operators.txt")).write_text(
+                    profiler.key_averages().table(sort_by="self_cuda_time_total", row_limit=25), encoding="utf-8")
             entry.update(metrics, status="complete")
         except torch.cuda.OutOfMemoryError:
             entry.update(status="out_of_memory", peak_gib=torch.cuda.max_memory_allocated()/2**30)
@@ -179,6 +197,13 @@ def profile(args, manifest, stats, reporter):
             gc.collect()
             torch.cuda.empty_cache()
         results.append(entry)
+        # Counts cover scanned/prefetched candidates, not a claim about the whole corpus.
+        scanned = excluded = 0
+        for worker_file in (args.output / "workers").glob("worker-*.json"):
+            worker_state = json.loads(worker_file.read_text())
+            scanned += worker_state.get("scanned_candidates", 0)
+            excluded += worker_state.get("excluded_no_price", 0)
+        entry.update(scanned_candidates=scanned, excluded_no_price=excluded)
         write_json(args.output / "results.json", dict(kind="short-profiling-not-quality-evaluation", results=results))
         reporter.update(results=results)
         reporter.log({"profile/"+key: value for key, value in entry.items() if isinstance(value, (int, float))}, index*10000+9999)
@@ -214,15 +239,32 @@ def train(args, manifest, stats, reporter):
         epoch, cursor, step = checkpoint["epoch"], checkpoint["cursor"], checkpoint["step"]
         torch.set_rng_state(checkpoint["rng"])
         torch.cuda.set_rng_state_all(checkpoint["cuda_rng"])
+        if cursor >= args.train_steps:
+            epoch, cursor = epoch+1, 0
+        if epoch >= args.epochs:
+            raise ValueError("Checkpoint already completed the requested epoch scope; increase --epochs explicitly.")
     history = []
+
+    def save_checkpoint(saved_epoch, saved_cursor, saved_step):
+        checkpoint = dict(contract=contract, model=model.state_dict(), optimizer=optimizer.state_dict(),
+                          epoch=saved_epoch, cursor=saved_cursor, step=saved_step, rng=torch.get_rng_state(),
+                          cuda_rng=torch.cuda.get_rng_state_all())
+        temporary = args.output / "checkpoint.partial"
+        torch.save(checkpoint, temporary)
+        temporary.replace(args.output / "checkpoint.pt")
+
     while epoch < args.epochs and not (args.output / "STOP").exists():
         loader = loader_for(args, manifest, stats, "train", args.batch_size, args.workers, epoch, cursor)
         reporter.update(config=dict(name=args.model, batch_size=args.batch_size, workers=args.workers,
                                     precision=args.precision, prefetch=args.prefetch), stage="training", epoch=epoch)
         remaining = min(args.train_steps-cursor, len(loader))
+        def checkpoint_step(consumed):
+            if consumed % args.checkpoint_every == 0:
+                save_checkpoint(epoch, cursor+consumed, step+consumed)
         try:
             metrics = run_steps(model, optimizer, loader, steps=remaining, precision=args.precision,
-                                reporter=reporter, log_base=step, seconds_limit=10**9, stop_path=args.output / "STOP")
+                                reporter=reporter, log_base=step, seconds_limit=10**9, stop_path=args.output / "STOP",
+                                on_step=checkpoint_step)
         finally:
             close_loader(loader)
         cursor += metrics["consumed_batches"]
@@ -230,12 +272,7 @@ def train(args, manifest, stats, reporter):
         completed = metrics["exhausted"] or cursor >= min(args.train_steps, loader.dataset.total)
         if completed:
             epoch, cursor = epoch+1, 0
-        checkpoint = dict(contract=contract, model=model.state_dict(), optimizer=optimizer.state_dict(),
-                          epoch=epoch, cursor=cursor, step=step, rng=torch.get_rng_state(),
-                          cuda_rng=torch.cuda.get_rng_state_all())
-        temporary = args.output / "checkpoint.partial"
-        torch.save(checkpoint, temporary)
-        temporary.replace(args.output / "checkpoint.pt")
+        save_checkpoint(epoch, cursor, step)
         validation = loader_for(args, manifest, stats, "validation", args.batch_size, args.workers)
         try:
             validation_metrics = run_steps(model, optimizer, validation, steps=args.validation_steps,
