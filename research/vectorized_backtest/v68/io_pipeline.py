@@ -24,10 +24,34 @@ class TransferStaging(_TransferStaging):
         from .registered_upload import registered
         from .capture_lifecycle import cuda_host_allocation
         for _,data in ready:
+            self._release_registered()
             groups=[data.host_tensors,data.resident_features.host]
-            with cuda_host_allocation,registered(groups,torch.cuda.cudart()):
-                try:activate_nonblocking(data,device)
-                finally:torch.cuda.synchronize(device)
+            with cuda_host_allocation:
+                context=registered(groups,torch.cuda.cudart())
+                context.__enter__()
+                try:
+                    activate_nonblocking(data,device)
+                    event=torch.cuda.Event()
+                    event.record(torch.cuda.current_stream(device))
+                except BaseException:
+                    try:torch.cuda.synchronize(device)
+                    finally:context.__exit__(*__import__('sys').exc_info())
+                    raise
+                self.registered_uploads=[(event,context)]
+
+    def _release_registered(self):
+        from .capture_lifecycle import cuda_host_allocation
+        pending=getattr(self,'registered_uploads',[])
+        with cuda_host_allocation:
+            while pending:
+                event,context=pending[0]
+                event.synchronize()
+                context.__exit__(None,None,None)
+                pending.pop(0)
+
+    def close(self):
+        self._release_registered()
+        return super().close()
 
     def stage(self,data,slot):
         """Keep the existing copy path, allocating only its exact aligned size."""
@@ -66,6 +90,7 @@ class TransferStaging(_TransferStaging):
     def release_completed(self):
         """Completed uploads need no pinned arena during chronological replay."""
         import torch
+        self._release_registered()
         released=0
         for slot in self.slots:
             if slot['event'] is not None:slot['event'].synchronize()

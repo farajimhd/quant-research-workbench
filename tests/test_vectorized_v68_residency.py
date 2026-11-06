@@ -103,6 +103,9 @@ def test_direct_upload_waits_for_dma_before_unregister(monkeypatch,fail):
                             cudaHostUnregister=lambda *args:events.append('unregister') or 0)
     monkeypatch.setattr(torch.cuda,'cudart',lambda:runtime)
     monkeypatch.setattr(torch.cuda,'synchronize',lambda device:events.append('dma_complete'))
+    monkeypatch.setattr(torch.cuda,'current_stream',lambda device:'upload_dependency')
+    monkeypatch.setattr(torch.cuda,'Event',lambda:SimpleNamespace(
+        record=lambda stream:events.append('record'),synchronize=lambda:events.append('dma_complete')))
     def upload(data,device):
         events.append('upload')
         if fail:raise ValueError('Upload failed')
@@ -112,6 +115,12 @@ def test_direct_upload_waits_for_dma_before_unregister(monkeypatch,fail):
     try:
         if fail:
             with pytest.raises(ValueError,match='Upload failed'):staging.activate([('day',market)],'cuda')
-        else:staging.activate([('day',market)],'cuda')
-        assert events==['register','upload','dma_complete','unregister']
+            assert events==['register','upload','dma_complete','unregister']
+        else:
+            staging.activate([('day',market)],'cuda')
+            assert events==['register','upload','record']
+            staging.activate([('next-day',market)],'cuda')
+            assert events==['register','upload','record','dma_complete','unregister','register','upload','record']
     finally:staging.close()
+    if not fail:
+        assert events==['register','upload','record','dma_complete','unregister']*2

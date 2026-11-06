@@ -55,7 +55,12 @@ def verify_replay_sources(code):
                              and ast.dump(statement.value.func)==ast.dump(ast.parse('_worker.staging.release_completed',mode='eval').body))]
                     if isinstance(node,ast.ClassDef) and node.name=='TransferStaging':
                         node.body=[method for method in node.body if not
-                            (isinstance(method,ast.FunctionDef) and method.name in ('stage','activate'))]
+                            (isinstance(method,ast.FunctionDef) and method.name in ('stage','activate','close','_release_registered'))]
+                        for method in node.body:
+                            if isinstance(method,ast.FunctionDef) and method.name=='release_completed':
+                                method.body=[statement for statement in method.body if not
+                                    (isinstance(statement,ast.Expr) and isinstance(statement.value,ast.Call)
+                                     and ast.dump(statement.value.func)==ast.dump(ast.parse('self._release_registered',mode='eval').body))]
                     if isinstance(node,ast.ClassDef) and node.name=='Global':
                         node.body=[method for method in node.body if not
                             (isinstance(method,ast.FunctionDef) and method.name=='prepare_resident_sessions')]
