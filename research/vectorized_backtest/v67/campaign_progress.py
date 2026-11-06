@@ -636,12 +636,17 @@ def render(model,width,height):
     if model.view.startswith('quality'):
         from .quality_panel import render as quality_render
         return quality_render(model,width,height)
-    head_size=9 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
+    head_size=10 if model.view=='global_sessions' else 7 if model.aggregate_mode else 6
     layout=Layout();layout.split_column(Layout(name='head',size=head_size),Layout(name='body'),Layout(name='keys',size=4))
     title=f"V67 MULTI-DEVICE | {'SESSION '+model.day if model.day else 'PHASE 1' if model.view=='overview' else 'PHASE 2 GLOBAL'} | 50 session + 50 global"
     if model.job.get('version')=='v60-pilot-v2':title=f"V67 LAPTOP | AUG 13 SAMPLE | 50 generations | {model.status().get('stage',model.view)}"
     if model.job.get('version')=='v67-global-v1':title=f"V67 WORKSTATION | GLOBAL ONLY | {model.job['phase2_generations']} generations | {len(model.job['training_days'])} train / {len(model.job['validation_days'])} validation"
     note='Score: 0.5 ticker($2000) + 0.5 session($5000), log excess 0.1 - $5/blocked request | DD diagnostic only | risk caps OFF | validation display-only'
+    if model.job.get('supervision'):
+        weights=model.job['supervision']['settings']
+        note=('1b profit + all losses; capped ticker/session reward | evolution only\n'
+              f"Penalties: ${weights['entry_penalty']:g}/${weights['exit_penalty']:g} entry/exit, "
+              f"${1000*weights['late_notional_second']:.2f}/$1000/s late, $5 blocked | VAL display-only")
     if model.aggregate_mode:
         report=model.report();note=f"GLOBAL {model.aggregate_role.upper()}: {report.get('coverage',0)}/{report.get('total',24)} sessions | {'PARTIAL totals' if report.get('partial',True) else 'COMPLETE totals'}\n"+note
     table=Table(expand=True,padding=(0,0));limit=max(1,height-head_size-9);start=model.selection//limit*limit
@@ -702,7 +707,7 @@ def render(model,width,height):
             avg_replay=duration(statistics.mean(samples)) if samples else '-'
             if compact:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,avg_replay,avg_generation,metrics[0],metrics[2]]
             elif timing:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,avg_replay,avg_generation,f"{numbers['done']}/{numbers['total'] or '?'}",duration(numbers['eta']),f"{p.get('completed_local_batches',0)}/{p.get('total_local_batches','?')}",f"{p.get('evaluated_candidates','?')}/{p.get('reused_candidates','?')}",p.get('stage',live['status'])]
-            else:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,avg_replay,avg_generation,str(r['generation']) if r['generation'] else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-'))]
+            else:cells=[r['day'],'VAL*' if r['role']=='validation' else 'Train',bar,avg_replay,avg_generation,str(r['generation']) if r['generation'] is not None else '-',number(s.get('best_score')),*metrics,number(s.get('median_drawdown')),number(s.get('top_win_rate')),number(s.get('profitable_fraction')),str(s.get('candidates','-'))]
             table.add_row(*cells,style=SELECTED if i==model.selection else 'bright_magenta' if r['role']=='validation' else 'bright_cyan')
         loaded=model.global_data;caption=f"Last seal {loaded['generation']}" if loaded else 'No sealed global generation yet'
         caption+=' | elapsed = current replay; averages = last 5 measured generations; Gen = metric generation'
@@ -714,7 +719,7 @@ def render(model,width,height):
         caption+=f' | rows {start+1}-{min(start+limit,len(rows))}/{len(rows)}'
         if rows:
             selected=rows[min(model.selection,len(rows)-1)];live=selected['replay'];sample=live['progress']
-            note+='\nReplay gen '+str(live['generation'] or '-')+' | '+selected['day']+' | '+live['status']+' | '+sample.get('stage','')
+            note+='\nReplay gen '+str(live['generation'] if live['generation'] is not None else '-')+' | '+selected['day']+' | '+live['status']+' | '+sample.get('stage','')
             if live['age'] is not None:note+=' | update '+duration(live['age'])+' ago'
             counts=replay_numbers(live)
             note+=f"\nCandidates {counts['done']}/{counts['total'] or '?'} | new {sample.get('evaluated_candidates','?')} / reused {sample.get('reused_candidates','?')} | batches {sample.get('completed_local_batches',0)}/{sample.get('total_local_batches','?')} | ETA {duration(counts['eta'])}"
@@ -863,10 +868,10 @@ def render(model,width,height):
             diagnostic=state.get('stage')=='Paired mutation diagnostic; selection and RNG isolated'
             active_rows=[r for r in rows if r['role']=='training'] if diagnostic else rows
             completed=sum(r['replay']['status']=='complete' for r in active_rows);work=sum(replay_numbers(r['replay'])['fraction'] for r in active_rows)
-            label='Mutation replay' if diagnostic else 'Overall replay'
-            header.append(f'\n{label} {completed}/{len(active_rows)} sessions ',style='white');header.append(progress_bar(work,len(active_rows),width=max(15,min(50,width-45))))
+            label='Mutation sessions' if diagnostic else 'Sessions'
+            header.append(f'\n{label} {completed}/{len(active_rows)} complete | replay ',style='white');header.append(progress_bar(work,len(active_rows),width=max(10,min(40,width-55))))
         if model.view!='global_sessions':header.append(' | Replay ',style='white');header.append(replay_progress(state.get('worker_progress',{}),state.get('status','queued')))
-        p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+' | '+p.get('stage',''),style='bright_yellow')
+        p=state.get('worker_progress',{});header.append('\n'+state.get('stage','Waiting for session')+(' | '+p.get('stage','') if model.view!='global_sessions' else ''),style='bright_yellow')
     if getattr(model,'initial_mode',False):
         header=Text(f'V67 INITIAL FOUNDERS | 6,144 founders | generation {model.initial.generation}\nTraining results under this campaign execution contract | G: live run | A: global paths',style='bright_cyan')
         if model.initial.error:header.append('\n'+model.initial.error,style='bright_red')
@@ -898,12 +903,13 @@ def render(model,width,height):
     if model.view=='global_splits':keys='1 Training (live) | 2 Validation (live) | 3 Initial | 4 Full results | 5 Quality\nFull results: latest completed generation, all configured sessions.\nArrows: select | Enter: open | Validation is display-only.\nEsc: back | G: global sessions | Q: close panel'
     keys=keys.replace('Q: close panel','3 / I: initial founders | Q: close panel').replace('Q: close','I: initial founders | Q: close').replace('Q close','I initial | Q close')
     keys=keys.replace('Q close','Y quality | Q close').replace('Q: close','Y: quality | Q: close')
-    layout['keys'].update(Text(keys+' | Z: manual interventions'))
+    layout['keys'].update(Text(keys+(' | Z: manual interventions' if model.job.get('agent_intervention') else '')))
     return layout
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--job',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--view',default='overview');a=p.parse_args()
-    console=Console();model=Model(json.loads(a.job.read_bytes()),asynchronous=console.is_terminal and not a.once);model.view=a.view
+    p=argparse.ArgumentParser();p.add_argument('--job',type=Path,required=True);p.add_argument('--once',action='store_true');p.add_argument('--view');a=p.parse_args()
+    console=Console();model=Model(json.loads(a.job.read_bytes()),asynchronous=console.is_terminal and not a.once)
+    if a.view is not None:model.view=a.view
     if console.is_terminal:console=Console(color_system='truecolor',no_color=False,legacy_windows=False)
     if a.once or not console.is_terminal:console.print(render(model,console.width,console.height));model.close();return
     if os.name=='nt':
