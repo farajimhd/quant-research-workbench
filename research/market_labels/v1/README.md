@@ -5,15 +5,22 @@ This offline sidecar adapts the existing RL V6 `price_action_opportunities`
 No optimizer, existing RL publication, or sealed market shard is modified.
 The new Research path is **Research → V66 labels · 1a / 1b**.
 The direct app route is `/?research=v66-labels#research-workspace`. Choose the
-phase, session and ticker; in 1b, expand the selection table and click a pair
-to jump to its saved entry candles. The existing flat/held/reference views,
-liquidity audit, quality/gain inspector and fullscreen chart remain available.
-Phase 1b also shows the overlap timeline directly above the decision table.
+phase, session and ticker. The 1b overlap timeline comes first, followed by a
+large, full-width price-action chart with an explicit ticker heading. Session
+values, algorithm details and the selection table are collapsed below the chart.
+The flat/held/reference views, liquidity audit, quality/gain inspector and
+fullscreen chart remain available.
 Boxes span saved ENTRY-to-target intervals, with separate overlap lanes and
 group bands. Pan/zoom, ticker filtering, linear/log score height and rejected
 opportunities use the existing Research timeline component. Clicking a selected
 box opens that ticker/pair's original **1a** labels in Price-action candles,
-while keeping the 1b timeline visible. Clicking a group band filters the table.
+while keeping the 1b timeline visible. Rejected boxes also expose their original
+1a opportunities for comparison. The whole saved ENTRY-to-target interval is
+loaded, plus up to 30 observed candles before and after, bounded by the stored
+session. Two dashed vertical lines mark the ENTRY and target candle closes.
+Missing seconds are not manufactured; sparse or long intervals are not cut to
+the ordinary 120-candle browsing page. Clicking a group band filters and opens
+the decision table below the chart.
 
 The source is the V66 `2026-top5-v1` manifest pair: 150 training and 38
 validation sessions. All stored ticker-union candles are considered, not only

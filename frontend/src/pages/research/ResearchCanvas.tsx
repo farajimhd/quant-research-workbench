@@ -7,7 +7,8 @@ export type ResearchWindowId = "architecture" | "analytics" | "chart";
 const ids: ResearchWindowId[] = ["architecture", "analytics", "chart"];
 
 /** Research-only Canvas shell; geometry persists independently for each path. */
-export function ResearchCanvas({ storageKey, titles, icons, sources, toolbar, children }: {
+export function ResearchCanvas({ storageKey, titles, icons, sources, toolbar, children, stacked = false }: {
+  stacked?: boolean;
   storageKey: string;
   titles: Record<ResearchWindowId, string>;
   icons: Record<ResearchWindowId, ReactNode>;
@@ -43,6 +44,15 @@ export function ResearchCanvas({ storageKey, titles, icons, sources, toolbar, ch
   const extent = fullscreen ? height : Math.max(400, ...ids.filter(id => !closed.includes(id)).map(id => {
     const l = layouts[id] ?? defaults[id]; return l.y + (l.minimized ? 24 : l.h) + 16;
   }));
+  if (stacked) return <div className="research-page research-stacked">
+    <section className="research-stacked-chart" aria-label={titles.chart}>
+      <header className="research-toolbar">{toolbar}</header>
+      {children.chart}
+    </section>
+    {(["analytics", "architecture"] as const).map(id => <details key={id} className="research-stacked-detail">
+      <summary>{titles[id]}</summary>{children[id]}
+    </details>)}
+  </div>;
   return <div className="research-page"><header className="research-toolbar">{toolbar}
     <button className="button secondary compact" onClick={() => { setLayouts({}); setClosed([]); }}><RefreshCcw size={14} />Reset containers</button>
   </header>{closed.length > 0 && <div className="research-controls">{closed.map(id => <button className="button secondary compact" key={id} onClick={() => setClosed(current => current.filter(item => item !== id))}>Restore {titles[id]}</button>)}</div>}

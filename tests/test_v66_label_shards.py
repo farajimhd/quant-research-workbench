@@ -30,8 +30,8 @@ class Labels(unittest.TestCase):
         self.assertAlmostEqual(selected['session_score_sum'],.6)
         self.assertEqual(timeline_rows(rows,groups,0,100_000_000,200_000_000,60)['total'],0)
 
-    def fixture(self,root,*,constant=False):
-        day='2026-01-05';origin=origin_us(day);n=180
+    def fixture(self,root,*,constant=False,n=180):
+        day='2026-01-05';origin=origin_us(day)
         close=np.ones(n)*5 if constant else 5+.2*np.sin(np.arange(n)/9)
         frame=pl.DataFrame(dict(ticker=['TEST']*n,time_us=origin+(14401+np.arange(n))*1_000_000,
             open=close,high=close+.01,low=close-.01,close=close,volume=np.ones(n)*1000,
@@ -77,6 +77,35 @@ class Labels(unittest.TestCase):
             root=Path(d);day,_=self.fixture(root,constant=True)
             proof=build_day((str(root/'training.json'),day,'training',str(root/'labels'),{}))
             self.assertEqual(proof['selected_pairs'],0)
+
+    def test_segment_chart_preserves_full_interval_context_and_boundaries(self):
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from src.backend.research_model_service import router
+        from research.market_labels.v1 import audit
+        with tempfile.TemporaryDirectory(dir='D:/TradingML/runtimes') as d:
+            root=Path(d);day,_=self.fixture(root,n=400)
+            output=root/'labels';proof=build_day((str(root/'training.json'),day,'training',str(output),{}))
+            labels=pl.read_parquet(output/day/proof['listings'][0]['file'])
+            clocks=labels['time_us'].to_list()
+            dataset=dict(binding={},days=[dict(day=day,certificate=sha(output/day/'complete.json'))])
+            app=FastAPI();app.include_router(router)
+            with patch.object(audit,'published',return_value=({'sha256':'pinned'},dataset,output)),TestClient(app) as client:
+                params=dict(day=day,listing_id='TEST',start_us=clocks[90],segment_end_us=clocks[260],dataset_sha256='pinned')
+                response=client.get('/api/research/models/v66/labels/chart',params=params)
+                self.assertEqual(response.status_code,200,response.text)
+                result=response.json()
+                self.assertEqual([r['time_us'] for r in result['labels']],clocks[60:291])
+                self.assertEqual(result['next_offset'],291)
+                self.assertTrue(all(r['action']==r['action_1a'] for r in result['labels']))
+                for start,end,expected in [(0,10,clocks[:41]),(len(clocks)-10,len(clocks)-1,clocks[-40:])]:
+                    params.update(start_us=clocks[start],segment_end_us=clocks[end])
+                    response=client.get('/api/research/models/v66/labels/chart',params=params)
+                    self.assertEqual([r['time_us'] for r in response.json()['labels']],expected)
+                params.update(start_us=clocks[100],segment_end_us=clocks[99])
+                response=client.get('/api/research/models/v66/labels/chart',params=params)
+                self.assertEqual(response.status_code,409)
+                self.assertIn('ordered start and end clocks',response.text)
 
     def test_app_reads_saved_1a_and_1b_and_rejects_stale_hash(self):
         from fastapi import FastAPI

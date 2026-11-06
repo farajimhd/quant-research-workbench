@@ -299,6 +299,8 @@ export type ChartCatalogKnowledge = {
   equations?: Array<{ markdown: string; title: string; variables: Record<string, string> }>;
 };
 export type ChartReference = {
+  /** Fit the complete interval with context and mark both boundaries. */
+  highlightRange?: boolean;
   endTime?: number;
   label?: string;
   minuteOfDay?: number;
@@ -1171,7 +1173,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
     ...displayedPriceZones.map((zone) => String(zone.displayItemId || zone.label).toLowerCase()),
   ]).size;
   const hasChartData = Boolean(payload?.candles.length);
-  const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}` : "";
+  const referenceKey = reference ? `${reference.time ?? ""}:${reference.startTime ?? ""}:${reference.endTime ?? ""}:${reference.sessionDate ?? ""}:${reference.minuteOfDay ?? ""}:${reference.label ?? ""}:${reference.highlightRange ?? false}` : "";
   const liveEntryLineKey = liveEntryLine ? `${liveEntryLine.price}:${liveEntryLine.quantity}:${liveEntryLine.pnl}:${liveEntryLine.color}:${liveEntryLine.stopPrice}:${JSON.stringify(liveEntryLine.targetPrices ?? [])}:${JSON.stringify(liveEntryLine.labelParts ?? [])}` : "";
   const liveEntryLineForDraw = liveEntryLine ? { ...liveEntryLine, onClose: onLiveEntryClose } : null;
   liveEntryLineRef.current = liveEntryLineForDraw;
@@ -2503,6 +2505,7 @@ const ChartPanelCore = forwardRef<ChartPanelHandle, ChartPanelProps>(({
             <button
               className="toolbar-button"
               type="button"
+              aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}
               title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
               onClick={() => {
                 setFullscreen((value) => !value);
@@ -6396,6 +6399,10 @@ function fitAroundReference(target: ChartRangeTarget, candles: Candle[], referen
   const referenceIndex = nearestTimelineIndex(timeline, referenceTime);
   const startIndex = typeof reference.startTime === "number" ? nearestTimelineIndex(timeline, reference.startTime) : referenceIndex;
   const endIndex = typeof reference.endTime === "number" ? nearestTimelineIndex(timeline, reference.endTime) : referenceIndex;
+  if (reference.highlightRange) {
+    setChartLogicalRange(charts, { from: Math.max(-1, startIndex - 30), to: Math.min(timeline.length, endIndex + 31) });
+    return;
+  }
   const tradeSpan = Math.max(1, Math.abs(endIndex - startIndex));
   const span = Math.min(timeline.length, Math.max(60, Math.min(240, tradeSpan * 5)));
   const halfSpan = Math.ceil(span / 2);
@@ -8707,6 +8714,27 @@ function drawReferenceLine(chart: IChartApi, layer: HTMLDivElement | null, candl
   if (!layer) return;
   layer.innerHTML = "";
   if (!reference || !candles.length) return;
+  if (reference.highlightRange) {
+    for (const [label, time] of [["Segment start", reference.startTime], ["Segment end", reference.endTime]] as const) {
+      if (typeof time !== "number") continue;
+      const coordinate = chart.timeScale().timeToCoordinate(candles[nearestCandleIndex(candles, time)].time as Time);
+      if (!isVisibleCoordinate(coordinate, layer.clientWidth)) continue;
+      const node = document.createElement("div");
+      node.className = "chart-reference-line";
+      node.title = label;
+      node.dataset.referenceBoundary = label === "Segment start" ? "start" : "end";
+      // timeToCoordinate is plot-relative; this layer spans both price axes.
+      const layerX = chart.priceScale("left").width() + Number(coordinate) - layer.offsetLeft;
+      node.style.left = `${layerX}px`;
+      const caption = document.createElement("span");
+      caption.textContent = label;
+      node.appendChild(caption);
+      if (layerX < 90) node.classList.add("near-left");
+      else if (layerX > layer.clientWidth - 90) node.classList.add("near-right");
+      layer.appendChild(node);
+    }
+    return;
+  }
   const referenceTime = resolveReferenceTime(reference, candles);
   if (referenceTime === null) return;
   const coordinate = chart.timeScale().timeToCoordinate(referenceTime as Time);

@@ -87,3 +87,15 @@
 .research-v66-workspace { overflow: auto; }
 .research-v66-workspace > .research-page { flex: 0 0 auto; height: auto; overflow: visible; }
 .research-v66-timeline .research-grouping-chart { margin: 0; }
+.research-v66-chart-anchor { flex: 0 0 auto; scroll-margin-top: 12px; }
+.research-stacked { display: flex; flex-direction: column; gap: 12px; }
+.research-stacked-chart { min-width: 0; }
+.research-stacked-chart > .research-toolbar { margin-bottom: 8px; }
+.research-stacked-chart > .research-chart-container { height: max(620px, 82vh); padding: 0; overflow: visible; }
+.research-stacked-chart .chart-shell { min-height: 400px; }
+.research-stacked-detail { border-top: 1px solid var(--border); padding-top: 12px; font-size: .8rem; }
+.research-stacked-detail > summary { cursor: pointer; }
+.research-stacked-detail .research-container { height: auto; }
+.research-stacked-chart .chart-reference-line[data-reference-boundary] { border-left: 2px dashed var(--foreground); }
+.research-stacked-chart .chart-reference-line[data-reference-boundary] span { color: var(--foreground); }
+.research-stacked-chart .chart-shell.fullscreen { top: 80px; height: auto; z-index: 1000; }

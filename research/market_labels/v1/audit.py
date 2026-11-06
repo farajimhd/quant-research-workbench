@@ -71,12 +71,20 @@ def product(day,identity,phase='1a'):
 def metadata(day,listing_id,phase='1a'):return product(day,listing_id,phase)[0]
 
 
-def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset=0,phase='1a'):
+def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset=0,phase='1a',segment_end_us=None):
     if view not in ('combined','flat','held','reference'):raise ValueError('Invalid label view')
     proof,frames=product(day,listing_id,phase)
     labels=frames['labels'];n=labels.height
     offset=int(labels['time_us'].search_sorted(start_us)) if start_us is not None else candle_offset or 0
-    offset=max(0,min(offset,max(0,n-1)));window=labels.slice(offset,120)
+    offset=max(0,min(offset,max(0,n-1)))
+    if segment_end_us is not None:
+        if start_us is None or segment_end_us<start_us:raise ValueError('Segment requires ordered start and end clocks')
+        # Preserve the whole saved ENTRY-to-target interval, including sparse
+        # periods. Context counts observed candles, never fabricated seconds.
+        stop=int(labels['time_us'].search_sorted(segment_end_us,side='right'))
+        offset=max(0,offset-30);stop=min(n,stop+30)
+        window=labels.slice(offset,stop-offset)
+    else:window=labels.slice(offset,120)
     start=int(window['time_us'][0]);end=int(window['time_us'][-1])+1_000_000
     # Render only saved labels. classify is a display projection, no future search.
     shown=algorithm.classify(window,proof['config']['quality_threshold'],view)
@@ -92,8 +100,8 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
         oscillator.append(dict(column=column,label=name,paneKey='macd',style='histogram' if column=='macd_histogram' else 'line',color=color,lineWidth=1,data=[dict(time=int(t)//1_000_000-1,value=float(v)) for t,v in zip(window['time_us'],values)]))
     regions=[dict(start=r['start_us']//1_000_000-1,end=r['end_us']//1_000_000-1,color='var(--success)' if r['direction']==1 else 'var(--danger)',label='') for r in frames['episodes'].filter((pl.col('start_us')<end)&(pl.col('end_us')>start)).iter_rows(named=True)]
     return dict(ticker=listing_id,candles=candles,labels=shown.to_dicts(),oscillator_series=oscillator,regions=regions,start_us=start,end_us=end,
-        context_candles=0,session_candles=window.height,offset=offset,previous_offset=max(0,offset-120),next_offset=offset+120,
-        previous_available=offset>0,next_available=offset+120<n,dataset_sha256=proof['dataset_sha256'],quality_threshold=.9)
+        context_candles=0,session_candles=window.height,offset=offset,previous_offset=max(0,offset-120),next_offset=offset+window.height,
+        previous_available=offset>0,next_available=offset+window.height<n,dataset_sha256=proof['dataset_sha256'],quality_threshold=.9)
 
 
 def market(day,search='',selection='all',offset=0,group_id=None):

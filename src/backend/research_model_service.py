@@ -31,9 +31,10 @@ def v66_metadata(day: str, listing_id: str, phase: Literal['1a','1b']='1a'):
 @router.get('/v66/labels/chart')
 def v66_chart(day: str, listing_id: str, start_us: int | None=None,
               seconds: int=Query(900,ge=60,le=3600), view: Literal['combined','flat','held','reference']='combined',
-              candle_offset: int=Query(0,ge=0), phase: Literal['1a','1b']='1a', dataset_sha256: str | None=None):
+              candle_offset: int=Query(0,ge=0), phase: Literal['1a','1b']='1a', dataset_sha256: str | None=None,
+              segment_end_us: int | None=None):
     from research.market_labels.v1 import audit
-    result=read(audit.chart,day,listing_id,start_us,seconds,view,candle_offset,phase)
+    result=read(audit.chart,day,listing_id,start_us,seconds,view,candle_offset,phase,segment_end_us)
     if dataset_sha256 is not None and result['dataset_sha256']!=dataset_sha256:
         raise HTTPException(409,'V66 labels changed; reload the dataset')
     return result
