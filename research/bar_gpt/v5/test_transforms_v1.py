@@ -4,6 +4,7 @@ import exchange_calendars as xc
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 from research.bar_gpt.v5.transforms_v1 import BarInputTransformV1, FEATURE_NAMES, TIMEZONE
 
@@ -23,7 +24,15 @@ def clocks(start, frequency="1min"):
 def apply(transform, ends, frame=60_000_000):
     """Supply neutral market observations to isolate time transformations."""
     shape = (*ends.shape, 21)
-    return transform(np.ones(shape, dtype=np.float32), np.ones(shape, dtype=bool), ends, frame)
+    return invoke(transform, np.ones(shape, dtype=np.float32), np.ones(shape, dtype=bool), ends, frame)
+
+
+def invoke(transform, values, valid, ends, frame):
+    """Adapt NumPy test fixtures at the caller boundary, never inside the transform."""
+    return transform(
+        torch.from_numpy(values), torch.from_numpy(valid), torch.from_numpy(ends),
+        torch.as_tensor(frame, dtype=torch.int64),
+    )
 
 
 def feature(result, name):
@@ -37,9 +46,9 @@ def test_market_preservation_and_missing_evidence(transform):
     valid = np.ones_like(values, dtype=np.uint8)
     values[0, 0, 0], valid[0, 0, 0] = np.nan, 0
     original = values.copy()
-    result = transform(values, valid, clocks("2024-03-11 09:30"), 60_000_000)
+    result = invoke(transform, values, valid, clocks("2024-03-11 09:30"), 60_000_000)
     assert result.values.shape == result.valid.shape == (1, 64, 33)
-    assert result.values.dtype == np.float32 and result.valid.dtype == bool
+    assert result.values.dtype == torch.float32 and result.valid.dtype == torch.bool
     np.testing.assert_array_equal(result.values[..., :21], np.where(valid, values, 0))
     np.testing.assert_array_equal(values, original)
     np.testing.assert_array_equal(result.valid[..., :21], valid)
@@ -101,6 +110,11 @@ def test_subminute_frames(transform, start, frequency, frame):
     result = apply(transform, clocks(start, frequency), frame)
     np.testing.assert_allclose(feature(result, "log_timeframe_seconds"), np.log1p(frame/1e6))
     np.testing.assert_allclose(feature(result, "log_gap_ratio")[0, 1:], np.log(2))
+    # Independent wall-clock calculation detects loss of precision from casting epochs.
+    seconds = 10 * 3600 + np.arange(64) * frame / 1e6
+    np.testing.assert_allclose(
+        feature(result, "intraday_sin")[0], np.sin(2*np.pi*seconds/86400), atol=1e-7,
+    )
 
 
 @pytest.mark.parametrize("start", ["2024-07-04 10:00", "2024-03-11 03:00", "2024-03-11 10:00:01"])
@@ -117,10 +131,75 @@ def test_bad_evidence_and_order_rejected(transform):
     valid = np.ones_like(values, dtype=np.uint8)
     values[0, 0, 0] = np.nan
     with pytest.raises(ValueError, match="finite"):
-        transform(values, valid, ends, 60_000_000)
+        invoke(transform, values, valid, ends, 60_000_000)
     values[0, 0, 0], valid[0, 0, 0] = 1, 2
     with pytest.raises(ValueError, match="evidence"):
-        transform(values, valid, ends, 60_000_000)
+        invoke(transform, values, valid, ends, 60_000_000)
     ends[0, 1] = ends[0, 0]
     with pytest.raises(ValueError, match="increase"):
         apply(transform, ends)
+
+
+@pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="CUDA hardware unavailable",
+))])
+def test_device_parity_gradients_and_no_batch_pandas(transform, monkeypatch, device):
+    """Torch batches retain device, gradients, masks, and calendar output without Pandas."""
+    from copy import deepcopy
+
+    target = deepcopy(transform).to(device)
+    ends = torch.from_numpy(clocks("2024-11-29 12:30"))
+    values = torch.ones((1, 64, 21), dtype=torch.float32)
+    valid = torch.ones_like(values, dtype=torch.bool)
+    valid[0, 0, 0] = False
+    frames = torch.tensor([60_000_000], dtype=torch.int64)
+    expected = transform(values, valid, ends, frames)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Calendar conversion must not execute in forward.")
+
+    monkeypatch.setattr(pd, "to_datetime", forbidden)
+    monkeypatch.setattr(pd, "DatetimeIndex", forbidden)
+    inputs = values.to(device).requires_grad_()
+    actual = target(inputs, valid.to(device), ends.to(device), frames.to(device))
+    assert actual.values.device.type == actual.valid.device.type == device
+    torch.testing.assert_close(actual.values.cpu(), expected.values)
+    torch.testing.assert_close(actual.valid.cpu(), expected.valid)
+    actual.values.sum().backward()
+    torch.testing.assert_close(inputs.grad.cpu(), valid.float())
+    assert all(buffer.device.type == device for buffer in target.buffers())
+
+
+def test_calendar_buffers_roundtrip_and_half_precision(transform):
+    """A checkpoint preserves calendar authority; half precision cannot round UTC clocks."""
+    from copy import deepcopy
+
+    restored = deepcopy(transform).half()
+    restored.load_state_dict(transform.state_dict())
+    assert all(buffer.dtype == torch.int64 for buffer in restored.buffers())
+    torch.testing.assert_close(
+        apply(restored, clocks("2024-03-11 10:00")).values,
+        apply(transform, clocks("2024-03-11 10:00")).values,
+    )
+
+
+@pytest.mark.parametrize("start", ["2019-12-31 10:00", "2025-01-02 10:00"])
+def test_calendar_coverage_rejected(transform, start):
+    """Searchsorted must not silently reuse the first or last covered trading date."""
+    with pytest.raises(ValueError, match="calendar"):
+        apply(transform, clocks(start))
+
+
+def test_torch_contract_rejected_inputs(transform):
+    """Callers explicitly convert shard arrays and preserve timestamp precision."""
+    ends = torch.from_numpy(clocks("2024-03-11 10:00"))
+    values = torch.ones((1, 64, 21))
+    valid = torch.ones_like(values, dtype=torch.bool)
+    with pytest.raises(TypeError, match="Torch tensors"):
+        transform(values.numpy(), valid, ends, 60_000_000)
+    with pytest.raises(ValueError, match="int64 timestamps"):
+        transform(values, valid, ends.float(), 60_000_000)
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        transform(values, valid, ends, 5_000_000)
+    with pytest.raises(ValueError, match="int64 scalar"):
+        transform(values, valid, ends, torch.tensor(60_000_000.0))

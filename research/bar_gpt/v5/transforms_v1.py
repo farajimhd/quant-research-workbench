@@ -2,14 +2,15 @@
 
 This module contains no learned layers, loading, training, or market scaling.
 It uses only completed-bar clocks and an explicitly supplied exchange schedule.
-Read ``BarInputTransformV1.__call__`` for the numerical feature definitions.
+Read ``BarInputTransformV1.forward`` for the numerical feature definitions.
 Calendar preparation happens once in the constructor, outside the batch path.
 """
 
 from dataclasses import dataclass
 
-import numpy as np
 import pandas as pd
+import torch
+from torch import nn
 
 from research.bar_gpt.v5.shards.contract import CHANNELS, FRAMES, WIDTH
 
@@ -35,11 +36,11 @@ class TransformedBars:
     Artificial reconstruction masking is separate from these evidence masks.
     """
 
-    values: np.ndarray
-    valid: np.ndarray
+    values: torch.Tensor
+    valid: torch.Tensor
 
 
-class BarInputTransformV1:
+class BarInputTransformV1(nn.Module):
     """Prepare the agreed time-aware inputs without changing market semantics.
 
     Supply an XNYS-compatible session schedule covering every sample date, e.g.
@@ -47,6 +48,10 @@ class BarInputTransformV1:
     The caller owns calendar selection/versioning; no calendar is downloaded or
     inferred here. Session flags describe interval overlap, not just end time.
     Consequently a full extended-session daily bar has all three flags equal to 1.
+
+    Construct once with ``transform = BarInputTransformV1(schedule).to(device)``.
+    Call with Torch tensors already on that device; outputs stay on that device.
+    Calendar buffers are saved in ``state_dict`` alongside the parent model.
     """
 
     def __init__(self, session_schedule: pd.DataFrame):
@@ -57,6 +62,7 @@ class BarInputTransformV1:
             UTC-midnight index labels are treated as dates, not converted to NY.
             Early closes must already be present in the supplied schedule.
         """
+        super().__init__()  # Calendar buffers follow module.to(device) and enter state_dict.
         if not {"open", "close"} <= set(session_schedule.columns):
             raise ValueError("Schedule must contain timezone-aware open and close columns.")
         dates = pd.DatetimeIndex(session_schedule.index).tz_localize(None)
@@ -68,34 +74,45 @@ class BarInputTransformV1:
                     or session_schedule[column].isna().any()):
                 raise ValueError(f"Schedule {column} must be timezone-aware and complete.")
 
-        # Cache date keys in nanoseconds and boundaries in UTC microseconds.
-        self._dates_ns = dates.as_unit("ns").asi8
-        self._regular_open = pd.DatetimeIndex(session_schedule["open"]).as_unit("us").asi8
-        self._regular_close = pd.DatetimeIndex(session_schedule["close"]).as_unit("us").asi8
-        # Localize wall-clock boundaries rather than adding hours to UTC midnight.
-        self._extended_open = (dates + pd.Timedelta(hours=4)).tz_localize(TIMEZONE).as_unit("us").asi8
-        self._extended_close = (dates + pd.Timedelta(hours=20)).tz_localize(TIMEZONE).as_unit("us").asi8
-        if not np.all((self._extended_open < self._regular_open)
-                      & (self._regular_open < self._regular_close)
-                      & (self._regular_close < self._extended_close)):
+        # Pandas is confined to initialization: resolve historical DST and calendar rules once.
+        extended_open = (dates + pd.Timedelta(hours=4)).tz_localize(TIMEZONE).as_unit("us").asi8
+        extended_close = (dates + pd.Timedelta(hours=20)).tz_localize(TIMEZONE).as_unit("us").asi8
+        regular_open = pd.DatetimeIndex(session_schedule["open"]).as_unit("us").asi8
+        regular_close = pd.DatetimeIndex(session_schedule["close"]).as_unit("us").asi8
+        if not ((extended_open < regular_open) & (regular_open < regular_close)
+                & (regular_close < extended_close)).all():
             raise ValueError("Regular sessions must lie strictly inside 04:00–20:00 NY.")
+        iso = dates.isocalendar()  # ISO year can differ from the date's calendar year.
+        december_28 = pd.to_datetime(iso["year"].astype(str) + "-12-28")
+        weeks_per_year = pd.DatetimeIndex(december_28).isocalendar()["week"]
+        # Integer buffers retain exact clocks even if the parent model uses half precision.
+        columns = (
+            extended_open, extended_close, regular_open, regular_close,
+            dates.dayofweek.to_numpy(), iso["week"].to_numpy(dtype="int64") - 1,
+            weeks_per_year.to_numpy(dtype="int64"),
+        )
+        self.register_buffer("calendar", torch.stack([
+            torch.tensor(column, dtype=torch.int64) for column in columns
+        ], dim=1))  # Seven [S] columns → [S,7], one row per trading session.
+        self.register_buffer("session_opens", self.calendar[:, 0].contiguous())  # [S], search keys.
+        self.register_buffer("supported_frames", torch.tensor(FRAMES, dtype=torch.int64))
 
-    def __call__(
+    def forward(
         self,
-        values: np.ndarray,
-        valid: np.ndarray,
-        end_us: np.ndarray,
-        timeframe_us: np.ndarray | int,
+        values: torch.Tensor,
+        valid: torch.Tensor,
+        end_us: torch.Tensor,
+        timeframe_us: torch.Tensor | int,
     ) -> TransformedBars:
-        """Transform one batch using vectorized NumPy/Pandas operations.
+        """Transform one batch entirely with vectorized Torch on the input device.
 
         Args:
-            values: floating [B,64,21], from shard ``values``; prices, activity,
+            values: Torch floating [B,64,21], from shard ``values``; prices, activity,
                 and halt channels remain unscaled. Invalid fields may hold NaN.
-            valid: bool or 0/1 integer [B,64,21], from shard evidence masks.
-            end_us: integer [B,64], UTC completed-bar end timestamps in microseconds,
+            valid: Torch bool or 0/1 integer [B,64,21], from shard evidence masks.
+            end_us: Torch int64 [B,64], UTC completed-bar end timestamps in microseconds,
                 strictly increasing within each sample. Session gaps are allowed.
-            timeframe_us: integer scalar or [B], from shard timeframe metadata;
+            timeframe_us: Python int or Torch int64 scalar/[B], from shard timeframe metadata;
                 supported durations are 100ms, 1s, 10s, 1m, 1h, and 1d.
 
         Returns:
@@ -112,90 +129,87 @@ class BarInputTransformV1:
             Session flags are positive-duration overlaps of [bar_start,bar_end)
             with [04:00,open), [open,close), and [close,20:00).
 
+        Move this module and all input tensors to the same device before calling.
+        No Pandas/NumPy operations or bulk CPU transfers occur in forward. Eager
+        validation raises ValueError on bad evidence; these scalar checks synchronize
+        CUDA, so this checked path does not promise asynchronous execution.
+
         These transformations never use market-value statistics, so calculating
         them before artificial masking cannot leak hidden prices or activity.
         """
-        values, valid, end_us = np.asarray(values), np.asarray(valid), np.asarray(end_us)
+        if not all(isinstance(item, torch.Tensor) for item in (values, valid, end_us)):
+            raise TypeError("values, valid, and end_us must be Torch tensors.")
+        if any(item.device != self.calendar.device for item in (values, valid, end_us)):
+            raise ValueError("Move the transform and all input tensors to the same device.")
         if values.ndim != 3 or values.shape[1:] != (WIDTH, len(CHANNELS)) or not len(values):
             raise ValueError("values must have nonempty shape [B,64,21].")
-        batch = len(values)
-        if not np.issubdtype(values.dtype, np.floating):
+        batch, device = len(values), values.device
+        if not values.is_floating_point():
             raise ValueError("Market values must be floating point.")
-        if (valid.shape != values.shape or valid.dtype.kind not in "bui"
-                or not np.isin(valid, (0, 1)).all()):
+        mask_types = (torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
+        if (valid.shape != values.shape or valid.dtype not in mask_types
+                or not ((valid == 0) | (valid == 1)).all()):
             raise ValueError("valid must contain boolean/0-1 evidence masks [B,64,21].")
-        observed = valid.astype(bool, copy=False)  # [B,64,21]; source masks, not augmentation masks.
-        if not np.isfinite(values[observed]).all():
+        observed = valid.bool()  # [B,64,21]; evidence masks, not augmentation masks.
+        if not (torch.isfinite(values) | ~observed).all():
             raise ValueError("Observed market values must be finite.")
-        if (end_us.shape != (batch, WIDTH) or end_us.dtype.kind not in "ui"
-                or np.any(end_us <= 0) or np.any(end_us > np.iinfo(np.int64).max)):
-            raise ValueError("end_us must contain positive signed-64-bit-compatible integers [B,64].")
-        ends = end_us.astype(np.int64, copy=False)  # [B,64], before subtraction to avoid unsigned wrap.
-        if np.any(np.diff(ends, axis=1) <= 0):
+        if end_us.shape != (batch, WIDTH) or end_us.dtype != torch.int64 or (end_us <= 0).any():
+            raise ValueError("end_us must contain positive int64 timestamps [B,64].")
+        gaps = torch.diff(end_us, dim=1)  # [B,64] → [B,63], exact integer subtraction.
+        if (gaps <= 0).any():
             raise ValueError("Bar end timestamps must increase strictly within each sample.")
-        frames = np.asarray(timeframe_us)
-        if frames.dtype.kind not in "ui" or frames.shape not in ((), (batch,)):
-            raise ValueError("timeframe_us must be an integer scalar or [B].")
-        if not np.isin(frames, FRAMES).all():
+        if type(timeframe_us) is int:
+            timeframe_us = torch.tensor(timeframe_us, dtype=torch.int64, device=device)
+        if (not isinstance(timeframe_us, torch.Tensor) or timeframe_us.dtype != torch.int64
+                or timeframe_us.device != device or timeframe_us.shape not in ((), (batch,))):
+            raise ValueError("timeframe_us must be an int64 scalar or [B] on the input device.")
+        if not torch.isin(timeframe_us, self.supported_frames).all():
             raise ValueError("Unsupported timeframe for the current shard contract.")
-        frames = np.broadcast_to(frames, (batch,)).astype(np.int64, copy=False)  # Scalar/[B] → [B].
+        frames = timeframe_us.expand(batch)  # Scalar/[B] → [B], without copying.
 
-        local = pd.to_datetime(ends.reshape(-1), unit="us", utc=True).tz_convert(TIMEZONE)
-        # [B*64] local dates look up historical regular opens/closes, including early closes.
-        dates_ns = local.tz_localize(None).normalize().as_unit("ns").asi8
-        indices = np.searchsorted(self._dates_ns, dates_ns)
-        safe_indices = np.minimum(indices, len(self._dates_ns)-1)
-        if np.any(indices == len(self._dates_ns)) or np.any(self._dates_ns[safe_indices] != dates_ns):
-            raise ValueError("Bar date is absent from the supplied trading-session calendar.")
-        extended_open = self._extended_open[indices].reshape(batch, WIDTH)
-        extended_close = self._extended_close[indices].reshape(batch, WIDTH)
-        regular_open = self._regular_open[indices].reshape(batch, WIDTH)
-        regular_close = self._regular_close[indices].reshape(batch, WIDTH)
-
-        # Daily bars span the actual extended session, not a rolling 24-hour interval.
-        starts = np.where(frames[:, None] == DAILY_US, extended_open, ends - frames[:, None])
-        if np.any(starts < extended_open) or np.any(ends > extended_close):
-            raise ValueError("Bar interval is outside the shards' 04:00–20:00 session.")
+        # Select the latest session open, then reject bars outside that exact session.
+        # Holiday/weekend/out-of-coverage timestamps cannot inherit the previous session.
+        indices = torch.searchsorted(self.session_opens, end_us.contiguous(), right=True) - 1
+        rows = self.calendar[indices.clamp_min(0)]  # [B,64] → [B,64,7], bounded lookup.
+        extended_open, extended_close, regular_open, regular_close = rows[..., :4].unbind(-1)
         daily = frames[:, None] == DAILY_US  # [B,1], broadcast over bar positions.
-        if np.any(daily & (ends != extended_close)):
+        starts = torch.where(daily, extended_open, end_us - frames[:, None])
+        if ((indices < 0) | (starts < extended_open) | (end_us > extended_close)).any():
+            raise ValueError("Bar interval is outside the supplied calendar's 04:00–20:00 session.")
+        if (daily & (end_us != extended_close)).any():
             raise ValueError("Daily bars must end at 20:00 New York.")
-        if np.any(~daily & ((ends - extended_open) % frames[:, None] != 0)):
+        if (~daily & ((end_us - extended_open) % frames[:, None] != 0)).any():
             raise ValueError("Intraday bars must align to the scheduled timeframe grid.")
 
-        time_values = np.zeros((batch, WIDTH, len(TIME_CHANNELS)), dtype=np.float32)
+        time_values = torch.zeros((batch, WIDTH, len(TIME_CHANNELS)), dtype=torch.float32, device=device)
         # Strict inequalities exclude mere boundary contact from session overlap.
-        time_values[..., 0] = (starts < regular_open) & (ends > extended_open)
-        time_values[..., 1] = (starts < regular_close) & (ends > regular_open)
-        time_values[..., 2] = (starts < extended_close) & (ends > regular_close)
-        time_values[..., 3] = np.arange(WIDTH, dtype=np.float32) / (WIDTH-1)  # [64] → [B,64].
-        time_values[..., 4] = np.log1p(frames / 1_000_000.0)[:, None]  # [B,1] → [B,64].
+        time_values[..., 0] = (starts < regular_open) & (end_us > extended_open)
+        time_values[..., 1] = (starts < regular_close) & (end_us > regular_open)
+        time_values[..., 2] = (starts < extended_close) & (end_us > regular_close)
+        # Relative sequence position broadcasts [64] across all samples → [B,64].
+        time_values[..., 3] = torch.arange(WIDTH, device=device, dtype=torch.float32) / (WIDTH - 1)
+        time_values[..., 4] = torch.log1p(frames.double() / 1_000_000)[:, None]  # [B,1] → [B,64].
 
-        seconds = (local.hour.to_numpy()*3600 + local.minute.to_numpy()*60
-                   + local.second.to_numpy() + local.microsecond.to_numpy()/1_000_000.0)
-        clock_angle = 2*np.pi*seconds/86400.0  # [B*64], using bar-end wall-clock time.
-        time_values[..., 5] = np.sin(clock_angle).reshape(batch, WIDTH)
-        time_values[..., 6] = np.cos(clock_angle).reshape(batch, WIDTH)
-        time_values[:, 1:, 7] = np.log1p(np.diff(ends, axis=1) / frames[:, None])  # [B,63].
+        # Subtract exact int64 epochs BEFORE converting to float: retain 100ms precision.
+        # NY has no UTC-offset transition inside a trading session's 04:00–20:00 interval.
+        seconds = (end_us - extended_open).double() / 1_000_000 + 4 * 3600
+        clock_angle = 2 * torch.pi * seconds / 86400  # [B,64], local bar-end clock phase.
+        time_values[..., 5] = torch.sin(clock_angle)
+        time_values[..., 6] = torch.cos(clock_angle)
+        time_values[:, 1:, 7] = torch.log1p(gaps.double() / frames[:, None])  # [B,63].
+        weekday_angle = 2 * torch.pi * rows[..., 4].double() / 7  # Monday=0.
+        time_values[..., 8] = torch.sin(weekday_angle)
+        time_values[..., 9] = torch.cos(weekday_angle)
+        week_angle = 2 * torch.pi * rows[..., 5].double() / rows[..., 6]  # ISO 52/53-week years.
+        time_values[..., 10] = torch.sin(week_angle)
+        time_values[..., 11] = torch.cos(week_angle)
 
-        weekday_angle = 2*np.pi*local.dayofweek.to_numpy()/7.0  # Monday=0, Sunday=6.
-        time_values[..., 8] = np.sin(weekday_angle).reshape(batch, WIDTH)
-        time_values[..., 9] = np.cos(weekday_angle).reshape(batch, WIDTH)
-        iso = local.isocalendar()  # ISO week-year can differ from the calendar year.
-        iso_years = iso["year"].to_numpy(dtype=np.int64)
-        unique_years, inverse = np.unique(iso_years, return_inverse=True)
-        # December 28 always belongs to the final ISO week (52 or 53) of its year.
-        december_28 = pd.to_datetime(np.char.add(unique_years.astype(str), "-12-28"))
-        weeks_per_year = december_28.isocalendar()["week"].to_numpy(dtype=np.float64)[inverse]
-        week_angle = 2*np.pi*(iso["week"].to_numpy(dtype=np.float64)-1)/weeks_per_year
-        time_values[..., 10] = np.sin(week_angle).reshape(batch, WIDTH)
-        time_values[..., 11] = np.cos(week_angle).reshape(batch, WIDTH)
-
-        time_valid = np.ones_like(time_values, dtype=bool)  # [B,64,12].
-        time_valid[:, 0, 7] = False  # The preceding timestamp is absent from the shard sample.
-        clean_values = np.where(observed, values, 0).astype(np.float32)  # Preserve observed market values.
-        if not np.isfinite(clean_values).all():
+        time_valid = torch.ones_like(time_values, dtype=torch.bool)  # [B,64,12].
+        time_valid[:, 0, 7] = False  # No predecessor exists in this shard sample.
+        clean_values = torch.where(observed, values, 0).float()  # [B,64,21], unscaled, differentiable.
+        if not torch.isfinite(clean_values).all():
             raise ValueError("Market values overflow Float32.")
         return TransformedBars(
-            values=np.concatenate((clean_values, time_values), axis=-1),  # 21+12 → [B,64,33].
-            valid=np.concatenate((observed, time_valid), axis=-1),  # Matching [B,64,33] evidence.
+            values=torch.cat((clean_values, time_values), dim=-1),  # 21+12 → [B,64,33].
+            valid=torch.cat((observed, time_valid), dim=-1),  # Matching [B,64,33] evidence.
         )
