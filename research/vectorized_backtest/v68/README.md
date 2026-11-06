@@ -64,7 +64,8 @@ resident CPU storage pages, merge overlapping ranges, and wait for DMA completio
 before unregistering. Completion events retain registrations through asynchronous
 handoff, without a device-wide wait before inference. This avoids a duplicate
 pinned upload arena. Completed
-splits release unused pinned-host cache allocations while keeping
+splits trim unused pinned-host allocations when free RAM approaches the configured
+reserve (with 2 GiB headroom); otherwise packet allocations remain reusable. Keep
 all prepared replay inputs resident. Pair tables are prepared once per resident
 session on CPU and are never candidate features or GPU inputs. Cost attribution
 runs in the compiled execution loop with deduplicated pair counters. Saved founder

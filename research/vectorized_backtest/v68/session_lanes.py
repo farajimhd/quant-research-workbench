@@ -495,7 +495,7 @@ def release_plans():
     for item in list(_worker.host.values()):
         if hasattr(item,'resident_features'):item.resident_features.deactivate()
         item.deactivate()
-    _worker.staging.release_completed()
+    _worker.staging.release_completed(_worker.config.get('host_reserve_gib',128.))
     _worker.staging.close();_worker.staging=TransferStaging()
     # GPU tensors above are released by reference count. A full Python heap
     # collection scans unrelated retained CPU ledgers and blocks the next split.
