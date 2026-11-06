@@ -17,6 +17,10 @@ def verify_replay_sources(code):
         current=Path(__file__).parent/original.name
         a=original.read_bytes().replace(b'\r\n',b'\n')
         b=current.read_bytes().replace(b'\r\n',b'\n').replace(b'research.vectorized_backtest.v68',b'research.vectorized_backtest.v67')
+        if original.name=='scheduled_launch.py':
+            # OS scheduling priority changes no input, accounting or genome math.
+            b=b.replace(b'New-ScheduledTaskSettingsSet -Hidden -Priority 4 ',
+                        b'New-ScheduledTaskSettingsSet -Hidden ')
         if original.name=='price_references.py':
             # Only the private cache representation changes; all reference math
             # and price evaluation remain byte-identical to the founder replay.

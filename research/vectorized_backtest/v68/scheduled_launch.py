@@ -33,7 +33,7 @@ $x=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('PAYLOAD')) | Con
 if (Get-ScheduledTask -TaskName $x.task -ErrorAction SilentlyContinue) { throw 'Task already exists; inspect it before replacing' }
 $a=New-ScheduledTaskAction -Execute $x.python -Argument $x.arguments -WorkingDirectory $x.working_directory
 $p=New-ScheduledTaskPrincipal -UserId ([Security.Principal.WindowsIdentity]::GetCurrent().Name) -LogonType Interactive -RunLevel Limited
-$s=New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$s=New-ScheduledTaskSettingsSet -Hidden -Priority 4 -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName $x.task -Action $a -Principal $p -Settings $s | Out-Null
 Start-ScheduledTask -TaskName $x.task
 Get-ScheduledTask -TaskName $x.task | Select-Object TaskName,State | ConvertTo-Json -Compress

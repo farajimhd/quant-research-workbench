@@ -96,3 +96,10 @@ original founder bindings, supervised dataset hash and resolved runtime roots.
 Qualify full-session accounting parity, cost determinism, founder rescore/cache
 reuse, all-session admission and warm throughput before starting the campaign.
 The run-specific launch command and qualification evidence live under runtimes.
+
+The Windows launcher selects Task Scheduler priority 4 (normal), rather than its
+background default of 7. The observed background launch gave workers low memory
+priority and substantial input paging despite ample available RAM. Verify normal
+CPU, memory and I/O priorities for the real scheduled parent and spawned workers;
+record paging and residency during the run. The 128 GiB setting is a soft session
+admission reserve; runtime telemetry uses a separate, explicit emergency floor.
