@@ -105,6 +105,9 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
             else:action=pl.when(exit_).then(pl.lit('EXIT')).when(selected & pl.col('exit_gain').is_not_null()).then(pl.lit('HOLD')).otherwise(pl.lit('WAIT'))
             shown=shown.with_columns(action.alias('action')).with_columns(
                 pl.when(selected & ~pl.col('spread_quote_valid').fill_null(False)).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'))
+            shown=shown.with_columns(pl.when(pl.col('action')=='ENTRY').then(pl.col('entry_quality'))
+                .when(pl.col('action')=='EXIT').then(pl.col('exit_quality')).when(pl.col('action')=='HOLD').then(1-pl.col('exit_quality').fill_null(0))
+                .when(pl.col('action')=='WAIT').then(1.).otherwise(None).alias('label_value'))
     if view=='held':
         shown=shown.with_columns(pl.when(pl.col('exit_gain').is_null() | ((pl.col('episode_selected')!=True).fill_null(True) if phase=='1b' else pl.lit(False))).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'))
     candles=[dict(time=r['time_us']//1_000_000-1,endTime=r['time_us']//1_000_000,isClosed=True,**{k:r[k] for k in ('open','high','low','close')}) for r in window.iter_rows(named=True)]
