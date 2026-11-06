@@ -1,14 +1,13 @@
-"""Append twelve deterministic time features to the 21-channel shard values.
+"""Append nine deterministic time features to the 21-channel shard values.
 
 This module contains no learned layers, loading, training, or market scaling.
-It uses only completed-bar clocks and an explicitly supplied exchange schedule.
+It uses UTC completed-bar timestamps directly, without a session schedule.
 Read ``BarInputTransformV1.forward`` for the numerical feature definitions.
-Calendar preparation happens once in the constructor, outside the batch path.
+No timezone conversion or exchange-session validation is performed.
 """
 
 from dataclasses import dataclass
 
-import pandas as pd
 import torch
 from torch import nn
 
@@ -16,19 +15,17 @@ from research.bar_gpt.v5.shards.contract import CHANNELS, FRAMES, WIDTH
 
 
 TIME_CHANNELS = (
-    "premarket", "regular_hours", "after_hours",
     "bar_index", "log_timeframe_seconds",
     "intraday_sin", "intraday_cos", "log_gap_ratio",
     "weekday_sin", "weekday_cos", "iso_week_sin", "iso_week_cos",
 )
-FEATURE_NAMES = CHANNELS + TIME_CHANNELS  # Stable order for all [B,64,33] arrays.
-TIMEZONE = "America/New_York"
-DAILY_US = 86_400_000_000  # Daily identity; its stored interval is 04:00–20:00 NY.
+FEATURE_NAMES = CHANNELS + TIME_CHANNELS  # Stable order for all [B,64,30] arrays.
+DAY_US = 86_400_000_000  # Exact POSIX UTC day; leap seconds are not represented.
 
 
 @dataclass(frozen=True)
 class TransformedBars:
-    """Model inputs: Float32 ``values[B,64,33]`` and bool ``valid[B,64,33]``.
+    """Model inputs: Float32 ``values[B,64,30]`` and bool ``valid[B,64,30]``.
 
     Feature order is ``FEATURE_NAMES``. Invalid values are zero placeholders,
     distinguishable from observed zeros through ``valid``. No ticker, absolute
@@ -41,61 +38,50 @@ class TransformedBars:
 
 
 class BarInputTransformV1(nn.Module):
-    """Prepare the agreed time-aware inputs without changing market semantics.
+    """Append UTC context to market tensors without changing market semantics.
 
-    Supply an XNYS-compatible session schedule covering every sample date, e.g.
-    ``exchange_calendars.get_calendar('XNYS', start=..., end=...).schedule``.
-    The caller owns calendar selection/versioning; no calendar is downloaded or
-    inferred here. Session flags describe interval overlap, not just end time.
-    Consequently a full extended-session daily bar has all three flags equal to 1.
-
-    Construct once with ``transform = BarInputTransformV1(schedule).to(device)``.
-    Call with Torch tensors already on that device; outputs stay on that device.
-    Calendar buffers are saved in ``state_dict`` alongside the parent model.
+    Construct with ``BarInputTransformV1().to(device)``; inputs and outputs stay
+    on that device. All date arithmetic is vectorized Torch. This module neither
+    identifies trading sessions nor checks holiday coverage or session grids.
     """
 
-    def __init__(self, session_schedule: pd.DataFrame):
-        """Cache session boundaries from an explicit exchange-calendar schedule.
-
-        session_schedule: DataFrame indexed by unique, increasing session-date
-            labels at midnight, with timezone-aware ``open`` and ``close`` columns.
-            UTC-midnight index labels are treated as dates, not converted to NY.
-            Early closes must already be present in the supplied schedule.
-        """
-        super().__init__()  # Calendar buffers follow module.to(device) and enter state_dict.
-        if not {"open", "close"} <= set(session_schedule.columns):
-            raise ValueError("Schedule must contain timezone-aware open and close columns.")
-        dates = pd.DatetimeIndex(session_schedule.index).tz_localize(None)
-        if (dates.empty or dates.hasnans or not dates.is_unique
-                or not dates.is_monotonic_increasing or not dates.equals(dates.normalize())):
-            raise ValueError("Schedule index must be nonempty, ordered, unique session dates.")
-        for column in ("open", "close"):
-            if (not isinstance(session_schedule[column].dtype, pd.DatetimeTZDtype)
-                    or session_schedule[column].isna().any()):
-                raise ValueError(f"Schedule {column} must be timezone-aware and complete.")
-
-        # Pandas is confined to initialization: resolve historical DST and calendar rules once.
-        extended_open = (dates + pd.Timedelta(hours=4)).tz_localize(TIMEZONE).as_unit("us").asi8
-        extended_close = (dates + pd.Timedelta(hours=20)).tz_localize(TIMEZONE).as_unit("us").asi8
-        regular_open = pd.DatetimeIndex(session_schedule["open"]).as_unit("us").asi8
-        regular_close = pd.DatetimeIndex(session_schedule["close"]).as_unit("us").asi8
-        if not ((extended_open < regular_open) & (regular_open < regular_close)
-                & (regular_close < extended_close)).all():
-            raise ValueError("Regular sessions must lie strictly inside 04:00–20:00 NY.")
-        iso = dates.isocalendar()  # ISO year can differ from the date's calendar year.
-        december_28 = pd.to_datetime(iso["year"].astype(str) + "-12-28")
-        weeks_per_year = pd.DatetimeIndex(december_28).isocalendar()["week"]
-        # Integer buffers retain exact clocks even if the parent model uses half precision.
-        columns = (
-            extended_open, extended_close, regular_open, regular_close,
-            dates.dayofweek.to_numpy(), iso["week"].to_numpy(dtype="int64") - 1,
-            weeks_per_year.to_numpy(dtype="int64"),
-        )
-        self.register_buffer("calendar", torch.stack([
-            torch.tensor(column, dtype=torch.int64) for column in columns
-        ], dim=1))  # Seven [S] columns → [S,7], one row per trading session.
-        self.register_buffer("session_opens", self.calendar[:, 0].contiguous())  # [S], search keys.
+    def __init__(self):
+        """Register supported shard durations; no calendar or external input is needed."""
+        super().__init__()
         self.register_buffer("supported_frames", torch.tensor(FRAMES, dtype=torch.int64))
+
+    @staticmethod
+    def _utc_week_fields(days: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return Monday-zero weekday, ISO week, and ISO-year length, all int64 [B,64].
+
+        ``days`` is the integer UTC day since 1970-01-01, derived from shard ends.
+        ISO weeks belong to the year containing their Thursday. Integer Gregorian
+        400-year eras resolve that year without date libraries or lookup tables.
+        Intermediate years are never included in the model input.
+        """
+        weekday = (days + 3) % 7  # The Unix epoch was Thursday (Monday-zero index 3).
+        thursday = days + (3 - weekday)  # [B,64], Thursday in each bar's ISO week.
+        shifted = thursday + 719468  # Rebase to 0000-03-01 for March-based leap-year arithmetic.
+        era = shifted // 146097  # Gregorian leap-day pattern repeats every 400 years.
+        day_of_era = shifted % 146097  # [0,146096], bounded within one era.
+        year_of_era = (
+            day_of_era - day_of_era // 1460 + day_of_era // 36524 - day_of_era // 146096
+        ) // 365  # Correct for four-year cycles and non-leap century boundaries.
+        march_day = day_of_era - (365 * year_of_era + year_of_era // 4 - year_of_era // 100)
+        march_month = (5 * march_day + 2) // 153  # March=0 through February=11.
+        year = era * 400 + year_of_era + march_month // 10  # January/February belong to next year.
+        previous = year - 1  # Count leap days completed before January 1 of this ISO year.
+        january_1 = (
+            365 * (year - 1970)
+            + previous // 4 - 1969 // 4
+            - previous // 100 + 1969 // 100
+            + previous // 400 - 1969 // 400
+        )  # [B,64], January 1 as UTC days since the Unix epoch.
+        week = (thursday - january_1) // 7 + 1  # First Thursday identifies ISO week 1.
+        january_weekday = (january_1 + 3) % 7
+        leap = (year % 4 == 0) & ((year % 100 != 0) | (year % 400 == 0))
+        weeks_in_year = 52 + ((january_weekday == 3) | ((january_weekday == 2) & leap)).long()
+        return weekday, week, weeks_in_year
 
     def forward(
         self,
@@ -116,18 +102,17 @@ class BarInputTransformV1(nn.Module):
                 supported durations are 100ms, 1s, 10s, 1m, 1h, and 1d.
 
         Returns:
-            TransformedBars containing Float32 values and bool validity [B,64,33].
+            TransformedBars containing Float32 values and bool validity [B,64,30].
             The first gap is zero with validity False: no predecessor is supplied.
-            The remaining eleven time channels are valid for every accepted bar.
+            The remaining eight time channels are valid for every accepted bar.
 
         Formulas:
             index = i/63; timeframe = log1p(duration_seconds).
-            clock = sin/cos(2*pi*NY_seconds_since_midnight/86400).
+            clock = sin/cos(2*pi*UTC_seconds_since_midnight/86400).
             gap[t] = log1p((end[t]-end[t-1])/timeframe_us), for t>0.
-            weekday = sin/cos(2*pi*Monday_zero_weekday/7).
-            week = sin/cos(2*pi*(ISO_week-1)/weeks_in_that_ISO_year).
-            Session flags are positive-duration overlaps of [bar_start,bar_end)
-            with [04:00,open), [open,close), and [close,20:00).
+            weekday = sin/cos(2*pi*UTC_Monday_zero_weekday/7).
+            week = sin/cos(2*pi*(UTC_ISO_week-1)/weeks_in_that_ISO_year).
+            Daily bars use their actual UTC end date, not an inferred exchange date.
 
         Move this module and all input tensors to the same device before calling.
         No Pandas/NumPy operations or bulk CPU transfers occur in forward. Eager
@@ -139,7 +124,7 @@ class BarInputTransformV1(nn.Module):
         """
         if not all(isinstance(item, torch.Tensor) for item in (values, valid, end_us)):
             raise TypeError("values, valid, and end_us must be Torch tensors.")
-        if any(item.device != self.calendar.device for item in (values, valid, end_us)):
+        if any(item.device != self.supported_frames.device for item in (values, valid, end_us)):
             raise ValueError("Move the transform and all input tensors to the same device.")
         if values.ndim != 3 or values.shape[1:] != (WIDTH, len(CHANNELS)) or not len(values):
             raise ValueError("values must have nonempty shape [B,64,21].")
@@ -167,49 +152,31 @@ class BarInputTransformV1(nn.Module):
             raise ValueError("Unsupported timeframe for the current shard contract.")
         frames = timeframe_us.expand(batch)  # Scalar/[B] → [B], without copying.
 
-        # Select the latest session open, then reject bars outside that exact session.
-        # Holiday/weekend/out-of-coverage timestamps cannot inherit the previous session.
-        indices = torch.searchsorted(self.session_opens, end_us.contiguous(), right=True) - 1
-        rows = self.calendar[indices.clamp_min(0)]  # [B,64] → [B,64,7], bounded lookup.
-        extended_open, extended_close, regular_open, regular_close = rows[..., :4].unbind(-1)
-        daily = frames[:, None] == DAILY_US  # [B,1], broadcast over bar positions.
-        starts = torch.where(daily, extended_open, end_us - frames[:, None])
-        if ((indices < 0) | (starts < extended_open) | (end_us > extended_close)).any():
-            raise ValueError("Bar interval is outside the supplied calendar's 04:00–20:00 session.")
-        if (daily & (end_us != extended_close)).any():
-            raise ValueError("Daily bars must end at 20:00 New York.")
-        if (~daily & ((end_us - extended_open) % frames[:, None] != 0)).any():
-            raise ValueError("Intraday bars must align to the scheduled timeframe grid.")
-
         time_values = torch.zeros((batch, WIDTH, len(TIME_CHANNELS)), dtype=torch.float32, device=device)
-        # Strict inequalities exclude mere boundary contact from session overlap.
-        time_values[..., 0] = (starts < regular_open) & (end_us > extended_open)
-        time_values[..., 1] = (starts < regular_close) & (end_us > regular_open)
-        time_values[..., 2] = (starts < extended_close) & (end_us > regular_close)
         # Relative sequence position broadcasts [64] across all samples → [B,64].
-        time_values[..., 3] = torch.arange(WIDTH, device=device, dtype=torch.float32) / (WIDTH - 1)
-        time_values[..., 4] = torch.log1p(frames.double() / 1_000_000)[:, None]  # [B,1] → [B,64].
+        time_values[..., 0] = torch.arange(WIDTH, device=device, dtype=torch.float32) / (WIDTH - 1)
+        time_values[..., 1] = torch.log1p(frames.double() / 1_000_000)[:, None]  # [B,1] → [B,64].
 
-        # Subtract exact int64 epochs BEFORE converting to float: retain 100ms precision.
-        # NY has no UTC-offset transition inside a trading session's 04:00–20:00 interval.
-        seconds = (end_us - extended_open).double() / 1_000_000 + 4 * 3600
-        clock_angle = 2 * torch.pi * seconds / 86400  # [B,64], local bar-end clock phase.
-        time_values[..., 5] = torch.sin(clock_angle)
-        time_values[..., 6] = torch.cos(clock_angle)
-        time_values[:, 1:, 7] = torch.log1p(gaps.double() / frames[:, None])  # [B,63].
-        weekday_angle = 2 * torch.pi * rows[..., 4].double() / 7  # Monday=0.
-        time_values[..., 8] = torch.sin(weekday_angle)
-        time_values[..., 9] = torch.cos(weekday_angle)
-        week_angle = 2 * torch.pi * rows[..., 5].double() / rows[..., 6]  # ISO 52/53-week years.
-        time_values[..., 10] = torch.sin(week_angle)
-        time_values[..., 11] = torch.cos(week_angle)
+        # Reduce exact int64 epochs BEFORE converting to float: preserve subsecond precision.
+        seconds = (end_us % DAY_US).double() / 1_000_000
+        clock_angle = 2 * torch.pi * seconds / 86400  # [B,64], UTC bar-end clock phase.
+        time_values[..., 2] = torch.sin(clock_angle)
+        time_values[..., 3] = torch.cos(clock_angle)
+        time_values[:, 1:, 4] = torch.log1p(gaps.double() / frames[:, None])  # [B,63].
+        weekday, week, weeks_in_year = self._utc_week_fields(end_us // DAY_US)
+        weekday_angle = 2 * torch.pi * weekday.double() / 7  # UTC Monday=0.
+        time_values[..., 5] = torch.sin(weekday_angle)
+        time_values[..., 6] = torch.cos(weekday_angle)
+        week_angle = 2 * torch.pi * (week - 1).double() / weeks_in_year
+        time_values[..., 7] = torch.sin(week_angle)
+        time_values[..., 8] = torch.cos(week_angle)
 
-        time_valid = torch.ones_like(time_values, dtype=torch.bool)  # [B,64,12].
-        time_valid[:, 0, 7] = False  # No predecessor exists in this shard sample.
+        time_valid = torch.ones_like(time_values, dtype=torch.bool)  # [B,64,9].
+        time_valid[:, 0, 4] = False  # No predecessor exists in this shard sample.
         clean_values = torch.where(observed, values, 0).float()  # [B,64,21], unscaled, differentiable.
         if not torch.isfinite(clean_values).all():
             raise ValueError("Market values overflow Float32.")
         return TransformedBars(
-            values=torch.cat((clean_values, time_values), dim=-1),  # 21+12 → [B,64,33].
-            valid=torch.cat((observed, time_valid), dim=-1),  # Matching [B,64,33] evidence.
+            values=torch.cat((clean_values, time_values), dim=-1),  # 21+9 → [B,64,30].
+            valid=torch.cat((observed, time_valid), dim=-1),  # Matching [B,64,30] evidence.
         )
