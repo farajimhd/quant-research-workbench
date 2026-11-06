@@ -1,3 +1,6 @@
+> Inherited V66 design reference. For V67 scoring and the prohibition on manual
+> intervention/review pauses, the current [README](README.md) is authoritative.
+
 # Bounded training-evidence review
 
 This document replaces all prior separate-replay and exhaustive endpoint-test

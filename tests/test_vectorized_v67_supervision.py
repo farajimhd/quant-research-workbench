@@ -109,3 +109,27 @@ def test_manual_intervention_prohibited():
     check_policy({});assert not enabled({})
     with pytest.raises(ValueError):check_policy({'agent_intervention':POLICY})
     with pytest.raises(ValueError):enabled({'review_window':REVIEW})
+
+
+def test_controller_handoff_retains_supervision_and_score():
+    from research.vectorized_backtest.v67.controller_metrics import compact,SCALARS
+    from research.vectorized_backtest.v67.full_common import aggregate,prepare_summary
+    m={key:[0.] for key in SCALARS}
+    m.update(net_pnl=[100.],closed_positions=[1.],winning_positions=[1.],terminal_valid=[True],
+             episode_profits=[[100.]],episode_entry_clocks=[[0]],episode_exit_clocks=[[4]],
+             episode_listings=[[0]],open_episode_listings=[[]],open_episode_realized=[[]],
+             label_reward=[50.],label_penalty=[5.],label_entry_errors=[1.],
+             label_ticker_reward=[[50.]],label_ticker_penalty=[[5.]])
+    a=aggregate([m]);handed=compact(m);b=aggregate([handed])
+    assert a['score'][0]==45.
+    for key in a:np.testing.assert_array_equal(a[key],b[key])
+    prepare_summary(handed)
+    np.testing.assert_array_equal(aggregate([handed])['score'],a['score'])
+
+
+def test_behavior_equivalence_includes_label_penalties():
+    from research.vectorized_backtest.v67.behavior_selection import session_keys,SCALARS,LEDGERS
+    m={key:[0.,0.] for key in SCALARS}
+    m.update({key:[[],[]] for key in LEDGERS})
+    m['label_penalty']=[0.,5.]
+    assert session_keys(m)[0]!=session_keys(m)[1]

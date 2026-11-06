@@ -1,3 +1,6 @@
+> Inherited V66 design reference. For V67 scoring and the prohibition on manual
+> intervention/review pauses, the current [README](README.md) is authoritative.
+
 # Inherited reference
 
 This document is retained from V64 for design provenance. Historical performance

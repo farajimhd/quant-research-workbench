@@ -1,3 +1,6 @@
+> Inherited V66 design reference. For V67 scoring and the prohibition on manual
+> intervention/review pauses, the current [README](README.md) is authoritative.
+
 # V67 requirements and remaining investigations
 
 Status: execution and construction requirements implemented in V67; the remaining
