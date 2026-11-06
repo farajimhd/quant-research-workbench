@@ -76,3 +76,14 @@ def test_shared_journal_deduplicates_across_pages_and_rejects_corruption(tmp_pat
     file=receipt.parent/page['file'];file.write_bytes(file.read_bytes()+b'corrupt')
     with pytest.raises(ValueError,match='page changed'):
         apply({'net_pnl':[0.],'execution_orders':[refs[0]]},item())
+
+
+def test_cost_reads_real_journal_beyond_windows_path_limit(tmp_path):
+    from research.vectorized_backtest.v68.order_journal import Journal
+    root=tmp_path
+    while len(str(root))<280:root=root/'long-qualification-generation-and-session'
+    journal=Journal(root,1,{'test':'long-path'})
+    journal.write(0,np.array([0]),np.array([1]),np.array([order()]))
+    refs=journal.finish()
+    metrics={'net_pnl':[0.],'execution_orders':refs}
+    apply(metrics,item());assert metrics['label_captured']==[1]

@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 from .distributed_assets import sha
+from .runtime import windows_path
 from .authority import MAXIMUM_SPREAD_BPS, INITIAL_STOP_BID_MARGIN, FIXED_ENTRY_DOLLARS
 from .supervision import SETTINGS
 
@@ -58,16 +59,16 @@ def counts(refs, targets, listings):
             continue
         groups.setdefault(ref['receipt'], []).append((index, ref))
     for name, candidates in groups.items():
-        path = Path(name); journal = json.loads(path.read_bytes()); seen = []
+        path = Path(name); journal = json.loads(windows_path(path).read_bytes()); seen = []
         for _, ref in candidates:
             local = ref['candidate_index']
             if journal['candidate_sha256'][local] != ref['sha256'] or journal['counts'][local] != ref['orders']:
                 raise ValueError('Order journal candidate binding changed')
         for page in journal['pages']:
             file = path.parent/page['file']
-            if sha(file) != page['sha256']:
+            if sha(windows_path(file)) != page['sha256']:
                 raise ValueError('Order journal page changed')
-            frame = pl.read_parquet(file)
+            frame = pl.read_parquet(windows_path(file))
             if frame.height != page['rows']:
                 raise ValueError('Order journal row count changed')
             seen.append(captured(frame, targets))
