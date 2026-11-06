@@ -14,7 +14,7 @@ import time
 import torch
 
 from research.mlops.env import discover_env_files, load_env_files
-from .data_v1 import ShardBatches, build_split, calibrate, close_loader, load_split, make_loader
+from .data_v1 import EligibleStream, build_split, calibrate, close_loader, load_split, make_loader
 from .encoder_v1 import EncoderConfig, MaskedAutoencoderV1
 from .engine_v1 import run_steps
 from .pretraining_v1 import ActivityStats
@@ -134,7 +134,7 @@ def main(argv=None):
 
 def loader_for(args, manifest, stats, split, batch, workers, epoch=0, cursor=0):
     """Create an explicit data-order epoch; caller owns worker lifetime and resume cursor."""
-    dataset = ShardBatches(manifest, split, stats, batch, args.seed, epoch, cursor,
+    dataset = EligibleStream(manifest, split, stats, batch, args.seed, epoch, cursor,
                            telemetry=str(args.output / "workers"))
     return make_loader(dataset, workers, args.prefetch)
 
@@ -202,7 +202,9 @@ def train(args, manifest, stats, reporter):
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=.01, fused=True)
     epoch, cursor, step = 0, 0, 0
     contract = dict(split_hash=manifest["manifest_hash"], model=asdict(model.config), batch=args.batch_size,
-                    precision=args.precision, seed=args.seed, median=stats.median.tolist(), scale=stats.scale.tolist())
+                    data_order="eligible-stream-v1",
+                    workers=args.workers, precision=args.precision, seed=args.seed,
+                    median=stats.median.tolist(), scale=stats.scale.tolist())
     if args.resume:
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         if checkpoint["contract"] != contract:
@@ -225,7 +227,7 @@ def train(args, manifest, stats, reporter):
             close_loader(loader)
         cursor += metrics["consumed_batches"]
         step += metrics["consumed_batches"]
-        completed = cursor >= min(args.train_steps, loader.dataset.total)
+        completed = metrics["exhausted"] or cursor >= min(args.train_steps, loader.dataset.total)
         if completed:
             epoch, cursor = epoch+1, 0
         checkpoint = dict(contract=contract, model=model.state_dict(), optimizer=optimizer.state_dict(),

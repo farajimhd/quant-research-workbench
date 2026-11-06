@@ -10,7 +10,7 @@ import time
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from .pretraining_v1 import ActivityStats, fit_activity_stats, prepare_batch
 from .shards.contract import SAMPLE_DTYPE, digest, file_hash, write_json
@@ -114,15 +114,22 @@ def calibrate(manifest: dict, maximum: int = 8192, seed: int = 17) -> tuple[Acti
         if file_hash(item["path"]) != item["sha256"]:
             raise ValueError(f"Changed calibration payload: {item['path']}")
         array = np.load(item["path"], mmap_mode="r", allow_pickle=False)
-        count = min(math.ceil(maximum/len(owners)), item["stop"]-item["start"])
-        local = rng.choice(item["stop"]-item["start"], count, replace=False) + item["start"]
+        candidate = array[item["start"]:item["stop"]]
+        eligible = np.flatnonzero(candidate["valid"][..., [3, 9, 15]].any(axis=(1, 2))) + item["start"]
+        count = min(math.ceil(maximum/len(owners)), len(eligible))
+        if count == 0:
+            selection.append(dict(path=item["path"], rows=[], reason="no_observed_closing_price"))
+            continue
+        local = rng.choice(eligible, count, replace=False)
         rows = array[local]
         values.append(rows["values"].copy())
         masks.append(rows["valid"].astype(bool))
         selection.append(dict(path=item["path"], rows=local.tolist()))
+    if not values:
+        raise ValueError("Calibration sample contains no eligible training observations.")
     stats = fit_activity_stats(torch.from_numpy(np.concatenate(values)), torch.from_numpy(np.concatenate(masks)))
     return stats, dict(seed=seed, samples=sum(len(v) for v in values), files=len(owners),
-                       method="64 size-weighted training ranges, uniform rows within each; bounded calibration sample",
+                       method="64 size-weighted training ranges, uniform eligible rows within each; bounded calibration sample",
                        split_hash=manifest["manifest_hash"], selection_hash=digest(selection),
                        median=stats.median.tolist(), scale=stats.scale.tolist())
 
@@ -201,6 +208,91 @@ class ShardBatches(Dataset):
 def worker_init(worker_id):
     """Prevent CPU oversubscription: each process performs vectorized work on one thread."""
     torch.set_num_threads(1)
+
+
+class EligibleStream(IterableDataset):
+    """Pack full eligible batches from disjoint worker shard lanes, without scanning 1 TB upfront.
+
+    Exclusions are explicit: no observed trade/bid/ask closing price. Every other
+    raw validation failure remains fatal. At epoch end each worker emits its tail.
+    Resume deterministically replays the worker's prefix reads without training;
+    it never repeats optimizer updates. This avoids a huge persistent row index.
+    Worker count is part of the resume contract because it defines stream ordering.
+    """
+
+    def __init__(self, manifest, split, stats, batch_size, seed=0, epoch=0, start_batch=0, telemetry=None):
+        self.entries = list(manifest["splits"][split])
+        if split == "train":
+            np.random.default_rng(seed + epoch).shuffle(self.entries)
+        self.stats, self.batch_size, self.seed, self.epoch = stats, batch_size, seed, epoch
+        self.start_batch, self.telemetry = start_batch, telemetry
+        self.replay_cursor = start_batch  # Controller replays the ordered loader prefix, including uneven lane tails.
+        self.total = math.ceil(sum(item["stop"]-item["start"] for item in self.entries)/batch_size)
+
+    def __len__(self):
+        return max(0, self.total-self.start_batch)  # Raw upper bound; not an eligible completion claim.
+
+    def __iter__(self):
+        worker = torch.utils.data.get_worker_info()
+        physical, workers = (worker.id, worker.num_workers) if worker else (0, 1)
+        lane, skip = physical, 0
+        completed = scanned = excluded = pending_count = 0
+        pieces = []
+        began = time.perf_counter()
+        verified = set()
+
+        def publish(stage):
+            if self.telemetry:
+                write_json(Path(self.telemetry)/f"worker-{physical:02d}.json", dict(
+                    id=physical, lane=lane, stage=stage, batches=completed, scanned_candidates=scanned,
+                    excluded_no_price=excluded, prepare_ms=(time.perf_counter()-began)*1000,
+                    updated=time.time(),
+                ))
+
+        def pack(rows):
+            # Lane-local sequence identifies the batch independently of scheduling/prefetch timing.
+            rng = self.seed + self.epoch*1_000_003 + completed*workers + lane
+            rows = rows[np.random.default_rng(rng).permutation(len(rows))]
+            return prepare_batch(torch.from_numpy(rows["values"].copy()), torch.from_numpy(rows["valid"].astype(bool)),
+                                 torch.from_numpy(rows["end_us"].copy()), torch.from_numpy(rows["timeframe_us"].copy()),
+                                 self.stats, torch.Generator().manual_seed(rng))
+
+        for item in self.entries[lane::workers]:
+            path = item["path"]
+            publish("reading / verifying")
+            if path not in verified:
+                if Path(path).stat().st_size != item["bytes"] or file_hash(path) != item["sha256"]:
+                    raise ValueError(f"Changed sealed payload: {path}")
+                verified.add(path)
+            data = np.load(path, mmap_mode="r", allow_pickle=False)[item["start"]:item["stop"]]
+            observed = data["valid"][..., [3, 9, 15]].any(axis=(1, 2))
+            scanned += len(data)
+            excluded += int((~observed).sum())
+            selected = data[observed]  # Compact eligible records once per small shard.
+            offset = 0
+            while offset < len(selected):
+                take = min(self.batch_size-pending_count, len(selected)-offset)
+                pieces.append(selected[offset:offset+take])
+                pending_count += take
+                offset += take
+                if pending_count == self.batch_size:
+                    rows = np.concatenate(pieces)
+                    pieces, pending_count = [], 0
+                    if completed >= skip:
+                        batch = pack(rows)
+                        completed += 1
+                        publish("prepared / prefetching")
+                        yield batch
+                        began = time.perf_counter()
+                    else:
+                        completed += 1  # Resume replay: consume source prefix without optimizer or augmentation.
+        if pending_count:
+            if completed >= skip:
+                batch = pack(np.concatenate(pieces))
+                completed += 1
+                publish("final partial batch")
+                yield batch
+        publish("lane complete")
 
 
 def make_loader(dataset: ShardBatches, workers: int = 8, prefetch: int = 2) -> DataLoader:

@@ -1,6 +1,7 @@
 """Measured CUDA training path with asynchronous transfers and no per-step metric sync."""
 
 from dataclasses import fields
+import itertools
 import time
 
 import numpy as np
@@ -14,6 +15,9 @@ class CudaBatches:
 
     def __init__(self, loader):
         self.iterator = iter(loader)
+        cursor = getattr(getattr(loader, "dataset", None), "replay_cursor", 0)
+        if cursor:
+            self.iterator = itertools.islice(self.iterator, cursor, None)
         self.stream = torch.cuda.Stream()
         self.next_batch = None
         self.wait_seconds = 0.0
@@ -69,6 +73,7 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
     mae_sums = torch.zeros_like(sums)
     squared_sums = torch.zeros_like(sums)
     samples = measured = consumed = 0
+    exhausted = False
     begin_measure = None
     torch.cuda.reset_peak_memory_stats()
     try:
@@ -82,6 +87,7 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
             try:
                 batch = batches.pop()
             except StopIteration:
+                exhausted = True
                 break
             start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
             start.record()
@@ -132,7 +138,7 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
         milliseconds = np.array([start.elapsed_time(end) for start, end in events])
         valid = counts > 0
         per_feature = sums/counts.clamp_min(1)
-        result = dict(samples=samples, measured_steps=measured, consumed_batches=consumed,
+        result = dict(samples=samples, measured_steps=measured, consumed_batches=consumed, exhausted=exhausted,
                       seconds=elapsed, startup_seconds=startup_seconds, samples_per_second=samples/elapsed,
                       compute_ms_mean=float(milliseconds.mean()), compute_ms_p95=float(np.quantile(milliseconds, .95)),
                       compute_duty_pct=min(100., float(milliseconds.sum()/10/elapsed)),

@@ -33,11 +33,12 @@ def render(state: dict, width: int = 100):
                    f"GPU {state.get('gpu_util', 0):.0f}% | allocated {metrics.get('peak_gib', 0):.2f} GiB | "
                    f"loader wait {metrics.get('loader_wait_pct', 0):.1f}% | loss {metrics.get('loss', 0):.5f}")
     workers = Table(box=None, expand=True)
-    for name in ("Worker", "Stage", "Batches", "Prepare ms"):
+    for name in ("Worker", "Stage", "Batches", "No-price exclusions", "Prepare ms"):
         workers.add_column(name)
     for item in state.get("workers", [])[:8 if width >= 90 else 4]:
         workers.add_row(str(item.get("id", "-")), item.get("stage", "queued"),
-                        str(item.get("batches", 0)), f"{item.get('prepare_ms', 0):.1f}")
+                        str(item.get("batches", 0)), f"{item.get('excluded_no_price', 0):,}",
+                        f"{item.get('prepare_ms', 0):.1f}")
     comparisons = Table(box=None, expand=True)
     for name in ("Completed configuration", "samples/s", "GiB", "Status"):
         comparisons.add_column(name)

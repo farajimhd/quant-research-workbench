@@ -10,7 +10,7 @@ import pytest
 from rich.console import Console
 import torch
 
-from research.bar_gpt.v5.data_v1 import ShardBatches, build_split, calibrate, close_loader, load_split, make_loader
+from research.bar_gpt.v5.data_v1 import EligibleStream, ShardBatches, build_split, calibrate, close_loader, load_split, make_loader
 from research.bar_gpt.v5.encoder_v1 import AttentionBlock
 from research.bar_gpt.v5.engine_v1 import run_steps
 from research.bar_gpt.v5.progress_v1 import render
@@ -72,6 +72,22 @@ def test_payload_mutation_fails(inventory):
         stream.write(b"x")
     with pytest.raises(ValueError, match="payload"):
         dataset[0]
+
+
+def test_eligible_stream_packs_full_batches_and_reports_exclusions(inventory, tmp_path):
+    manifest, stats = inventory
+    for item in manifest["splits"]["train"]:
+        array = np.load(item["path"], allow_pickle=False)
+        array["valid"][:8, :, [3, 9, 15]] = 0
+        np.save(item["path"], array, allow_pickle=False)
+        item["sha256"] = file_hash(item["path"])
+    telemetry = tmp_path / "workers"
+    telemetry.mkdir()
+    dataset = EligibleStream(manifest, "train", stats, 25, telemetry=str(telemetry))
+    batches = list(dataset)
+    assert [len(batch.visible) for batch in batches] == [25, 25, 14]
+    report = json.loads((telemetry / "worker-00.json").read_text())
+    assert report["scanned_candidates"] == 128 and report["excluded_no_price"] == 64
 
 
 def test_spawn_workers_and_cleanup(inventory):
