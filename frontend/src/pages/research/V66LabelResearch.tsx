@@ -6,7 +6,7 @@ import { PriceActionResearch } from "./PriceActionResearch";
 import { LoadingState } from "../../app/components/LoadingState";
 import { researchClock as clock } from "./researchChart";
 
-type Catalog = { dataset_sha256: string; label_version?: string; days: { day: string; role: string; valid_rows: number; excluded_rows: number; selected_pairs: number }[] };
+type Catalog = { dataset_sha256: string; label_version?: string; scope?: { quotes?: string }; days: { day: string; role: string; valid_rows: number; excluded_rows: number; selected_pairs: number }[] };
 type Listing = { listing_id: string; ticker: string; valid_rows: number; excluded_rows: number };
 type Decision = { listing_id: string; pair_id: number; selected: boolean; selection_reason: string; time_us: number | null; entry_target_us: number | null; selection_score: number | null; allocation_ratio: number; group_id: number | null; active_count: number | null };
 type Market = { dataset_sha256: string; total: number; rows: Decision[]; groups: { group_id: number; start_us: number; end_us: number; members: number }[] };
@@ -68,6 +68,7 @@ export function V66LabelResearch() {
       <button className="button secondary compact" disabled={index < 0 || index >= choices.length-1} onClick={() => { setTicker(choices[index+1].ticker); setFocus(null); }}>Next ticker</button>
       <button className="button secondary compact" onClick={() => setAttempt(a => a+1)}>Reload V66 labels</button>
     </div>
+    {catalog?.scope?.quotes && <p className="research-muted">{catalog.label_version} · {catalog.scope.quotes}</p>}
     {phase === "1b" && catalog && day && <div className="research-page research-v66-timeline"><EpisodeGroupingChart key={`${catalog.dataset_sha256}:${day}`} jobId={`${catalog.dataset_sha256}:${day}`} savedV66={{day,datasetSha:catalog.dataset_sha256}} sessionScore={0} focusedGroup={group}
       onGroup={id=>{setGroup(id);setOffset(0);setSelection("all");setSearch("");if(table.current)table.current.open=Boolean(id);}}
       onInspect={inspect} /></div>}

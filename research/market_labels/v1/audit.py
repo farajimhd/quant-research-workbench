@@ -7,12 +7,14 @@ from research.rl_trading.v6.saved_label_audit import read_json, mapped, runtime,
 from research.rl_trading.v6 import price_action_opportunities as algorithm
 from .contract import VERSION, SCOPE
 from research.market_labels.v2.contract import VERSION as SPREAD_VERSION
+from research.market_labels.v3.contract import VERSION as EXECUTION_VERSION
+SPREAD_VERSIONS=(SPREAD_VERSION,EXECUTION_VERSION)
 
 
 def published():
     registry=Path(os.environ.get('V66_LABEL_REGISTRY',str(runtime()/'v66-active-labels.json')))
     active=read_json(registry)
-    if active['version'] not in (VERSION,SPREAD_VERSION):raise ValueError('Wrong V66 label registry')
+    if active['version'] not in (VERSION,*SPREAD_VERSIONS):raise ValueError('Wrong V66 label registry')
     path=mapped(active['dataset']);dataset=read_json(path,active['sha256'])
     if dataset['version']!=active['version'] or not dataset['full_inventory'] or dataset['status']!='verified_review_only':raise ValueError('Incomplete V66 review dataset')
     return active,dataset,path.parent
@@ -58,7 +60,7 @@ def product(day,identity,phase='1a'):
     frames=dict(labels=labels,**{name:read_frame(root,proof,name+'.parquet',identity) for name in ('episodes','pairs','trades')})
     decisions=read_frame(root,proof,'decisions.parquet',identity)
     pairs=frames['pairs'].join(decisions.select('listing_id','pair_id','selected','selection_reason','selection_score','allocation_ratio','group_id'),on=['listing_id','pair_id'],how='left',validate='1:1')
-    if proof['version']==SPREAD_VERSION:
+    if proof['version'] in SPREAD_VERSIONS:
         pairs=pairs.join(decisions.select('listing_id','pair_id',pl.col('time_us').alias('selected_entry_us'),pl.col('entry_target_us').alias('selected_target_us'),
             pl.col('ask').alias('selected_entry_ask'),pl.col('target_bid').alias('selected_target_bid'),'score_threshold'),on=['listing_id','pair_id'],how='left',validate='1:1')
     meta=dict(day=day,ticker=identity,listing_id=identity,session='V66 premarket 04:00–09:30 ET',version=proof['version'],quote_audit=proof.get('quote_audit'),
@@ -95,7 +97,7 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
     if phase=='1b':
         shown=shown.with_columns(pl.when(pl.col('episode_selected')==False).then(pl.lit('WAIT')).otherwise(pl.col('action')).alias('action'),
             pl.when(pl.col('episode_selected')==False).then(pl.lit(1.)).otherwise(pl.col('label_value')).alias('label_value'))
-        if proof['version']==SPREAD_VERSION:
+        if proof['version'] in SPREAD_VERSIONS:
             selected=pl.col('episode_selected').fill_null(False)
             entry=selected & pl.col('spread_entry_eligible')
             exit_=selected & pl.col('spread_exit_eligible')
@@ -108,6 +110,9 @@ def chart(day,listing_id,start_us=None,seconds=900,view='combined',candle_offset
             shown=shown.with_columns(pl.when(pl.col('action')=='ENTRY').then(pl.col('entry_quality'))
                 .when(pl.col('action')=='EXIT').then(pl.col('exit_quality')).when(pl.col('action')=='HOLD').then(1-pl.col('exit_quality').fill_null(0))
                 .when(pl.col('action')=='WAIT').then(1.).otherwise(None).alias('label_value'))
+    if phase=='1b' and proof['version']==EXECUTION_VERSION:
+        shown=shown.with_columns(pl.when(~pl.col('economic_label_valid')).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'),
+            pl.when(~pl.col('economic_label_valid')).then(None).otherwise(pl.col('label_value')).alias('label_value'))
     if view=='held':
         shown=shown.with_columns(pl.when(pl.col('exit_gain').is_null() | ((pl.col('episode_selected')!=True).fill_null(True) if phase=='1b' else pl.lit(False))).then(pl.lit('UNLABELLED')).otherwise(pl.col('action')).alias('action'))
     candles=[dict(time=r['time_us']//1_000_000-1,endTime=r['time_us']//1_000_000,isClosed=True,**{k:r[k] for k in ('open','high','low','close')}) for r in window.iter_rows(named=True)]
