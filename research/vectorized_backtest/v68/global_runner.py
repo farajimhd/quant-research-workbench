@@ -17,7 +17,7 @@ class Global(Evolution):
         self.split_lanes={};self.worker.deferred_writes=[];self.published_receipts=[]
         import multiprocessing
         context=multiprocessing.get_context('spawn')
-        self.host_load_slots=context.BoundedSemaphore(job.get('host_load_slots',4))
+        self.host_load_slots=context.BoundedSemaphore(job.get('host_load_slots',8))
         self.host_load_counts=context.Array('q',[0,0,0,0],lock=True)
 
     def close_lanes(self):

@@ -4,6 +4,27 @@ import pytest
 from research.vectorized_backtest.v68.global_runner import Global
 
 
+def test_releasing_source_lru_preserves_prepared_arrays_and_provenance():
+    import numpy as np
+    import polars as pl
+    from research.vectorized_backtest.v68.market_memory import release_completed_source_cache
+    frame=pl.DataFrame({'close':[10.,11.,12.]});view=frame['close'].to_numpy()
+    session=SimpleNamespace(cache={'bars':frame},cache_used=frame.estimated_size(),verified_files={('day','bars')})
+    item=SimpleNamespace(shard_session=session,resident_features=object(),shard_values=view,
+                         host_tensors={'close':view},quote_coverage={})
+    original=view.copy();assert release_completed_source_cache(item)>0
+    assert not session.cache and session.cache_used==0
+    assert session.verified_files=={('day','bars')}
+    np.testing.assert_array_equal(item.shard_values,original)
+    np.testing.assert_array_equal(item.host_tensors['close'],original)
+
+
+def test_source_lru_cannot_be_released_before_preparation():
+    from research.vectorized_backtest.v68.market_memory import release_completed_source_cache
+    with pytest.raises(ValueError,match='Complete prepared'):
+        release_completed_source_cache(SimpleNamespace(shard_session=object()))
+
+
 @pytest.mark.parametrize('slots',[0,1,3,64,4.0,True])
 def test_invalid_global_startup_slot_count_fails_closed(slots):
     from research.vectorized_backtest.v68.global_contract import check

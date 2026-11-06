@@ -17,11 +17,19 @@ def verify_replay_sources(code):
         current=Path(__file__).parent/original.name
         a=original.read_bytes().replace(b'\r\n',b'\n')
         b=current.read_bytes().replace(b'\r\n',b'\n').replace(b'research.vectorized_backtest.v68',b'research.vectorized_backtest.v67')
-        if original.name=='global_runner.py':
+        if original.name in ('global_runner.py','session_lanes.py'):
             import ast
             def without_admission(raw):
                 tree=ast.parse(raw.decode('utf8'))
                 for node in tree.body:
+                    if isinstance(node,ast.ClassDef) and node.name=='Worker':
+                        for method in node.body:
+                            if isinstance(method,ast.FunctionDef) and method.name=='_read_host':
+                                method.body=[statement for statement in method.body if not
+                                    (isinstance(statement,ast.ImportFrom) and statement.module=='market_memory')
+                                    and not (isinstance(statement,ast.Expr) and isinstance(statement.value,ast.Call)
+                                             and isinstance(statement.value.func,ast.Name)
+                                             and statement.value.func.id=='release_completed_source_cache')]
                     if isinstance(node,ast.ClassDef) and node.name=='Global':
                         node.body=[method for method in node.body if not
                             (isinstance(method,ast.FunctionDef) and method.name=='prepare_resident_sessions')]
