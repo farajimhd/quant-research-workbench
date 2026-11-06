@@ -117,8 +117,6 @@ class Worker:
             feature_workers=c.get('diagnostic_feature_workers',1),
             review_feature_cache=c.get('review_feature_cache')),
             resident=torch.device(c['device']).type=='cuda')
-        from .market_memory import release_completed_source_cache
-        release_completed_source_cache(item)
         from .supervision import load
         load(item,c['supervision'],c['shard_manifest'])
         item.profile_baseline_execution=c.get('profile_baseline_execution',False)
@@ -497,6 +495,7 @@ def release_plans():
     for item in list(_worker.host.values()):
         if hasattr(item,'resident_features'):item.resident_features.deactivate()
         item.deactivate()
+    _worker.staging.release_completed()
     _worker.staging.close();_worker.staging=TransferStaging()
     # GPU tensors above are released by reference count. A full Python heap
     # collection scans unrelated retained CPU ledgers and blocks the next split.

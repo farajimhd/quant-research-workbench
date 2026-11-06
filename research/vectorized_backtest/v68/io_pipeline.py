@@ -16,6 +16,16 @@ from research.vectorized_backtest.v68.base_io_pipeline import TransferStaging as
 
 
 class TransferStaging(_TransferStaging):
+    def stage(self,data,slot):
+        """Keep the existing copy path, allocating only its exact aligned size."""
+        import torch
+        if slot['event'] is not None:slot['event'].synchronize()
+        groups=[data.host_tensors,data.resident_features.host]
+        required=sum((v.numel()*v.element_size()+255)//256*256 for group in groups for v in group.values())
+        if slot['buffer'] is None or slot['buffer'].numel()<required:
+            slot['buffer']=torch.empty(required,dtype=torch.uint8,pin_memory=True)
+        return super().stage(data,slot)
+
     def begin(self,data):
         """Allocate at the quiescent CUDA owner; copy bytes on the CPU pool."""
         import torch

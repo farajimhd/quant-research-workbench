@@ -4,27 +4,6 @@ import pytest
 from research.vectorized_backtest.v68.global_runner import Global
 
 
-def test_releasing_source_lru_preserves_prepared_arrays_and_provenance():
-    import numpy as np
-    import polars as pl
-    from research.vectorized_backtest.v68.market_memory import release_completed_source_cache
-    frame=pl.DataFrame({'close':[10.,11.,12.]});view=frame['close'].to_numpy()
-    session=SimpleNamespace(cache={'bars':frame},cache_used=frame.estimated_size(),verified_files={('day','bars')})
-    item=SimpleNamespace(shard_session=session,resident_features=object(),shard_values=view,
-                         host_tensors={'close':view},quote_coverage={})
-    original=view.copy();assert release_completed_source_cache(item)>0
-    assert not session.cache and session.cache_used==0
-    assert session.verified_files=={('day','bars')}
-    np.testing.assert_array_equal(item.shard_values,original)
-    np.testing.assert_array_equal(item.host_tensors['close'],original)
-
-
-def test_source_lru_cannot_be_released_before_preparation():
-    from research.vectorized_backtest.v68.market_memory import release_completed_source_cache
-    with pytest.raises(ValueError,match='Complete prepared'):
-        release_completed_source_cache(SimpleNamespace(shard_session=object()))
-
-
 @pytest.mark.parametrize('slots',[0,1,3,64,4.0,True])
 def test_invalid_global_startup_slot_count_fails_closed(slots):
     from research.vectorized_backtest.v68.global_contract import check
@@ -61,3 +40,22 @@ def test_admission_finishes_training_before_validation_and_rejects_deferral(tmp_
         with pytest.raises(MemoryError,match='All-session RAM residency'):model.prepare_resident_sessions()
     else:model.prepare_resident_sessions()
     assert submitted==['training','training','validation','validation']
+
+
+def test_upload_staging_uses_exact_capacity_and_preserves_tensor_bytes(monkeypatch):
+    import torch
+    from research.vectorized_backtest.v68.io_pipeline import TransferStaging
+    original_empty=torch.empty;allocated=[]
+    def pageable_empty(*args,**kwargs):
+        kwargs.pop('pin_memory',None)
+        value=original_empty(*args,**kwargs);allocated.append(value.numel());return value
+    monkeypatch.setattr(torch,'empty',pageable_empty)
+    market=SimpleNamespace(host_tensors={'a':torch.arange(7),'b':torch.arange(9,dtype=torch.float64)},
+        resident_features=SimpleNamespace(host={'c':torch.arange(17,dtype=torch.float32)}))
+    staging=TransferStaging()
+    try:
+        thin,resident=staging.stage(market,staging.slots[0])
+        assert allocated==[768]  # Existing power-of-two path would allocate 1024.
+        for key,value in thin.items():assert torch.equal(value,market.host_tensors[key])
+        assert torch.equal(resident['c'],market.resident_features.host['c'])
+    finally:staging.close()

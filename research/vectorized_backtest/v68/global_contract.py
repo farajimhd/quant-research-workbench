@@ -21,7 +21,7 @@ def source_job_path(job):
 
 
 def check(job):
-    slots=job.get('host_load_slots',8)
+    slots=job.get('host_load_slots',4)
     if type(slots) is not int or slots not in (2,4,8,16,32):raise ValueError('Bounded startup load slots required')
     from .review_window import enabled
     if job.get('review_window') is not None or job.get('agent_intervention') is not None:
