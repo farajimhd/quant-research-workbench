@@ -119,6 +119,7 @@ class Evolution(Controller):
         with owned_run(self.root,version='v57-campaign-evolution-v1'):
             write_json(self.root/'owner.json',self.owner);thread=threading.Thread(target=self.pump,daemon=True);thread.start()
             try:
+                if hasattr(self,'prepare_resident_sessions'):self.prepare_resident_sessions()
                 self.global_run(exports,self.job['training_days'],self.job['validation_days']);self.status='complete';self.stage='Complete'
             except BaseException:
                 self.status='interrupted' if any((Path(p)/'STOP').exists() for p in self.stop_roots) else 'failed'

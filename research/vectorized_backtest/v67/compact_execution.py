@@ -76,7 +76,9 @@ def _one(candidate,start,slots,signals,ratios,prices,owners,abstain,quotes,
             targeted=held and np.isfinite(mark) and mark>=p[u,3]
             lifecycle=rank_loss or terminal or stopped or targeted or o[u,12]>0
             flatten=lifecycle or (sig&2)!=0
-            if held and not lifecycle and action>0 and (new_edge & (2|8))!=0:
+            strategy_exit=((not lifecycle and (new_edge & (2|8))!=0) or
+                           (targeted and not rank_loss and not terminal and not stopped and o[u,12]==0))
+            if held and action>0 and strategy_exit:
                 if action!=4 or pair!=int(score[u,0]):score[u,8]+=1
             if rank_loss and o[u,13]==0:
                 d[9]+=1;o[u,13]=clock+1

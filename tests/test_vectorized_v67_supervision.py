@@ -6,7 +6,7 @@ from research.vectorized_backtest.v67 import compact_execution as kernel
 from research.vectorized_backtest.v67.supervision import SETTINGS
 
 
-def replay(actions, signals, prices=None, *, pairs=None, chunks=False, candidates=2):
+def replay(actions, signals, prices=None, *, pairs=None, chunks=False, candidates=2,target=1000.):
     n=len(actions);u=5;b=candidates
     slots=np.tile(np.arange(u,dtype=np.int32),(n,1))
     sig=np.zeros((n,b,u),np.int16);sig[:,:,0]=np.asarray(signals)[:,None]
@@ -15,7 +15,7 @@ def replay(actions, signals, prices=None, *, pairs=None, chunks=False, candidate
                (price,price,price,np.arange(n,dtype=float),np.full(n,100000.),np.full(n,100000.),np.ones(n,bool)))
     refs=np.zeros((n,b,u,5));refs[:,:,:,0]=100.;refs[:,:,:,1]=.01
     # A $100 limit yields ten initial shares; actual fills use the quote.
-    refs[:,:,:,2]=1.;refs[:,:,:,3]=1000.;refs[:,:,:,4]=1.
+    refs[:,:,:,2]=1.;refs[:,:,:,3]=target;refs[:,:,:,4]=1.
     ratios=np.ones((n,b,u,3));owners=np.broadcast_to(np.arange(b)[None,:,None],(n,b,u)).copy()
     abstain=np.zeros((n,b,u),bool)
     action=np.zeros((n,u),np.int8);action[:,0]=actions
@@ -77,6 +77,16 @@ def test_early_discretionary_exit():
 def test_terminal_liquidation_exempt_from_exit_signal_penalty():
     score,_,_=replay([2,3,3,4,1],[1,0,0,0,0])
     assert score[0,0,8]==0 and score[0,0,9]>0
+
+
+def test_early_candidate_target_is_not_an_exempt_exit():
+    score,_,_=replay([2,3,3,4,1],[1,0,0,0,0],[10,101,101,101,101],target=100.5)
+    assert score[0,0,8]==1
+
+
+def test_protective_stop_is_exempt():
+    score,episodes,_=replay([2,3,3,4,1],[1,0,0,0,0],[10,.5,.5,.5,.5])
+    assert score[0,0,8]==0 and score[0,0,6]==episodes[0][0][0]<0
 
 
 def test_unaligned_add_dilutes_profit():

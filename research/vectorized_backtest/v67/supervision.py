@@ -5,13 +5,14 @@ import numpy as np
 import polars as pl
 from .distributed_assets import sha
 
-VERSION = 'saved-1b-entry-profit-and-request-penalties-v1'
+VERSION = 'saved-1b-entry-profit-and-request-penalties-v2'
 APPROVED_SHA = 'f3357d530cdf6ba8b53d4e559c6b219dc3ebeda172a728cead5c5296c3749543'
 SETTINGS = dict(version=VERSION, entry_penalty=5., exit_penalty=5.,
                 late_notional_second=0.00001, timing='decision-candle-close',
                 actions='saved-1b-only', missing='masked-no-positive-credit',
                 profit='episode-net-aligned-buy-notional-fraction',
-                requests='rising-edge-per-action-and-pair', protective_exits='exempt')
+                requests='rising-edge-per-action-and-pair', protective_exits='stops-rank-loss-terminal-exempt',
+                take_profit='candidate-exit-at-first-trigger')
 
 
 def contract(value):

@@ -32,7 +32,8 @@ supervised reward, with equal weights. Deduct:
 
 Request penalties use rising edges of each action bit and pair, avoiding repeated
 per-second charges for a persistent signal. Execution-blocked penalties describe
-a separate execution failure and retain V66 behavior. Protective stop/target,
+a separate execution failure and retain V66 behavior. Candidate take-profit
+targets are checked once at their first trigger. Protective stop,
 rank-loss, and terminal liquidations are exempt from discretionary-exit charges;
 late exposure still counts until actual liquidation. Stop-update requests are
 execution management, not an ENTRY/EXIT decision target. WAIT/HOLD earn no bonus.
@@ -56,6 +57,8 @@ remain CPU-only, absent from feature tensors, GPU transfers, calibration, and
 candidate inputs. Scoring runs inside the existing Numba accounting loop. No
 tick-level label I/O, external lookup, or extra candidate replay is used in a
 normal run. Resident label memory is reported in quote-coverage receipts.
+Startup must successfully admit all 188 sessions while preserving the 128 GiB
+RAM reserve before evolution begins; deferred sessions fail this admission.
 
 After committing, pushing, and hash-verifying an isolated workstation deployment:
 

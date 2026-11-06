@@ -28,6 +28,29 @@ class Global(Evolution):
         self.split_lanes.clear()
         if errors:raise errors[0]
 
+    def prepare_resident_sessions(self):
+        """Admit every train/validation input before evolution; no labels in inference."""
+        from .session_lanes import prime_sessions
+        from .publication import write_json
+        import psutil,time
+        self.stage='Prepare all-session RAM residency';self.publish()
+        started=time.perf_counter();pending=[]
+        for role in ('training','validation'):
+            lanes=self.get_lanes(role)
+            for lane,pool in enumerate(lanes.pools):
+                pending.append(pool.submit(prime_sessions,self.job[role+'_days'][lane::self.workers]))
+        records=[future.result() for future in pending]
+        report=dict(sessions=sum(r['ready'] for r in records),deferred=[d for r in records for d in r['deferred']],
+                    workers=records,available_gib=psutil.virtual_memory().available/2**30,
+                    seconds=time.perf_counter()-started,labels_cpu_only=True)
+        write_json(self.root/'all-session-residency.json',report)
+        expected=sum(len(self.job[r+'_days']) for r in ('training','validation'))
+        if report['sessions']!=expected or report['deferred']:
+            raise MemoryError('All-session RAM residency is required before evolution')
+        if report['available_gib']<self.job['machines']['workstation']['reserve_gib']:
+            raise MemoryError('All-session residency breached the RAM reserve')
+        self.publish(resident_sessions=report['sessions'],resident_available_gib=report['available_gib'])
+
     def session_result(self,day,result,role,generation):
         if result.get('restored'):
             # Explicitly bound receipts remain immutable; publication only links
