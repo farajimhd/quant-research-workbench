@@ -3,6 +3,13 @@ DEFAULT=dict(time_block=256,transfer_mode='synchronous')
 TRANSFER_BUFFERS=8
 
 
+def transfer_capacity(block):
+    """Keep at most the original 2,048 clocks of pending output storage."""
+    if type(block) is not int or block not in (128,256,512,1024):
+        raise ValueError('Unsupported independent-clock block')
+    return min(TRANSFER_BUFFERS,256*TRANSFER_BUFFERS//block)
+
+
 def tuning(job):
     value=dict(DEFAULT,**job.get('replay_tuning',{}))
     if set(value)!=set(DEFAULT) or value['time_block'] not in (128,256,512,1024):
@@ -43,7 +50,7 @@ def memory_budget(item,population,batches,block):
     workspace=block*largest_nodes*5*5
     # Projection/transforms/lag intermediates plus the bounded output ring.
     projection=block*5*len(CATALOG)*128
-    outputs=block*largest_leaves*5*96*TRANSFER_BUFFERS
+    outputs=block*largest_leaves*5*96*transfer_capacity(block)
     prices=item.clocks*5*(len(REFERENCES)+1)*8
     context=2*1024**3
     required=resident+context+int(1.25*(packed+workspace+projection+outputs+prices))

@@ -124,3 +124,30 @@ def test_direct_upload_waits_for_dma_before_unregister(monkeypatch,fail):
     finally:staging.close()
     if not fail:
         assert events==['register','upload','record','dma_complete','unregister']*2
+
+
+@pytest.mark.parametrize('block,capacity',[(128,8),(256,8),(512,4),(1024,2)])
+def test_output_queue_has_bounded_clock_horizon(block,capacity):
+    from research.vectorized_backtest.v68.performance import transfer_capacity
+    assert transfer_capacity(block)==capacity
+    assert block*capacity<=2048
+
+
+@pytest.mark.parametrize('block',[0,2048,512.,True])
+def test_invalid_output_queue_clock_block_fails_closed(block):
+    from research.vectorized_backtest.v68.performance import transfer_capacity
+    with pytest.raises(ValueError):transfer_capacity(block)
+
+
+def test_memory_admission_counts_actual_output_queue(monkeypatch):
+    from research.vectorized_backtest.v68 import strategy_mix,performance
+    monkeypatch.setattr(strategy_mix,'node_count',lambda member:1)
+    monkeypatch.setattr(strategy_mix,'leaves',lambda member:[member])
+    item=SimpleNamespace(bytes=1024,resident_features=SimpleNamespace(bytes=1024),clocks=23400)
+    population=list(range(1024));batches=[population]
+    small=performance.memory_budget(item,population,batches,256)
+    large=performance.memory_budget(item,population,batches,512)
+    assert small['output_bytes']==large['output_bytes']==256*1024*5*96*8
+    assert large['workspace_bytes']==2*small['workspace_bytes']
+    assert large['projection_bytes']==2*small['projection_bytes']
+    assert large['context_headroom_bytes']==small['context_headroom_bytes']

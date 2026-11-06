@@ -33,9 +33,13 @@ def verify_replay_sources(code):
                         node.args=[arg for arg in node.args if not (isinstance(arg,ast.Name) and arg.id=='capture_state')]
                     return self.generic_visit(node)
                 def visit_Assign(self,node):
-                    if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id=='capture_state':return None
+                    if len(node.targets)==1 and isinstance(node.targets[0],ast.Name) and node.targets[0].id in ('capture_state','transfer_buffers'):return None
                     return self.generic_visit(node)
+                def visit_Name(self,node):
+                    if node.id=='transfer_buffers':node.id='TRANSFER_BUFFERS'
+                    return node
                 def visit_ImportFrom(self,node):
+                    if node.module=='performance':node.names=[name for name in node.names if name.name!='transfer_capacity']
                     return None if node.module=='opportunity_cost' else node
                 def visit_Expr(self,node):
                     if (isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name)
@@ -44,6 +48,18 @@ def verify_replay_sources(code):
             def without_capture(raw):
                 return ast.dump(WithoutCaptureTracking().visit(ast.parse(raw.decode('utf8'))),include_attributes=False)
             a,b=without_capture(a),without_capture(b)
+        if original.name=='performance.py':
+            import ast
+            class WithoutQueueSizing(ast.NodeTransformer):
+                def visit_FunctionDef(self,node):
+                    return None if node.name=='transfer_capacity' else self.generic_visit(node)
+                def visit_Call(self,node):
+                    if isinstance(node.func,ast.Name) and node.func.id=='transfer_capacity':
+                        return ast.Name(id='TRANSFER_BUFFERS',ctx=ast.Load())
+                    return self.generic_visit(node)
+            def without_queue_sizing(raw):
+                return ast.dump(WithoutQueueSizing().visit(ast.parse(raw.decode('utf8'))),include_attributes=False)
+            a,b=without_queue_sizing(a),without_queue_sizing(b)
         if original.name in ('global_runner.py','session_lanes.py','io_pipeline.py'):
             import ast
             def without_admission(raw):

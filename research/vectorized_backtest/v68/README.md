@@ -71,6 +71,10 @@ runs in the compiled execution loop with deduplicated pair counters. Saved found
 rescoring uses verified journals; live replay does not rescan journals for costs.
 No extra market replay is required.
 
+Output queues retain at most the original 2,048 independent clocks: eight
+256-clock packets or four 512-clock packets. GPU admission uses the same actual
+queue capacity; larger clock blocks do not silently increase the buffer budget.
+
 Run the launcher help with bytecode disabled:
 
 ```powershell
