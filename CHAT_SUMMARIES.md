@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-11-05 - V66 review, disk failure, storage repair and cleanup handoff](docs/codex/chat-summaries/2026/CHAT-20261101-1732-v66-review-storage-cleanup-handoff.md)
+
+TASK-0223. V66 stopped after sealed generation96 when disk admission blocked97; epoch95's 64-control package consumption is hash-confirmed. Manual reviews use live optimizer-owned windows and existing training evidence only; failed/mixed repairs remain hypotheses. Scheduler explicitly PAUSED. User approved seven deletions; about3.84 TiB reclaimed, V66/checkpoint preserved. Storage commit cac5002ac compresses metrics, references paired slices and coalesces journals. One real sample shrank83.7% exactly;272 V66 tests,17 final checks and25 workstation tests passed (overlapping counts). Verified deployment and generation96/188-cache continuation prepared but NOT started; post-cleanup panel loaded1088 candidates. Preserve archived source manifest; no automatic restart or evidence migration. Earlier context partial.
+
 ### [2026-11-01 - V53–V63 design, audits and active workstation handoff](docs/codex/chat-summaries/2026/CHAT-20261026-0804-v53-v63-optimization-handoff.md)
 
 TASK-0223. Preserves the user's bottom-up network, central authority, stateless inference/minimal execution, top-five batching, whole-share fixed budgets, broad generalization and measured-throughput requirements. V63 now runs global-only: 6,144 fresh founders, 1,024 population, 24 train/12 display-only validation, 200 generations, six workers/256 clocks. Records weak founder quality, calibration mismatch repairs, exact score reconciliation and loading optimizations through 9fa1416ac. Live cold loads still reached 22.5s; profitability and full-generation improvement remain unproven. Current campaign resumed from checkpoint; preserve receipts/RNG and stopped predecessors. No monitor recreation. Prior-result loading is optimizer reuse, not terminal-only work. Early assistant evidence is partial.
