@@ -40,6 +40,15 @@ C:/Users/Mehdi/miniconda3/envs/ml4t/python.exe -B -m research.market_labels.v2.r
 
 Defaults: source `D:/TradingML/runtimes/market_shards/datasets/2026-top5-v1`,
 approved 1a `.../market_shards/labels/v66-1a1b-v1/dataset.json`, output
-`.../market_shards/labels/v66-1a1b-spread-v2`. STOP drains active days; reruns
+`<source>/labels/1a1b-spread-v2`. STOP drains active days; reruns
 verify sealed days. Only complete 188-session coverage may publish the app
 registry. Optimizers remain bound to their existing approved label hash.
+
+Storage belongs to the owning market dataset and has no optimizer-version
+prefix. Existing sealed labels can be moved with
+`python -B -m research.market_labels.v2.relocate`; this verifies all file hashes,
+preserves the sealed product identity and dataset hash, journals the rename,
+and updates the app pointers only after destination verification. Market
+manifests and market-bar seals are not rewritten. The completed build's original
+immutable deployment can resume with an explicit `--output` at the new path;
+new producer source still requires its own binding and a fresh build location.

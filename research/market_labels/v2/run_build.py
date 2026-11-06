@@ -18,11 +18,12 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--source',type=Path,default=Path('D:/TradingML/runtimes/market_shards/datasets/2026-top5-v1'))
     p.add_argument('--labels',type=Path,default=Path('D:/TradingML/runtimes/market_shards/labels/v66-1a1b-v1/dataset.json'))
-    p.add_argument('--output',type=Path,default=Path('D:/TradingML/runtimes/market_shards/labels/v66-1a1b-spread-v2'))
+    p.add_argument('--output',type=Path,help='Default: <source>/labels/1a1b-spread-v2')
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--days',nargs='+',help='Bounded canary; cannot publish the full registry')
     p.add_argument('--publish',action='store_true')
     a=p.parse_args()
+    if a.output is None:a.output=a.source/'labels'/'1a1b-spread-v2'
     runtime=Path('D:/TradingML/runtimes').resolve()
     if not runtime.is_dir():raise ValueError('Required runtime unavailable')
     if not a.output.resolve().is_relative_to(runtime) or a.output.resolve()==a.source.resolve():raise ValueError('Separate external label root required')
