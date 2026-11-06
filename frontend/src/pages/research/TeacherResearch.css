@@ -78,3 +78,4 @@
 .research-grouping-chart { --research-threshold-rejected: var(--destructive); }
 
 .research-grouping-surface { cursor: grab; touch-action: pan-y; user-select: none; }
+.research-v66-decisions { max-height: 35vh; overflow: auto; }

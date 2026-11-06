@@ -10,6 +10,40 @@ from research.rl_trading.v6 import price_action_opportunities as price_action_la
 
 router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'])
 
+@router.get('/v66/labels')
+def v66_catalog():
+    from research.market_labels.v1 import audit
+    return read(audit.catalog)
+
+
+@router.get('/v66/labels/listings')
+def v66_listings(day: str):
+    from research.market_labels.v1 import audit
+    return read(audit.listings,day)
+
+
+@router.get('/v66/labels/metadata')
+def v66_metadata(day: str, listing_id: str, phase: Literal['1a','1b']='1a'):
+    from research.market_labels.v1 import audit
+    return read(audit.metadata,day,listing_id,phase)
+
+
+@router.get('/v66/labels/chart')
+def v66_chart(day: str, listing_id: str, start_us: int | None=None,
+              seconds: int=Query(900,ge=60,le=3600), view: Literal['combined','flat','held','reference']='combined',
+              candle_offset: int=Query(0,ge=0), phase: Literal['1a','1b']='1a', dataset_sha256: str | None=None):
+    from research.market_labels.v1 import audit
+    result=read(audit.chart,day,listing_id,start_us,seconds,view,candle_offset,phase)
+    if dataset_sha256 is not None and result['dataset_sha256']!=dataset_sha256:
+        raise HTTPException(409,'V66 labels changed; reload the dataset')
+    return result
+
+
+@router.get('/v66/labels/market')
+def v66_market(day: str, search: str='', selection: Literal['all','selected','rejected']='all', offset: int=Query(0,ge=0)):
+    from research.market_labels.v1 import audit
+    return read(audit.market,day,search,selection,offset)
+
 @router.get('/v6/market-labels')
 def published_market_session(day: str):
     from research.rl_trading.v6.published_market_audit import open_session
