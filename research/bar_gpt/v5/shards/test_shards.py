@@ -29,6 +29,24 @@ from .storage import BAR_DTYPE, Budget, publish, unpack_bars, verify_receipt, ad
 
 
 class FormatTests(unittest.TestCase):
+    def test_memory_retry_restores_limits_and_preserves_other_errors(self):
+        """Only memory errors enter the bounded lane; client settings always restore."""
+        import threading
+        from types import SimpleNamespace
+        from .build import Status, query_with_memory_recovery
+
+        client = SimpleNamespace(default_query_params={"max_memory_usage": "1073741824", "max_threads": "2"})
+        status = Status(1)
+        with patch.object(query_with_memory_recovery.__globals__["source"], "arrow", side_effect=[
+                RuntimeError("MEMORY_LIMIT_EXCEEDED"), "unchanged-output"]):
+            self.assertEqual(query_with_memory_recovery(client, "SELECT", "test", threading.Event(), status, 0),
+                             "unchanged-output")
+        self.assertEqual(status.retries, 1)
+        self.assertEqual(client.default_query_params, {"max_memory_usage": "1073741824", "max_threads": "2"})
+        with patch.object(query_with_memory_recovery.__globals__["source"], "arrow", side_effect=RuntimeError("unrelated error")):
+            with self.assertRaisesRegex(RuntimeError, "unrelated error"):
+                query_with_memory_recovery(client, "SELECT", "test", threading.Event(), status, 0)
+
     def test_backward_split_adjustment_counts_and_future_actions(self):
         """Both split directions change historical price/size units, never event counts."""
         samples = np.zeros(2, dtype=SAMPLE_DTYPE)

@@ -22,6 +22,48 @@ from .storage import BAR_DTYPE, Budget, coarse_samples, publish, unpack_bars, ve
 from .recovery import resolve_binding
 from research.bar_gpt.v5 import bar_semantics_v1
 
+# One enlarged query may run alongside the normal pool. Normal queries reserve
+# at most 64 GiB collectively; this lane reserves at most 32 GiB, totaling 96.
+HEAVY_QUERY = threading.Semaphore(1)
+
+
+def query_with_memory_recovery(c, statement, query_id, stop, status, worker):
+    """Return unchanged Arrow output, retrying only explicit CH memory errors.
+
+    Each worker owns its client/settings. Enlarged retries serialize so rare
+    dense sessions cannot exhaust server memory or silently lose source coverage.
+    All limits are finite; failure at 32 GiB still drains the campaign visibly.
+    """
+    try:
+        return source.arrow(c, statement, query_id)
+    except RuntimeError as error:
+        if "MEMORY_LIMIT_EXCEEDED" not in str(error):
+            raise
+    status.update(worker, phase="waiting for memory lane")
+    while not HEAVY_QUERY.acquire(timeout=1):
+        if stop.is_set():
+            return None
+    original = c.default_query_params["max_memory_usage"]
+    original_threads = c.default_query_params["max_threads"]
+    try:
+        c.default_query_params["max_threads"] = 4  # Dense-session benchmark: 1.5x faster than two threads.
+        for gib in (4, 8, 16, 32):
+            if stop.is_set():
+                return None
+            c.default_query_params["max_memory_usage"] = gib * 1024**3
+            with status.lock:
+                status.retries += 1
+            status.update(worker, phase=f"memory retry {gib} GiB")
+            try:
+                return source.arrow(c, statement, f"{query_id}-memory-{gib}")
+            except RuntimeError as error:
+                if "MEMORY_LIMIT_EXCEEDED" not in str(error) or gib == 32:
+                    raise
+    finally:
+        c.default_query_params["max_memory_usage"] = original
+        c.default_query_params["max_threads"] = original_threads
+        HEAVY_QUERY.release()
+
 
 class Status:
     """Small synchronized worker snapshots; no market arrays in progress state."""
@@ -141,7 +183,8 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
             result = None
             for attempt in range(3):
                 try:
-                    result = source.arrow(c, statement, f"bargpt-{key}-{day}-{attempt}")
+                    result = query_with_memory_recovery(
+                        c, statement, f"bargpt-{key}-{day}-{attempt}", stop, status, worker)
                     break
                 except (ConnectionError, TimeoutError, OSError):
                     if attempt == 2:
@@ -227,12 +270,11 @@ def main(argv=None):
     years = sorted(set(map(int, args.years.split(","))))
     if not years or min(years) < 2019 or max(years) > 2025:
         parser.error("years must be within 2019–2025")
-    # The fixed-workload benchmark supports 64 concurrent queries. Preserve the
-    # aggregate 96 GiB ceiling below: 64 workers require <=1.5 GiB per query.
+    # Reserve 32 GiB for the single heavy-query lane, within 96 GiB total.
     if not (1 <= args.workers <= 64 and 1 <= args.io_workers <= 16
             and 1 <= args.keep_percent <= 100 and 1 <= args.shard_mib <= 64
             and 0 < args.target_bytes <= 10**12 and 0 < args.query_memory_gib
-            and args.workers * args.query_memory_gib <= 96):
+            and args.workers * args.query_memory_gib <= 64):
         parser.error("Invalid bounded resource or byte-limit settings.")
     root = Path("D:/TradingML/runtimes").resolve()
     args.output = args.output.resolve()
