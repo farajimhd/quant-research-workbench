@@ -226,9 +226,10 @@ def main(argv=None):
     years = sorted(set(map(int, args.years.split(","))))
     if not years or min(years) < 2019 or max(years) > 2025:
         parser.error("years must be within 2019–2025")
-    if not (1 <= args.workers <= 16 and 1 <= args.io_workers <= 8
+    if not (1 <= args.workers <= 32 and 1 <= args.io_workers <= 16
             and 1 <= args.keep_percent <= 100 and 1 <= args.shard_mib <= 64
-            and 0 < args.target_bytes <= 10**12 and args.workers * args.query_memory_gib <= 48):
+            and 0 < args.target_bytes <= 10**12 and 0 < args.query_memory_gib
+            and args.workers * args.query_memory_gib <= 96):
         parser.error("Invalid bounded resource or byte-limit settings.")
     root = Path("D:/TradingML/runtimes").resolve()
     args.output = args.output.resolve()

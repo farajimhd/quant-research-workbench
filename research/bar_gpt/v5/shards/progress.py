@@ -27,7 +27,11 @@ def render(snapshot, width=100):
     table = Table(expand=True, box=None, padding=(0, 1))
     for name in ("Worker", "Ticker / date", "Stage", "Sessions resolved", "Progress"):
         table.add_column(name, no_wrap=True)
-    for worker in snapshot.get("workers", []):
+    workers = snapshot.get("workers", [])
+    page_size = 16 if width >= 90 else 12
+    pages = max(1, (len(workers)+page_size-1)//page_size)
+    first = (int(time.time())//10 % pages)*page_size  # Rotate every ten seconds; retain readable worker rows.
+    for worker in workers[first:first+page_size]:
         done, total = worker.get("done", 0), worker.get("total", 0)
         focus = f"{worker.get('ticker','')} {worker.get('day','')}"
         table.add_row(str(worker["id"]), focus, worker.get("phase", "queued"),
@@ -35,6 +39,8 @@ def render(snapshot, width=100):
                       ProgressBar(total=max(total, 1), completed=min(done, total),
                                   width=12 if width < 90 else 22))
     detail = Text("Per-worker progress: resolved sessions (saved, reused, or explicitly unavailable).")
+    if pages > 1:
+        detail.append(f"\nWorkers {first+1}–{min(first+page_size,len(workers))} of {len(workers)}; pages rotate every 10s.")
     errors = [Text(str(e.get("error", e))[:max(70, width*2)], style="red")
               for e in snapshot.get("failed", [])[-2:]]
     return Group(heading, summary, ProgressBar(total=target, completed=min(used, target)),
