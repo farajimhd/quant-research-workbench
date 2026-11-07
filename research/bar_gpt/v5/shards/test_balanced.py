@@ -66,6 +66,38 @@ def test_quota_enforces_saved_liquidity_counts():
     assert quotas.saved["100000"][0] == len(low)
 
 
+def test_panel_configuration_has_its_own_line_and_fits_native_window():
+    """The byte progress bar must not consume or truncate the configuration row."""
+    import io
+    import time
+    from rich.console import Console
+    from .progress import render
+
+    quotas = Quotas(10**9).snapshot()
+    snapshot = dict(
+        state="running",
+        updated=time.time(),
+        quotas=quotas,
+        configuration=dict(
+            workers=64,
+            io_workers=16,
+            chunk_events=500000,
+            max_chunk_events=500000,
+            coarse_days=20,
+        ),
+        workers=[dict(id=i + 1, phase="query", done=1, total=10) for i in range(64)],
+    )
+    stream = io.StringIO()
+    Console(file=stream, width=120, height=30, force_terminal=False).print(
+        render(snapshot, 120, 30)
+    )
+    lines = stream.getvalue().splitlines()
+    assert len(lines) <= 30 and max(map(len, lines)) <= 120
+    assert any(
+        line.startswith("Queries 64") and "coarse 20 days" in line for line in lines
+    )
+
+
 @pytest.mark.skipif(
     os.getenv("BARGPT_LIVE_TESTS") != "1", reason="Read-only canonical ClickHouse probe"
 )

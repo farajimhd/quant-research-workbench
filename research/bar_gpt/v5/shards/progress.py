@@ -70,7 +70,7 @@ def render(snapshot, width=100, height=40):
                 f"{high:,} / {low:,}",
             )
     table = Table(expand=True, box=None, padding=(0, 1))
-    for name in ("Worker", "Ticker / date", "Stage", "Sessions resolved", "Progress"):
+    for name in ("Worker", "Ticker / date", "Stage", "Resolved units", "Progress"):
         table.add_column(name, no_wrap=True)
     workers = snapshot.get("workers", [])
     page_size = max(1, min(16 if width >= 90 else 12, height - (22 if quotas else 12)))
@@ -119,6 +119,7 @@ def render(snapshot, width=100, height=40):
         heading,
         summary,
         ProgressBar(total=target, completed=min(used, target)),
+        Text(""),
         configuration,
         *([throughput] if quotas else []),
         *([allocation] if quotas else []),
