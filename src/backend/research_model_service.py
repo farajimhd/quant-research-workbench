@@ -10,6 +10,25 @@ from research.rl_trading.v6 import price_action_opportunities as price_action_la
 
 router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'])
 
+
+@router.get('/bargpt/shards/catalog')
+def bargpt_shard_catalog(search: str = '', year: int = 0, offset: int = Query(0, ge=0)):
+    from research.bar_gpt.v5 import shard_inspection as inspection
+    return read(inspection.catalog, search, year, offset)
+
+
+@router.get('/bargpt/shards/files')
+def bargpt_shard_files(job: str):
+    from research.bar_gpt.v5 import shard_inspection as inspection
+    return read(inspection.shards, job)
+
+
+@router.get('/bargpt/shards/sample')
+def bargpt_shard_sample(job: str = '', shard: str = '', file: str = '', row: int = Query(0, ge=0),
+                       timeframe: int = 0, randomize: bool = False, search: str = '', year: int = 0):
+    from research.bar_gpt.v5 import shard_inspection as inspection
+    return read(inspection.sample, job, shard, file, row, timeframe, randomize, search, year)
+
 @router.get('/v66/labels')
 def v66_catalog():
     from research.market_labels.v1 import audit

@@ -1,0 +1,27 @@
+.bar-shard-research .research-selection { max-width: none; }
+.bar-shard-research .research-heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; }
+.bar-shard-chart-panel, .bar-shard-inspector, .bar-shard-rows { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 1rem; margin-bottom: 1rem; }
+.bar-shard-chart { display: block; width: 100%; min-height: 220px; overflow: visible; }
+.bar-shard-legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .8rem; }
+.shard-trade { color: var(--foreground); fill: var(--foreground); stroke: var(--foreground); }
+.shard-bid { color: var(--success); fill: var(--success); stroke: var(--success); }
+.shard-ask { color: var(--primary); fill: var(--primary); stroke: var(--primary); }
+.bar-shard-grid line { stroke: var(--border); }
+.bar-shard-grid text, .bar-shard-axis { fill: var(--muted-foreground); font-size: 12px; }
+.bar-shard-hit { fill: transparent; cursor: pointer; }
+.bar-shard-hit.padded { fill: var(--surface-alt); }
+.bar-shard-hit.selected, .bar-shard-hit:hover { stroke: var(--primary); stroke-width: 1; }
+.bar-shard-chart g[role="button"]:focus-visible { outline: 2px solid var(--primary); }
+.bar-shard-inspector { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(380px, 1.5fr); gap: 1.5rem; }
+.bar-shard-fields, .bar-shard-table-scroll { overflow: auto; }
+.bar-shard-table-scroll { max-height: 460px; }
+.bar-shard-rows td { white-space: nowrap; }
+.bar-shard-rows thead { position: sticky; top: 0; background: var(--surface); }
+.bar-shard-error { color: var(--danger); }
+@media (max-width: 900px) { .bar-shard-inspector { grid-template-columns: minmax(0, 1fr); } }
+
+.bar-shard-research .research-controls + .research-controls { margin-top: .75rem; }
+@media (max-width: 1200px) {
+  .bar-shard-inspector { grid-template-columns: minmax(0, 1fr); }
+  .bar-shard-grid text, .bar-shard-axis { font-size: 18px; }
+}
