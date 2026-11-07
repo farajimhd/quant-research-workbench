@@ -55,8 +55,8 @@ def execute_range(c, statement, query_id, stop, status, lane):
 class Quotas:
     """Reserve saved sample counts atomically by timeframe and liquidity class.
 
-    Daily may occupy less space. The other five frames receive equal caps, with
-    an explicit redistribution pass if the daily inventory cannot fill its cap.
+    Daily may occupy less space. The other five frames receive equal caps.
+    Insufficient source inventory is reported rather than filled with duplicates.
     Payload and receipt overhead share the separate hard byte budget.
     """
 
@@ -175,7 +175,7 @@ def worker(
     """Execute one ticker chronologically; raw market events never leave CH."""
     bounds = ticker_bounds(args.output, job)
     if not bounds:
-        return
+        raise ValueError("Frozen ticker job has no ordinal bounds")
     rules = authority["rules"]
     actions = [
         r
@@ -210,28 +210,57 @@ def worker(
                 if r["source_family"] == "halt_reason" and int(r["modifier_int"]) == 178
             }
         )
-        raw = event_source(
-            job["ticker"],
-            bounds,
-            int(bounds[0]["first_ordinal"]),
-            int(bounds[-1]["next_ordinal"]),
-        )
         tokens = (
             "arrayFilter(t->t>0,["
             + ",".join(f"toUInt16(condition_token_{i})" for i in range(1, 6))
             + "])"
         )
-        events = source.rows(
-            c,
-            f"""SELECT sip_timestamp_us,ordinal,
+        state_events = []
+        years = sorted({r["source_date"][:4] for r in bounds})
+        for number, year in enumerate(years):
+            if stop.is_set():
+                source.close(c)
+                return False
+            part_path = state_path.with_name(f"{job['key']}-states-{year}.json")
+            status.update(
+                lane,
+                phase=f"freezing halt timeline {year}",
+                done=number,
+                total=len(years),
+            )
+            if part_path.exists():
+                part = json.loads(part_path.read_text())
+                if part["binding"] != binding or part["hash"] != digest(part["events"]):
+                    raise ValueError("Yearly status checkpoint seal changed")
+                state_events.extend(part["events"])
+                continue
+            selected = [r for r in bounds if r["source_date"].startswith(year)]
+            raw = event_source(
+                job["ticker"],
+                selected,
+                int(selected[0]["first_ordinal"]),
+                int(selected[-1]["next_ordinal"]),
+            )
+            # Dense instruments contain billions of events across seven years.
+            # Yearly scans bound query duration and checkpoint sparse evidence;
+            # they do not change which halt/resume events are included.
+            events = source.rows(
+                c,
+                f"""SELECT sip_timestamp_us,ordinal,
           multiIf(hasAny(tokens,{halt}) AND hasAny(tokens,{resume}),2,hasAny(tokens,{halt}),1,0) state
           FROM (SELECT sip_timestamp_us,ordinal,{tokens} tokens FROM ({raw}))
           WHERE hasAny(tokens,{halt+resume}) ORDER BY ordinal""",
-        )
-        state_events = [
-            (int(r["sip_timestamp_us"]), int(r["ordinal"]), int(r["state"]))
-            for r in events
-        ]
+            )
+            part_events = [
+                (int(r["sip_timestamp_us"]), int(r["ordinal"]), int(r["state"]))
+                for r in events
+            ]
+            write_json(
+                part_path,
+                dict(binding=binding, events=part_events, hash=digest(part_events)),
+            )
+            state_events.extend(part_events)
+        state_events.sort(key=lambda row: row[1])
         write_json(
             state_path,
             dict(binding=binding, events=state_events, hash=digest(state_events)),
@@ -248,7 +277,7 @@ def worker(
         raise ValueError("Ticker checkpoint belongs to a different campaign")
     if checkpoint.get("complete"):
         source.close(c)
-        return
+        return True
 
     def checkpoint_commit():
         # Commit the cursor only after every corresponding payload receipt is
@@ -304,7 +333,7 @@ def worker(
                 lane,
             )
             if output is None:
-                return
+                return False
             for frame in FRAMES[4:]:
                 bars = output.filter(output["resolution"] == frame)
                 if not len(bars):
@@ -385,7 +414,7 @@ def worker(
                     lane,
                 )
                 if output is None:
-                    return
+                    return False
                 for frame in FRAMES[:4]:
                     bars = output.filter(output["resolution"] == frame)
                     if not len(bars):
@@ -423,6 +452,7 @@ def worker(
             checkpoint_commit()
     finally:
         source.close(c)
+    return bool(checkpoint.get("complete"))
 
 
 def arguments(argv=None):
@@ -501,6 +531,10 @@ def main(argv=None):
             updated=time.time(),
             elapsed_seconds=elapsed,
             jobs_completed=completed,
+            jobs_active=len(active),
+            jobs_queued=max(
+                0, (len(plan["jobs"]) if plan else 0) - completed - len(active)
+            ),
             jobs_total=len(plan["jobs"]) if plan else 0,
             failed=list(failed),
             quotas=quotas.snapshot(),
@@ -635,11 +669,12 @@ def main(argv=None):
                 for future in ready:
                     lane = active.pop(future)
                     try:
-                        future.result()
-                        completed += 1
-                        status.update(lane, phase="completed")
+                        done = future.result()
+                        completed += int(done)
+                        status.update(lane, phase="completed" if done else "stopped")
                     except Exception as error:
                         failed.append(dict(worker=lane + 1, error=str(error)[:1600]))
+                        status.update(lane, phase="failed")
                         stop.set()
                         state = "draining"
                     admit(lane)
