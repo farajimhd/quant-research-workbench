@@ -227,7 +227,9 @@ def main(argv=None):
     years = sorted(set(map(int, args.years.split(","))))
     if not years or min(years) < 2019 or max(years) > 2025:
         parser.error("years must be within 2019–2025")
-    if not (1 <= args.workers <= 32 and 1 <= args.io_workers <= 16
+    # The fixed-workload benchmark supports 64 concurrent queries. Preserve the
+    # aggregate 96 GiB ceiling below: 64 workers require <=1.5 GiB per query.
+    if not (1 <= args.workers <= 64 and 1 <= args.io_workers <= 16
             and 1 <= args.keep_percent <= 100 and 1 <= args.shard_mib <= 64
             and 0 < args.target_bytes <= 10**12 and 0 < args.query_memory_gib
             and args.workers * args.query_memory_gib <= 96):

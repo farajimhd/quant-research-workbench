@@ -17,7 +17,9 @@
 #   stay unchanged. Freeze reference evidence and never apply future actions.
 # - Unknown halt states remain masked; silence does not establish normal trading.
 # - Sample independently of scanners and labels. Keep bounded mmap-ready shards,
-#   ClickHouse aggregation, vectorized packing, 32 query workers and 16 I/O workers.
+#   ClickHouse aggregation and vectorized packing. Initial concurrency was 32
+#   query/16 I/O workers; equivalent-output profiling permits 64 query workers
+#   at 1.5 GiB each, preserving the 96 GiB aggregate query-memory ceiling.
 # - Separate train/validation by full context spans and purge crossing windows.
 #   Check actual saved coverage by year/timeframe and source-to-output examples;
 #   configuration alone is not evidence of coverage or completed extraction.
