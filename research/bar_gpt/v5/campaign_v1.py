@@ -1,7 +1,7 @@
 """Full-epoch MAE orchestration; model mathematics remain in encoder_v1/trainer_v1.
 
 Inputs are the sealed split manifest and training-only ActivityStats produced by
-data_v1. Loaders deliver PreparedBatch tensors, with eight/nine visible market
+data_v1. Loaders deliver PreparedBatch tensors, with seven/eight visible market
 columns over 64 bars. This module owns scheduling, validation and durable state.
 """
 
@@ -15,6 +15,7 @@ from .data_v1 import close_loader
 from .encoder_v1 import MaskedAutoencoderV1
 from .engine_v1 import run_steps
 from .shards.contract import write_json
+from .shards.phase1_contract import VERSION
 
 
 class EpochCosine:
@@ -67,6 +68,7 @@ def train_campaign(args, manifest, stats, reporter):
         train_steps=args.train_steps, validation_steps=args.validation_steps,
         epochs=args.epochs, peak=args.learning_rate, minimum=args.min_learning_rate,
         warmup=args.warmup_updates, data_order="eligible-stream-v1",
+        input_schema=VERSION, market_channels=18, time_channels=9, mask_rate=0.6,
     )
     epoch = step = 0
     phase, history, best, training_metrics = "train", [], None, None

@@ -2,6 +2,7 @@
 
 from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from datetime import datetime, timezone
 import json
 import math
@@ -13,14 +14,42 @@ import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from .pretraining_v1 import ActivityStats, fit_activity_stats, prepare_batch
-from .shards.phase1_contract import SAMPLE_DTYPE, digest, file_hash, write_json
+from .shards.phase1_contract import CHANNELS, SAMPLE_DTYPE, VERSION, digest, file_hash, write_json
 
 
-def read_receipt(path: Path) -> list[dict]:
+def dataset_identity(dataset: Path) -> dict:
+    """Validate a production v6 contract; contract-free inventories are explicit test fixtures."""
+    path = dataset / "contract.json"
+    if not path.exists():
+        return {}
+    wrapper = json.loads(path.read_text())
+    if wrapper["binding"] != digest(wrapper["contract"]):
+        raise ValueError("Dataset contract seal changed.")
+    if wrapper["contract"]["version"] != VERSION:
+        raise ValueError("Training requires v6 market-only shards and a fresh split/calibration.")
+    return dict(dataset_binding=wrapper["binding"], dataset_version=VERSION,
+                market_channels=list(CHANNELS))
+
+
+def validate_complete_market(rows):
+    """Reject malformed v6 [N,64,18] records; no silent exclusion of authoritative samples."""
+    if (rows.dtype != SAMPLE_DTYPE or rows.ndim != 1
+            or not rows["valid"][..., :6].all()
+            or np.any(rows["values"][..., :6] <= 0)
+            or not np.isfinite(rows["values"]).all()
+            or not np.isin(rows["valid"], (0, 1)).all()
+            or np.any(rows["end_us"] <= 0)
+            or np.any(np.diff(rows["end_us"], axis=1) <= 0)):
+        raise ValueError("Invalid v6 sample: require 64 ordered real bars and complete positive trade fields.")
+
+
+def read_receipt(path: Path, expected_binding=None) -> list[dict]:
     """Validate a publication seal and NPY headers; defer payload hashing until use."""
     receipt = json.loads(path.read_text())
     if digest({k: v for k, v in receipt.items() if k != "receipt_hash"}) != receipt["receipt_hash"]:
         raise ValueError(f"Receipt digest mismatch: {path}")
+    if expected_binding is not None and receipt.get("binding") != expected_binding:
+        raise ValueError(f"Receipt belongs to a different dataset contract: {path}")
     entries = []
     for item in receipt["files"]:
         if not item["name"].startswith("samples-"):
@@ -49,12 +78,14 @@ def build_split(dataset: Path, output: Path, progress=None) -> dict:
     conservative nominal duration (24h for daily). Existing shard split flags are
     deliberately superseded in this separate manifest, never overwritten.
     """
+    identity = dataset_identity(dataset)  # Pin production schema/authority before indexing any publication.
     paths = sorted((dataset / "jobs").rglob("receipt.json"))
     if not paths:
         raise ValueError("No published sample receipts found.")
     entries = []
     with ThreadPoolExecutor(max_workers=8) as pool:
-        for index, result in enumerate(pool.map(read_receipt, paths)):
+        reader = partial(read_receipt, expected_binding=identity.get("dataset_binding"))
+        for index, result in enumerate(pool.map(reader, paths)):
             entries.extend(result)
             if progress and index % 500 == 0:
                 progress(stage="indexing receipts", done=index, total=len(paths))
@@ -90,11 +121,14 @@ def build_split(dataset: Path, output: Path, progress=None) -> dict:
             for start, stop in edges.reshape(-1, 2):
                 splits[name].append(dict(item, start=int(start), stop=int(stop)))
     counts = {name: sum(item["stop"]-item["start"] for item in rows) for name, rows in splits.items()}
+    if not all(counts.values()):
+        raise ValueError("The purged chronological split needs nonempty train and validation sets.")
     manifest = dict(version="chronological-80-20-v1", dataset=str(dataset.resolve()),
                     cutoff_day=cutoff_day, cutoff_us=cutoff, counts=counts, purged_crossing=purged,
                     train_fraction=counts["train"]/sum(counts.values()), splits=splits,
                     inventory_samples=sum(item["rows"] for item in entries),
                     integrity="receipt digests and headers verified; payload SHA256 verified on first access per worker")
+    manifest.update(identity)  # Resume binds the frozen inventory to its exact v6 source authority.
     manifest["manifest_hash"] = digest(manifest)
     write_json(output, manifest)
     return manifest
@@ -105,6 +139,12 @@ def load_split(path: Path) -> dict:
     manifest = json.loads(path.read_text())
     if digest({k: v for k, v in manifest.items() if k != "manifest_hash"}) != manifest["manifest_hash"]:
         raise ValueError("Split manifest was modified.")
+    dataset = Path(manifest["dataset"])
+    if manifest.get("dataset_binding") and not (dataset / "contract.json").is_file():
+        raise ValueError("The split's sealed dataset contract is missing.")
+    for key, value in dataset_identity(dataset).items():
+        if manifest.get(key) != value:
+            raise ValueError("Split belongs to a different dataset contract; rebuild split and calibration.")
     return manifest
 
 
@@ -122,6 +162,8 @@ def calibrate(manifest: dict, maximum: int = 8192, seed: int = 17) -> tuple[Acti
             raise ValueError(f"Changed calibration payload: {item['path']}")
         array = np.load(item["path"], mmap_mode="r", allow_pickle=False)
         candidate = array[item["start"]:item["stop"]]
+        if manifest.get("dataset_version") == VERSION:
+            validate_complete_market(candidate)  # Calibration must not hide malformed production samples.
         eligible = np.flatnonzero(candidate["valid"][..., [3, 9, 15]].any(axis=(1, 2))) + item["start"]
         count = min(math.ceil(maximum/len(owners)), len(eligible))
         if count == 0:
@@ -155,6 +197,7 @@ class ShardBatches(Dataset):
         if batch_size < 1 or start_batch < 0:
             raise ValueError("Batch size must be positive and resume cursor nonnegative.")
         self.entries = list(manifest["splits"][split])
+        self.strict_market = manifest.get("dataset_version") == VERSION
         if split == "train":
             np.random.default_rng(seed + epoch).shuffle(self.entries)
         self.cumulative = np.cumsum([item["stop"]-item["start"] for item in self.entries])
@@ -194,6 +237,8 @@ class ShardBatches(Dataset):
             pieces.append(self.cache[path][item["start"]+first-base:item["start"]+stop-base])
             first = stop
         rows = np.concatenate(pieces)  # One bounded batch copy, not a redundant context materialization.
+        if self.strict_market:
+            validate_complete_market(rows)
         rng = np.random.default_rng(self.seed + self.epoch*1_000_003 + index)
         rows = rows[rng.permutation(len(rows))]
         generator = torch.Generator().manual_seed(self.seed + self.epoch*1_000_003 + index)
@@ -229,6 +274,7 @@ class EligibleStream(IterableDataset):
 
     def __init__(self, manifest, split, stats, batch_size, seed=0, epoch=0, start_batch=0, telemetry=None):
         self.entries = list(manifest["splits"][split])
+        self.strict_market = manifest.get("dataset_version") == VERSION
         if split == "train":
             np.random.default_rng(seed + epoch).shuffle(self.entries)
         self.stats, self.batch_size, self.seed, self.epoch = stats, batch_size, seed, epoch
@@ -279,6 +325,8 @@ class EligibleStream(IterableDataset):
                     raise ValueError(f"Changed sealed payload: {path}")
                 verified.add(path)
             data = np.load(path, mmap_mode="r", allow_pickle=False)[item["start"]:item["stop"]]
+            if self.strict_market:
+                validate_complete_market(data)  # Invalid v6 bars stop the run instead of becoming exclusions.
             observed = data["valid"][..., [3, 9, 15]].any(axis=(1, 2))
             scanned += len(data)
             excluded += int((~observed).sum())

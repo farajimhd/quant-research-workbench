@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import io
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -206,6 +207,69 @@ def test_epoch_cosine_endpoints_and_resume():
     restored = EpochCosine(1, 1, 1, 1)
     restored.load_state_dict(schedule.state_dict())
     assert restored.value() == schedule.value()
+
+
+def test_pretraining_preset_preserves_the_agreed_configuration():
+    """Resolve the real CLI, including full passes and the fresh market-only dataset."""
+    from research.bar_gpt.v5.run_pretrain import campaign_arguments
+    from research.bar_gpt.v5.run_v1 import arguments
+    args = arguments(campaign_arguments(["--output", "D:/TradingML/runtimes/bar_gpt/preset-test"]))
+    assert (args.model, args.precision, args.batch_size, args.workers, args.prefetch) == ("large", "bf16", 4096, 32, 2)
+    assert (args.epochs, args.train_steps, args.validation_steps, args.checkpoint_every) == (50, 0, 0, 0)
+    assert (args.scheduler, args.learning_rate, args.min_learning_rate, args.warmup_updates) == ("cosine", .001, .00005, 1000)
+    assert (args.metrics_every, args.loss_every, args.seed) == (1000, 10, 17)
+    assert args.panel and args.wandb_mode == "online" and args.attention_dropout == 0
+    assert args.dataset.name == "shards-2019-2025-v6"
+    assert args.split_manifest is args.calibration is args.resume is None
+
+
+@pytest.fixture
+def production_inventory(inventory, tmp_path):
+    """Bind the synthetic published records to the same sealed schema as real v6 data."""
+    from research.bar_gpt.v5.shards.phase1_contract import VERSION
+    root = tmp_path / "dataset"
+    contract = dict(version=VERSION, source="synthetic-v6-fixture")
+    binding = digest(contract)
+    write_json(root / "contract.json", dict(contract=contract, binding=binding))
+    for path in (root / "jobs").rglob("receipt.json"):
+        receipt = json.loads(path.read_text())
+        receipt["binding"] = binding
+        receipt["receipt_hash"] = digest({k: v for k, v in receipt.items() if k != "receipt_hash"})
+        write_json(path, receipt)
+    manifest = build_split(root, tmp_path / "v6-split.json")
+    return manifest, inventory[1]
+
+
+def test_production_split_binds_receipts_and_rejects_missing_authority(production_inventory, tmp_path):
+    manifest, _ = production_inventory
+    root = Path(manifest["dataset"])
+    assert load_split(tmp_path / "v6-split.json")["dataset_binding"] == manifest["dataset_binding"]
+    path = next((root / "jobs").rglob("receipt.json"))
+    receipt = json.loads(path.read_text())
+    receipt["binding"] = "another-dataset"
+    receipt["receipt_hash"] = digest({k: v for k, v in receipt.items() if k != "receipt_hash"})
+    write_json(path, receipt)
+    with pytest.raises(ValueError, match="different dataset"):
+        build_split(root, tmp_path / "mixed.json")
+    (root / "contract.json").unlink()
+    with pytest.raises(ValueError, match="contract is missing"):
+        load_split(tmp_path / "v6-split.json")
+
+
+def test_production_loader_rejects_invalid_trade_bar_instead_of_excluding_it(production_inventory):
+    """Even a correctly sealed malformed record is a fatal data error in v6."""
+    manifest, stats = production_inventory
+    item = manifest["splits"]["train"][0]
+    rows = np.load(item["path"], allow_pickle=False)
+    rows["valid"][0, 0, :6] = 0  # One incomplete candle must invalidate the sample, even if quotes exist.
+    np.save(item["path"], rows, allow_pickle=False)
+    item["sha256"] = file_hash(item["path"])  # Isolate content validation from the independent hash check.
+    loader = make_loader(EligibleStream(manifest, "train", stats, 16), workers=0)
+    try:
+        with pytest.raises(ValueError, match="Invalid v6 sample"):
+            list(loader)  # Training shuffles ranges; the malformed file need not be first.
+    finally:
+        close_loader(loader)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")

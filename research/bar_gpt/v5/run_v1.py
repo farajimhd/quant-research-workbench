@@ -22,6 +22,7 @@ from .engine_v1 import run_steps
 from .pretraining_v1 import ActivityStats
 from .reporting_v1 import Reporter, open_panel, remove_panel_task
 from .shards.contract import digest, write_json
+from .shards.phase1_contract import VERSION, CHANNELS
 
 
 CONFIGURATIONS = {
@@ -135,7 +136,6 @@ def main(argv=None):
         # Reject old production data while preserving explicit custom/test inventories.
         source_contract = Path(manifest["dataset"]) / "contract.json"
         if source_contract.is_file():
-            from .shards.balanced_plan import VERSION
             if json.loads(source_contract.read_text())["contract"]["version"] != VERSION:
                 raise ValueError("Training requires v6 market-only shards; build a fresh split for the new dataset.")
         if args.calibration:
@@ -147,7 +147,9 @@ def main(argv=None):
             reporter.update(stage="fitting training-only activity scales", done=0, total=64)
             stats, calibration = calibrate(manifest)
         write_json(args.output / "calibration.json", calibration)
-        config.update(split_hash=manifest["manifest_hash"], split_counts=manifest["counts"],
+        config.update(input_schema=VERSION, market_channels=list(CHANNELS), time_channels=9,
+                      dataset_binding=manifest.get("dataset_binding"),
+                      split_hash=manifest["manifest_hash"], split_counts=manifest["counts"],
                       cutoff_day=manifest["cutoff_day"], purged_crossing=manifest["purged_crossing"],
                       calibration_hash=digest(calibration))
         write_json(args.output / "manifest.json", config)
