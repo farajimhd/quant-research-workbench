@@ -53,6 +53,9 @@ def audit(root, output):
                     raise ValueError("Valid price masks reference nonpositive prices.")
                 differences = np.diff(data["end_us"], axis=1)
                 present = data["end_us"] > 0
+                if (not data["valid"][..., :6][present].all()
+                        or np.any(data["values"][..., :6][present] <= 0)):
+                    raise ValueError("Real bar lacks complete positive trade attributes.")
                 if (np.any(data["end_us"] < 0) or np.any(~present[:, 0])
                         or np.any(present[:, 1:] & ~present[:, :-1])
                         or np.any((differences <= 0) & present[:, 1:])

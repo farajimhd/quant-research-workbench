@@ -86,6 +86,8 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
     masks = ",".join("toUInt8(" + n + ")" for n in mask_names)
     # Aggregate 100ms once. Rollups operate on these sufficient statistics, not
     # another six scans of the event stream. Only selected final bars leave SQL.
+    # Filter observations AFTER rollup: an incomplete 100ms bucket can contribute
+    # eligible volume to a complete minute. Quotes alone never create a bar.
     # Keep a selected session tail even when it contains fewer than 64 bars;
     # NumPy adds masked right padding. Sessions shorter than 64 start at index 0.
     # All output boundaries align to 100ms. quote_clock can therefore retain
@@ -114,7 +116,7 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
       GROUP BY frame,bucket),
     observed AS (SELECT *,toUInt64(row_number() OVER (PARTITION BY frame ORDER BY bucket)-1) observed_index,
       count() OVER (PARTITION BY frame) observed_count
-      FROM rolled WHERE trade_pv OR trade_ev OR trade_av OR bid_pv OR ask_pv OR condition_events>0 OR quote_events>0),
+      FROM rolled WHERE trade_pv AND trade_ev AND trade_n>0),
     selected_grid AS (SELECT toUInt8(1) join_key,r.frame frame,f.2 step,r.bucket bucket,r.observed_index observed_index,
       if(r.frame={FRAMES[-1]},toUInt64({regular_open}),{opened}+r.bucket*f.2) start_us,
       if(r.frame={FRAMES[-1]},toUInt64({regular_close}),{opened}+(r.bucket+1)*f.2) end_us,

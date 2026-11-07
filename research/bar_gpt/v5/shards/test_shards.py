@@ -192,7 +192,7 @@ class SqlTests(unittest.TestCase):
         opened = sql.clock("2019-01-03", 4)
         if fill:
             # Complete an observed 64-bar block without altering the first two seconds.
-            events = list(events) + [(i*1_000_000, 0, 1200, 1100, []) for i in range(2, 66)]
+            events = list(events) + [event for i in range(2, 66) for event in ((i*1_000_000, 0, 1200, 1100, []), (i*1_000_000+1, 1, 1150, 0, []))]
         columns = ("ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64,"
                    "price_primary_int UInt32,price_secondary_int UInt32,size_primary Float32,"
                    "size_secondary Float32,condition_token_1 UInt8,condition_token_2 UInt8,"
@@ -213,7 +213,7 @@ class SqlTests(unittest.TestCase):
 
     def test_successive_observed_bars_preserve_clock_gaps(self):
         """Sparse canonical events must yield 64 consecutive observations, not 6.4 empty seconds."""
-        events = [(i*10_000_000, 0, 1200, 1100, []) for i in range(64)]
+        events = [event for i in range(64) for event in ((i*10_000_000, 0, 1200, 1100, []), (i*10_000_000+1, 1, 1150, 0, []))]
         result = self.fixture(events, fill=False, limit=False)
         samples, coarse = unpack_bars(result, 0)
         self.assertEqual(len(samples), 4)  # Fine minute tail is now right-padded, not discarded.
@@ -226,7 +226,7 @@ class SqlTests(unittest.TestCase):
             self.assertEqual(rows["observed_index"].to_list(), list(range(64)))
 
     def test_observed_windows_do_not_overlap(self):
-        events = [(i*10_000_000, 0, 1200, 1100, []) for i in range(128)]
+        events = [event for i in range(128) for event in ((i*10_000_000, 0, 1200, 1100, []), (i*10_000_000+1, 1, 1150, 0, []))]
         result = self.fixture(events, fill=False, limit=False)
         samples, _ = unpack_bars(result, 0)
         for frame in (100000, 1000000, 10000000):
@@ -241,6 +241,33 @@ class SqlTests(unittest.TestCase):
         self.assertEqual(len(samples), 0)
         self.assertEqual(len(coarse), 0)
         self.assertEqual(result["g.frame"].to_list(), [0])
+
+    def test_quotes_without_trades_never_create_bars(self):
+        """Many valid quote updates cannot manufacture a trade observation."""
+        result = self.fixture([(i*1_000_000, 0, 1200, 1100, []) for i in range(128)],
+                              fill=False, limit=False)
+        samples, coarse = unpack_bars(result, 0)
+        self.assertEqual((len(samples), len(coarse)), (0, 0))
+        self.assertEqual(result["g.frame"].to_list(), [0])
+
+    def test_incomplete_trade_bucket_skipped_but_volume_rolls_up_and_quotes_carry(self):
+        """ARTE's independent conditions are preserved before per-frame completeness filtering."""
+        volume_only = next(int(r["token_id"]) for r in self.rules
+                           if r["source_family"] == "trade_conditions" and int(r["modifier_int"]) != 12
+                           and r["update_volume"] == 1 and r["update_last"] == 0 and r["update_high_low"] == 0)
+        events = [(0, 0, 1200, 1100, []), (100, 1, 9900, 0, [volume_only]),
+                  (5_000_000, 0, 1400, 1300, []), (10_000_000, 3, 115000, 0, [])]
+        result = self.fixture(events, fill=False, limit=False)
+        seconds = result.filter(result["g.frame"] == 1_000_000)
+        self.assertEqual(seconds["end_us"].to_list(), [sql.clock("2019-01-03", 4)+11_000_000])
+        self.assertEqual(seconds["observed_index"].to_list(), [0])
+        values = seconds["values"][0].to_list()
+        self.assertEqual(values[:6], [11.5, 11.5, 11.5, 11.5, 10., 1.])
+        self.assertEqual(values[9:12], [13., 20., 0.])  # Carried quote, no fabricated quote event.
+        minute = result.filter(result["g.frame"] == 60_000_000)["values"][0].to_list()
+        self.assertEqual(minute[:6], [11.5, 11.5, 11.5, 11.5, 20., 2.])
+        samples, coarse = unpack_bars(result, 0)
+        self.assertTrue(samples["valid"][..., :6][samples["end_us"] > 0].all())
 
     def token(self, family, modifier):
         return next(int(r["token_id"]) for r in self.rules
@@ -270,7 +297,7 @@ class SqlTests(unittest.TestCase):
         f = self.fixture([(-1,0,0,0,[normal]), (0,0,0,0,[halt]),
             (100000,0,1200,1100,[]), (200000,0,0,0,[resume]),
             (300000,0,0,0,[halt]), (400000,0,0,0,[halt]),
-            (500000,1,1150,0,[]), (1000000,0,0,0,[resume])])
+            (500000,1,1150,0,[]), (1000000,0,0,0,[resume]), (1100000,1,1150,0,[])])
         values = f["values"].to_list(); valid = f["valid"].to_list()
         self.assertEqual(values[0][-3:], [0,1,2])
         self.assertEqual(values[1][-3:], [1,0,0])
@@ -307,26 +334,26 @@ class SqlTests(unittest.TestCase):
         self.assertTrue((values[:, 9] == 11).all())
         self.assertTrue((values[:, 11] == 0).all())
 
-    def test_unknown_delayed_and_invalid_trades_do_not_update_prices(self):
+    def test_reporting_status_does_not_exclude_valid_encoder_trades(self):
         events = [(i*1_000_000, 0, 1200, 1100, []) for i in range(64)]
         # 193 = evaluated+delayed; 3 = unknown reporting with high-precision price encoding.
         events += [(10, 65, 1150, 0, []), (20, 193, 9900, 0, []),
                    (30, 3, 990000, 0, []), (40, 65, 0, 0, [])]
         result = self.fixture(events, fill=False, limit=False)
         row = result.filter(result["g.frame"] == 1_000_000)["values"][0].to_list()
-        self.assertEqual(row[:6], [11.5, 11.5, 11.5, 11.5, 10., 1.])
+        self.assertEqual(row[:6], [11.5, 99., 11.5, 99., 30., 3.])
 
     def test_unknown_is_not_normal_and_conflicts_invalidate(self):
         halt = self.token("cta_security_status",102)
         resume = self.token("cta_security_status",103)
-        f = self.fixture([(0,0,0,0,[halt]), (1500000,0,0,0,[halt,resume])])
+        f = self.fixture([(0,0,0,0,[halt]), (500000,1,1150,0,[]), (1500000,0,0,0,[halt,resume]), (1600000,1,1150,0,[])])
         self.assertEqual(f["valid"][0].to_list()[-3:], [0,1,0])
         self.assertEqual(f["valid"][1].to_list()[-3:], [1,0,0])
         self.assertEqual(f["values"][0].to_list()[-1], 0)
 
     def test_session_tail_padding_keeps_real_bars_and_clears_padding(self):
         """65 observed seconds yield one full context and one padded tail per fine scale."""
-        events = [(i*1_000_000, 0, 1200, 1100, []) for i in range(65)]
+        events = [event for i in range(65) for event in ((i*1_000_000, 0, 1200, 1100, []), (i*1_000_000+1, 1, 1150, 0, []))]
         result = self.fixture(events, fill=False, limit=False)
         samples, _ = unpack_bars(result, 0)
         seconds = samples[samples["timeframe_us"] == 1_000_000]

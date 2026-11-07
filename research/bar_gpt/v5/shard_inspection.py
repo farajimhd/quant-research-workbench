@@ -1,4 +1,4 @@
-"""Read-only, receipt-verified inspection of the active BarGPT v3 corpus.
+"""Read-only, receipt-verified inspection of the active BarGPT v4 corpus.
 
 No canonical queries, aggregation, transforms or label generation occur here.
 Only published files beneath the fixed workstation runtime authority are read.
@@ -14,7 +14,7 @@ import numpy as np
 
 from .shards.contract import CHANNELS, FRAMES, SAMPLE_DTYPE, VERSION, digest, file_hash
 
-ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\shards-2019-2025-v3")
+ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\shards-2019-2025-v4")
 
 
 @lru_cache(maxsize=1)
@@ -40,7 +40,7 @@ def catalog(search="", year=0, offset=0):
     jobs = [r for r in plan if r["job"] in available and (not year or r["year"] == year)
             and search.upper() in r["ticker"].upper()]
     progress = json.loads((ROOT / "progress.json").read_text())
-    return dict(jobs=jobs[offset:offset+100], total=len(jobs), offset=offset,
+    return dict(version=VERSION, jobs=jobs[offset:offset+100], total=len(jobs), offset=offset,
                 years=wrapper["contract"]["years"], channels=CHANNELS, frames=FRAMES,
                 binding=wrapper["binding"], progress={k: progress.get(k) for k in ("state", "samples", "bytes", "updated")})
 
@@ -139,6 +139,8 @@ def sample(job="", shard="", file="", row=0, timeframe=0, randomize=False, searc
                 or np.any((np.diff(record["end_us"]) <= 0) & present[1:])
                 or np.any(record["values"][~present]) or np.any(record["valid"][~present])):
             raise ValueError("Sample has malformed evidence, clocks or padding")
+        if not record["valid"][present, :6].all() or np.any(record["values"][present, :6] <= 0):
+            raise ValueError("Real bar has incomplete trade attributes")
         sample_rows = [dict(row=int(i), timeframe=int(data["timeframe_us"][i]), first_us=int(data["end_us"][i,0]),
                             last_us=int(data["end_us"][i].max())) for i in indices]
     finally:
@@ -151,7 +153,7 @@ def sample(job="", shard="", file="", row=0, timeframe=0, randomize=False, searc
         bars.append(dict(index=i, end_us=end or None, padding=end == 0,
                          gap_us=int(end-record["end_us"][i-1]) if i and end else None,
                          raw=raw, valid=valid.tolist(), values=[v if ok else None for v,ok in zip(raw,valid)]))
-    return dict(**identity, shard=shard, file=file, row=row, timeframe=int(record["timeframe_us"]),
+    return dict(**identity, version=VERSION, shard=shard, file=file, row=row, timeframe=int(record["timeframe_us"]),
                 samples=sample_rows, bars=bars, channels=CHANNELS, sha256=entry["sha256"],
                 receipt_hash=receipt["receipt_hash"], binding=receipt["binding"],
                 observed=sum(not b["padding"] for b in bars), reporting_counts=receipt.get("reporting_counts"),

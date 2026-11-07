@@ -51,6 +51,9 @@ def unpack_bars(frame, development):
     positions = frame["observed_index"].to_numpy()
     if not np.isfinite(values).all() or not np.isin(valid, (0, 1)).all():
         raise ValueError("Malformed SQL result.")
+    real = frames > 0  # Metadata frame zero is not a market observation.
+    if (not valid[real, :6].all() or np.any(values[real, :6] <= 0)):
+        raise ValueError("Every real bar must contain complete positive trade OHLC, volume and count.")
     samples = []
     for resolution in FRAMES[:4]:
         take = frames == resolution
@@ -164,11 +167,13 @@ def publish(directory, samples, coarse, metadata, budget, shard_bytes):
     existing = verify_receipt(directory, metadata["identity"])
     if existing:
         return existing
-    # A rare all-status/all-volume block can still lack a price reference. Record
-    # its exclusion explicitly; never manufacture prices or change its 64-bar span.
+    # Trade completeness is an invariant, not a sample filter. A failure must
+    # stop publication rather than silently turn incomplete bars into training data.
     candidate_samples = len(samples)
-    observed_price = samples["valid"][..., [3, 9, 15]].any(axis=(1, 2))
-    samples = samples[observed_price]
+    real = samples["end_us"] > 0
+    if (not samples["valid"][..., :6][real].all()
+            or np.any(samples["values"][..., :6][real] <= 0)):
+        raise ValueError("Cannot publish a sample with incomplete trade attributes.")
     per_shard = max(1, (shard_bytes - 4096) // SAMPLE_DTYPE.itemsize)
     # Include conservative file-header and receipt overhead in the hard budget.
     reserve = samples.nbytes + 65536 + (len(samples) // per_shard + 1) * 4096

@@ -36,8 +36,8 @@ CONFIGURATIONS = {
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("profile", "train"), default="profile")
-    # V3 supplies masked session tails and corporate-action-adjusted coarse contexts.
-    parser.add_argument("--dataset", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v3"))
+    # V4 supplies masked session tails and corporate-action-adjusted coarse contexts.
+    parser.add_argument("--dataset", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v4"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split-manifest", type=Path)
     parser.add_argument("--calibration", type=Path)
@@ -137,7 +137,7 @@ def main(argv=None):
         if source_contract.is_file():
             from .shards.contract import VERSION
             if json.loads(source_contract.read_text())["contract"]["version"] != VERSION:
-                raise ValueError("Training requires v3 shards; build a fresh split for the new dataset.")
+                raise ValueError("Training requires v4 shards; build a fresh split for the new dataset.")
         if args.calibration:
             calibration = json.loads(args.calibration.read_text())
             if calibration["split_hash"] != manifest["manifest_hash"]:

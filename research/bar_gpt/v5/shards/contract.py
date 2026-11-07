@@ -3,14 +3,19 @@
 # Recorded extraction requirements (user-confirmed, November 6, 2026):
 # - Historical market reads use canonical market_sip_compact events only; never
 #   reopen flatfiles, repair reporting flags, or infer missing trade evidence.
-# - Exclude unknown, delayed, structurally invalid and condition-ineligible
-#   trades using the same independent price/extreme/volume rules as ARTE.
+# - Updated November 7: reporting status and missing participant timestamps do
+#   NOT exclude encoder trades, including explicitly delayed reporting classes.
+#   Reject structurally invalid trades; apply ARTE sale conditions independently
+#   to price, extremes and volume. This supersedes the earlier reporting gate.
 # - Combine trade, bid, ask and halt channels with explicit evidence masks.
 # - Carry quotes causally within a session; invalid quotes clear the carry.
 #   Carry never creates quote events or counts, and cannot use future quotes.
 # - Frames are 100ms, 1s, 10s, 1min, 1hour and daily, across 2019–2025.
 # - Fine samples contain consecutive OBSERVED bars from one session, preserving
 #   real timestamps/gaps. Right-pad session tails with zero values/clocks/masks.
+# - A real observation requires complete trade OHLC and positive eligible trade
+#   volume/count at that timeframe. Quotes/status never create a bar; all six
+#   trade attributes must be valid on every real (unpadded) row.
 # - Hourly/daily contexts may join sessions. Use 64 actual observed bars and
 #   backward-adjust executed stock splits/reverse splits to the sample-end basis:
 #   earlier prices *= split_from/split_to; volume/sizes use the inverse; counts
@@ -31,7 +36,7 @@ import time
 
 import numpy as np
 
-VERSION = "bargpt-session-padded-64-v3"
+VERSION = "bargpt-trade-driven-64-v4"
 WIDTH = 64
 FRAMES = (100_000, 1_000_000, 10_000_000, 60_000_000, 3_600_000_000, 86_400_000_000)
 CHANNELS = tuple(

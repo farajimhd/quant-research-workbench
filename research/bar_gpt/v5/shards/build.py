@@ -270,7 +270,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v3"))
+    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v4"))
     parser.add_argument("--target-bytes", type=int, default=10**12)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--io-workers", type=int, default=2)

@@ -21,8 +21,8 @@ These are final **unscaled** model-input arrays, not fitted normalized features.
 Float32 rounding is intentional; exact source observations remain in canonical
 ClickHouse. Future scaling and artificial masking belong in vectorized/GPU batch
 operations. The loader need not aggregate, join, decode Parquet, or construct
-windows. Price adjustment, identity remapping, and a training loader are not
-implemented here. Symbols never join across ticker-year jobs.
+windows. Coarse contexts are split-adjusted as described below; the training
+loader lives in `../data_v1.py`. Symbols never join across ticker-year jobs.
 
 Use only files named in valid `receipt.json` publications, never arbitrary
 directory globs while a campaign is writing. Shards are capped at 32 MiB by
@@ -39,12 +39,13 @@ not event-weighted random ordinal sampling or a claim of certified instrument
 identity. Each worker processes trading sessions chronologically so halt state
 and coarse context can be carried without rereading prior days repeatedly.
 
-The v3 contract imports `bar_semantics_v1.py`, shared with future model phases.
+The v4 contract imports `bar_semantics_v1.py`, shared with future model phases.
 ClickHouse aggregates a sparse 100ms base, rolls up sufficient statistics,
 and returns samples of **64 consecutive observed bars**, plus transient coarse bars.
 Observation indices are assigned before sampling; clock gaps remain in timestamps.
-Unknown reporting status and explicitly delayed trades are excluded. Receipts
-record total trades, unknown trades, delayed trades and structurally usable timely
+Reporting status does not exclude encoder trades. Structurally valid trades use
+ARTE sale-condition rules independently for last price, extremes and volume. Receipts
+record total trades, unknown trades, delayed trades and structurally valid
 trades, in that order, in `reporting_counts`.
 Sessions are XNYS trading dates, 04:00–20:00 New York, including early-close
 dates under that explicitly extended-hours definition. Daily uses 09:30–16:00
@@ -60,8 +61,12 @@ and evidence masks. Short sessions start at their first observed bar. Tail block
 use the same hash retention as full blocks. Hourly/daily contexts remain complete
 64-bar windows; their incomplete final remainders are not published.
 No empty clock slots are manufactured;
-missing ticker-days are recorded with explicit reasons. An entirely price-empty
-status-only block is explicitly counted and excluded before publication.
+missing ticker-days are recorded with explicit reasons. Quote-only and status-only
+buckets are not observations. A retained bar requires complete trade OHLC and
+positive eligible volume/count; every real row is checked before publication.
+Apply this requirement after rollup at each timeframe. Volume-only contributions
+in a 100ms bucket must still contribute to a longer complete bar. No reporting
+clock evidence, participant timestamp, or timely-status bit is required.
 
 Quotes carry the last causal valid pair within a session when no new quote is
 available; an invalid quote message clears that state. Carry does not create
@@ -108,7 +113,7 @@ python -B -u research/bar_gpt/v5/run_shards.py --workers 6 --io-workers 2
 python -B -m research.bar_gpt.v5.shards.progress
 ```
 
-Default output: `D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v3`.
+Default output: `D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v4`.
 The limit is 1,000,000,000,000 bytes, with a 100 GB free-space reserve. A final
 batch can leave the dataset slightly below the cap. Exhaustion is reported
 honestly rather than duplicating samples to reach an artificial size.

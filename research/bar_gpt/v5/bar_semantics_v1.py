@@ -2,7 +2,8 @@
 
 The input authority is canonical SIP events, ordered by (sip_timestamp_us, ordinal).
 Predicates use ARTE's sale-condition mapping and structural quote-pair rules.
-Unknown reporting status is rejected explicitly; it is not interpreted as timely.
+Reporting-clock status is diagnostic only for encoder pretraining. Sale-condition
+rules independently govern last price, extremes and volume, as in ARTE.
 All timeframes use the same eligibility. Daily means 09:30–16:00 New York.
 No function in this module writes bars, shards, tables, or model artifacts.
 """
@@ -11,14 +12,14 @@ from pipelines.market_sip.events.market_day_sql import condition_expressions
 
 
 CONTRACT = dict(
-    version="bargpt-shared-bar-semantics-v2-session-padding",
+    version="bargpt-shared-bar-semantics-v3-trade-driven",
     ordering="sip_timestamp_us,ordinal",
-    trade_reporting="bitAnd(event_meta,192)=64; unknown and delayed rejected",
+    trade_reporting="no reporting-clock filter; include all structurally valid trades under ARTE per-field sale-condition rules",
     trade_conditions="ARTE independent update_last/update_high_low/update_volume with extended-hours Form T",
     quotes="positive noncrossed pair; finite nonnegative sizes; latest invalid quote clears carry",
     quote_carry="causal within 04:00-20:00 session; no age cutoff; actual quote counts remain unchanged",
     daily="09:30-16:00 America/New_York; same eligibility as intraday",
-    samples="fine frames stay within one session with masked right padding; hourly/daily use 64 observed bars across sessions; purge train/validation-crossing contexts",
+    samples="complete trade OHLC and positive eligible volume/count define observations; quotes/status never create bars; fine frames stay in session with masked right padding; hourly/daily span sessions with split adjustment",
 )
 
 
@@ -33,7 +34,7 @@ def predicates(rules):
         [row for row in rules if row["source_family"] == "trade_conditions"]
     )
     return f"""({form}) form_ok,
-        kind=1 AND bitAnd(event_meta,192)=64 AND price_int>0
+        kind=1 AND price_int>0
           AND size_primary>0 AND isFinite(size_primary) usable,
         usable AND {last} p_ok, usable AND {high} e_ok, usable AND {volume} v_ok,
         kind=0 AND secondary_int>0 AND price_int>=secondary_int
