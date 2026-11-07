@@ -23,14 +23,20 @@ import numpy as np
 from . import source
 from .balanced_plan import VERSION, YEARS, freeze, ticker_bounds
 from .build import Status, query_with_memory_recovery
-from .contract import FRAMES, SAMPLE_DTYPE, digest, file_hash, seed_for, write_json
+from .phase1_contract import (
+    FRAMES,
+    SAMPLE_DTYPE,
+    digest,
+    file_hash,
+    seed_for,
+    write_json,
+)
 from .origin_samples import arrays, samples
-from .range_sql import range_query, event_source
-from pipelines.market_sip.events.market_signals import token_sets
+from .range_sql import range_query
 from .sql import clock
 from .storage import BAR_DTYPE, Budget, publish, verify_receipt
 from research.bar_gpt.v5 import bar_semantics_v1
-from pipelines.market_sip.events import market_day_sql, market_signals
+from pipelines.market_sip.events import market_day_sql
 
 NY = ZoneInfo("America/New_York")
 
@@ -183,88 +189,6 @@ def worker(
         if r["provider_ticker"] == job["ticker"]
     ]
     c = source.client(args.endpoint, args.query_memory_gib)
-    state_path = args.output / "checkpoints" / f"{job['key']}-states.json"
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    if state_path.exists():
-        sealed = json.loads(state_path.read_text())
-        if sealed["binding"] != binding or sealed["hash"] != digest(sealed["events"]):
-            raise ValueError("Sparse status timeline seal changed")
-        state_events = sealed["events"]
-    else:
-        status.update(lane, ticker=job["ticker"], phase="freezing sparse halt timeline")
-        halt, resume = token_sets(rules)
-        halt = sorted(
-            set(halt)
-            | {
-                int(r["token_id"])
-                for r in rules
-                if r["source_family"] == "halt_reason"
-                and int(r["modifier_int"]) in (177, 181, 182, 183, 186)
-            }
-        )
-        resume = sorted(
-            set(resume)
-            | {
-                int(r["token_id"])
-                for r in rules
-                if r["source_family"] == "halt_reason" and int(r["modifier_int"]) == 178
-            }
-        )
-        tokens = (
-            "arrayFilter(t->t>0,["
-            + ",".join(f"toUInt16(condition_token_{i})" for i in range(1, 6))
-            + "])"
-        )
-        state_events = []
-        years = sorted({r["source_date"][:4] for r in bounds})
-        for number, year in enumerate(years):
-            if stop.is_set():
-                source.close(c)
-                return False
-            part_path = state_path.with_name(f"{job['key']}-states-{year}.json")
-            status.update(
-                lane,
-                phase=f"freezing halt timeline {year}",
-                done=number,
-                total=len(years),
-            )
-            if part_path.exists():
-                part = json.loads(part_path.read_text())
-                if part["binding"] != binding or part["hash"] != digest(part["events"]):
-                    raise ValueError("Yearly status checkpoint seal changed")
-                state_events.extend(part["events"])
-                continue
-            selected = [r for r in bounds if r["source_date"].startswith(year)]
-            raw = event_source(
-                job["ticker"],
-                selected,
-                int(selected[0]["first_ordinal"]),
-                int(selected[-1]["next_ordinal"]),
-            )
-            # Dense instruments contain billions of events across seven years.
-            # Yearly scans bound query duration and checkpoint sparse evidence;
-            # they do not change which halt/resume events are included.
-            events = source.rows(
-                c,
-                f"""SELECT sip_timestamp_us,ordinal,
-          multiIf(hasAny(tokens,{halt}) AND hasAny(tokens,{resume}),2,hasAny(tokens,{halt}),1,0) state
-          FROM (SELECT sip_timestamp_us,ordinal,{tokens} tokens FROM ({raw}))
-          WHERE hasAny(tokens,{halt+resume}) ORDER BY ordinal""",
-            )
-            part_events = [
-                (int(r["sip_timestamp_us"]), int(r["ordinal"]), int(r["state"]))
-                for r in events
-            ]
-            write_json(
-                part_path,
-                dict(binding=binding, events=part_events, hash=digest(part_events)),
-            )
-            state_events.extend(part_events)
-        state_events.sort(key=lambda row: row[1])
-        write_json(
-            state_path,
-            dict(binding=binding, events=state_events, hash=digest(state_events)),
-        )
     pending = []
     checkpoint_path = args.output / "checkpoints" / f"{job['key']}.json"
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -322,7 +246,6 @@ def worker(
                 int(group[-1]["next_ordinal"]),
                 begin_us=clock(group[0]["source_date"], 4),
                 end_us=clock(group[-1]["source_date"], 20),
-                state_events=state_events,
             )
             output = execute_range(
                 c,
@@ -402,9 +325,7 @@ def worker(
                 unit = f"fine-{origin}-{end}"
                 if end <= origin:
                     break
-                statement = range_query(
-                    job["ticker"], bounds, rules, origin, end, state_events=state_events
-                )
+                statement = range_query(job["ticker"], bounds, rules, origin, end)
                 output = execute_range(
                     c,
                     statement,
@@ -460,7 +381,7 @@ def arguments(argv=None):
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v5"),
+        default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v6"),
     )
     parser.add_argument("--target-bytes", type=int, default=10**12)
     parser.add_argument("--workers", type=int, default=32)
@@ -478,6 +399,11 @@ def arguments(argv=None):
     parser.add_argument("--tickers", default="")
     parser.add_argument("--pilot-units", type=int, default=0)
     parser.add_argument("--plan-only", action="store_true")
+    parser.add_argument(
+        "--prepare-only",
+        action="store_true",
+        help="Seal the contract for an audited migration; do not extract",
+    )
     return parser.parse_args(argv)
 
 
@@ -585,12 +511,19 @@ def main(argv=None):
         plan_hash=plan["hash"],
         years=YEARS,
         authority=authority,
-        format="Float32[64,21] plus masks, UTC clocks, timeframe and split",
+        format="Float32[64,18] plus masks, UTC clocks, timeframe and split",
         policy="20% fine-frame sliding origins; hourly/daily sliding; cross-session; sample-end split basis",
         configuration={
             k: v
             for k, v in vars(args).items()
-            if k not in ("output", "endpoint", "source_revision", "plan_only")
+            if k
+            not in (
+                "output",
+                "endpoint",
+                "source_revision",
+                "plan_only",
+                "prepare_only",
+            )
         },
         code={
             p.name: file_hash(p)
@@ -601,7 +534,7 @@ def main(argv=None):
     contract["code"].update(
         {
             module.__name__: file_hash(Path(module.__file__))
-            for module in (bar_semantics_v1, market_day_sql, market_signals)
+            for module in (bar_semantics_v1, market_day_sql)
         }
     )
     binding = digest(contract)
@@ -609,6 +542,10 @@ def main(argv=None):
     if path.exists() and json.loads(path.read_text())["binding"] != binding:
         raise ValueError("Campaign contract changed; use a new output root")
     write_json(path, dict(binding=binding, contract=contract))
+    if args.prepare_only:
+        state = "migration_ready"
+        snapshot()
+        return 0
     write_json(
         args.output / "launch.json",
         dict(source_revision=args.source_revision, pid=os.getpid(), started=began),

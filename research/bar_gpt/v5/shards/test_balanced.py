@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from .balanced_build import Quotas
-from .contract import SAMPLE_DTYPE
+from .phase1_contract import SAMPLE_DTYPE
 from .origin_samples import samples, select_origins
 
 
@@ -18,8 +18,47 @@ def test_twenty_percent_without_replacement():
     np.testing.assert_array_equal(a, select_origins(1000, 42, 0.2))
 
 
+def test_market_only_migration_preserves_all_retained_fields(tmp_path):
+    from .contract import SAMPLE_DTYPE as OLD_DTYPE
+    from .storage import BAR_DTYPE, Budget, publish
+    from .migrate_market_only import migrate_unit
+
+    old = np.zeros(3, dtype=OLD_DTYPE)
+    old["values"] = 10
+    old["valid"] = 1
+    old["values"][..., -3:] = 99  # These columns must not survive migration.
+    old["end_us"] = 1_700_000_000_000_000 + np.arange(64) * 100000
+    old["timeframe_us"] = 100000
+    source = tmp_path / "old"
+    target = tmp_path / "new"
+    original = publish(
+        source,
+        old,
+        np.empty(0, dtype=BAR_DTYPE),
+        dict(
+            binding="old",
+            identity="old",
+            ticker="TEST",
+            unit="fine-1-2",
+            year=2023,
+            liquid=1,
+            day="2023-01-01",
+        ),
+        Budget(10**7),
+        1024**2,
+    )
+    result = migrate_unit(
+        source / "receipt.json", target, "new", Budget(10**7), 1024**2
+    )
+    actual = np.load(target / result["files"][0]["name"], allow_pickle=False)
+    assert actual.dtype == SAMPLE_DTYPE and actual["values"].shape == (3, 64, 18)
+    np.testing.assert_array_equal(actual["values"], old["values"][..., :18])
+    np.testing.assert_array_equal(actual["valid"], old["valid"][..., :18])
+    assert result["parent_receipt_hash"] == original["receipt_hash"]
+
+
 def test_sliding_daily_and_cross_session_split():
-    values = np.full((100, 21), 10, dtype=np.float32)
+    values = np.full((100, 18), 10, dtype=np.float32)
     valid = np.ones_like(values, dtype=np.uint8)
     # Daily origins cross both overnight gaps and an actual effective split clock.
     first = np.datetime64("2022-07-01T20:00:00", "us").astype(np.int64)
@@ -35,7 +74,7 @@ def test_sliding_daily_and_cross_session_split():
 
 
 def test_no_padding_and_no_partial_context():
-    v = np.ones((63, 21), dtype=np.float32)
+    v = np.ones((63, 18), dtype=np.float32)
     m = np.ones_like(v, dtype=np.uint8)
     t = np.arange(63, dtype=np.int64) * 100000 + 1_600_000_000_000_000
     data, tail = samples(v, m, t, 100000, 42, [])
@@ -152,7 +191,7 @@ def test_range_matches_existing_audited_session_query():
     os.getenv("BARGPT_LIVE_TESTS") != "1",
     reason="SELECT-only synthetic ClickHouse check",
 )
-def test_range_preserves_cached_halt_transitions_and_quote_invalidation():
+def test_range_has_no_halt_fields_and_preserves_quote_invalidation():
     from unittest.mock import patch
     from .source import client, arrow, preflight, close
     from .range_sql import range_query
@@ -211,17 +250,11 @@ def test_range_preserves_cached_halt_transitions_and_quote_invalidation():
         ]
         bounds = [dict(source_date="2019-01-03", first_ordinal=100, next_ordinal=107)]
         with patch.dict(range_query.__globals__, {"event_source": lambda *args: raw}):
-            statement = range_query(
-                "TEST", bounds, rules, 100, 107, state_events=timeline
-            )
+            statement = range_query("TEST", bounds, rules, 100, 107)
             result = arrow(c, statement, "bargpt-halt-range-test")
         seconds = result.filter(result["resolution"] == 1000000)
-        assert [r[-3:] for r in seconds["values"].to_list()] == [
-            [0.0, 1.0, 1.0],
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 0.0],
-        ]
-        assert all(r[-3:] == [1, 1, 1] for r in seconds["valid"].to_list())
+        assert all(len(r) == 18 for r in seconds["values"].to_list())
+        assert "states AS" not in statement
         # The zero-price source message invalidates the book; it cannot leave
         # the old positive bid/ask usable at later completed trade bars.
         assert all(r[9] == 0 and r[15] == 0 for r in seconds["valid"].to_list())

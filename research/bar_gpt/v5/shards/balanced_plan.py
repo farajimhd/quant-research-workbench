@@ -15,7 +15,8 @@ import polars as pl
 from . import source
 from .contract import digest, file_hash, seed_for, write_json
 
-VERSION = "bargpt-ordinal-balanced-64-v5"
+from .phase1_contract import VERSION
+
 YEARS = tuple(range(2019, 2026))
 
 

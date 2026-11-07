@@ -3,7 +3,7 @@ import json
 import numpy as np
 import pytest
 from research.bar_gpt.v5 import shard_inspection as view
-from research.bar_gpt.v5.shards.contract import SAMPLE_DTYPE, VERSION, digest, file_hash
+from research.bar_gpt.v5.shards.phase1_contract import SAMPLE_DTYPE, VERSION, digest, file_hash
 
 
 @pytest.fixture
@@ -35,8 +35,8 @@ def test_raw_evidence_padding_and_frame_selection(corpus):
     assert len(view.shards(job)['shards'])==1
     s=view.sample(job,'2025-01-02','samples-0000.npy',timeframe=100000)
     assert len(s['bars'])==64 and s['observed']==3
-    assert s['bars'][3]['end_us'] is None and s['bars'][3]['raw']==[0.]*21
-    assert s['bars'][3]['values']==[None]*21 and not any(s['bars'][3]['valid'])
+    assert s['bars'][3]['end_us'] is None and s['bars'][3]['raw']==[0.]*18
+    assert s['bars'][3]['values']==[None]*18 and not any(s['bars'][3]['valid'])
     minute=view.sample(job,'2025-01-02','samples-0000.npy',timeframe=60000000,randomize=True)
     assert minute['row']==1 and minute['observed']==64
 

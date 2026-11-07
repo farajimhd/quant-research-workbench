@@ -31,7 +31,7 @@ def render(snapshot, width=100, height=40):
     elapsed = float(snapshot.get("elapsed_seconds", 0))
     throughput = Text("Rate / ETA: warming up")
     quotas = snapshot.get("quotas")
-    if rate > 0 and elapsed >= 60:
+    if state == "running" and rate > 0 and elapsed >= 60:
         throughput = Text(f"Durable write rate {rate/10**6:,.1f} MB/s")
         # Fast fine frames can reach their cap before daily/hourly. Forecast the
         # slowest remaining timeframe/class quota, rather than total bytes alone.
@@ -107,6 +107,10 @@ def render(snapshot, width=100, height=40):
             configuration.append(
                 f" · plan {snapshot.get('plan_done',0)}/{snapshot.get('plan_total',112)}"
             )
+        if state.startswith("migration") or state == "migrating":
+            configuration = Text(
+                f"Market-only migration · {config['io_workers']} I/O workers · every retained field verified"
+            )
     if pages > 1:
         detail.append(
             f"\nWorkers {first+1}–{min(first+page_size,len(workers))} of {len(workers)}; pages rotate every 10s."
@@ -136,7 +140,7 @@ def main():
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v5"),
+        default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v6"),
     )
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()

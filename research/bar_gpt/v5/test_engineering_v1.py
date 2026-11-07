@@ -14,7 +14,7 @@ from research.bar_gpt.v5.data_v1 import EligibleStream, ShardBatches, build_spli
 from research.bar_gpt.v5.encoder_v1 import AttentionBlock
 from research.bar_gpt.v5.engine_v1 import run_steps
 from research.bar_gpt.v5.progress_v1 import render
-from research.bar_gpt.v5.shards.contract import SAMPLE_DTYPE, digest, file_hash, write_json
+from research.bar_gpt.v5.shards.phase1_contract import SAMPLE_DTYPE, digest, file_hash, write_json
 from research.bar_gpt.v5.test_encoder_v1 import small_model
 
 
@@ -27,7 +27,6 @@ def inventory(tmp_path):
         path.mkdir(parents=True)
         rows = np.zeros(16, dtype=SAMPLE_DTYPE)
         rows["values"] = 10
-        rows["values"][..., 18:21] = 0
         rows["valid"] = 1
         rows["timeframe_us"] = 1_000_000
         rows["end_us"] = int(day.timestamp()*1e6) + 10*3600*1_000_000 + np.arange(64)*1_000_000
@@ -133,7 +132,7 @@ def test_spawn_workers_and_cleanup(inventory):
     try:
         batch = next(iter(loader))
         assert batch.visible.shape[0] == 32
-        assert batch.visible.shape[1] in (8, 9)
+        assert batch.visible.shape[1] in (7, 8)
         if torch.cuda.is_available():
             assert batch.visible.is_pinned()
     finally:

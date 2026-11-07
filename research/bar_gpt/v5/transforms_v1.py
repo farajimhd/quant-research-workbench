@@ -1,4 +1,4 @@
-"""Append nine deterministic time features to the 21-channel shard values.
+"""Append nine deterministic time features to the 18-channel shard values.
 
 This module contains no learned layers, loading, training, or market scaling.
 It uses UTC completed-bar timestamps directly, without a session schedule.
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 
-from research.bar_gpt.v5.shards.contract import CHANNELS, FRAMES, WIDTH
+from research.bar_gpt.v5.shards.phase1_contract import CHANNELS, FRAMES, WIDTH
 
 
 TIME_CHANNELS = (
@@ -19,13 +19,13 @@ TIME_CHANNELS = (
     "intraday_sin", "intraday_cos", "log_gap_ratio",
     "weekday_sin", "weekday_cos", "iso_week_sin", "iso_week_cos",
 )
-FEATURE_NAMES = CHANNELS + TIME_CHANNELS  # Stable order for all [B,64,30] arrays.
+FEATURE_NAMES = CHANNELS + TIME_CHANNELS  # Stable order for all [B,64,27] arrays.
 DAY_US = 86_400_000_000  # Exact POSIX UTC day; leap seconds are not represented.
 
 
 @dataclass(frozen=True)
 class TransformedBars:
-    """Model inputs: Float32 ``values[B,64,30]`` and bool ``valid[B,64,30]``.
+    """Model inputs: Float32 ``values[B,64,27]`` and bool ``valid[B,64,27]``.
 
     Feature order is ``FEATURE_NAMES``. Invalid values are zero placeholders,
     distinguishable from observed zeros through ``valid``. No ticker, absolute
@@ -93,9 +93,9 @@ class BarInputTransformV1(nn.Module):
         """Transform one batch entirely with vectorized Torch on the input device.
 
         Args:
-            values: Torch floating [B,64,21], from shard ``values``; prices, activity,
-                and halt channels remain unscaled. Invalid fields may hold NaN.
-            valid: Torch bool or 0/1 integer [B,64,21], from shard evidence masks.
+            values: Torch floating [B,64,18], from shard ``values``; prices and activity
+                remain unscaled. Invalid fields may hold NaN.
+            valid: Torch bool or 0/1 integer [B,64,18], from shard evidence masks.
             end_us: Torch int64 [B,64], UTC completed-bar end timestamps in microseconds,
                 strictly increasing for observed bars, then zero right padding.
                 Cross-session gaps are supported for hourly/daily contexts.
@@ -103,7 +103,7 @@ class BarInputTransformV1(nn.Module):
                 supported durations are 100ms, 1s, 10s, 1m, 1h, and 1d.
 
         Returns:
-            TransformedBars containing Float32 values and bool validity [B,64,30].
+            TransformedBars containing Float32 values and bool validity [B,64,27].
             The first gap is zero with validity False: no predecessor is supplied.
             The remaining eight time channels are valid for every accepted bar.
 
@@ -128,15 +128,15 @@ class BarInputTransformV1(nn.Module):
         if any(item.device != self.supported_frames.device for item in (values, valid, end_us)):
             raise ValueError("Move the transform and all input tensors to the same device.")
         if values.ndim != 3 or values.shape[1:] != (WIDTH, len(CHANNELS)) or not len(values):
-            raise ValueError("values must have nonempty shape [B,64,21].")
+            raise ValueError("values must have nonempty shape [B,64,18].")
         batch, device = len(values), values.device
         if not values.is_floating_point():
             raise ValueError("Market values must be floating point.")
         mask_types = (torch.bool, torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64)
         if (valid.shape != values.shape or valid.dtype not in mask_types
                 or not ((valid == 0) | (valid == 1)).all()):
-            raise ValueError("valid must contain boolean/0-1 evidence masks [B,64,21].")
-        observed = valid.bool()  # [B,64,21]; evidence masks, not augmentation masks.
+            raise ValueError("valid must contain boolean/0-1 evidence masks [B,64,18].")
+        observed = valid.bool()  # [B,64,18]; evidence masks, not augmentation masks.
         if not (torch.isfinite(values) | ~observed).all():
             raise ValueError("Observed market values must be finite.")
         if end_us.shape != (batch, WIDTH) or end_us.dtype != torch.int64 or (end_us < 0).any():
@@ -181,10 +181,10 @@ class BarInputTransformV1(nn.Module):
         time_valid = present[..., None].expand_as(time_values).clone()  # [B,64] → [B,64,9].
         time_valid[:, 0, 4] = False  # No predecessor exists in this shard sample.
         time_values = torch.where(time_valid, time_values, 0)  # Padding carries no clock or sequence signal.
-        clean_values = torch.where(observed, values, 0).float()  # [B,64,21], unscaled, differentiable.
+        clean_values = torch.where(observed, values, 0).float()  # [B,64,18], unscaled, differentiable.
         if not torch.isfinite(clean_values).all():
             raise ValueError("Market values overflow Float32.")
         return TransformedBars(
-            values=torch.cat((clean_values, time_values), dim=-1),  # 21+9 → [B,64,30].
-            valid=torch.cat((observed, time_valid), dim=-1),  # Matching [B,64,30] evidence.
+            values=torch.cat((clean_values, time_values), dim=-1),  # 18+9 → [B,64,27].
+            valid=torch.cat((observed, time_valid), dim=-1),  # Matching [B,64,27] evidence.
         )

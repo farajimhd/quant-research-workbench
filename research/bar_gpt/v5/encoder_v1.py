@@ -77,10 +77,10 @@ def blocks(width: int, heads: int, feedforward: int, depth: int, dropout: float,
 class ColumnEncoderV1(nn.Module):
     """Compress visible columns and complete UTC context into one embedding [B,D].
 
-    Feature IDs 0..20 follow shards.contract.CHANNELS. Temporal order is retained
+    Feature IDs 0..17 follow shards.phase1_contract.CHANNELS. Temporal order is retained
     by the 64 ordered inputs to each projection, rather than attention over bars.
     All nine time features stay visible as ONE context token, plus missingness.
-    At inference supply all 21 columns; training supplies only 8 or 9 columns.
+    At inference supply all 18 columns; training supplies only 7 or 8 columns.
     """
 
     def __init__(self, config: EncoderConfig = EncoderConfig()):
@@ -88,7 +88,7 @@ class ColumnEncoderV1(nn.Module):
         self.config = config
         self.values = nn.Linear(64, config.width)  # One column [B,K,64] -> [B,K,D].
         self.missing = nn.Linear(64, config.width, bias=False)  # Missing != observed zero.
-        self.identity = nn.Embedding(21, config.width)  # Column IDs [B,K] -> [B,K,D].
+        self.identity = nn.Embedding(18, config.width)  # Column IDs [B,K] -> [B,K,D].
         self.time = nn.Linear(64 * 9 * 2, config.width)  # Values + masks -> one context token.
         self.summary = nn.Parameter(torch.zeros(1, 1, config.width))  # Shared learned readout query.
         nn.init.normal_(self.summary, std=0.02)
@@ -109,7 +109,7 @@ class ColumnEncoderV1(nn.Module):
         context = torch.cat((time, (~time_valid).to(time.dtype)), dim=-1).flatten(1)
         context = self.time(context).unsqueeze(1)  # [B,64*18] -> [B,1,D].
         hidden = torch.cat((self.summary.expand(len(visible), -1, -1), context, hidden), dim=1)
-        # Attention sees K+2 tokens (10 or 11 during training, 23 with all columns).
+        # Attention sees K+2 tokens (9 or 10 during training, 20 with all columns).
         for block in self.blocks:
             hidden = block(hidden)  # [B,K+2,D], full bidirectional attention inside the supplied window.
         return self.norm(hidden[:, 0])  # Summary only: [B,K+2,D] -> [B,D].
@@ -120,7 +120,7 @@ class ColumnDecoderV1(nn.Module):
 
     Uses a small bidirectional reconstruction network, with the embedding as one
     memory token and hidden feature IDs as queries. No encoder column states enter.
-    Output is [B,M,64] in scaled coordinates; halt binary channels are logits.
+    Output is [B,M,64] in scaled continuous market coordinates.
     """
 
     def __init__(self, config: EncoderConfig = EncoderConfig()):
@@ -128,7 +128,7 @@ class ColumnDecoderV1(nn.Module):
         width = config.decoder_width
         self.summary = nn.Linear(config.width, width)  # Bottleneck [B,D] -> [B,d].
         self.time = nn.Linear(64 * 9 * 2, width)  # Known target timing, not market evidence.
-        self.identity = nn.Embedding(21, width)  # Requested column queries [B,M] -> [B,M,d].
+        self.identity = nn.Embedding(18, width)  # Requested column queries [B,M] -> [B,M,d].
         self.blocks = blocks(width, config.decoder_heads, width * 4, config.decoder_layers, config.dropout,
                              config.attention, config.attention_dropout)
         self.output = nn.Sequential(nn.LayerNorm(width), nn.Linear(width, 64))

@@ -1,4 +1,4 @@
-# Ordinal and timestamp campaign, dataset v5
+# Ordinal and timestamp campaign, dataset v6
 
 The model is unchanged. `run_balanced_shards.py` owns the new extraction path;
 `run_shards.py` remains the historical session-based implementation.
@@ -24,8 +24,7 @@ The model is unchanged. `run_balanced_shards.py` owns the new extraction path;
   Prices multiply by split_from/split_to; volumes/sizes use the inverse.
   Counts are unchanged. Apply no action after the sample's final clock.
 - Keep causal quote carry within each session. The latest invalid quote clears
-  carry; carried values never manufacture quote counts. Seed status from a
-  frozen sparse canonical halt/resume timeline; silence is not normal trading.
+  carry; carried values never manufacture quote counts. No halt state or halt-history acquisition is included in phase one.
 - Target 75/25 liquid/less-liquid saved samples, separately per timeframe.
   Liquidity uses the top quartile of ticker-year average source event count,
   an explicit proxy rather than a claim about trade volume or spreads.
@@ -35,7 +34,7 @@ The model is unchanged. `run_balanced_shards.py` owns the new extraction path;
   identical samples to make a nominal storage or class quota.
 - Purge contexts crossing the shared train/development boundary. The trainer
   builds its own chronological 80/20 manifest from complete context bounds.
-- Keep final, unscaled, mmap-ready `[N,64,21]` samples in at most 32 MiB files.
+- Keep final, unscaled, mmap-ready `[N,64,18]` samples in at most 32 MiB files.
   Query and I/O concurrency are separately bounded. Checkpoint after durable
   publication and hold an OS controller lock; never overwrite sealed payloads.
 
@@ -59,8 +58,13 @@ python -B research/bar_gpt/v5/run_balanced_shards.py --workers 32 --io-workers 1
 python -B -m research.bar_gpt.v5.shards.progress
 ```
 
-The default root is `D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v5`.
+The default root is `D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v6`.
 The byte limit is a hard cap, including metadata. The sample quota reserves 2%
 for the frozen plan, headers and receipts. An explicit `STOP` file drains workers;
 restarting the identical immutable code resumes sealed work. Configuration or
 code changes require a new dataset root. A pilot must always use a separate root.
+
+Phase-one v6 explicitly excludes halt-open, halt-close and halt-start count.
+`phase1_contract.py` defines 18 market fields; the Torch transform appends nine UTC
+features for 27 model channels. The archived 21-field contract remains available
+only for auditing and lossless migration of existing v5 publications.

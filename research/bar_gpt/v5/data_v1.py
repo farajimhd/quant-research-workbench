@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from .pretraining_v1 import ActivityStats, fit_activity_stats, prepare_batch
-from .shards.contract import SAMPLE_DTYPE, digest, file_hash, write_json
+from .shards.phase1_contract import SAMPLE_DTYPE, digest, file_hash, write_json
 
 
 def read_receipt(path: Path) -> list[dict]:

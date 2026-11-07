@@ -6,7 +6,6 @@ Quotes are carried after aggregation, never counted as invented updates.
 """
 
 from research.bar_gpt.v5.bar_semantics_v1 import family_statistics, predicates
-from pipelines.market_sip.events.market_signals import token_sets
 from .sql import literal
 
 
@@ -30,82 +29,35 @@ def event_source(ticker, bounds, first, stop):
     return " UNION ALL ".join(pieces)
 
 
-def range_query(
-    ticker, bounds, rules, first, stop, *, begin_us=None, end_us=None, state_events=None
-):
+def range_query(ticker, bounds, rules, first, stop, *, begin_us=None, end_us=None):
     """Return sparse final bars from an ordinal chunk or timestamp coarse span.
 
     first/stop are frozen UInt64 ordinal bounds. With begin_us/end_us, aggregate
     only hourly/daily bars inside that timestamp span. Otherwise return the four
     fine frames and discard partial clock buckets at both chunk boundaries.
-    Quote seeds are the last actual quote before the range in its local session;
-    the latest explicit halt/resume from preceding canonical coverage seeds state.
-    Output values/masks have shape [bars,21]; timestamps are UTC microseconds.
+    Quote seeds are the last actual quote before the range in its local session.
+    Output values/masks have shape [bars,18]; timestamps are UTC microseconds.
     """
-    halt, resume = token_sets(rules)
-    halt = sorted(
-        set(halt)
-        | {
-            int(r["token_id"])
-            for r in rules
-            if r["source_family"] == "halt_reason"
-            and int(r["modifier_int"]) in (177, 181, 182, 183, 186)
-        }
-    )
-    resume = sorted(
-        set(resume)
-        | {
-            int(r["token_id"])
-            for r in rules
-            if r["source_family"] == "halt_reason" and int(r["modifier_int"]) == 178
-        }
-    )
-    status = halt + resume
     raw = event_source(ticker, bounds, first, stop)
-    earliest = min(int(r["first_ordinal"]) for r in bounds)
-    prefix = event_source(ticker, bounds, earliest, first) if first > earliest else None
-    tokens = "arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),toUInt16(condition_token_3),toUInt16(condition_token_4),toUInt16(condition_token_5)])"
-    # LIMIT 1 uses the ticker/ordinal ordering. Prefix rows supply evidence only;
-    # they never contribute trades, quote counts, or halt-start counts to a bar.
-    if state_events is not None:
-        # The frozen sparse timeline avoids rescanning years of condition columns
-        # for every chunk. Quote carry needs only the immediately preceding source
-        # day; it resets at 04:00 local time and never spans overnight sessions.
-        prior = [r for r in bounds if int(r["first_ordinal"]) < first]
-        prefix = (
-            event_source(
-                ticker,
-                bounds,
-                int(prior[-2 if len(prior) > 1 else -1]["first_ordinal"]),
-                first,
-            )
-            if prior
-            else None
+    # Seed only the last actual quote from preceding source days. Quotes reset
+    # per NY session; no halt/status history is queried for phase one.
+    prior = [r for r in bounds if int(r["first_ordinal"]) < first]
+    prefix = (
+        event_source(
+            ticker,
+            bounds,
+            int(prior[-2 if len(prior) > 1 else -1]["first_ordinal"]),
+            first,
         )
+        if prior
+        else None
+    )
     seeds = (
         ""
         if prefix is None
-        else f""" UNION ALL SELECT *,toUInt8(0) core FROM
-      (SELECT * FROM ({prefix}) WHERE bitAnd(event_meta,1)=0 ORDER BY ordinal DESC LIMIT 1)
-      """
+        else f" UNION ALL SELECT *,toUInt8(0) core FROM (SELECT * FROM ({prefix}) WHERE bitAnd(event_meta,1)=0 ORDER BY ordinal DESC LIMIT 1)"
     )
-    if state_events is None and prefix:
-        seeds += f""" UNION ALL SELECT *,toUInt8(0) core FROM
-          (SELECT * FROM ({prefix}) WHERE hasAny({tokens},{status}) ORDER BY ordinal DESC LIMIT 1)"""
-    states_sql = f"""SELECT sip_timestamp_us at_us,ordinal,
-      multiIf(hasAny(tokens,{halt}) AND hasAny(tokens,{resume}),2,hasAny(tokens,{halt}),1,0) state
-      FROM decoded WHERE hasAny(tokens,{status})"""
-    if state_events is not None:
-        before = [r for r in state_events if r[1] < first]
-        selected_states = before[-1:] + [
-            r for r in state_events if first <= r[1] < stop
-        ]
-        # Always include an unknown sentinel; absence of evidence is not normal.
-        entries = ",".join(
-            f"tuple(toUInt64({r[0]}),toUInt64({r[1]}),toUInt8({r[2]}))"
-            for r in selected_states + [(0, 0, 2)]
-        )
-        states_sql = f"SELECT s.1 at_us,s.2 ordinal,s.3 state FROM (SELECT arrayJoin([{entries}]) s)"
+    tokens = "arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),toUInt16(condition_token_3),toUInt16(condition_token_4),toUInt16(condition_token_5)])"
     coarse = begin_us is not None
     frames = (
         "[3600000000,86400000000]" if coarse else "[100000,1000000,10000000,60000000]"
@@ -168,8 +120,6 @@ def range_query(
     )
     value_sql = ",".join(f"toFloat32({v})" for v in projected_values)
     mask_sql = ",".join(f"toUInt8({v})" for v in projected_masks)
-    # Explicit source-state transitions remain sparse, so the ASOF joins do not
-    # allocate an event-sized attention/grid-like intermediate.
     return f"""WITH raw AS (SELECT *,toUInt8(1) core FROM ({raw}) {seeds}),
     decoded AS (SELECT *,bitAnd(event_meta,1) kind,
       toUInt64(price_primary_int)*if(bitAnd(event_meta,2)!=0,1,100) price_int,
@@ -192,28 +142,8 @@ def range_query(
     seeded AS (SELECT r.*,
       if(frame=86400000000,bucket+23400000000,bucket+frame) end_us,
       toUInt8(1) join_key FROM rolled r),
-    states AS ({states_sql}
-      UNION ALL SELECT toUInt64(0),toUInt64(0),toUInt8(2)),
-    changes AS (SELECT *,lagInFrame(state,1,toUInt8(2)) OVER
-      (ORDER BY at_us,ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) previous FROM states),
-    at_clock AS (SELECT toUInt8(1) join_key,at_us,argMax(state,ordinal) state
-      FROM states GROUP BY at_us ORDER BY at_us),
     selected AS (SELECT * FROM seeded
       WHERE trade_pv AND trade_ev AND trade_n>0 AND bucket>={begin} AND end_us<={end}),
-    transitions AS (SELECT f frame,
-      if(f=86400000000,toUInt64(toUnixTimestamp64Micro(toDateTime64(concat(toString(toDate(fromUnixTimestamp64Micro(toInt64(at_us),'America/New_York'))),' 09:30:00'),6,'America/New_York'))),intDiv(at_us,f)*f) bucket,
-      countIf(state=1 AND previous=0) starts,
-      countIf(state=2 OR (state=1 AND previous=2)) uncertain
-      FROM changes ARRAY JOIN {frames} AS f WHERE at_us>={begin} AND at_us<{end}
-        AND (f!=86400000000 OR (toHour(fromUnixTimestamp64Micro(toInt64(at_us),'America/New_York'))*3600+
-          toMinute(fromUnixTimestamp64Micro(toInt64(at_us),'America/New_York'))*60>=34200 AND
-          toHour(fromUnixTimestamp64Micro(toInt64(at_us),'America/New_York'))<16))
-      GROUP BY frame,bucket)
-    SELECT g.frame resolution,g.end_us end_us,
-      [{value_sql},toFloat32(o.state=1),toFloat32(c.state=1),toFloat32(t.starts)] values,
-      [{mask_sql},toUInt8(o.state!=2),toUInt8(c.state!=2),toUInt8(o.state!=2 AND t.uncertain=0)] valid
-    FROM (SELECT * FROM selected ORDER BY bucket) g
-      ASOF LEFT JOIN at_clock o ON g.join_key=o.join_key AND g.bucket>o.at_us
-      ASOF LEFT JOIN at_clock c ON g.join_key=c.join_key AND g.end_us>c.at_us
-      LEFT JOIN transitions t ON g.frame=t.frame AND g.bucket=t.bucket
-    ORDER BY g.frame,g.end_us FORMAT ArrowStream"""
+    output AS (SELECT g.frame resolution,g.end_us end_us,
+      [{value_sql}] values,[{mask_sql}] valid FROM selected g)
+    SELECT * FROM output ORDER BY resolution,end_us FORMAT ArrowStream"""

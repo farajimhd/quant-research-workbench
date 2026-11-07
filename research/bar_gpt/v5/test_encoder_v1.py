@@ -13,11 +13,8 @@ from research.bar_gpt.v5.trainer_v1 import MAETrainerV1, RawBatch, reconstructio
 def raw_batch(batch=4):
     """Synthetic positive market evidence, not a claim of real-data training quality."""
     generator = torch.Generator().manual_seed(41)
-    values = torch.rand((batch, 64, 21), generator=generator) + 10
+    values = torch.rand((batch, 64, 18), generator=generator) + 10
     values[..., PRICES] = 20 + torch.arange(64)[None, :, None] * 0.01
-    values[..., 18:20] = 0
-    values[:, 20:30, 18:20] = 1
-    values[..., 20] = 0
     valid = torch.ones_like(values, dtype=torch.bool)
     ends = (1_700_000_000_000_000 + torch.arange(64) * 1_000_000).expand(batch, -1).clone()
     return RawBatch(values, valid, ends, 1_000_000)
@@ -48,7 +45,6 @@ def test_scaling_and_shared_activity_statistics():
     reference = raw.values[..., (3, 9, 15)].flatten(1).quantile(0.5, dim=1)[:, None, None]
     torch.testing.assert_close(restored[..., PRICES], 100 * (raw.values[..., PRICES]/reference).log(), atol=1e-5, rtol=1e-4)
     torch.testing.assert_close(restored[..., ACTIVITY], (raw.values[..., ACTIVITY].log1p()-stats.median)/stats.scale)
-    torch.testing.assert_close(restored[..., 18:20], raw.values[..., 18:20])
     assert batch.targets.shape == (4, 0, 64)
 
 
@@ -57,10 +53,9 @@ def test_hidden_values_cannot_influence_visible_inputs_or_embedding():
     stats = fit_activity_stats(raw.values, raw.valid)
     before = prepared(raw, stats)
     altered = raw.values.clone().transpose(1, 2)
-    hidden = torch.zeros((4, 21), dtype=torch.bool).scatter_(1, before.hidden_ids, True)
-    # Alter hidden prices/activity, while respecting the raw halt-channel contract.
+    hidden = torch.zeros((4, 18), dtype=torch.bool).scatter_(1, before.hidden_ids, True)
+    # Alter every hidden market column; visible inputs must stay identical.
     alterable = hidden.clone()
-    alterable[:, 18:20] = False
     altered = torch.where(alterable[..., None], altered * 3, altered).transpose(1, 2)
     after = prepared(RawBatch(altered, raw.valid, raw.end_us, raw.timeframe_us), stats)
     for name in ("visible", "valid", "feature_ids", "hidden_ids", "time", "time_valid"):
@@ -85,7 +80,7 @@ def test_packed_attention_shapes_and_gradients(device):
     embedding, predictions = model(batch.visible, batch.valid, batch.feature_ids, batch.hidden_ids, batch.time, batch.time_valid)
     handle.remove()
     assert lengths == [batch.visible.shape[1] + 2]
-    assert lengths[0] in (10, 11) and embedding.shape == (4, 32)
+    assert lengths[0] in (9, 10) and embedding.shape == (4, 32)
     assert predictions.shape == batch.targets.shape
     loss, _, _ = reconstruction_loss(predictions, batch)
     loss.backward()
@@ -96,7 +91,7 @@ def test_packed_attention_shapes_and_gradients(device):
 def test_mask_rate_and_missing_close_fail_closed():
     raw = raw_batch(1)
     stats = fit_activity_stats(raw.values, raw.valid)
-    rates = [prepared(raw, stats, seed=seed).hidden_ids.numel()/21 for seed in range(100)]
+    rates = [prepared(raw, stats, seed=seed).hidden_ids.numel()/18 for seed in range(100)]
     assert abs(sum(rates)/len(rates) - 0.6) < 0.015
     raw.valid[..., (3, 9, 15)] = False
     with pytest.raises(ValueError, match="closing price"):

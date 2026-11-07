@@ -73,8 +73,8 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
     events = []
     finite = torch.ones((), device="cuda", dtype=torch.bool)
     pending_losses = []  # Keep tiny device scalars until the next metrics upload.
-    sums = torch.zeros(21, device="cuda", dtype=torch.float64)
-    counts = torch.zeros(21, device="cuda", dtype=torch.int64)
+    sums = torch.zeros(18, device="cuda", dtype=torch.float64)
+    counts = torch.zeros(18, device="cuda", dtype=torch.int64)
     mae_sums = torch.zeros_like(sums)
     squared_sums = torch.zeros_like(sums)
     samples = measured = consumed = 0
@@ -95,7 +95,7 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
             prefix + "samples": samples,
         }
         # Accumulate on device each step; materialize full metrics only at the requested cadence.
-        from .shards.contract import CHANNELS
+        from .shards.phase1_contract import CHANNELS
         for index, name in enumerate(CHANNELS):
             if counts[index] > 0:
                 values[prefix + name + "/loss"] = float(sums[index] / counts[index])
@@ -145,8 +145,7 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
                     pending_losses.append((log_base + consumed, loss.detach()))
                 sums += batch_sums
                 counts += batch_counts
-                binary = ((batch.hidden_ids == 18) | (batch.hidden_ids == 19))[..., None]
-                decoded = torch.where(binary, prediction.detach().float().sigmoid(), prediction.detach().float())
+                decoded = prediction.detach().float()
                 error = torch.where(batch.target_valid, decoded - batch.targets, 0)
                 mae_sums.scatter_add_(0, batch.hidden_ids.flatten(), error.abs().sum(-1).double().flatten())
                 squared_sums.scatter_add_(0, batch.hidden_ids.flatten(), error.square().sum(-1).double().flatten())

@@ -1,4 +1,8 @@
-"""Prepared 64-bar sample contract and deterministic sampling primitives."""
+"""Archived 21-channel v4/v5 contract and shared deterministic utilities.
+
+Current phase-one generation and models use phase1_contract.py (18 channels).
+Keep this dtype stable so existing publications can be verified and migrated.
+"""
 
 # Recorded extraction requirements (user-confirmed, November 6, 2026):
 # - Historical market reads use canonical market_sip_compact events only; never

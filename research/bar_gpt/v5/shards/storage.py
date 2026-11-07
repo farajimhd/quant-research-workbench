@@ -174,7 +174,7 @@ def publish(directory, samples, coarse, metadata, budget, shard_bytes):
     if (not samples["valid"][..., :6][real].all()
             or np.any(samples["values"][..., :6][real] <= 0)):
         raise ValueError("Cannot publish a sample with incomplete trade attributes.")
-    per_shard = max(1, (shard_bytes - 4096) // SAMPLE_DTYPE.itemsize)
+    per_shard = max(1, (shard_bytes - 4096) // samples.dtype.itemsize)
     # Include conservative file-header and receipt overhead in the hard budget.
     reserve = samples.nbytes + 65536 + (len(samples) // per_shard + 1) * 4096
     if not budget.reserve(reserve):

@@ -60,9 +60,7 @@ def main(argv=None):
             try:
                 frame = source.arrow(
                     transport,
-                    range_query(
-                        ticker, bounds, authority["rules"], begin, stop, state_events=[]
-                    ),
+                    range_query(ticker, bounds, authority["rules"], begin, stop),
                     f"bargpt-profile-{events}-{workers}-{number}",
                     allow_empty=True,
                 )
@@ -130,7 +128,6 @@ def main(argv=None):
                     int(group[-1]["next_ordinal"]),
                     begin_us=clock(group[0]["source_date"], 4),
                     end_us=clock(group[-1]["source_date"], 20),
-                    state_events=[],
                 ),
                 f"bargpt-profile-coarse-{days}",
                 allow_empty=True,

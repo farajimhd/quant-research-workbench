@@ -21,7 +21,7 @@ def clocks(start="2024-03-11T10:00:00", frame=60_000_000):
 
 def apply(ends, frame=60_000_000):
     """Create neutral market tensors and transform them on the timestamp device."""
-    values = torch.ones((*ends.shape, 21), device=ends.device)
+    values = torch.ones((*ends.shape, 18), device=ends.device)
     return BarInputTransformV1().to(ends.device)(values, torch.ones_like(values, dtype=torch.bool), ends, frame)
 
 
@@ -32,19 +32,19 @@ def feature(result, name):
 
 def test_market_preservation_and_missing_evidence():
     """Market values stay unscaled; unavailable inputs and the first gap remain masked."""
-    values = torch.arange(64*21, dtype=torch.float32).reshape(1, 64, 21)
+    values = torch.arange(64*18, dtype=torch.float32).reshape(1, 64, 18)
     valid = torch.ones_like(values, dtype=torch.bool)
     values[0, 0, 0], valid[0, 0, 0] = float("nan"), False
     original = values.clone()
     result = BarInputTransformV1()(values, valid, clocks(), 60_000_000)
-    assert result.values.shape == result.valid.shape == (1, 64, 30)
+    assert result.values.shape == result.valid.shape == (1, 64, 27)
     assert result.values.dtype == torch.float32 and result.valid.dtype == torch.bool
     assert not {"premarket", "regular_hours", "after_hours"}.intersection(FEATURE_NAMES)
-    torch.testing.assert_close(result.values[..., :21], torch.where(valid, values, 0))
+    torch.testing.assert_close(result.values[..., :18], torch.where(valid, values, 0))
     torch.testing.assert_close(values, original, equal_nan=True)
-    torch.testing.assert_close(result.valid[..., :21], valid)
+    torch.testing.assert_close(result.valid[..., :18], valid)
     assert not result.valid[0, 0, FEATURE_NAMES.index("log_gap_ratio")]
-    assert result.valid[..., 21:].sum() == 64*9 - 1
+    assert result.valid[..., 18:].sum() == 64*9 - 1
     assert feature(result, "log_gap_ratio")[0, 0] == 0
     torch.testing.assert_close(feature(result, "bar_index")[0, [0, -1]], torch.tensor([0., 1.]))
 
@@ -53,7 +53,7 @@ def test_right_padding_has_no_market_or_time_evidence():
     """A short session retains only its real prefix; every padded time feature is masked."""
     ends = clocks()
     ends[:, 5:] = 0
-    values = torch.zeros(1, 64, 21)
+    values = torch.zeros(1, 64, 18)
     valid = torch.zeros_like(values, dtype=torch.bool)
     values[:, :5], valid[:, :5] = 10., True
     result = BarInputTransformV1()(values, valid, ends, 60_000_000)
@@ -128,7 +128,7 @@ def test_device_parity_and_gradients(device):
     """UTC arithmetic, evidence masks, and market gradients stay on the requested device."""
     transform = BarInputTransformV1().to(device)
     ends = clocks("2020-12-31T23:59:30", 1_000_000)
-    values = torch.ones((1, 64, 21), device=device, requires_grad=True)
+    values = torch.ones((1, 64, 18), device=device, requires_grad=True)
     valid = torch.ones_like(values, dtype=torch.bool)
     valid[0, 0, 0] = False
     actual = transform(values, valid, ends.to(device), 1_000_000)
@@ -144,7 +144,7 @@ def test_invalid_evidence_clocks_and_timeframes():
     """Removing session validation must preserve data-integrity checks."""
     transform = BarInputTransformV1()
     ends = clocks()
-    values = torch.ones((1, 64, 21))
+    values = torch.ones((1, 64, 18))
     valid = torch.ones_like(values, dtype=torch.uint8)
     values[0, 0, 0] = float("nan")
     with pytest.raises(ValueError, match="finite"):

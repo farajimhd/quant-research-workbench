@@ -17,7 +17,7 @@ from research.bar_gpt.v5.pretraining_v1 import ActivityStats, PreparedBatch, pre
 
 @dataclass(frozen=True)
 class RawBatch:
-    """CPU shard tensors: values/valid [B,64,21], ends [B,64], duration scalar/[B]."""
+    """CPU shard tensors: values/valid [B,64,18], ends [B,64], duration scalar/[B]."""
 
     values: Tensor
     valid: Tensor
@@ -26,25 +26,20 @@ class RawBatch:
 
 
 def reconstruction_loss(predictions: Tensor, batch: PreparedBatch) -> tuple[Tensor, Tensor, Tensor]:
-    """Masked-only, equal-feature loss; return scalar plus sums/counts [21].
+    """Masked-only, equal-feature loss; return scalar plus sums/counts [18].
 
     Predictions/targets are [B,M,64]; no visible values participate in this loss.
-    Binary halt channels 18/19 use BCE-with-logits; all other scaled channels use
-    SmoothL1(beta=1). Average valid observations per feature, then equally average
+    All 18 scaled market channels use SmoothL1(beta=1). Average valid observations per feature, then equally average
     features present in the batch. Invalid source evidence never becomes a target.
     """
     if predictions.shape != batch.targets.shape or batch.targets.numel() == 0:
         raise ValueError("Reconstruction requires matching predictions and observed hidden targets.")
-    binary = ((batch.hidden_ids == 18) | (batch.hidden_ids == 19))[..., None]
-    continuous = F.smooth_l1_loss(predictions, batch.targets, reduction="none")
-    # Clamp the unused continuous targets for the BCE branch; only binary positions are selected.
-    categorical = F.binary_cross_entropy_with_logits(predictions, batch.targets.clamp(0, 1), reduction="none")
-    errors = torch.where(binary, categorical, continuous)
+    errors = F.smooth_l1_loss(predictions, batch.targets, reduction="none")
     errors = torch.where(batch.target_valid, errors, 0)  # [B,M,64], remove unavailable evidence.
-    sums = torch.zeros(21, device=predictions.device).scatter_add(
+    sums = torch.zeros(18, device=predictions.device).scatter_add(
         0, batch.hidden_ids.flatten(), errors.sum(-1).flatten(),
     )  # Reduce observations into semantic column IDs, independent of random ordering.
-    counts = torch.zeros(21, dtype=torch.int64, device=predictions.device).scatter_add(
+    counts = torch.zeros(18, dtype=torch.int64, device=predictions.device).scatter_add(
         0, batch.hidden_ids.flatten(), batch.target_valid.sum(-1).flatten(),
     )
     present = counts > 0
@@ -89,8 +84,8 @@ class MAETrainerV1:
         """Shared bounded-iterator loop; aggregate exact per-feature evidence counts."""
         previous_mode = self.model.training
         self.model.train(training)
-        sums = torch.zeros(21, dtype=torch.float64, device=self.device)  # Stable accumulation over long epochs.
-        counts = torch.zeros(21, dtype=torch.int64, device=self.device)  # Exact counts beyond FP32's integer range.
+        sums = torch.zeros(18, dtype=torch.float64, device=self.device)  # Stable accumulation over long epochs.
+        counts = torch.zeros(18, dtype=torch.int64, device=self.device)  # Exact counts beyond FP32's integer range.
         samples = masked_columns = batches_seen = 0
         try:
             for raw in batches:
@@ -124,7 +119,7 @@ class MAETrainerV1:
             "loss": float(per_feature[present].mean()),
             "feature_loss": [float(value) if observed else None for value, observed in zip(per_feature.cpu(), present.cpu())],
             "target_counts": counts.cpu().tolist(), "samples": samples, "batches": batches_seen,
-            "mask_fraction": masked_columns / (samples * 21), "optimizer_steps": self.steps,
+            "mask_fraction": masked_columns / (samples * 18), "optimizer_steps": self.steps,
         }
 
     def train_epoch(self, batches: Iterable[RawBatch]) -> dict:

@@ -39,28 +39,25 @@ class ActivityStats:
 
 
 def validate_market(values: Tensor, valid: Tensor) -> None:
-    """Reject invalid observed values in raw CPU [B,64,21] batches before logarithms."""
+    """Reject invalid observed values in raw CPU [B,64,18] batches before logarithms."""
     if values.device.type != "cpu" or valid.device.type != "cpu":
         raise ValueError("Masking/scaling requires CPU batches before GPU transfer.")
-    if values.ndim != 3 or values.shape[1:] != (64, 21) or len(values) == 0:
-        raise ValueError("Expected a nonempty raw [B,64,21] market batch.")
+    if values.ndim != 3 or values.shape[1:] != (64, 18) or len(values) == 0:
+        raise ValueError("Expected a nonempty raw [B,64,18] market batch.")
     if not values.is_floating_point() or valid.shape != values.shape or valid.dtype != torch.bool:
         raise ValueError("Expected floating values and matching bool evidence masks.")
     if not (torch.isfinite(values) | ~valid).all():
         raise ValueError("Observed market values must be finite.")
     if ((values[..., PRICES] <= 0) & valid[..., PRICES]).any():
         raise ValueError("Observed prices must be positive.")
-    if ((values[..., ACTIVITY + (20,)] < 0) & valid[..., ACTIVITY + (20,)]).any():
-        raise ValueError("Observed activity and halt counts must be nonnegative.")
-    flags = values[..., 18:20]
-    if (~((flags == 0) | (flags == 1)) & valid[..., 18:20]).any():
-        raise ValueError("Halt state observations must be binary.")
+    if ((values[..., ACTIVITY] < 0) & valid[..., ACTIVITY]).any():
+        raise ValueError("Observed activity must be nonnegative.")
 
 
 def fit_activity_stats(training_values: Tensor, training_valid: Tensor) -> ActivityStats:
     """Fit exact log-space medians/IQRs on caller-selected TRAINING observations.
 
-    Inputs: CPU floats and bools [N,64,21], e.g. a declared bounded training-only
+    Inputs: CPU floats and bools [N,64,18], e.g. a declared bounded training-only
     calibration sample. No sampling or validation-data selection occurs here.
     This function does not load the entire 1 TB corpus; the caller owns sample size
     and provenance. A missing activity family fails explicitly; zero IQR uses 1.
@@ -83,7 +80,7 @@ def fit_activity_stats(training_values: Tensor, training_valid: Tensor) -> Activ
 
 @dataclass(frozen=True)
 class PreparedBatch:
-    """Packed tensors; K visible columns, M hidden columns, K+M=21.
+    """Packed tensors; K visible columns, M hidden columns, K+M=18.
 
     visible/valid [B,K,64]; feature_ids [B,K]; hidden_ids [B,M]; targets and
     target_valid [B,M,64]; time/time_valid [B,64,9]. Values are float32, masks bool,
@@ -118,13 +115,13 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
                   stats: ActivityStats, generator: torch.Generator, *, mask_rate: float = 0.6) -> PreparedBatch:
     """Scale and pack raw CPU shards into visible feature tokens and hidden targets.
 
-    Raw shapes: values/valid [B,64,21], end_us [B,64], timeframe_us scalar or [B].
+    Raw shapes: values/valid [B,64,18], end_us [B,64], timeframe_us scalar or [B].
     Masks are whole columns, independently randomized per sample. A shared batch
     count avoids padding: stochastic rounding gives the requested rate in expectation
-    (at .6: hide 12 with probability .4, 13 with probability .6). Sampling is uniform
+    (at .6: hide 10 with probability .2, 11 with probability .8). Sampling is uniform
     conditional on retaining at least one observed closing-price column. This explicit
     constraint prevents a price reference from depending on hidden reconstruction targets.
-    mask_rate=0 prepares all 21 columns for downstream embedding extraction.
+    mask_rate=0 prepares all 18 columns for downstream embedding extraction.
     """
     validate_market(values, valid)
     if not 0 <= mask_rate < 1:
@@ -132,27 +129,27 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
     if end_us.device.type != "cpu" or (isinstance(timeframe_us, Tensor) and timeframe_us.device.type != "cpu"):
         raise ValueError("Raw clocks and timeframe metadata must be on CPU.")
     batch = len(values)
-    expected = 21 * mask_rate
+    expected = 18 * mask_rate
     masked = int(expected) + int(torch.rand((), generator=generator) < expected % 1)
-    if masked == 21:
+    if masked == 18:
         raise ValueError("Sampled mask hides all columns; a visible price reference is required.")
-    kept = 21 - masked
+    kept = 18 - masked
     close_available = valid[..., CLOSES].any(dim=1)  # [B,3], evidence independent of market values.
     if not close_available.any(dim=1).all():
         raise ValueError("Each sample needs at least one valid closing price; no fallback is invented.")
-    eligible = torch.zeros((batch, 21), dtype=torch.bool)
+    eligible = torch.zeros((batch, 18), dtype=torch.bool)
     eligible[:, CLOSES] = close_available
-    order = torch.rand((batch, 21), generator=generator).argsort(dim=1)
+    order = torch.rand((batch, 18), generator=generator).argsort(dim=1)
     # Rejection sampling preserves conditional uniformity; only failed rows are redrawn.
     for _ in range(256):
         rejected = ~eligible.gather(1, order[:, :kept]).any(dim=1)
         if not rejected.any():
             break
-        order[rejected] = torch.rand((int(rejected.sum()), 21), generator=generator).argsort(dim=1)
+        order[rejected] = torch.rand((int(rejected.sum()), 18), generator=generator).argsort(dim=1)
     else:
         raise RuntimeError("Could not sample a valid visible-price mask within the bounded retries.")
     feature_ids, hidden_ids = order[:, :kept], order[:, kept:]
-    visible_columns = torch.zeros((batch, 21), dtype=torch.bool).scatter_(1, feature_ids, True)
+    visible_columns = torch.zeros((batch, 18), dtype=torch.bool).scatter_(1, feature_ids, True)
     reference_mask = valid[..., CLOSES] & visible_columns[:, None, CLOSES]
     closes = torch.where(reference_mask, values[..., CLOSES], torch.nan).flatten(1).double()
     reference = torch.nanquantile(closes, 0.5, dim=1)[:, None, None]  # [B,1,1], visible median only.
@@ -161,11 +158,10 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
     prices = torch.where(valid[..., PRICES], scaled[..., PRICES], reference)
     scaled[..., PRICES] = 100 * torch.log(prices / reference)  # Preserve common bid/ask geometry.
     scaled[..., ACTIVITY] = (torch.log1p(scaled[..., ACTIVITY]) - stats.median) / stats.scale
-    scaled[..., 20] = torch.log1p(scaled[..., 20])  # Halt states 18/19 remain binary.
     scaled = torch.where(valid, scaled, 0).float()  # Invalid source fields remain masked zeros.
     # Reuse the UTC contract for validation/time features; this preparation runs on CPU.
     transformed = BarInputTransformV1()(scaled, valid, end_us, timeframe_us)
-    columns, evidence = scaled.transpose(1, 2), valid.transpose(1, 2)  # [B,21,64].
+    columns, evidence = scaled.transpose(1, 2), valid.transpose(1, 2)  # [B,18,64].
     visible_index = feature_ids[..., None].expand(-1, -1, 64)
     hidden_index = hidden_ids[..., None].expand(-1, -1, 64)
     if masked and not evidence.gather(1, hidden_index).any():
@@ -173,5 +169,5 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
     return PreparedBatch(
         columns.gather(1, visible_index), evidence.gather(1, visible_index), feature_ids, hidden_ids,
         columns.gather(1, hidden_index), evidence.gather(1, hidden_index),
-        transformed.values[..., 21:].contiguous(), transformed.valid[..., 21:].contiguous(),
+        transformed.values[..., 18:].contiguous(), transformed.valid[..., 18:].contiguous(),
     )

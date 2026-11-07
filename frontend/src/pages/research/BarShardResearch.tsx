@@ -53,7 +53,7 @@ export function BarShardResearch() {
   const matchingFiles = files.filter(f => !timeframe || f.frames[String(timeframe)] > 0);
   const selectionMatches = sample?.job === job && `${sample.shard}/${sample.file}` === fileKey && (!timeframe || sample.timeframe === timeframe);
   return <div className="research-page bar-shard-research">
-    <header className="research-heading"><div><h1>BarGPT shard inspection</h1><p>Published v5 trade-driven samples · raw stored values, evidence masks and actual clocks</p></div>
+    <header className="research-heading"><div><h1>BarGPT shard inspection</h1><p>Published v6 · 18 market channels · raw stored values, evidence masks and actual clocks</p></div>
       {catalog && <span className="research-muted">{catalog.progress.state} · {(catalog.progress.bytes / 1e9).toFixed(2)} GB · {catalog.progress.samples.toLocaleString()} samples</span>}
     </header>
     <section className="research-selection" aria-label="Shard selection">
@@ -87,7 +87,7 @@ export function BarShardResearch() {
         <p className="research-muted">Missing evidence is distinct from an observed zero. No price is invented for a missing channel.</p>
         <details><summary>Publication evidence</summary><p className="research-source">{sample.job}/{sample.shard}/{sample.file} · row {sample.row}</p><p className="research-source">SHA-256: {sample.sha256}</p><p>{sample.reporting_counts ? `Source trade counts (total, unknown-status, delayed-status, structurally valid; status is diagnostic only): ${sample.reporting_counts}` : "Reporting-clock status does not filter this dataset. Trade eligibility follows canonical sale-condition rules."}</p></details>
       </div><div className="bar-shard-fields"><table><thead><tr><th>Channel</th><th>Value</th><th>Valid</th><th>Stored value</th></tr></thead><tbody>{sample.channels.map((name, i) => <tr key={name}><th scope="row">{name}</th><td>{number(chosen.values[i])}</td><td>{chosen.valid[i] ? "Yes" : "No"}</td><td>{String(chosen.raw[i])}</td></tr>)}</tbody></table></div></section>}
-      <section className="bar-shard-rows" aria-label="All bar clocks"><h2>Bar clocks and closing prices</h2><div className="bar-shard-table-scroll"><table><thead><tr><th>Bar</th><th>Actual end time</th><th>Gap (s)</th><th>Trade close</th><th>Bid close</th><th>Ask close</th><th>Halt open / close / starts</th></tr></thead><tbody>{sample.bars.map(b => <tr key={b.index} aria-selected={b.index === selected}><td><button className="research-ticker-button" onClick={() => setSelected(b.index)}>{b.index + 1}</button></td><td>{clock(b.end_us)}</td><td>{b.gap_us === null ? "—" : number(b.gap_us / 1e6)}</td><td>{number(b.values[3])}</td><td>{number(b.values[9])}</td><td>{number(b.values[15])}</td><td>{b.values.slice(18).map(number).join(" / ")}</td></tr>)}</tbody></table></div></section>
+      <section className="bar-shard-rows" aria-label="All bar clocks"><h2>Bar clocks and closing prices</h2><div className="bar-shard-table-scroll"><table><thead><tr><th>Bar</th><th>Actual end time</th><th>Gap (s)</th><th>Trade close</th><th>Bid close</th><th>Ask close</th></tr></thead><tbody>{sample.bars.map(b => <tr key={b.index} aria-selected={b.index === selected}><td><button className="research-ticker-button" onClick={() => setSelected(b.index)}>{b.index + 1}</button></td><td>{clock(b.end_us)}</td><td>{b.gap_us === null ? "—" : number(b.gap_us / 1e6)}</td><td>{number(b.values[3])}</td><td>{number(b.values[9])}</td><td>{number(b.values[15])}</td></tr>)}</tbody></table></div></section>
     </>}
   </div>;
 }

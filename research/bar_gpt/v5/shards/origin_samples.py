@@ -3,16 +3,16 @@
 from datetime import datetime, timezone
 import numpy as np
 
-from .contract import FRAMES, SAMPLE_DTYPE, pack, seed_for
+from .phase1_contract import FRAMES, SAMPLE_DTYPE, pack, seed_for
 from .storage import adjust_splits
 
 CUTOFF = int(datetime(2025, 10, 1, 4, tzinfo=timezone.utc).timestamp() * 1_000_000)
 
 
 def arrays(frame):
-    """Convert final Arrow list columns to contiguous [bars,21] CPU arrays."""
-    values = frame["values"].list.to_array(21).to_numpy().astype(np.float32, copy=False)
-    valid = frame["valid"].list.to_array(21).to_numpy().astype(np.uint8, copy=False)
+    """Convert final Arrow list columns to contiguous [bars,18] CPU arrays."""
+    values = frame["values"].list.to_array(18).to_numpy().astype(np.float32, copy=False)
+    valid = frame["valid"].list.to_array(18).to_numpy().astype(np.uint8, copy=False)
     ends = frame["end_us"].to_numpy().astype(np.int64, copy=False)
     if (
         not np.isfinite(values).all()
@@ -41,7 +41,7 @@ def samples(
 ):
     """Pack sampled complete sliding contexts and return the final 63-bar tail.
 
-    Inputs are final bars [bars,21], masks [bars,21], and UTC clocks [bars].
+    Inputs are final bars [bars,18], masks [bars,18], and UTC clocks [bars].
     previous contains up to 63 unadjusted bars from the preceding coarse span.
     Fine chunks pass no previous state: incomplete chunk contexts are dropped.
     Split adjustment is applied only to copied final samples, never to the tail.

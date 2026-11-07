@@ -17,7 +17,7 @@ import numpy as np
 
 from . import source
 from .balanced_plan import VERSION, ticker_bounds
-from .contract import FRAMES, SAMPLE_DTYPE, digest, write_json
+from .phase1_contract import FRAMES, SAMPLE_DTYPE, digest, write_json
 from .range_sql import event_source
 from .sql import clock
 from .storage import verify_receipt
@@ -248,7 +248,7 @@ def audit(root, output, oracle_ticker="SLVO"):
         oracle_ticker=oracle_ticker,
         limitations=[
             "Pilot audit; not certification of all future campaign outputs",
-            "Source oracle covers market channels; halt transitions are covered by live synthetic tests",
+            "Phase-one market-only contract; halt fields are intentionally absent",
         ],
     )
     write_json(Path(output), result)

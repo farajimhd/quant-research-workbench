@@ -12,10 +12,10 @@ import time
 
 import numpy as np
 
-from .shards.contract import CHANNELS, FRAMES, SAMPLE_DTYPE, VERSION, digest, file_hash
+from .shards.phase1_contract import CHANNELS, FRAMES, SAMPLE_DTYPE, VERSION, digest, file_hash
 from .shards.balanced_plan import VERSION as BALANCED_VERSION
 
-ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\shards-2019-2025-v5")
+ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\shards-2019-2025-v6")
 
 
 @lru_cache(maxsize=1)
@@ -86,7 +86,7 @@ def _verify(path, size, mtime, expected_hash):
 def sample(job="", shard="", file="", row=0, timeframe=0, randomize=False, search="", year=0):
     """Read one sample as 64 raw rows with explicit padding and validity.
 
-    Market arrays remain [64,21]. JSON null means invalid evidence; raw zero
+    Market arrays remain [64,18]. JSON null means invalid evidence; raw zero
     placeholders are returned separately so inspection can verify stored bytes.
     Random selection chooses a matching job/file/row, not a uniform corpus draw.
     """
