@@ -1,6 +1,7 @@
 """Bounded read-only transport, frozen inventories, and source preflight."""
 
 import json
+import math
 from pathlib import Path
 
 import polars as pl
@@ -95,6 +96,48 @@ def preflight(c):
     schema = rows(c, "SELECT table,name,type FROM system.columns WHERE database='market_sip_compact' "
                   "AND match(table,'^events_20(19|2[0-5])$') ORDER BY table,position")
     return dict(tables=tables, schema=schema, rules=rules, dictionary_hash=digest(rules))
+
+
+def split_authority(c, years):
+    """Freeze a completed retrospective corporate-action catalog covering years.
+
+    Reads existing reference tables only, never vendor APIs or flatfiles. A
+    complete acquisition receipt plus exact row count establishes coverage;
+    absence of a ticker action is meaningful only inside that covered range.
+    These are executed-date adjustments, not public-announcement-time features.
+    """
+    start, end = f"{min(years)}-01-01", f"{max(years)+1}-01-01"
+    coverage = rows(c, "SELECT source_run_id,coverage_start_date,coverage_end_date,"
+                    "rows_read,rows_written,rows_failed,details_json FROM "
+                    "q_live.market_reference_publication_coverage_v1 FINAL "
+                    "WHERE coverage_kind='massive_splits' AND source_system='massive' "
+                    "AND source_object='splits' AND status='completed' "
+                    f"AND coverage_start_date<={literal(start)} AND coverage_end_date>={literal(end)} "
+                    "ORDER BY finished_at_utc DESC LIMIT 1")
+    if len(coverage) != 1:
+        raise ValueError("No complete corporate-action acquisition covers the requested years.")
+    proof = coverage[0]
+    details = json.loads(proof.pop("details_json"))
+    if (proof["rows_failed"] or proof["rows_read"] != proof["rows_written"]
+            or details.get("saturated") is not False or details.get("pages", 0) < 1):
+        raise ValueError("Incomplete corporate-action acquisition receipt.")
+    # Retain only provenance fields, never source URLs or credential-bearing details.
+    proof["provider_response_sha256"] = details["sha256"]
+    catalog = rows(c, "SELECT stock_split_id,provider_ticker,execution_date,split_from,split_to,"
+                   "source_content_sha256 FROM q_live.market_stock_split_v1 FINAL "
+                   f"WHERE source_run_id={literal(proof['source_run_id'])} "
+                   f"AND execution_date>={literal(proof['coverage_start_date'])} "
+                   f"AND execution_date<{literal(proof['coverage_end_date'])} ORDER BY stock_split_id")
+    if len(catalog) != int(proof["rows_written"]) or len({r["stock_split_id"] for r in catalog}) != len(catalog):
+        raise ValueError("Corporate-action catalog differs from its complete acquisition receipt.")
+    for row in catalog:
+        before, after = float(row["split_from"]), float(row["split_to"])
+        if not (math.isfinite(before) and math.isfinite(after) and before > 0 and after > 0):
+            raise ValueError("Invalid corporate-action ratio.")
+        # Distinct event IDs can execute on the same date (reverse then forward).
+        # Preserve and compound them, matching ARTE's split_factor implementation.
+    return dict(coverage=proof, rows=catalog, catalog_hash=digest(catalog),
+                policy="ARTE split_from/split_to before execution; inverse for sizes; sample-end basis")
 
 
 def plan(c, root, seed, tickers=(), years=range(2019, 2026)):

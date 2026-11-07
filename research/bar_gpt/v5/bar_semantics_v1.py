@@ -11,14 +11,14 @@ from pipelines.market_sip.events.market_day_sql import condition_expressions
 
 
 CONTRACT = dict(
-    version="bargpt-shared-bar-semantics-v1",
+    version="bargpt-shared-bar-semantics-v2-session-padding",
     ordering="sip_timestamp_us,ordinal",
     trade_reporting="bitAnd(event_meta,192)=64; unknown and delayed rejected",
     trade_conditions="ARTE independent update_last/update_high_low/update_volume with extended-hours Form T",
     quotes="positive noncrossed pair; finite nonnegative sizes; latest invalid quote clears carry",
     quote_carry="causal within 04:00-20:00 session; no age cutoff; actual quote counts remain unchanged",
     daily="09:30-16:00 America/New_York; same eligibility as intraday",
-    samples="64 consecutive observed bars; actual clock gaps retained; no clock-grid padding",
+    samples="fine frames stay within one session with masked right padding; hourly/daily use 64 observed bars across sessions; purge train/validation-crossing contexts",
 )
 
 

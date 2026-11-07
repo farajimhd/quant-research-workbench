@@ -81,7 +81,7 @@ def build_split(dataset: Path, output: Path, progress=None) -> dict:
             splits["train" if item["day"] < cutoff_day else "validation"].append(item)
             continue
         data = np.load(item["path"], mmap_mode="r", allow_pickle=False)
-        train = data["end_us"][:, -1] < cutoff
+        train = data["end_us"].max(axis=1) < cutoff  # Ignore zero padding; include the entire real lookback.
         validation = data["end_us"][:, 0] - data["timeframe_us"] >= cutoff
         purged += int((~train & ~validation).sum())
         for name, mask in (("train", train), ("validation", validation)):

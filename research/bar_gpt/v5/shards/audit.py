@@ -10,6 +10,7 @@ import numpy as np
 
 from .contract import FRAMES, SAMPLE_DTYPE, VERSION, write_json
 from .storage import verify_receipt
+from .sql import clock
 
 
 def audit(root, output):
@@ -28,7 +29,7 @@ def audit(root, output):
     frames = {str(frame): 0 for frame in FRAMES}
     reporting = np.zeros(4, dtype=np.int64)
     last_end = {}
-    gaps = 0
+    gaps = padded = 0
     for receipt_path in sorted((root / "jobs").glob("*/*/receipt.json")):
         receipt = verify_receipt(receipt_path.parent, hashes=True)
         receipts += 1
@@ -38,7 +39,7 @@ def audit(root, output):
         counted = 0
         for item in receipt["files"]:
             if not item["name"].startswith("samples-"):
-                raise ValueError("Intermediate bar files must not be persisted in v2.")
+                raise ValueError("Intermediate bar files must not be persisted.")
             data = np.load(receipt_path.parent / item["name"], mmap_mode="r", allow_pickle=False)
             try:
                 if data.dtype != SAMPLE_DTYPE or data.ndim != 1:
@@ -51,11 +52,25 @@ def audit(root, output):
                 if np.any((data["valid"][..., price_columns] != 0) & (data["values"][..., price_columns] <= 0)):
                     raise ValueError("Valid price masks reference nonpositive prices.")
                 differences = np.diff(data["end_us"], axis=1)
-                if (differences <= 0).any() or not np.isin(data["timeframe_us"], FRAMES).all():
+                present = data["end_us"] > 0
+                if (np.any(data["end_us"] < 0) or np.any(~present[:, 0])
+                        or np.any(present[:, 1:] & ~present[:, :-1])
+                        or np.any((differences <= 0) & present[:, 1:])
+                        or not np.isin(data["timeframe_us"], FRAMES).all()):
                     raise ValueError("Nonmonotonic clocks or unknown timeframe.")
+                if np.any(data["values"][~present]) or np.any(data["valid"][~present]):
+                    raise ValueError("Nonzero padding values or evidence masks.")
+                fine = data["timeframe_us"] < FRAMES[4]
+                if fine.any():
+                    real = data["end_us"][fine][present[fine]]
+                    if np.any(real <= clock(receipt["day"], 4)) or np.any(real > clock(receipt["day"], 20)):
+                        raise ValueError("Fine sample crosses its source session.")
+                if not present[~fine].all():
+                    raise ValueError("Hourly/daily contexts must contain 64 real bars.")
+                padded += int((~present).sum())
                 gaps += int((differences > data["timeframe_us"][:, None]).sum())
                 starts = data["end_us"][:, 0] - data["timeframe_us"]
-                ends = data["end_us"][:, -1]
+                ends = data["end_us"].max(axis=1)
                 if int(starts.min()) != item["first_start_us"] or int(ends.max()) != item["last_end_us"]:
                     raise ValueError("Receipt context bounds disagree with payload.")
                 for frame in FRAMES:
@@ -79,6 +94,7 @@ def audit(root, output):
         total += counted
     result = dict(status="passed", receipts=receipts, samples=total, frames=frames,
                   excluded_price_empty_blocks=excluded, observed_clock_gaps=gaps,
+                  padded_bars=padded,
                   reporting_counts=reporting.tolist(), payload_bytes=payload_bytes,
                   seconds=time.perf_counter()-began, dataset=str(root))
     write_json(output, result)

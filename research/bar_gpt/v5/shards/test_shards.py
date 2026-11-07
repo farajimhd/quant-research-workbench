@@ -25,10 +25,28 @@ from .contract import SAMPLE_DTYPE, digest, pack, write_json, file_hash
 from .recovery import resolve_binding
 from .progress import render
 from .source import arrow, client, preflight
-from .storage import BAR_DTYPE, Budget, publish, unpack_bars, verify_receipt
+from .storage import BAR_DTYPE, Budget, publish, unpack_bars, verify_receipt, adjust_splits
 
 
 class FormatTests(unittest.TestCase):
+    def test_backward_split_adjustment_counts_and_future_actions(self):
+        """Both split directions change historical price/size units, never event counts."""
+        samples = np.zeros(2, dtype=SAMPLE_DTYPE)
+        before, after = sql.clock("2020-08-28", 16), sql.clock("2020-08-31", 16)
+        samples["end_us"][0] = before + np.arange(64)
+        samples["end_us"][1] = np.r_[before + np.arange(32), after + np.arange(32)]
+        samples["values"] = 100.
+        samples["valid"] = 1
+        action = dict(execution_date="2020-08-31", split_from=1., split_to=4.)
+        adjust_splits(samples, [action])
+        self.assertTrue((samples["values"][0] == 100.).all())  # No future action leakage.
+        self.assertTrue((samples["values"][1, :32, 3] == 25.).all())
+        self.assertTrue((samples["values"][1, :32, 4] == 400.).all())
+        self.assertTrue((samples["values"][1, :, [5, 11, 17]] == 100.).all())
+        self.assertTrue((samples["values"][1, 32:] == 100.).all())
+        adjust_splits(samples, [dict(action, split_from=4., split_to=1.)])
+        self.assertTrue((samples["values"] == 100.).all())  # Inverse action restores units.
+
     def test_real_windows_reader_lock_retries_atomic_publication(self):
         runtime = Path("D:/TradingML/runtimes/bar_gpt/tests")
         runtime.mkdir(parents=True, exist_ok=True)
@@ -180,10 +198,11 @@ class SqlTests(unittest.TestCase):
         events = [(i*10_000_000, 0, 1200, 1100, []) for i in range(64)]
         result = self.fixture(events, fill=False, limit=False)
         samples, coarse = unpack_bars(result, 0)
-        self.assertEqual(len(samples), 3)  # 100ms, 1s and 10s each have exactly 64 observed bars.
+        self.assertEqual(len(samples), 4)  # Fine minute tail is now right-padded, not discarded.
         self.assertEqual(len(coarse), 1)  # Premarket-only observations do not create a regular-session daily bar.
-        self.assertTrue(np.all(np.diff(samples["end_us"], axis=1) == 10_000_000))
-        self.assertTrue(samples["valid"][..., [9, 15]].all())
+        full = samples[samples["timeframe_us"] < 60_000_000]
+        self.assertTrue(np.all(np.diff(full["end_us"], axis=1) == 10_000_000))
+        self.assertTrue(full["valid"][..., [9, 15]].all())
         for frame in (100000, 1000000, 10000000):
             rows = result.filter(result["g.frame"] == frame)
             self.assertEqual(rows["observed_index"].to_list(), list(range(64)))
@@ -208,6 +227,23 @@ class SqlTests(unittest.TestCase):
     def token(self, family, modifier):
         return next(int(r["token_id"]) for r in self.rules
                     if r["source_family"] == family and int(r["modifier_int"]) == modifier)
+
+    def test_adjustment_matches_arte_execution_date_formula(self):
+        """Independent existing ARTE SQL verifies compounded forward/reverse factors."""
+        from pipelines.market_sip.events.market_day_sql import split_factor
+        from .source import rows
+
+        actions = [dict(provider_ticker="TEST", execution_date="2020-08-31", split_from=1., split_to=4.),
+                   dict(provider_ticker="TEST", execution_date="2020-09-01", split_from=10., split_to=1.)]
+        expression = split_factor(actions, "2020-09-02", "TEST", "toDate('2020-08-28')")
+        expected = rows(self.client, f"SELECT {expression} AS factor")[0]["factor"]
+        sample = np.zeros(1, dtype=SAMPLE_DTYPE)
+        sample["end_us"][0, :32] = sql.clock("2020-08-28", 16) + np.arange(32)
+        sample["end_us"][0, 32:] = sql.clock("2020-09-02", 16) + np.arange(32)
+        sample["values"] = 100.
+        adjust_splits(sample, actions)
+        self.assertEqual(float(sample["values"][0, 0, 3]), 100*expected)
+        self.assertEqual(float(sample["values"][0, 0, 4]), 100/expected)
 
     def test_boundary_transitions_and_repeated_messages(self):
         normal = self.token("cta_security_status",100)
@@ -249,7 +285,7 @@ class SqlTests(unittest.TestCase):
         result = self.fixture(events, fill=False, limit=False, offset=32)
         seconds = result.filter(result["g.frame"] == 1_000_000)
         values = np.array(seconds["values"].to_list())
-        self.assertEqual(len(seconds), 64)
+        self.assertEqual(len(seconds), 96)  # 64 full bars plus the retained 32-bar session tail.
         self.assertTrue((values[:, 9] == 11).all())
         self.assertTrue((values[:, 11] == 0).all())
 
@@ -269,6 +305,16 @@ class SqlTests(unittest.TestCase):
         self.assertEqual(f["valid"][0].to_list()[-3:], [0,1,0])
         self.assertEqual(f["valid"][1].to_list()[-3:], [1,0,0])
         self.assertEqual(f["values"][0].to_list()[-1], 0)
+
+    def test_session_tail_padding_keeps_real_bars_and_clears_padding(self):
+        """65 observed seconds yield one full context and one padded tail per fine scale."""
+        events = [(i*1_000_000, 0, 1200, 1100, []) for i in range(65)]
+        result = self.fixture(events, fill=False, limit=False)
+        samples, _ = unpack_bars(result, 0)
+        seconds = samples[samples["timeframe_us"] == 1_000_000]
+        self.assertEqual((seconds["end_us"] > 0).sum(axis=1).tolist(), [64, 1])
+        self.assertFalse(seconds["valid"][1, 1:].any())
+        self.assertFalse(seconds["values"][1, 1:].any())
 
 
 if __name__ == "__main__":

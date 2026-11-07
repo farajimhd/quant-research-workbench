@@ -84,6 +84,23 @@ def test_loader_resume_and_tail_no_drops(inventory):
     torch.testing.assert_close(dataset[2].hidden_ids, resumed[0].hidden_ids)
 
 
+def test_zero_padding_cannot_put_validation_sample_in_training(inventory, tmp_path):
+    """The last array slot is padding; split assignment must use the last real clock."""
+    from research.bar_gpt.v5.shards.storage import BAR_DTYPE, Budget, publish
+
+    rows = np.zeros(2, dtype=SAMPLE_DTYPE)
+    rows["values"][:, :2], rows["valid"][:, :2] = 10., 1
+    rows["timeframe_us"] = 1_000_000
+    for i, day in enumerate((8, 9)):
+        start = int(datetime(2024, 1, day, 10, tzinfo=timezone.utc).timestamp()*1e6)
+        rows["end_us"][i, :2] = start + np.arange(2)*1_000_000
+    publish(tmp_path / "dataset/jobs/padded/coarse", rows, np.empty(0, dtype=BAR_DTYPE),
+            dict(identity="padded-split", day="coarse"), Budget(10**7), 1024**2)
+    result = build_split(tmp_path / "dataset", tmp_path / "split-padded.json")
+    assert result["counts"] == {"train": 129, "validation": 33}
+    assert result["purged_crossing"] == 0
+
+
 def test_payload_mutation_fails(inventory):
     manifest, stats = inventory
     dataset = ShardBatches(manifest, "validation", stats, 8)

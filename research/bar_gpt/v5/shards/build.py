@@ -56,7 +56,7 @@ def sessions(year):
     return [str(d.date()) for d in calendar.sessions]
 
 
-def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, stop):
+def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, stop, split_rows):
     """One ticker-year, bounded day queries and at most two pending disk writes.
 
     Day receipts are restart boundaries. Coarse windows never cross a missing
@@ -64,6 +64,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
     state is masked until explicit evidence establishes it; no silence inference.
     """
     ticker, year = job["ticker"], job["year"]
+    actions = [r for r in split_rows if r["provider_ticker"] == ticker]
     key = f"{year}-{digest(ticker)[:20]}"
     directory = args.output / "jobs" / key
     directory.mkdir(parents=True, exist_ok=True)
@@ -114,7 +115,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
                           and int(r["last_sip_timestamp_us"]) >= clock(day, 4) for r in bounds)
             if not covered:
                 if coarse_segment:
-                    segments.append(coarse_samples(coarse_segment)); coarse_segment = []
+                    segments.append(coarse_samples(coarse_segment, actions)); coarse_segment = []
                 initial_state = 2
                 previous_close = None
                 skipped.append(dict(day=day, reason="ticker_session_absent_from_index"))
@@ -122,7 +123,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
                 continue
             development = int(day >= args.development_start)
             if previous_split is not None and previous_split != development:
-                segments.append(coarse_samples(coarse_segment)); coarse_segment = []
+                segments.append(coarse_samples(coarse_segment, actions)); coarse_segment = []
             previous_split = development
             day_id = digest(dict(job=identity, day=day, initial_state=initial_state,
                                  previous_close=previous_close))
@@ -177,7 +178,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
         if stop.is_set():
             status.update(worker, phase="stopped", io_pending=0)
             return False
-        segments.append(coarse_samples(coarse_segment))
+        segments.append(coarse_samples(coarse_segment, actions))
         samples = np.concatenate(segments) if segments else np.empty(0, dtype=SAMPLE_DTYPE)
         metadata = dict(identity=digest(dict(job=identity, kind="coarse")), ticker=ticker,
                         year=year, day="coarse", binding=binding)
@@ -204,7 +205,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v2"))
+    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v3"))
     parser.add_argument("--target-bytes", type=int, default=10**12)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--io-workers", type=int, default=2)
@@ -279,6 +280,7 @@ def campaign(args, years):
     c = source.client(args.endpoint, args.query_memory_gib)
     try:
         authority = source.preflight(c)
+        authority["corporate_actions"] = source.split_authority(c, years)
         if shutil.disk_usage(args.output).free < args.target_bytes + args.free_reserve_gb * 10**9:
             # Resume may already occupy much of the requested capacity.
             existing_size = sum(p.stat().st_size for p in args.output.rglob("*") if p.is_file())
@@ -294,8 +296,9 @@ def campaign(args, years):
                         years=years, tickers=args.tickers, max_days=args.max_days, max_jobs=args.max_jobs,
                         development_start=args.development_start, target_bytes=args.target_bytes,
                         authority=authority, code={str(p.name): file_hash(p) for p in source_files},
-                        session="XNYS dates; intraday 04:00–20:00, daily 09:30–16:00 America/New_York; unadjusted prices",
-                        sampling="consecutive observed bars; random-offset nonoverlapping fine windows; retain hash fraction; observed coarse windows",
+                        session="XNYS dates; intraday 04:00–20:00, daily 09:30–16:00 America/New_York; coarse prices/sizes in sample-end split basis",
+                        sampling="session-local fine windows with masked right padding; random-offset hash retention; full cross-session hourly/daily windows",
+                        padding="end_us=0, values=0, valid=0; only a fine session's final selected block may be partial",
                         transform="unscaled Float32; masks separate; no fitted normalization or augmentation",
                         evidence="canonical finalized events; no assertion of causal correction-pair reconstruction")
         binding = digest(contract)
@@ -331,7 +334,8 @@ def campaign(args, years):
                     job = next(iterator, None)
                     if job is not None and not stop.is_set():
                         active[pool.submit(run_job, worker, job, args, binding, authority["rules"],
-                                           calendar, budget, status, disk, stop)] = worker
+                                           calendar, budget, status, disk, stop,
+                                           authority["corporate_actions"]["rows"])] = worker
                 for worker in range(args.workers):
                     admit(worker)
                 while active:

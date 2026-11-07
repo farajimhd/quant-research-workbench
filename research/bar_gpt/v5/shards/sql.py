@@ -79,6 +79,8 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
     masks = ",".join("toUInt8(" + n + ")" for n in mask_names)
     # Aggregate 100ms once. Rollups operate on these sufficient statistics, not
     # another six scans of the event stream. Only selected final bars leave SQL.
+    # Keep a selected session tail even when it contains fewer than 64 bars;
+    # NumPy adds masked right padding. Sessions shorter than 64 start at index 0.
     return f"""WITH
     raw AS ({raw}),
     decoded AS (
@@ -104,9 +106,8 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
       if(r.frame={FRAMES[-1]},toUInt64({regular_open}),{opened}+r.bucket*f.2) start_us,
       if(r.frame={FRAMES[-1]},toUInt64({regular_close}),{opened}+(r.bucket+1)*f.2) end_us
       FROM observed r INNER JOIN (SELECT arrayJoin({frame_sql}) f) specs ON r.frame=f.1
-      WHERE r.frame>={FRAMES[-2]} OR (r.observed_index>=f.4
-        AND r.observed_index<f.4+intDiv(greatest(toInt64(r.observed_count)-toInt64(f.4),0),64)*64
-        AND cityHash64(toUInt64(intDiv(toInt64(r.observed_index)-toInt64(f.4),64)),f.5)%100<{int(keep_percent)})),
+      WHERE r.frame>={FRAMES[-2]} OR (r.observed_index>=if(r.observed_count<64,0,f.4)
+        AND cityHash64(toUInt64(intDiv(toInt64(r.observed_index)-toInt64(if(r.observed_count<64,0,f.4)),64)),f.5)%100<{int(keep_percent)})),
     grid AS (SELECT * FROM selected_grid UNION ALL
       SELECT toUInt8(1),toUInt64(0),toUInt64(0),toUInt64(0),toUInt64(0),toUInt64({opened}),toUInt64({opened})
       WHERE NOT EXISTS (SELECT 1 FROM selected_grid)),

@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-VERSION = "bargpt-observed-64-v2"
+VERSION = "bargpt-session-padded-64-v3"
 WIDTH = 64
 FRAMES = (100_000, 1_000_000, 10_000_000, 60_000_000, 3_600_000_000, 86_400_000_000)
 CHANNELS = tuple(
@@ -25,7 +25,7 @@ CHANNELS = tuple(
 SAMPLE_DTYPE = np.dtype([
     ("values", "<f4", (WIDTH, len(CHANNELS))),
     ("valid", "u1", (WIDTH, len(CHANNELS))),
-    ("end_us", "<i8", (WIDTH,)),
+    ("end_us", "<i8", (WIDTH,)),  # Zero denotes right padding, never an observed bar.
     ("timeframe_us", "<i8"),
     ("split", "u1"),  # 0=train; 1=chronological development (2025 Q4).
 ])
@@ -76,8 +76,15 @@ def pack(values, valid, ends, frame, development):
     """Pack aligned [N,64,21] arrays into N ready-to-read records, vectorized."""
     if values.shape[1:] != (WIDTH, len(CHANNELS)) or valid.shape != values.shape:
         raise ValueError("Expected aligned [N,64,21] values and validity.")
-    if ends.shape != values.shape[:2] or np.any(np.diff(ends, axis=1) <= 0):
-        raise ValueError("Sample clocks must be strictly increasing [N,64].")
+    if ends.shape != values.shape[:2]:
+        raise ValueError("Sample clocks must have shape [N,64].")
+    present = ends > 0  # [N,64]; actual timestamps followed only by zero padding.
+    if (np.any(ends < 0) or np.any(~present[:, 0])
+            or np.any(present[:, 1:] & ~present[:, :-1])
+            or np.any((np.diff(ends, axis=1) <= 0) & present[:, 1:])):
+        raise ValueError("Observed clocks must increase strictly before right padding.")
+    if np.any(values[~present]) or np.any(valid[~present]):
+        raise ValueError("Padding must have zero values and zero evidence masks.")
     if not np.isfinite(values).all() or not np.isin(valid, (0, 1)).all():
         raise ValueError("Nonfinite values or malformed masks in final samples.")
     result = np.zeros(len(values), dtype=SAMPLE_DTYPE)

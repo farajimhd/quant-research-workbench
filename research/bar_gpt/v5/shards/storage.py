@@ -55,14 +55,22 @@ def unpack_bars(frame, development):
     for resolution in FRAMES[:4]:
         take = frames == resolution
         count = int(take.sum())
-        if count % WIDTH:
-            raise ValueError("Selected SQL windows are not complete 64-bar blocks.")
         if count:
-            if np.any(np.diff(positions[take].reshape(-1, WIDTH), axis=1) != 1):
+            # SQL returns complete selected blocks followed by at most one
+            # partial session tail. Padding never creates another clock bucket.
+            padded_count = ((count + WIDTH - 1) // WIDTH) * WIDTH
+            v = np.zeros((padded_count, 21), dtype=np.float32)
+            m = np.zeros((padded_count, 21), dtype=np.uint8)
+            t = np.zeros(padded_count, dtype=np.int64)
+            indices = np.zeros(padded_count, dtype=np.int64)
+            v[:count], m[:count], t[:count] = values[take], valid[take], ends[take]
+            indices[:count] = positions[take]
+            # Validate only real neighbors within each selected 64-bar block.
+            present = t.reshape(-1, WIDTH) > 0
+            if np.any((np.diff(indices.reshape(-1, WIDTH), axis=1) != 1) & present[:, 1:]):
                 raise ValueError("Missing or duplicated observed bar inside a window.")
-            samples.append(pack(values[take].reshape(-1, WIDTH, 21),
-                                valid[take].reshape(-1, WIDTH, 21),
-                                ends[take].reshape(-1, WIDTH), resolution, development))
+            samples.append(pack(v.reshape(-1, WIDTH, 21), m.reshape(-1, WIDTH, 21),
+                                t.reshape(-1, WIDTH), resolution, development))
     coarse = np.zeros(int((frames >= FRAMES[4]).sum()), dtype=BAR_DTYPE)
     take = frames >= FRAMES[4]
     coarse["values"], coarse["valid"], coarse["end_us"] = values[take], valid[take], ends[take]
@@ -73,7 +81,7 @@ def unpack_bars(frame, development):
     return result, coarse
 
 
-def coarse_samples(day_rows):
+def coarse_samples(day_rows, actions=()):
     """Pack full chronological segments; caller separates missing days/splits.
 
     Every nonoverlapping 64-bar coarse window is retained. Fine windows use 10%
@@ -94,7 +102,37 @@ def coarse_samples(day_rows):
                                selected["valid"].reshape(-1, WIDTH, 21),
                                selected["end_us"].reshape(-1, WIDTH), frame,
                                int(selected["split"][0])))
-    return np.concatenate(result) if result else np.empty(0, dtype=SAMPLE_DTYPE)
+    samples = np.concatenate(result) if result else np.empty(0, dtype=SAMPLE_DTYPE)
+    adjust_splits(samples, actions)
+    return samples
+
+
+def adjust_splits(samples, actions):
+    """Adjust [N,64,21] coarse samples in place to each sample's final share basis.
+
+    actions are frozen q_live corporate-action rows for this ticker. As in
+    ARTE market_day_sql.split_factor, prices before execution multiply by
+    split_from/split_to; volume and quote sizes multiply by the reciprocal.
+    Counts, timestamps and masks stay unchanged. Future executions do not affect
+    samples ending before the action. Canonical event prices are never modified.
+    """
+    from .sql import clock
+
+    price_columns = [0, 1, 2, 3, 6, 7, 8, 9, 12, 13, 14, 15]
+    size_columns = [4, 10, 16]
+    ends = samples["end_us"]  # [N,64], full observed coarse contexts.
+    factor = np.ones(ends.shape, dtype=np.float64)
+    for action in sorted(actions, key=lambda row: row["execution_date"]):
+        effective = clock(action["execution_date"], 4)
+        before, after = float(action["split_from"]), float(action["split_to"])
+        if not (np.isfinite(before) and np.isfinite(after) and before > 0 and after > 0):
+            raise ValueError("Invalid split ratio; never publish unadjusted fallback.")
+        affected = (ends > 0) & (ends < effective) & (ends.max(axis=1)[:, None] >= effective)
+        factor *= np.where(affected, before / after, 1.)  # Compound executions within each context.
+    samples["values"][..., price_columns] *= factor[..., None]
+    samples["values"][..., size_columns] /= factor[..., None]
+    if not np.isfinite(samples["values"]).all():
+        raise ValueError("Corporate-action adjustment overflowed final Float32 values.")
 
 
 def verify_receipt(directory, expected_identity=None, hashes=True):
@@ -154,11 +192,14 @@ def publish(directory, samples, coarse, metadata, budget, shard_bytes):
             if name.startswith("samples-") and len(array):
                 # Full context spans, including gaps, permit safe cross-timeframe split assignment.
                 item.update(first_start_us=int((array["end_us"][:, 0]-array["timeframe_us"]).min()),
-                            last_end_us=int(array["end_us"][:, -1].max()))
+                            last_end_us=int(array["end_us"].max()))
             files.append(item)
         receipt = dict(metadata, files=files, samples=len(samples),
                        candidate_samples=candidate_samples,
                        excluded_no_price=candidate_samples-len(samples),
+                       observed_bars=int((samples["end_us"] > 0).sum()),
+                       padded_bars=int((samples["end_us"] == 0).sum()),
+                       valid_bars_by_channel=samples["valid"].sum(axis=(0, 1)).tolist(),
                        frames={str(f): int((samples["timeframe_us"] == f).sum()) for f in FRAMES},
                        bytes=sum(item["bytes"] for item in files))
         receipt["receipt_hash"] = digest(receipt)

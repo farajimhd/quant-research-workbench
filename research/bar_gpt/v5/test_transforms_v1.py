@@ -49,6 +49,22 @@ def test_market_preservation_and_missing_evidence():
     torch.testing.assert_close(feature(result, "bar_index")[0, [0, -1]], torch.tensor([0., 1.]))
 
 
+def test_right_padding_has_no_market_or_time_evidence():
+    """A short session retains only its real prefix; every padded time feature is masked."""
+    ends = clocks()
+    ends[:, 5:] = 0
+    values = torch.zeros(1, 64, 21)
+    valid = torch.zeros_like(values, dtype=torch.bool)
+    values[:, :5], valid[:, :5] = 10., True
+    result = BarInputTransformV1()(values, valid, ends, 60_000_000)
+    assert torch.isfinite(result.values).all()
+    assert not result.valid[:, 5:].any()
+    assert not result.values[:, 5:].any()
+    valid[:, 5, 0] = True
+    with pytest.raises(ValueError, match="Padded bars"):
+        BarInputTransformV1()(values, valid, ends, 60_000_000)
+
+
 @pytest.mark.parametrize("frame", FRAMES)
 def test_all_timeframes_and_subsecond_precision(frame):
     """Independent UTC clock arithmetic verifies all six durations and adjacent gaps."""

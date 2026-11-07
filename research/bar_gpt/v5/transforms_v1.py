@@ -97,7 +97,8 @@ class BarInputTransformV1(nn.Module):
                 and halt channels remain unscaled. Invalid fields may hold NaN.
             valid: Torch bool or 0/1 integer [B,64,21], from shard evidence masks.
             end_us: Torch int64 [B,64], UTC completed-bar end timestamps in microseconds,
-                strictly increasing within each sample. Session gaps are allowed.
+                strictly increasing for observed bars, then zero right padding.
+                Cross-session gaps are supported for hourly/daily contexts.
             timeframe_us: Python int or Torch int64 scalar/[B], from shard timeframe metadata;
                 supported durations are 100ms, 1s, 10s, 1m, 1h, and 1d.
 
@@ -138,11 +139,17 @@ class BarInputTransformV1(nn.Module):
         observed = valid.bool()  # [B,64,21]; evidence masks, not augmentation masks.
         if not (torch.isfinite(values) | ~observed).all():
             raise ValueError("Observed market values must be finite.")
-        if end_us.shape != (batch, WIDTH) or end_us.dtype != torch.int64 or (end_us <= 0).any():
-            raise ValueError("end_us must contain positive int64 timestamps [B,64].")
+        if end_us.shape != (batch, WIDTH) or end_us.dtype != torch.int64 or (end_us < 0).any():
+            raise ValueError("end_us must contain int64 timestamps or zero right padding [B,64].")
+        present = end_us > 0  # [B,64]; padding is not market evidence or a time observation.
+        if (~present[:, 0]).any() or (present[:, 1:] & ~present[:, :-1]).any():
+            raise ValueError("Each sample needs an observed prefix followed only by right padding.")
+        if (observed & ~present[..., None]).any():
+            raise ValueError("Padded bars cannot contain valid market observations.")
         gaps = torch.diff(end_us, dim=1)  # [B,64] → [B,63], exact integer subtraction.
-        if (gaps <= 0).any():
+        if ((gaps <= 0) & present[:, 1:]).any():
             raise ValueError("Bar end timestamps must increase strictly within each sample.")
+        gaps = torch.where(present[:, 1:], gaps, 0)  # Avoid logarithms of artificial negative padding gaps.
         if type(timeframe_us) is int:
             timeframe_us = torch.tensor(timeframe_us, dtype=torch.int64, device=device)
         if (not isinstance(timeframe_us, torch.Tensor) or timeframe_us.dtype != torch.int64
@@ -171,8 +178,9 @@ class BarInputTransformV1(nn.Module):
         time_values[..., 7] = torch.sin(week_angle)
         time_values[..., 8] = torch.cos(week_angle)
 
-        time_valid = torch.ones_like(time_values, dtype=torch.bool)  # [B,64,9].
+        time_valid = present[..., None].expand_as(time_values).clone()  # [B,64] → [B,64,9].
         time_valid[:, 0, 4] = False  # No predecessor exists in this shard sample.
+        time_values = torch.where(time_valid, time_values, 0)  # Padding carries no clock or sequence signal.
         clean_values = torch.where(observed, values, 0).float()  # [B,64,21], unscaled, differentiable.
         if not torch.isfinite(clean_values).all():
             raise ValueError("Market values overflow Float32.")

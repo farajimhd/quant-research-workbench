@@ -13,7 +13,7 @@ with `np.load(path, mmap_mode='r', allow_pickle=False)`. One record contains:
 * `values`: Float32 `[64,21]`: trade OHLC/volume/count, bid OHLC/closing size/count,
   ask OHLC/closing size/count, halted-open, halted-close, halt-start count.
 * `valid`: UInt8 `[64,21]`, separate per-field evidence masks.
-* `end_us`: Int64 `[64]`, UTC completed-bar clocks.
+* `end_us`: Int64 `[64]`, UTC completed-bar clocks; zero denotes right padding.
 * `timeframe_us`: Int64 scalar: 100ms, 1s, 10s, 1m, 1h, or 1d.
 * `split`: UInt8: 0 training, 1 development from 2025-10-01.
 
@@ -39,7 +39,7 @@ not event-weighted random ordinal sampling or a claim of certified instrument
 identity. Each worker processes trading sessions chronologically so halt state
 and coarse context can be carried without rereading prior days repeatedly.
 
-The v2 contract imports `bar_semantics_v1.py`, shared with future model phases.
+The v3 contract imports `bar_semantics_v1.py`, shared with future model phases.
 ClickHouse aggregates a sparse 100ms base, rolls up sufficient statistics,
 and returns samples of **64 consecutive observed bars**, plus transient coarse bars.
 Observation indices are assigned before sampling; clock gaps remain in timestamps.
@@ -55,7 +55,11 @@ Fine frames use a deterministic random offset in 0–63, then nonoverlapping
 are retained because they are scarce. Frame counts are exposed; equal storage
 by timeframe is not forced through duplication. Coarse windows are packed by
 NumPy across sessions but never across a missing ticker-day, year, or split.
-Remainders shorter than 64 are not samples. No empty clock slots are manufactured;
+Fine session tails shorter than 64 are right-padded with zero values, timestamps,
+and evidence masks. Short sessions start at their first observed bar. Tail blocks
+use the same hash retention as full blocks. Hourly/daily contexts remain complete
+64-bar windows; their incomplete final remainders are not published.
+No empty clock slots are manufactured;
 missing ticker-days are recorded with explicit reasons. An entirely price-empty
 status-only block is explicitly counted and excluded before publication.
 
@@ -68,6 +72,15 @@ recovery replays canonical days to rebuild the small in-memory coarse context.
 Each sample shard records its full context bounds. The training split uses one
 chronological cutoff for all tickers/timeframes and purges crossing contexts,
 including contexts whose observed bars have gaps across that cutoff.
+
+Hourly/daily prices are backward-adjusted to the share basis at the end of each
+sample using the existing `q_live.market_stock_split_v1` executed-action catalog.
+The complete acquisition receipt, catalog rows, and hashes are frozen in the
+dataset contract. As in ARTE `market_day_sql.split_factor`, earlier prices multiply
+by `split_from/split_to`; trade volume and bid/ask sizes use the inverse. Counts
+and timestamps are unchanged. Multiple action IDs compound, and future actions
+after a sample's end never affect that sample. No flatfiles or trade-flag repair
+workflow is used. Unknown halt state remains masked; missing evidence is not zero.
 
 Halt state follows source-observed halt/resume token mappings from the shared
 market-signals implementation. Open is before `[start,end)`, close is after
@@ -85,7 +98,7 @@ python -B -u research/bar_gpt/v5/run_shards.py --workers 6 --io-workers 2
 python -B -m research.bar_gpt.v5.shards.progress
 ```
 
-Default output: `D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v1`.
+Default output: `D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v3`.
 The limit is 1,000,000,000,000 bytes, with a 100 GB free-space reserve. A final
 batch can leave the dataset slightly below the cap. Exhaustion is reported
 honestly rather than duplicating samples to reach an artificial size.
