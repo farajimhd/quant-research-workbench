@@ -30,12 +30,29 @@ def render(snapshot, width=100, height=40):
     rate = float(snapshot.get("bytes_per_second", 0))
     elapsed = float(snapshot.get("elapsed_seconds", 0))
     throughput = Text("Rate / ETA: warming up")
-    if rate > 0 and elapsed >= 60:
-        hours = max(0, target - used) / rate / 3600
-        throughput = Text(
-            f"Durable write rate {rate/10**6:,.1f} MB/s · estimated remaining {hours:,.1f} hours"
-        )
     quotas = snapshot.get("quotas")
+    if rate > 0 and elapsed >= 60:
+        throughput = Text(f"Durable write rate {rate/10**6:,.1f} MB/s")
+        # Fast fine frames can reach their cap before daily/hourly. Forecast the
+        # slowest remaining timeframe/class quota, rather than total bytes alone.
+        # Restored counters have no per-class rate baseline, so omit that estimate
+        # after resume instead of presenting historical samples as newly written.
+        if quotas and not snapshot.get("reused", 0):
+            estimates = []
+            for frame, goal in quotas["targets"].items():
+                for cohort, weight in ((0, 0.25), (1, 0.75)):
+                    saved = quotas["saved"][frame][cohort]
+                    remaining = max(0, int(goal * weight) - saved)
+                    estimates.append(
+                        remaining / (saved / elapsed) if saved else float("inf")
+                    )
+            seconds = max(estimates, default=0)
+            if seconds < float("inf"):
+                throughput.append(
+                    f" · quota-based remaining ~{seconds/3600:,.1f} hours"
+                )
+            else:
+                throughput.append(" · quota ETA warming up")
     allocation = Table(box=None, padding=(0, 1), expand=True)
     allocation.add_column("Timeframe")
     allocation.add_column("Saved / target")
