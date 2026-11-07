@@ -154,3 +154,26 @@ def test_default_architecture_and_full_column_inference():
         )
     # FP32 attention reductions change summation order under permutation across four layers.
     torch.testing.assert_close(full_embedding, permuted, rtol=1e-5, atol=5e-6)
+
+
+@pytest.mark.parametrize("rate", [0.0, 0.6])
+def test_full_reconstruction_queries_every_channel_in_canonical_order(rate):
+    """Full and masked inputs can reconstruct all columns through the same bottleneck."""
+    raw = raw_batch(2)
+    batch = prepared(raw, fit_activity_stats(raw.values, raw.valid), rate=rate)
+    model = small_model().eval()
+    embedding, predictions = model.reconstruct_full(
+        batch.visible, batch.valid, batch.feature_ids, batch.time, batch.time_valid,
+    )
+    with torch.no_grad():
+        expected_embedding = model.encoder(
+            batch.visible, batch.valid, batch.feature_ids, batch.time, batch.time_valid,
+        )
+        ids = torch.arange(18).expand(len(raw.values), -1)
+        expected = model.decoder(expected_embedding, ids, batch.time, batch.time_valid)
+    assert predictions.shape == (2, 64, 18)
+    assert torch.isfinite(predictions).all()
+    assert not predictions.requires_grad and not embedding.requires_grad
+    assert not model.training  # The helper preserves the caller's evaluation mode.
+    torch.testing.assert_close(embedding, expected_embedding)
+    torch.testing.assert_close(predictions, expected.transpose(1, 2))

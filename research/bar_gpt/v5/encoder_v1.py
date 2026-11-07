@@ -157,3 +157,26 @@ class MaskedAutoencoderV1(nn.Module):
         """Return embedding [B,D] and hidden reconstruction [B,M,64]; no targets are inputs."""
         embedding = self.encoder(visible, valid, feature_ids, time, time_valid)
         return embedding, self.decoder(embedding, hidden_ids, time, time_valid)
+
+    @torch.no_grad()
+    def reconstruct_full(self, visible: Tensor, valid: Tensor, feature_ids: Tensor,
+                         time: Tensor, time_valid: Tensor) -> tuple[Tensor, Tensor]:
+        """Return embedding [B,D] and all reconstructed market channels [B,64,18].
+
+        Inputs come from prepare_batch: scaled visible columns [B,K,64], bool
+        validity [B,K,64], int64 semantic IDs [B,K], and UTC values/bool masks
+        [B,64,9], all on the model device. K may be the masked training subset
+        or all 18 market columns; their order is identified by feature_ids.
+
+        Call model.eval() before inference to disable dropout. This helper disables
+        gradients without changing the caller's train/eval mode. Output columns
+        always follow phase1_contract.CHANNELS and remain in scaled coordinates;
+        these reconstruct the supplied window, rather than forecast future bars.
+        Full-input reconstruction quality needs validation separately from the
+        masked training objective. The standalone encoder still returns only z.
+        """
+        embedding = self.encoder(visible, valid, feature_ids, time, time_valid)  # [B,K,64] -> [B,D].
+        requested = torch.arange(self.decoder.identity.num_embeddings, device=embedding.device)
+        requested = requested.unsqueeze(0).expand(len(visible), -1)  # [18] -> [B,18], canonical output order.
+        predictions = self.decoder(embedding, requested, time, time_valid)  # [B,D] -> [B,18,64].
+        return embedding, predictions.transpose(1, 2)  # [B,18,64] -> [B,64,18]; no copy is required.
