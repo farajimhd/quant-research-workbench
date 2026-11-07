@@ -36,7 +36,8 @@ CONFIGURATIONS = {
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("profile", "train"), default="profile")
-    parser.add_argument("--dataset", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v2"))
+    # V3 supplies masked session tails and corporate-action-adjusted coarse contexts.
+    parser.add_argument("--dataset", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v3"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split-manifest", type=Path)
     parser.add_argument("--calibration", type=Path)
@@ -131,6 +132,9 @@ def main(argv=None):
         manifest = load_split(args.split_manifest) if args.split_manifest else build_split(
             args.dataset, args.output / "split.json", reporter.update,
         )
+        # An explicit old manifest must not silently redirect a new-data run to v2.
+        if Path(manifest["dataset"]).resolve() != args.dataset.resolve():
+            raise ValueError("Split manifest belongs to another dataset; build a fresh split for this run.")
         if args.calibration:
             calibration = json.loads(args.calibration.read_text())
             if calibration["split_hash"] != manifest["manifest_hash"]:

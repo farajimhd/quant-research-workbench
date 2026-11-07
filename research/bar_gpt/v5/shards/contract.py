@@ -1,5 +1,27 @@
 """Prepared 64-bar sample contract and deterministic sampling primitives."""
 
+# Recorded extraction requirements (user-confirmed, November 6, 2026):
+# - Historical market reads use canonical market_sip_compact events only; never
+#   reopen flatfiles, repair reporting flags, or infer missing trade evidence.
+# - Exclude unknown, delayed, structurally invalid and condition-ineligible
+#   trades using the same independent price/extreme/volume rules as ARTE.
+# - Combine trade, bid, ask and halt channels with explicit evidence masks.
+# - Carry quotes causally within a session; invalid quotes clear the carry.
+#   Carry never creates quote events or counts, and cannot use future quotes.
+# - Frames are 100ms, 1s, 10s, 1min, 1hour and daily, across 2019–2025.
+# - Fine samples contain consecutive OBSERVED bars from one session, preserving
+#   real timestamps/gaps. Right-pad session tails with zero values/clocks/masks.
+# - Hourly/daily contexts may join sessions. Use 64 actual observed bars and
+#   backward-adjust executed stock splits/reverse splits to the sample-end basis:
+#   earlier prices *= split_from/split_to; volume/sizes use the inverse; counts
+#   stay unchanged. Freeze reference evidence and never apply future actions.
+# - Unknown halt states remain masked; silence does not establish normal trading.
+# - Sample independently of scanners and labels. Keep bounded mmap-ready shards,
+#   ClickHouse aggregation, vectorized packing, 32 query workers and 16 I/O workers.
+# - Separate train/validation by full context spans and purge crossing windows.
+#   Check actual saved coverage by year/timeframe and source-to-output examples;
+#   configuration alone is not evidence of coverage or completed extraction.
+
 import hashlib
 import json
 from pathlib import Path
