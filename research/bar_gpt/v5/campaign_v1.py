@@ -125,6 +125,8 @@ def train_campaign(args, manifest, stats, reporter):
                 before_step=set_rate if training else None, on_step=advance_schedule if training else None,
             )
             result["complete_pass"] = result["exhausted"] or result["consumed_batches"] >= limit
+            reporter.update(done=result["consumed_batches"], total=limit, metrics=result)
+            # Flush final progress even when a pass ends between the ten-step status updates.
             return result
         finally:
             close_loader(loader)
