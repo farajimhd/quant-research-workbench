@@ -132,9 +132,12 @@ def main(argv=None):
         manifest = load_split(args.split_manifest) if args.split_manifest else build_split(
             args.dataset, args.output / "split.json", reporter.update,
         )
-        # An explicit old manifest must not silently redirect a new-data run to v2.
-        if Path(manifest["dataset"]).resolve() != args.dataset.resolve():
-            raise ValueError("Split manifest belongs to another dataset; build a fresh split for this run.")
+        # Reject old production data while preserving explicit custom/test inventories.
+        source_contract = Path(manifest["dataset"]) / "contract.json"
+        if source_contract.is_file():
+            from .shards.contract import VERSION
+            if json.loads(source_contract.read_text())["contract"]["version"] != VERSION:
+                raise ValueError("Training requires v3 shards; build a fresh split for the new dataset.")
         if args.calibration:
             calibration = json.loads(args.calibration.read_text())
             if calibration["split_hash"] != manifest["manifest_hash"]:
