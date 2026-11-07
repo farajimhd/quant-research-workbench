@@ -27,6 +27,7 @@ class EncoderConfig:
     dropout: float = 0.1
     attention: str = "sdpa"
     attention_dropout: float | None = None  # None preserves the original attention dropout.
+    architecture: str = "column-latest-bar-v1"  # Bind checkpoints to the mandatory latest-bar path.
 
 
 @lru_cache(maxsize=1)
@@ -74,21 +75,60 @@ def blocks(width: int, heads: int, feedforward: int, depth: int, dropout: float,
     ])  # Construct separately so layers do not start as identical deep copies.
 
 
+class LatestBarToken(nn.Module):
+    """Pool the latest available values of supplied columns into one token [B,1,D].
+
+    The caller passes only the K visible feature columns, never a full raw market
+    tensor or reconstruction targets. Semantic identities distinguish, for example,
+    a trade close from an ask size. A nonlinear per-feature projection preserves
+    that interaction before permutation-invariant mean pooling. The mean keeps
+    the token scale comparable between K=7/8 training and K=18 inference.
+    """
+
+    def __init__(self, width: int):
+        super().__init__()
+        self.values = nn.Linear(2, width)  # Latest scaled value + missingness: [B,K,2] -> [B,K,D].
+        self.output = nn.Linear(width, width)  # Pooled endpoint representation [B,1,D] -> [B,1,D].
+        self.norm = nn.LayerNorm(width)  # Stabilize the additional token before encoder attention.
+        self.role = nn.Parameter(torch.empty(1, 1, width))  # Explicitly identify this as the latest-bar token.
+        nn.init.normal_(self.role, std=0.02)
+
+    def forward(self, visible: Tensor, valid: Tensor, identities: Tensor) -> Tensor:
+        """Read scaled values/bool masks [B,K,64] and identity embeddings [B,K,D].
+
+        All inputs are on the model device. Index -1 is the last completed bar t.
+        Invalid source values contribute only their missingness and identity.
+        Earlier bars and withheld feature columns have no input path here.
+        """
+        if visible.shape[1] == 0:
+            raise ValueError("The latest-bar token requires at least one supplied feature column.")
+        observed = valid[..., -1]  # [B,K,64] -> [B,K], evidence at t only.
+        values = torch.where(observed, visible[..., -1], 0)  # [B,K]; absent evidence cannot inject a placeholder value.
+        endpoint = torch.stack((values, (~observed).to(visible.dtype)), dim=-1)  # [B,K] -> [B,K,2].
+        features = F.gelu(self.values(endpoint) + identities)  # [B,K,2] -> [B,K,D], condition on feature meaning.
+        pooled = features.mean(dim=1, keepdim=True)  # [B,K,D] -> [B,1,D], independent of supplied-column ordering.
+        return self.norm(self.output(pooled)) + self.role  # [B,1,D], a single endpoint token with a learned role.
+
+
 class ColumnEncoderV1(nn.Module):
     """Compress visible columns and complete UTC context into one embedding [B,D].
 
     Feature IDs 0..17 follow shards.phase1_contract.CHANNELS. Temporal order is retained
     by the 64 ordered inputs to each projection, rather than attention over bars.
     All nine time features stay visible as ONE context token, plus missingness.
+    A separate latest-bar token pools only supplied columns at index 63.
     At inference supply all 18 columns; training supplies only 7 or 8 columns.
     """
 
     def __init__(self, config: EncoderConfig = EncoderConfig()):
         super().__init__()
+        if config.architecture != "column-latest-bar-v1":
+            raise ValueError("Unsupported encoder architecture revision.")
         self.config = config
         self.values = nn.Linear(64, config.width)  # One column [B,K,64] -> [B,K,D].
         self.missing = nn.Linear(64, config.width, bias=False)  # Missing != observed zero.
         self.identity = nn.Embedding(18, config.width)  # Column IDs [B,K] -> [B,K,D].
+        self.latest_bar = LatestBarToken(config.width)  # Visible endpoint values [B,K,64] -> one [B,1,D] token.
         self.time = nn.Linear(64 * 9 * 2, config.width)  # Values + masks -> one context token.
         self.summary = nn.Parameter(torch.zeros(1, 1, config.width))  # Shared learned readout query.
         nn.init.normal_(self.summary, std=0.02)
@@ -104,15 +144,17 @@ class ColumnEncoderV1(nn.Module):
         prepare_batch; missing entries are zero. Time validity has shape [B,64,9].
         No hidden-column placeholders or attention padding are allocated here.
         """
+        identities = self.identity(feature_ids)  # IDs [B,K] -> [B,K,D], shared semantic identities for both input paths.
+        latest = self.latest_bar(visible, valid, identities)  # [B,K,64] -> [B,1,D]; hidden columns are never supplied.
         hidden = self.values(visible) + self.missing((~valid).to(visible.dtype))
-        hidden = hidden + self.identity(feature_ids)  # [B,K,D], retain feature meaning after shuffling.
+        hidden = hidden + identities  # [B,K,D], retain feature meaning after shuffling.
         context = torch.cat((time, (~time_valid).to(time.dtype)), dim=-1).flatten(1)
         context = self.time(context).unsqueeze(1)  # [B,64*18] -> [B,1,D].
-        hidden = torch.cat((self.summary.expand(len(visible), -1, -1), context, hidden), dim=1)
-        # Attention sees K+2 tokens (9 or 10 during training, 20 with all columns).
+        hidden = torch.cat((self.summary.expand(len(visible), -1, -1), context, latest, hidden), dim=1)
+        # [summary, time, latest bar, columns]: K+3 tokens, 10/11 in training or 21 with all columns.
         for block in self.blocks:
-            hidden = block(hidden)  # [B,K+2,D], full bidirectional attention inside the supplied window.
-        return self.norm(hidden[:, 0])  # Summary only: [B,K+2,D] -> [B,D].
+            hidden = block(hidden)  # [B,K+3,D], full bidirectional attention inside the supplied window.
+        return self.norm(hidden[:, 0])  # Summary only: [B,K+3,D] -> [B,D]; large D remains 512.
 
     def encode_full(self, market: Tensor, valid: Tensor,
                     time: Tensor, time_valid: Tensor) -> Tensor:

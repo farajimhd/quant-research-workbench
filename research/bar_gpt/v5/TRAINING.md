@@ -21,6 +21,7 @@ subsequent flags override its preset. No training runs merely by importing it.
 | Batch / workers / prefetch | 4096 / 32 / two batches per worker |
 | Duration | 50 full training passes; full validation after each epoch |
 | Masking | 60% of market columns; all time context remains visible |
+| Encoder tokens | Summary, time context, latest bar and supplied market columns: 10/11 during masking, 21 with all features |
 | Learning rate | 1,000-update linear warmup; epoch-wise cosine from 1e-3 to 5e-5 |
 | Reporting | Loss observations every 10 updates; upload with metrics every 1,000 |
 | Tracking | Online W&B project `bargpt-v5-mae-market-only-v6`; workstation panel enabled |
@@ -52,3 +53,11 @@ Phase one still trains the masked encoder and reconstruction decoder. For phase
 two, retain `model.encoder` and call `encode_full` on scaled `[B,64,18]` market
 values, masks and `[B,64,9]` time context. It returns `[B,512]` for the large model
 without executing the decoder and preserves gradients for joint fine-tuning.
+
+The latest-bar token uses only the supplied columns' values and validity at bar
+63, with their feature identities. Hidden market columns have no endpoint path.
+At full inference all 18 columns contribute. Nonlinear per-column projection and
+mean pooling produce one extra token; the exported summary stays 512 dimensions.
+The architecture revision `column-latest-bar-v1` is recorded in checkpoint model
+configuration. Checkpoints without this branch require a fresh training run;
+there is no automatic partial-weight migration.

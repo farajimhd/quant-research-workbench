@@ -62,9 +62,13 @@ def test_hidden_values_cannot_influence_visible_inputs_or_embedding():
         torch.testing.assert_close(getattr(before, name), getattr(after, name))
     assert not torch.equal(before.targets, after.targets)
     model = small_model().eval()
+    latest_tokens = []
+    handle = model.encoder.latest_bar.register_forward_hook(lambda module, args, output: latest_tokens.append(output.detach().clone()))
     with torch.no_grad():
         z1 = model.encoder(before.visible, before.valid, before.feature_ids, before.time, before.time_valid)
         z2 = model.encoder(after.visible, after.valid, after.feature_ids, after.time, after.time_valid)
+    handle.remove()
+    torch.testing.assert_close(latest_tokens[0], latest_tokens[1])
     torch.testing.assert_close(z1, z2)
 
 
@@ -79,13 +83,15 @@ def test_packed_attention_shapes_and_gradients(device):
     handle = model.encoder.blocks[0].register_forward_pre_hook(lambda module, args: lengths.append(args[0].shape[1]))
     embedding, predictions = model(batch.visible, batch.valid, batch.feature_ids, batch.hidden_ids, batch.time, batch.time_valid)
     handle.remove()
-    assert lengths == [batch.visible.shape[1] + 2]
-    assert lengths[0] in (9, 10) and embedding.shape == (4, 32)
+    assert lengths == [batch.visible.shape[1] + 3]
+    assert lengths[0] in (10, 11) and embedding.shape == (4, 32)
     assert predictions.shape == batch.targets.shape
     loss, _, _ = reconstruction_loss(predictions, batch)
     loss.backward()
     assert model.encoder.summary.grad.abs().sum() > 0
     assert torch.isfinite(model.encoder.values.weight.grad).all()
+    assert model.encoder.latest_bar.values.weight.grad.abs().sum() > 0
+    assert torch.isfinite(model.encoder.latest_bar.values.weight.grad).all()
 
 
 def test_mask_rate_and_missing_close_fail_closed():
@@ -178,3 +184,53 @@ def test_full_embedding_supports_joint_training_and_decoder_free_inference():
     assert not actual.requires_grad
     with pytest.raises(ValueError, match="Full embedding"):
         encoder.encode_full(market[..., :8], valid[..., :8], batch.time, batch.time_valid)
+
+
+def test_latest_bar_token_reads_only_endpoint_and_distinguishes_missing_evidence():
+    """The endpoint branch cannot inspect history, and unavailable values cannot influence it."""
+    batch = prepared(raw_batch(), fit_activity_stats(raw_batch().values, raw_batch().valid))
+    encoder = small_model().encoder.eval()
+    identities = encoder.identity(batch.feature_ids)
+    values, valid = batch.visible.clone(), batch.valid.clone()
+    valid[:, 0, -1] = False
+    with torch.no_grad():
+        expected = encoder.latest_bar(values, valid, identities)
+        values[..., :-1] += 1000
+        values[:, 0, -1] = 1e6  # This last-bar cell has no valid source evidence.
+        actual = encoder.latest_bar(values, valid, identities)
+        permuted = encoder.latest_bar(values.flip(1), valid.flip(1), identities.flip(1))
+    torch.testing.assert_close(actual, expected)
+    torch.testing.assert_close(permuted, expected)
+
+
+def test_large_full_inference_has_21_tokens_and_one_512_embedding():
+    """Exercise the actual large preset, including all 18 endpoint inputs and export dimensions."""
+    from dataclasses import replace
+    from research.bar_gpt.v5.run_v1 import CONFIGURATIONS
+    model = MaskedAutoencoderV1(replace(CONFIGURATIONS["large"], dropout=0.)).eval()
+    market = torch.randn(2, 64, 18, requires_grad=True)
+    valid = torch.ones_like(market, dtype=torch.bool)
+    time = torch.zeros(2, 64, 9)
+    lengths, column_counts = [], []
+    length_hook = model.encoder.blocks[0].register_forward_pre_hook(lambda module, args: lengths.append(args[0].shape[1]))
+    endpoint_hook = model.encoder.latest_bar.register_forward_pre_hook(lambda module, args: column_counts.append(args[0].shape[1]))
+    embedding = model.encoder.encode_full(market, valid, time, torch.ones_like(time, dtype=torch.bool))
+    length_hook.remove()
+    endpoint_hook.remove()
+    assert embedding.shape == (2, 512) and lengths == [21] and column_counts == [18]
+    # Isolate the endpoint branch: all columns at t contribute, and earlier bars cannot contribute.
+    identities = model.encoder.identity(torch.arange(18).expand(2, -1))
+    endpoint = model.encoder.latest_bar(market.transpose(1, 2), valid.transpose(1, 2), identities)
+    endpoint[..., 0].sum().backward()
+    assert market.grad[:, :-1].count_nonzero() == 0
+    assert (market.grad[:, -1].abs().sum(dim=0) > 0).all()
+
+
+def test_old_architecture_checkpoint_is_rejected():
+    """Old checkpoints must not silently initialize a new endpoint branch with random weights."""
+    raw = raw_batch()
+    trainer = MAETrainerV1(small_model(), fit_activity_stats(raw.values, raw.valid))
+    old = trainer.state_dict()
+    old["config"] = {k: v for k, v in old["config"].items() if k != "architecture"}
+    with pytest.raises(ValueError, match="architecture/version"):
+        trainer.load_state_dict(old)
