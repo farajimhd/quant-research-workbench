@@ -114,3 +114,84 @@ def test_range_matches_existing_audited_session_query():
         assert compared > 800
     finally:
         c.close()
+
+
+@pytest.mark.skipif(
+    os.getenv("BARGPT_LIVE_TESTS") != "1",
+    reason="SELECT-only synthetic ClickHouse check",
+)
+def test_range_preserves_cached_halt_transitions_and_quote_invalidation():
+    from unittest.mock import patch
+    from .source import client, arrow, preflight, close
+    from .range_sql import range_query
+    from .sql import clock
+
+    c = client()
+    try:
+        rules = preflight(c)["rules"]
+        opened = clock("2019-01-03", 4)
+        columns = (
+            "ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64,"
+            "price_primary_int UInt32,price_secondary_int UInt32,size_primary Float32,"
+            "size_secondary Float32,condition_token_1 UInt8,condition_token_2 UInt8,"
+            "condition_token_3 UInt8,condition_token_4 UInt8,condition_token_5 UInt8"
+        )
+        events = [
+            (0, 0, 1200, 1100),
+            (100000, 1, 1150, 0),
+            (300000, 0, 0, 0),
+            (1100000, 1, 1150, 0),
+            (1500000, 0, 0, 0),
+            (2100000, 1, 1150, 0),
+            (4000000, 0, 1200, 1100),
+        ]
+        records = []
+        for i, (offset, kind, price, bid) in enumerate(events):
+            records.append(
+                "("
+                + ",".join(
+                    map(
+                        str,
+                        [
+                            "'TEST'",
+                            100 + i,
+                            kind,
+                            opened + offset,
+                            price,
+                            bid,
+                            10,
+                            20,
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                        ],
+                    )
+                )
+                + ")"
+            )
+        raw = f"SELECT * FROM values('{columns}'," + ",".join(records) + ")"
+        timeline = [
+            (opened - 1, 99, 0),
+            (opened + 300000, 102, 1),
+            (opened + 1500000, 104, 0),
+        ]
+        bounds = [dict(source_date="2019-01-03", first_ordinal=100, next_ordinal=107)]
+        with patch.dict(range_query.__globals__, {"event_source": lambda *args: raw}):
+            statement = range_query(
+                "TEST", bounds, rules, 100, 107, state_events=timeline
+            )
+            result = arrow(c, statement, "bargpt-halt-range-test")
+        seconds = result.filter(result["resolution"] == 1000000)
+        assert [r[-3:] for r in seconds["values"].to_list()] == [
+            [0.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+        assert all(r[-3:] == [1, 1, 1] for r in seconds["valid"].to_list())
+        # The zero-price source message invalidates the book; it cannot leave
+        # the old positive bid/ask usable at later completed trade bars.
+        assert all(r[9] == 0 and r[15] == 0 for r in seconds["valid"].to_list())
+    finally:
+        close(c)

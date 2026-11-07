@@ -17,8 +17,9 @@ The model is unchanged. `run_balanced_shards.py` owns the new extraction path;
   chunk merely to force every timeframe to appear.
 - Independently extract hourly/daily bars over timestamp spans. Daily means
   09:30–16:00 New York. Intraday observations use 04:00–20:00 New York.
-- Sample 20% of complete intraday sliding origins without replacement; daily
-  uses sliding origins without that restriction. Preserve UTC clocks and gaps.
+- Sample 20% of complete fine-frame sliding origins without replacement.
+  Hourly and daily use sliding origins without that restriction, as explicitly
+  confirmed after the inventory capacity check. Preserve UTC clocks and gaps.
 - Backward-adjust every cross-split context to its own final share basis.
   Prices multiply by split_from/split_to; volumes/sizes use the inverse.
   Counts are unchanged. Apply no action after the sample's final clock.
@@ -29,7 +30,7 @@ The model is unchanged. `run_balanced_shards.py` owns the new extraction path;
   Liquidity uses the top quartile of ticker-year average source event count,
   an explicit proxy rather than a claim about trade volume or spreads.
 - Target equal saved counts for the five non-daily frames. Daily may be fewer;
-  the initial default reserves 5% for daily and 19% for each remaining frame.
+  the initial default reserves 3% for daily and 19.4% for each remaining frame.
   Publish actual coverage and report inventory exhaustion rather than repeat
   identical samples to make a nominal storage or class quota.
 - Purge contexts crossing the shared train/development boundary. The trainer

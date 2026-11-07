@@ -37,7 +37,7 @@ class Quotas:
     Payload and receipt overhead share the separate hard byte budget.
     """
 
-    def __init__(self, target, daily_fraction=0.05):
+    def __init__(self, target, daily_fraction=0.03):
         capacity = (
             int(target * 0.98) // SAMPLE_DTYPE.itemsize
         )  # Reserve 2% for headers/receipts/plan.
@@ -123,7 +123,7 @@ def write_samples(
             )
             .date()
             .isoformat(),
-            origin_fraction=1.0 if frame == FRAMES[-1] else 0.2,
+            origin_fraction=1.0 if frame in FRAMES[4:] else 0.2,
         )
 
         def commit(path=path, data=selected, metadata=metadata, liquid=liquid):
@@ -300,7 +300,7 @@ def worker(
                     frame,
                     seed_for(job["ticker"], unit, frame),
                     actions,
-                    fraction=1.0 if frame == FRAMES[-1] else 0.2,
+                    fraction=1.0,
                     previous=tail.get(frame, ()),
                 )
                 write_samples(
@@ -425,7 +425,7 @@ def arguments(argv=None):
     parser.add_argument("--coarse-days", type=int, default=20)
     parser.add_argument("--query-memory-gib", type=float, default=1)
     parser.add_argument("--shard-mib", type=int, default=32)
-    parser.add_argument("--daily-fraction", type=float, default=0.05)
+    parser.add_argument("--daily-fraction", type=float, default=0.03)
     parser.add_argument("--seed", type=int, default=20261107)
     parser.add_argument("--endpoint")
     parser.add_argument("--source-revision", default="working-tree")

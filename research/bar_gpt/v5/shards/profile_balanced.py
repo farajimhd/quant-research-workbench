@@ -79,8 +79,23 @@ def main(argv=None):
                 source.close(transport)
 
         started = time.perf_counter()
-        with ThreadPoolExecutor(workers) as pool:
-            results = list(pool.map(query, tasks))
+        try:
+            with ThreadPoolExecutor(workers) as pool:
+                results = list(pool.map(query, tasks))
+        except RuntimeError as error:
+            if "MEMORY_LIMIT_EXCEEDED" not in str(error):
+                raise
+            # A failed configuration is a benchmark result, never a reason to
+            # silently raise campaign memory limits or lose the other cases.
+            case = dict(
+                chunk_events=events,
+                workers=workers,
+                rejected="query memory exceeds 1 GiB",
+            )
+            cases.append(case)
+            write_json(args.output / "profile.json", dict(cases=cases))
+            print(json.dumps(case), flush=True)
+            continue
         elapsed = time.perf_counter() - started
         counts = {
             str(f): sum(r["potential_samples"][str(f)] for r in results)
