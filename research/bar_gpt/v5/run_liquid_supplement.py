@@ -184,6 +184,7 @@ def main(argv=None):
     queue_owner.seek(0)
     msvcrt.locking(queue_owner.fileno(), msvcrt.LK_NBLCK, 1)
     owner = None
+    observer = None
     try:
         while owner is None:
             if (args.output / "STOP").exists():
@@ -228,10 +229,11 @@ def main(argv=None):
             ),
         )
         code = run(args)
+        result = json.loads((args.output / "result.json").read_text())
         write_json(
             queue,
             dict(
-                state="finished" if code == 0 else "failed",
+                state=result["state"] if code == 0 else "failed",
                 updated=time.time(),
                 exit_code=code,
             ),
@@ -249,6 +251,9 @@ def main(argv=None):
         write_json(status_path, dict(snapshot, **failure))
         raise
     finally:
+        if observer is not None and observer.poll() is None:
+            observer.terminate()  # Close only this job's observer after its controller has finished or failed.
+            observer.wait(timeout=10)
         if owner is not None:
             owner.close()
         queue_owner.close()
