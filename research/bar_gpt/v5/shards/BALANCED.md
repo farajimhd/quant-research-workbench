@@ -1,7 +1,15 @@
 # Ordinal and timestamp campaign, dataset v6
 
-The model is unchanged. `run_balanced_shards.py` owns the new extraction path;
-`run_shards.py` remains the historical session-based implementation.
+`run_balanced_shards.py` owns the active extraction path; `run_shards.py` is an
+alias to the same guarded launcher. The archived session builder is not launched.
+
+The launcher canonicalizes an explicit default `--query-memory-gib 1` to the
+producer's integer default. This preserves the existing migration contract's
+exact hash: JSON `1` and `1.0` otherwise hash differently despite imposing the
+same 1 GiB limit. Other configuration/code/source changes still fail closed.
+Startup/controller exceptions publish a terminal failure instead of leaving a
+stale planning panel. Operational supervisors must capture stdout and stderr
+separately and retain the child exit code; migration need not repeat on resume.
 
 ## Recorded requirements
 

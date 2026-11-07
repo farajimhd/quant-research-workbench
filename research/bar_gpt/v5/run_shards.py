@@ -10,7 +10,7 @@ os.environ.setdefault("POLARS_MAX_THREADS", "2")
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
-from research.bar_gpt.v5.shards.balanced_build import main
+from research.bar_gpt.v5.run_balanced_shards import main
 
 if __name__ == "__main__":
     print('Equivalent: '+subprocess.list2cmdline([sys.executable,'-B','-u',str(Path(__file__).resolve()),*sys.argv[1:]]),flush=True)
