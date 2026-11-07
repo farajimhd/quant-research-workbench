@@ -5,6 +5,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import date, datetime, timezone
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import shutil
@@ -19,7 +20,7 @@ from . import source
 from .contract import CHANNELS, FRAMES, SAMPLE_DTYPE, VERSION, digest, file_hash, write_json
 from .sql import clock, day_query
 from .storage import BAR_DTYPE, Budget, coarse_samples, publish, unpack_bars, verify_receipt
-from .recovery import resolve_binding
+from .recovery import resolve_binding, identity_query
 from research.bar_gpt.v5 import bar_semantics_v1
 
 # One enlarged query may run alongside the normal pool. Normal queries reserve
@@ -180,6 +181,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
             if previous_split is not None and previous_split != development:
                 segments.append(coarse_samples(coarse_segment, actions)); coarse_segment = []
             previous_split = development
+            day_initial_state, day_previous_close = initial_state, previous_close
             day_id = digest(dict(job=identity, day=day, initial_state=initial_state,
                                  previous_close=previous_close))
             target = directory / day
@@ -215,8 +217,15 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
             previous_close = clock(day, 20)
             if result["source_hash"].n_unique() != 1:
                 raise ValueError("Source evidence changed inside query response.")
+            # Existing publications keep their original logical SQL identity;
+            # the execution hash below makes the optimized path independently auditable.
+            logical_statement = (statement if args.identity_query is day_query else
+                                 args.identity_query(ticker, day, bounds, rules, day_initial_state,
+                                                     args.seed, args.keep_percent, day_previous_close))
             metadata = dict(identity=day_id, ticker=ticker, year=year, day=day,
-                            source_hash=result["source_hash"][0], query_hash=digest(statement),
+                            source_hash=result["source_hash"][0],
+                            query_hash=digest(logical_statement),
+                            execution_query_hash=digest(statement),
                             reporting_counts=result["reporting_counts"][0],
                             query_seconds=time.perf_counter()-began,
                             final_state=initial_state, binding=binding)
@@ -365,6 +374,7 @@ def campaign(args, years):
             binding = resolve_binding(json.loads(path.read_text()), contract, args.resume_code_receipt)
         else:
             write_json(path, dict(binding=binding, contract=contract))
+        args.identity_query = identity_query(args.resume_code_receipt)
         write_json(args.output / "launch.json", dict(source_revision=args.source_revision,
                    workers=args.workers, io_workers=args.io_workers, query_memory_gib=args.query_memory_gib,
                    started=datetime.now(timezone.utc).isoformat(), pid=os.getpid(), binding=binding,
@@ -377,9 +387,21 @@ def campaign(args, years):
         # Startup validates receipt integrity and file sizes. Per-job reuse also
         # verifies file SHA-256 before using any cached market aggregate.
         state = "resuming"; snapshot()
-        for receipt_path in args.output.glob("jobs/*/*/receipt.json"):
-            receipt = verify_receipt(receipt_path.parent, hashes=False)
-            status.accepted(receipt, reused=True)
+        # Parallelize metadata I/O with a bounded 512-receipt batch. Previously,
+        # half a million tiny serialized reads stalled every restart for minutes.
+        # Validation is identical; only the read scheduling changes.
+        receipt_paths = args.output.glob("jobs/*/*/receipt.json")
+        last_resume_update = time.monotonic()
+        def restore_receipt(path):
+            return verify_receipt(path.parent, hashes=False)
+        with ThreadPoolExecutor(args.io_workers, thread_name_prefix="bar-resume") as readers:
+            while batch := list(islice(receipt_paths, 512)):
+                for receipt in readers.map(restore_receipt, batch):
+                    status.accepted(receipt, reused=True)
+                    budget.used += receipt["bytes"]  # Startup progress; exact all-file usage is reconciled below.
+                if time.monotonic() - last_resume_update >= 1:
+                    snapshot()
+                    last_resume_update = time.monotonic()
         budget.used = sum(p.stat().st_size for p in args.output.rglob("*") if p.is_file())
         calendar = {year: sessions(year) for year in years}
         state = "running"; snapshot()

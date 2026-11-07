@@ -72,6 +72,13 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
     regular_open = opened + (9*3600+30*60-4*3600)*1_000_000
     regular_close = clock(day, 16)
     aggregates, reducers, value_names, mask_names = family_statistics()
+    # Carry sufficient statistics through selection and the temporal joins.
+    # Rejoining rolled at the end would expand and execute that CTE again.
+    carried = [f"{side}_{field}" for side in ("trade", "bid", "ask")
+               for field in ("o", "h", "l", "c", "s", "n", "pv", "ev", "av")]
+    empty_statistics = ["toUInt64(0)" if name.endswith("_n") else
+                        "toUInt8(0)" if name.endswith(("_pv", "_ev", "_av")) else
+                        "toFloat64(0)" for name in carried]
     aggregates.extend([f"countIf(hasAny(tokens,{halt+resume})) condition_events", "countIf(kind=0) quote_events"])
     reducers.extend(["sum(condition_events) condition_events", "sum(quote_events) quote_events"])
     value_names, mask_names = quote_carry_projection(value_names, mask_names)
@@ -81,6 +88,12 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
     # another six scans of the event stream. Only selected final bars leave SQL.
     # Keep a selected session tail even when it contains fewer than 64 bars;
     # NumPy adds masked right padding. Sessions shorter than 64 start at index 0.
+    # All output boundaries align to 100ms. quote_clock can therefore retain
+    # only each bucket's LAST actual quote (valid or invalid), ordered by both
+    # timestamp and ordinal. Earlier intrabucket messages cannot affect an ASOF
+    # lookup at any output end; observed OHLC/counts still use every eligible quote.
+    # Frame zero is always returned as metadata and is never packed. This avoids
+    # a second expansion of selected_grid solely to test whether it is empty.
     return f"""WITH
     raw AS ({raw}),
     decoded AS (
@@ -104,13 +117,14 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
       FROM rolled WHERE trade_pv OR trade_ev OR trade_av OR bid_pv OR ask_pv OR condition_events>0 OR quote_events>0),
     selected_grid AS (SELECT toUInt8(1) join_key,r.frame frame,f.2 step,r.bucket bucket,r.observed_index observed_index,
       if(r.frame={FRAMES[-1]},toUInt64({regular_open}),{opened}+r.bucket*f.2) start_us,
-      if(r.frame={FRAMES[-1]},toUInt64({regular_close}),{opened}+(r.bucket+1)*f.2) end_us
+      if(r.frame={FRAMES[-1]},toUInt64({regular_close}),{opened}+(r.bucket+1)*f.2) end_us,
+      {','.join('r.'+name for name in carried)}
       FROM observed r INNER JOIN (SELECT arrayJoin({frame_sql}) f) specs ON r.frame=f.1
       WHERE r.frame>={FRAMES[-2]} OR (r.observed_index>=if(r.observed_count<64,0,f.4)
         AND cityHash64(toUInt64(intDiv(toInt64(r.observed_index)-toInt64(if(r.observed_count<64,0,f.4)),64)),f.5)%100<{int(keep_percent)})),
     grid AS (SELECT * FROM selected_grid UNION ALL
-      SELECT toUInt8(1),toUInt64(0),toUInt64(0),toUInt64(0),toUInt64(0),toUInt64({opened}),toUInt64({opened})
-      WHERE NOT EXISTS (SELECT 1 FROM selected_grid)),
+      SELECT toUInt8(1),toUInt64(0),toUInt64(0),toUInt64(0),toUInt64(0),toUInt64({opened}),toUInt64({opened}),
+      {','.join(empty_statistics)}),
     states AS (SELECT sip_timestamp_us at_us,ordinal,
       multiIf(hasAny(tokens,{halt}) AND hasAny(tokens,{resume}),2,hasAny(tokens,{halt}),1,0) state
       FROM (SELECT *,arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),
@@ -125,9 +139,9 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
       countIf(state=2 OR (state=1 AND previous=2)) uncertain
       FROM changes ARRAY JOIN {frame_sql} AS f WHERE at_us>={opened}
         AND (f.1!={FRAMES[-1]} OR (at_us>={regular_open} AND at_us<{regular_close})) GROUP BY frame,bucket),
-    quote_clock AS (SELECT toUInt8(1) join_key,sip_timestamp_us at_us,
-      argMax(tuple(toUInt8(q_ok),secondary_int,price_int,toFloat64(size_secondary),toFloat64(size_primary)),ordinal) book
-      FROM decoded WHERE kind=0 GROUP BY at_us ORDER BY at_us),
+    quote_clock AS (SELECT toUInt8(1) join_key,max(sip_timestamp_us) at_us,
+      argMax(tuple(toUInt8(q_ok),secondary_int,price_int,toFloat64(size_secondary),toFloat64(size_primary)),tuple(sip_timestamp_us,ordinal)) book
+      FROM decoded WHERE kind=0 GROUP BY intDiv(sip_timestamp_us-{opened},100000) ORDER BY at_us),
     boundaries AS (SELECT g.*,o.state open_state,c.state close_state
       FROM (SELECT * FROM grid ORDER BY start_us) g
       ASOF LEFT JOIN at_clock o ON g.join_key=o.join_key AND g.start_us>o.at_us
@@ -140,7 +154,7 @@ def day_query(ticker, day, bounds, rules, initial_state, seed, keep_percent, pre
       (SELECT toString(tuple(countIf(kind=1),countIf(kind=1 AND bitAnd(event_meta,192)=0),
         countIf(kind=1 AND bitAnd(event_meta,128)!=0),countIf(usable))) FROM decoded) reporting_counts,
       (SELECT toString(tuple(count(),sum(cityHash64(tuple(*)))) ) FROM raw) source_hash
-    FROM boundaries g LEFT JOIN rolled r ON g.frame=r.frame AND g.bucket=r.bucket
+    FROM boundaries g
       LEFT JOIN transitions t ON g.frame=t.frame AND g.bucket=t.bucket
       ASOF LEFT JOIN quote_clock qb ON g.join_key=qb.join_key AND g.end_us>qb.at_us
     ORDER BY g.frame,g.bucket FORMAT ArrowStream"""

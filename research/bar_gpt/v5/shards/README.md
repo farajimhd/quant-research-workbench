@@ -73,6 +73,16 @@ Each sample shard records its full context bounds. The training split uses one
 chronological cutoff for all tickers/timeframes and purges crossing contexts,
 including contexts whose observed bars have gaps across that cutoff.
 
+An audited execution-only resume may optimize SQL while preserving the frozen
+logical dataset identity. Such a resume requires a sealed equivalence report
+covering at least 32 real ticker-days and every dataset year, identical packed
+arrays and provenance, pinned baseline/candidate SQL hashes, and unchanged source
+selection. `query_hash` continues to describe the original logical query;
+`execution_query_hash` records the query actually executed. Original receipts
+are never rewritten. The optimized query carries aggregates forward and reduces
+the quote lookup to the last actual update per 100ms bucket; observed OHLC/counts
+still consume all eligible events, and quote invalidation still clears carry.
+
 Hourly/daily prices are backward-adjusted to the share basis at the end of each
 sample using the existing `q_live.market_stock_split_v1` executed-action catalog.
 The complete acquisition receipt, catalog rows, and hashes are frozen in the
