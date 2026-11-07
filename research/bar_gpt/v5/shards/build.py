@@ -28,7 +28,7 @@ from research.bar_gpt.v5 import bar_semantics_v1
 HEAVY_QUERY = threading.Semaphore(1)
 
 
-def query_with_memory_recovery(c, statement, query_id, stop, status, worker):
+def query_with_memory_recovery(c, statement, query_id, stop, status, worker, *, allow_empty=False):
     """Return unchanged Arrow output, retrying only explicit CH memory errors.
 
     Each worker owns its client/settings. Enlarged retries serialize so rare
@@ -36,7 +36,7 @@ def query_with_memory_recovery(c, statement, query_id, stop, status, worker):
     All limits are finite; failure at 32 GiB still drains the campaign visibly.
     """
     try:
-        return source.arrow(c, statement, query_id)
+        return source.arrow(c, statement, query_id, **({'allow_empty':True} if allow_empty else {}))
     except RuntimeError as error:
         if "MEMORY_LIMIT_EXCEEDED" not in str(error):
             raise
@@ -56,7 +56,7 @@ def query_with_memory_recovery(c, statement, query_id, stop, status, worker):
                 status.retries += 1
             status.update(worker, phase=f"memory retry {gib} GiB")
             try:
-                return source.arrow(c, statement, f"{query_id}-memory-{gib}")
+                return source.arrow(c, statement, f"{query_id}-memory-{gib}", **({'allow_empty':True} if allow_empty else {}))
             except RuntimeError as error:
                 if "MEMORY_LIMIT_EXCEEDED" not in str(error) or gib == 32:
                     raise

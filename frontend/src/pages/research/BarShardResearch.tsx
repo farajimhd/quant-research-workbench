@@ -53,7 +53,7 @@ export function BarShardResearch() {
   const matchingFiles = files.filter(f => !timeframe || f.frames[String(timeframe)] > 0);
   const selectionMatches = sample?.job === job && `${sample.shard}/${sample.file}` === fileKey && (!timeframe || sample.timeframe === timeframe);
   return <div className="research-page bar-shard-research">
-    <header className="research-heading"><div><h1>BarGPT shard inspection</h1><p>Published v4 trade-driven samples · raw stored values, evidence masks and actual clocks</p></div>
+    <header className="research-heading"><div><h1>BarGPT shard inspection</h1><p>Published v5 trade-driven samples · raw stored values, evidence masks and actual clocks</p></div>
       {catalog && <span className="research-muted">{catalog.progress.state} · {(catalog.progress.bytes / 1e9).toFixed(2)} GB · {catalog.progress.samples.toLocaleString()} samples</span>}
     </header>
     <section className="research-selection" aria-label="Shard selection">

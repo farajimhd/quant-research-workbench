@@ -13,15 +13,16 @@ import time
 import numpy as np
 
 from .shards.contract import CHANNELS, FRAMES, SAMPLE_DTYPE, VERSION, digest, file_hash
+from .shards.balanced_plan import VERSION as BALANCED_VERSION
 
-ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\shards-2019-2025-v4")
+ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\shards-2019-2025-v5")
 
 
 @lru_cache(maxsize=1)
 def _plan():
     """Cache immutable ticker-year identity metadata, not growing file listings."""
     wrapper = json.loads((ROOT / "contract.json").read_text())
-    if wrapper["binding"] != digest(wrapper["contract"]) or wrapper["contract"]["version"] != VERSION:
+    if wrapper["binding"] != digest(wrapper["contract"]) or wrapper["contract"]["version"] not in (VERSION,BALANCED_VERSION):
         raise ValueError("The inspection source has an unsupported or corrupt contract")
     jobs = json.loads((ROOT / "plan.json").read_text())
     return wrapper, [dict(job=f"{r['year']}-{digest(r['ticker'])[:20]}", ticker=r["ticker"], year=r["year"]) for r in jobs]
@@ -40,7 +41,7 @@ def catalog(search="", year=0, offset=0):
     jobs = [r for r in plan if r["job"] in available and (not year or r["year"] == year)
             and search.upper() in r["ticker"].upper()]
     progress = json.loads((ROOT / "progress.json").read_text())
-    return dict(version=VERSION, jobs=jobs[offset:offset+100], total=len(jobs), offset=offset,
+    return dict(version=wrapper['contract']['version'], jobs=jobs[offset:offset+100], total=len(jobs), offset=offset,
                 years=wrapper["contract"]["years"], channels=CHANNELS, frames=FRAMES,
                 binding=wrapper["binding"], progress={k: progress.get(k) for k in ("state", "samples", "bytes", "updated")})
 
@@ -107,7 +108,7 @@ def sample(job="", shard="", file="", row=0, timeframe=0, randomize=False, searc
         if not job:
             raise ValueError("No matching published sample found; select a materialized ticker-year")
     identity, directory = _job(job)
-    if not re.fullmatch(r"(?:\d{4}-\d{2}-\d{2}|coarse)", shard) or not re.fullmatch(r"samples-\d{4}\.npy", file):
+    if not re.fullmatch(r"(?:\d{4}-\d{2}-\d{2}|coarse|(?:fine|coarse)-[0-9-]{1,85})", shard) or not re.fullmatch(r"samples-\d{4}\.npy", file):
         raise ValueError("Select a published shard file")
     receipt = json.loads((directory / shard / "receipt.json").read_text())
     if digest({k:v for k,v in receipt.items() if k != "receipt_hash"}) != receipt["receipt_hash"] or receipt["binding"] != _plan()[0]["binding"]:
@@ -153,7 +154,7 @@ def sample(job="", shard="", file="", row=0, timeframe=0, randomize=False, searc
         bars.append(dict(index=i, end_us=end or None, padding=end == 0,
                          gap_us=int(end-record["end_us"][i-1]) if i and end else None,
                          raw=raw, valid=valid.tolist(), values=[v if ok else None for v,ok in zip(raw,valid)]))
-    return dict(**identity, version=VERSION, shard=shard, file=file, row=row, timeframe=int(record["timeframe_us"]),
+    return dict(**identity, version=_plan()[0]['contract']['version'], shard=shard, file=file, row=row, timeframe=int(record["timeframe_us"]),
                 samples=sample_rows, bars=bars, channels=CHANNELS, sha256=entry["sha256"],
                 receipt_hash=receipt["receipt_hash"], binding=receipt["binding"],
                 observed=sum(not b["padding"] for b in bars), reporting_counts=receipt.get("reporting_counts"),
