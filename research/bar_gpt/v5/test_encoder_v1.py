@@ -156,24 +156,25 @@ def test_default_architecture_and_full_column_inference():
     torch.testing.assert_close(full_embedding, permuted, rtol=1e-5, atol=5e-6)
 
 
-@pytest.mark.parametrize("rate", [0.0, 0.6])
-def test_full_reconstruction_queries_every_channel_in_canonical_order(rate):
-    """Full and masked inputs can reconstruct all columns through the same bottleneck."""
+def test_full_embedding_supports_joint_training_and_decoder_free_inference():
+    """The explicit full-input path exports z and propagates a downstream head's loss."""
     raw = raw_batch(2)
-    batch = prepared(raw, fit_activity_stats(raw.values, raw.valid), rate=rate)
-    model = small_model().eval()
-    embedding, predictions = model.reconstruct_full(
-        batch.visible, batch.valid, batch.feature_ids, batch.time, batch.time_valid,
-    )
-    with torch.no_grad():
-        expected_embedding = model.encoder(
-            batch.visible, batch.valid, batch.feature_ids, batch.time, batch.time_valid,
-        )
-        ids = torch.arange(18).expand(len(raw.values), -1)
-        expected = model.decoder(expected_embedding, ids, batch.time, batch.time_valid)
-    assert predictions.shape == (2, 64, 18)
-    assert torch.isfinite(predictions).all()
-    assert not predictions.requires_grad and not embedding.requires_grad
-    assert not model.training  # The helper preserves the caller's evaluation mode.
-    torch.testing.assert_close(embedding, expected_embedding)
-    torch.testing.assert_close(predictions, expected.transpose(1, 2))
+    batch = prepared(raw, fit_activity_stats(raw.values, raw.valid), rate=0)
+    order = batch.feature_ids.argsort(dim=1)[..., None].expand(-1, -1, 64)
+    market = batch.visible.gather(1, order).transpose(1, 2)  # Restore canonical [B,64,18] from shuffled prepared columns.
+    valid = batch.valid.gather(1, order).transpose(1, 2)
+    encoder = small_model().encoder  # Keep only the encoder; no decoder participates.
+    embedding = encoder.encode_full(market, valid, batch.time, batch.time_valid)
+    head = torch.nn.Linear(32, 1)
+    head(embedding).square().mean().backward()  # A phase-two objective must reach encoder parameters.
+    assert embedding.shape == (2, 32) and embedding.requires_grad
+    assert encoder.values.weight.grad.abs().sum() > 0
+    assert torch.isfinite(encoder.values.weight.grad).all()
+    encoder.eval()
+    with torch.inference_mode():
+        actual = encoder.encode_full(market, valid, batch.time, batch.time_valid)
+        expected = encoder(batch.visible, batch.valid, batch.feature_ids, batch.time, batch.time_valid)
+    torch.testing.assert_close(actual, expected, rtol=1e-5, atol=5e-6)
+    assert not actual.requires_grad
+    with pytest.raises(ValueError, match="Full embedding"):
+        encoder.encode_full(market[..., :8], valid[..., :8], batch.time, batch.time_valid)
