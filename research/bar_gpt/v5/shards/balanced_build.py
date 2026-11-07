@@ -9,7 +9,9 @@ coarse tails, never adds a receipt twice or overwrites authoritative payloads.
 import argparse
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +29,27 @@ from .range_sql import range_query, event_source
 from pipelines.market_sip.events.market_signals import token_sets
 from .sql import clock
 from .storage import BAR_DTYPE, Budget, publish, verify_receipt
+from research.bar_gpt.v5 import bar_semantics_v1
+from pipelines.market_sip.events import market_day_sql, market_signals
+
+NY = ZoneInfo("America/New_York")
+
+
+def execute_range(c, statement, query_id, stop, status, lane):
+    """Retry transient transport failures, preserving the identical bounded query."""
+    for attempt in range(3):
+        try:
+            return query_with_memory_recovery(
+                c, statement, query_id, stop, status, lane, allow_empty=True
+            )
+        except (ConnectionError, TimeoutError, OSError):
+            if attempt == 2:
+                raise
+            with status.lock:
+                status.retries += 1
+            status.update(lane, phase="retrying query connection")
+            if stop.wait(2**attempt):
+                return None
 
 
 class Quotas:
@@ -96,10 +119,7 @@ def write_samples(
     frame = int(data["timeframe_us"][0])
     # A chunk may cross years. Cohorts use the sample-end ticker-year activity.
     years = np.asarray(
-        [
-            datetime.fromtimestamp(int(t) / 1e6, timezone.utc).year
-            for t in data["end_us"][:, -1]
-        ]
+        [datetime.fromtimestamp(int(t) / 1e6, NY).year for t in data["end_us"][:, -1]]
     )
     activity = {r["year"]: r["liquid"] for r in job["years"]}
     for year in np.unique(years):
@@ -118,9 +138,7 @@ def write_samples(
             year=int(year),
             liquid=liquid,
             unit=unit,
-            day=datetime.fromtimestamp(
-                int(selected["end_us"][0, -1]) / 1e6, timezone.utc
-            )
+            day=datetime.fromtimestamp(int(selected["end_us"][0, -1]) / 1e6, NY)
             .date()
             .isoformat(),
             origin_fraction=1.0 if frame in FRAMES[4:] else 0.2,
@@ -277,14 +295,13 @@ def worker(
                 end_us=clock(group[-1]["source_date"], 20),
                 state_events=state_events,
             )
-            output = query_with_memory_recovery(
+            output = execute_range(
                 c,
                 statement,
                 "bargpt-" + digest([job["ticker"], unit])[:24],
                 stop,
                 status,
                 lane,
-                allow_empty=True,
             )
             if output is None:
                 return
@@ -359,14 +376,13 @@ def worker(
                 statement = range_query(
                     job["ticker"], bounds, rules, origin, end, state_events=state_events
                 )
-                output = query_with_memory_recovery(
+                output = execute_range(
                     c,
                     statement,
                     "bargpt-" + digest([job["ticker"], unit])[:24],
                     stop,
                     status,
                     lane,
-                    allow_empty=True,
                 )
                 if output is None:
                     return
@@ -466,12 +482,17 @@ def main(argv=None):
     )
     stop = threading.Event()
     began = time.time()
+    baseline_bytes, baseline_clock = 0, began
     failed, completed, active = [], 0, {}
     state = "planning"
     plan = None
 
     def snapshot(done=0, total=112):
         elapsed = time.time() - began
+        if (args.output / "STOP").exists():
+            stop.set()
+        if shutil.disk_usage(args.output).free < 100 * 10**9:
+            stop.set()
         snapshot = dict(
             status.snapshot(),
             state=state,
@@ -493,7 +514,8 @@ def main(argv=None):
                 chunk_minutes=args.chunk_minutes,
                 coarse_days=args.coarse_days,
             ),
-            bytes_per_second=budget.used / max(1, elapsed),
+            bytes_per_second=max(0, budget.used - baseline_bytes)
+            / max(1, time.time() - baseline_clock),
         )
         write_json(args.output / "progress.json", snapshot)
 
@@ -530,7 +552,7 @@ def main(argv=None):
         years=YEARS,
         authority=authority,
         format="Float32[64,21] plus masks, UTC clocks, timeframe and split",
-        policy="20% intraday sliding origins; daily sliding; cross-session; sample-end split basis",
+        policy="20% fine-frame sliding origins; hourly/daily sliding; cross-session; sample-end split basis",
         configuration={
             k: v
             for k, v in vars(args).items()
@@ -542,6 +564,12 @@ def main(argv=None):
             if not p.name.startswith("test_")
         },
     )
+    contract["code"].update(
+        {
+            module.__name__: file_hash(Path(module.__file__))
+            for module in (bar_semantics_v1, market_day_sql, market_signals)
+        }
+    )
     binding = digest(contract)
     path = args.output / "contract.json"
     if path.exists() and json.loads(path.read_text())["binding"] != binding:
@@ -552,14 +580,21 @@ def main(argv=None):
         dict(source_revision=args.source_revision, pid=os.getpid(), started=began),
     )
     # Restore only sealed publications; counts are never inferred from stale logs.
-    for path in args.output.glob("jobs/*/*/receipt.json"):
-        r = verify_receipt(path.parent, hashes=False)
-        if r["binding"] != binding:
-            raise ValueError("Foreign receipt in campaign")
-        status.accepted(r, reused=True)
-        frame = str(next(int(f) for f, n in r["frames"].items() if n))
-        quotas.saved[frame][r["liquid"]] += r["samples"]
+    state = "resuming"
+    paths = args.output.glob("jobs/*/*/receipt.json")
+    with ThreadPoolExecutor(args.io_workers) as readers:
+        while batch := list(islice(paths, 512)):
+            for r in readers.map(
+                lambda p: verify_receipt(p.parent, hashes=False), batch
+            ):
+                if r["binding"] != binding:
+                    raise ValueError("Foreign receipt in campaign")
+                status.accepted(r, reused=True)
+                frame = str(next(int(f) for f, n in r["frames"].items() if n))
+                quotas.saved[frame][r["liquid"]] += r["samples"]
+            snapshot()
     budget.used = sum(p.stat().st_size for p in args.output.rglob("*") if p.is_file())
+    baseline_bytes, baseline_clock = budget.used, time.time()
     state = "running"
     jobs = iter(plan["jobs"])
     with ThreadPoolExecutor(args.io_workers, thread_name_prefix="shard-io") as disk:

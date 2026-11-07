@@ -27,6 +27,14 @@ def render(snapshot, width=100, height=40):
         f"jobs {snapshot.get('jobs_completed',0):,}/{snapshot.get('jobs_total',0):,}  |  "
         f"failed {len(snapshot.get('failed',[]))}  retries {snapshot.get('retries',0)}"
     )
+    rate = float(snapshot.get("bytes_per_second", 0))
+    elapsed = float(snapshot.get("elapsed_seconds", 0))
+    throughput = Text("Rate / ETA: warming up")
+    if rate > 0 and elapsed >= 60:
+        hours = max(0, target - used) / rate / 3600
+        throughput = Text(
+            f"Durable write rate {rate/10**6:,.1f} MB/s · estimated remaining {hours:,.1f} hours"
+        )
     quotas = snapshot.get("quotas")
     allocation = Table(box=None, padding=(0, 1), expand=True)
     allocation.add_column("Timeframe")
@@ -95,6 +103,7 @@ def render(snapshot, width=100, height=40):
         summary,
         ProgressBar(total=target, completed=min(used, target)),
         configuration,
+        *([throughput] if quotas else []),
         *([allocation] if quotas else []),
         Text(""),
         table,

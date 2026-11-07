@@ -34,6 +34,13 @@ def freeze(root, endpoint=None, progress=None, tickers=()):
         result = json.loads(final.read_text())
         if result["hash"] != digest({k: v for k, v in result.items() if k != "hash"}):
             raise ValueError("Frozen plan seal changed")
+        for item in result["partitions"]:
+            path = output / item["name"]
+            if (
+                path.stat().st_size != item["bytes"]
+                or file_hash(path) != item["sha256"]
+            ):
+                raise ValueError("Frozen ordinal partition changed")
         return result
     predicate = (
         ""
