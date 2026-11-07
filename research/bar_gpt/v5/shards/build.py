@@ -119,7 +119,20 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
         days = days[:args.max_days]
     status.update(worker, ticker=ticker, year=year, total=len(days), done=0, phase="index")
     try:
-        bounds = source.index(c, ticker, year)
+        # Concurrent startup can briefly exhaust the endpoint's accept queue.
+        # Retry transport failures only; integrity errors must still fail closed.
+        for attempt in range(4):
+            try:
+                bounds = source.index(c, ticker, year)
+                break
+            except (ConnectionError, TimeoutError, OSError):
+                if attempt == 3:
+                    raise
+                with status.lock:
+                    status.retries += 1
+                status.update(worker, phase="index connection retry")
+                if stop.wait(2 ** attempt):
+                    return False
         index_path = directory / "index.json"
         if index_path.exists():
             if json.loads(index_path.read_text()) != bounds:
@@ -324,6 +337,7 @@ def campaign(args, years):
     c = source.client(args.endpoint, args.query_memory_gib)
     try:
         authority = source.preflight(c)
+        args.endpoint = c.base_url  # All workers use the endpoint actually verified by preflight.
         authority["corporate_actions"] = source.split_authority(c, years)
         if shutil.disk_usage(args.output).free < args.target_bytes + args.free_reserve_gb * 10**9:
             # Resume may already occupy much of the requested capacity.
