@@ -105,6 +105,7 @@ def train_campaign(args, manifest, stats, reporter):
         limit = (args.train_steps if training else args.validation_steps) or len(loader)
         reporter.update(
             stage="starting " + split + " loader", epoch=epoch + 1, epochs=args.epochs,
+            done=0, total=limit,  # Replace the prior pass's counters before workers start or prefetch.
             best_validation=best, total_is_upper_bound=True,
             config=dict(name=args.model, batch_size=args.batch_size, workers=args.workers,
                         precision=args.precision, prefetch=args.prefetch),
