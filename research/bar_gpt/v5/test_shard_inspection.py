@@ -60,3 +60,36 @@ def test_modified_receipt_rejected(corpus):
     job,folder=corpus
     p=folder/'receipt.json';r=json.loads(p.read_text());r['samples']=999;p.write_text(json.dumps(r))
     with pytest.raises(ValueError,match='receipt'): view.sample(job,'2025-01-02','samples-0000.npy')
+
+
+def test_component_namespaces_and_waiting_supplement_are_visible(corpus):
+    """Two v6 bindings share one inspector without ambiguous job IDs or path fallbacks."""
+    from research.bar_gpt.v5.cohort_v1 import COHORT_VERSION
+    import shutil
+    _, folder = corpus
+    base = view.ROOT
+    supplement = base / "extra"
+    contract = dict(version=VERSION, years=[2025], component="fixture-extra")
+    supplement.mkdir()
+    (supplement / "contract.json").write_text(json.dumps(dict(contract=contract, binding=digest(contract))))
+    (supplement / "plan.json").write_text(json.dumps([dict(ticker="NVDA", year=2025)]))
+    (supplement / "queue.json").write_text(json.dumps(dict(state="waiting_base")))
+    raw_job = "2025-" + digest("NVDA")[:20]
+    target = supplement / "jobs" / raw_job / "2025-01-02"
+    target.mkdir(parents=True)
+    shutil.copyfile(folder / "samples-0000.npy", target / "samples-0000.npy")
+    receipt = json.loads((folder / "receipt.json").read_text())
+    receipt["binding"] = digest(contract)
+    receipt["receipt_hash"] = digest({k: v for k, v in receipt.items() if k != "receipt_hash"})
+    (target / "receipt.json").write_text(json.dumps(receipt))
+    body = dict(version=COHORT_VERSION, schema=VERSION,
+                members=[dict(name="base", path="."), dict(name="liquid500", path="extra")])
+    (base / "cohort.json").write_text(json.dumps(dict(cohort=body, hash=digest(body))))
+    view._plan.cache_clear()
+    view._available.cache_clear()
+    catalog = view.catalog("NVDA")
+    assert catalog["total"] == 1 and catalog["components"][1]["state"] == "waiting_base"
+    job = catalog["jobs"][0]["job"]
+    assert job == "liquid500~" + raw_job
+    sample = view.sample(job, "2025-01-02", "samples-0000.npy", row=1)
+    assert sample["component"] == "liquid500" and sample["ticker"] == "NVDA"

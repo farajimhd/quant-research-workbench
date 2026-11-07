@@ -34,6 +34,12 @@ hourly/daily contexts and gaps. Activity scaling is fitted on training data only
 The split binds the v6 dataset contract, receipt hashes and file hashes. A bad v6
 trade bar is fatal; it is never silently counted as a no-price exclusion.
 
+When `phase1-v6-cohort/cohort.json` registers the 500 GB liquid supplement, the
+same base dataset argument resolves both components. Both must complete before
+freezing the final split. All members share one chronological cutoff, full-context
+purging and training-only calibration; do not create separate train/validation
+splits for the supplement. See `LIQUID_SUPPLEMENT.md` for the queued extraction.
+
 Use a fresh split and calibration for v6. Old 21-feature checkpoints are
 incompatible and cannot resume this model. For a subsequent compatible resume,
 pass `--resume <checkpoint_last.pt>` plus the original `--split-manifest` and

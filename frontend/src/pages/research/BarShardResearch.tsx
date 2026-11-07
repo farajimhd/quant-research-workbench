@@ -3,14 +3,15 @@ import { query } from "../../api/client";
 import { researchApi } from "./researchApi";
 import "./BarShardResearch.css";
 
-type Job = { job: string; ticker: string; year: number };
+type Job = { job: string; ticker: string; year: number; component?: string };
 type File = { shard: string; file: string; frames: Record<string, number> };
 type Bar = { index: number; end_us: number | null; gap_us: number | null; padding: boolean; raw: number[]; valid: boolean[]; values: (number | null)[] };
 type Sample = Job & { shard: string; file: string; row: number; timeframe: number; observed: number; bars: Bar[]; channels: string[]; sha256: string; basis: string; reporting_counts: string | null; samples: { row: number; timeframe: number; first_us: number; last_us: number }[] };
-type Catalog = { jobs: Job[]; total: number; years: number[]; progress: { state: string; samples: number; bytes: number } };
+type Catalog = { jobs: Job[]; total: number; years: number[]; components?: { name: string; state: string; samples: number }[]; progress: { state: string; samples: number; bytes: number } };
 const endpoint = "/api/research/models/bargpt/shards";
 const frames = [[100000, "100ms"], [1000000, "1s"], [10000000, "10s"], [60000000, "1min"], [3600000000, "1hour"], [86400000000, "Daily"]] as const;
 const frameName = (value: number) => frames.find(([n]) => n === value)?.[1] ?? String(value);
+const componentName = (value?: string) => value === "liquid500" ? "Liquid supplement" : "Base";
 const number = (value: number | null) => value === null ? "Missing" : value.toLocaleString("en-US", { maximumFractionDigits: 8 });
 const clock = (us: number | null) => us === null ? "Padding" : new Date(us / 1000).toISOString().replace("T", " ").replace("Z", "") + String(us % 1000).padStart(3, "0") + " UTC";
 
@@ -64,7 +65,7 @@ export function BarShardResearch() {
         <button className="button primary" disabled={busy} onClick={() => void load(true, undefined, true)}>{busy ? "Loading…" : "Random sample"}</button>
       </div>
       <div className="research-controls">
-        <label>Ticker / year<select aria-label="Ticker / year" disabled={busy} value={job} onChange={e => { setJob(e.target.value); setFileKey(""); }}><option value="">Select a ticker-year</option>{job && !catalog?.jobs.some(j => j.job === job) && <option value={job}>{sample?.ticker ?? job} · {sample?.year}</option>}{catalog?.jobs.map(j => <option key={j.job} value={j.job}>{j.ticker} · {j.year}</option>)}</select></label>
+        <label>Ticker / year<select aria-label="Ticker / year" disabled={busy} value={job} onChange={e => { setJob(e.target.value); setFileKey(""); }}><option value="">Select a ticker-year</option>{job && !catalog?.jobs.some(j => j.job === job) && <option value={job}>{sample?.ticker ?? job} · {sample?.year}</option>}{catalog?.jobs.map(j => <option key={j.job} value={j.job}>{j.ticker} · {j.year} · {j.component ?? "base"}</option>)}</select></label>
         <label>Published shard<select aria-label="Published shard" disabled={busy} value={fileKey} onChange={e => setFileKey(e.target.value)}><option value="">Select a shard file</option>{fileKey && !matchingFiles.some(f => `${f.shard}/${f.file}` === fileKey) && <option value={fileKey}>{fileKey}</option>}{matchingFiles.map(f => <option key={`${f.shard}/${f.file}`} value={`${f.shard}/${f.file}`}>{f.shard} / {f.file}</option>)}</select></label>
         <button className="button secondary" disabled={busy || !fileKey} onClick={() => void load(true)}>Load shard</button>
         <button className="button secondary compact" disabled={!offset} onClick={() => setOffset(Math.max(0, offset - 100))}>Previous tickers</button>
@@ -72,11 +73,12 @@ export function BarShardResearch() {
       </div>
       {job && files.length > 0 && !matchingFiles.length && <p className="research-muted">No published files for this timeframe yet. Hourly/daily files appear when the ticker-year completes.</p>}
       <p className="research-muted">{catalog?.total.toLocaleString() ?? "Loading"} materialized ticker-years. Random selection chooses a matching published file and row; it is not a uniform draw over the entire corpus.</p>
+      {catalog?.components && <p className="research-muted">{catalog.components.map(c => `${componentName(c.name)}: ${c.state === "waiting_base" ? "queued after base" : c.state.replaceAll("_", " ")} · ${c.samples.toLocaleString()} samples`).join(" | ")}</p>}
     </section>
     {error && <p role="alert" className="bar-shard-error">{error}</p>}
     {!sample ? <div className="research-empty">Choose a shard or load a random sample to inspect its 64 bar slots.</div> : <>
       <section className="bar-shard-chart-panel" aria-label="Shard chart">
-        <div className="research-controls"><h2>{sample.ticker} · {sample.year} · {frameName(sample.timeframe)}</h2>
+        <div className="research-controls"><h2>{sample.ticker} · {sample.year} · {frameName(sample.timeframe)} · {sample.component ?? "base"}</h2>
           <label>Sample row<select aria-label="Sample row" value={sample.row} disabled={busy || !selectionMatches} onChange={e => void load(false, Number(e.target.value))}>{sample.samples.map(r => <option key={r.row} value={r.row}>#{r.row} · {frameName(r.timeframe)} · {clock(r.first_us)}</option>)}</select></label>
           <label>Price series<select aria-label="Price series" value={family} onChange={e => setFamily(e.target.value)}><option value="all">Trades + bid + ask</option><option value="trade">Trades</option><option value="bid">Bid</option><option value="ask">Ask</option></select></label>
         </div>

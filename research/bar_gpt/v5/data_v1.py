@@ -2,7 +2,6 @@
 
 from collections import OrderedDict, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 from datetime import datetime, timezone
 import json
 import math
@@ -14,12 +13,16 @@ import torch
 from torch.utils.data import DataLoader, Dataset, IterableDataset
 
 from .pretraining_v1 import ActivityStats, fit_activity_stats, prepare_batch
+from .cohort_v1 import members as cohort_members
 from .shards.phase1_contract import CHANNELS, SAMPLE_DTYPE, VERSION, digest, file_hash, write_json
 
 
 def dataset_identity(dataset: Path) -> dict:
     """Validate a production v6 contract; contract-free inventories are explicit test fixtures."""
     path = dataset / "contract.json"
+    seal, components = cohort_members(dataset, require_all=True)
+    if not path.exists() and seal is not None:
+        path = components[0][1] / "contract.json"
     if not path.exists():
         return {}
     wrapper = json.loads(path.read_text())
@@ -27,8 +30,20 @@ def dataset_identity(dataset: Path) -> dict:
         raise ValueError("Dataset contract seal changed.")
     if wrapper["contract"]["version"] != VERSION:
         raise ValueError("Training requires v6 market-only shards and a fresh split/calibration.")
-    return dict(dataset_binding=wrapper["binding"], dataset_version=VERSION,
-                market_channels=list(CHANNELS))
+    identity = dict(dataset_binding=wrapper["binding"], dataset_version=VERSION,
+                    market_channels=list(CHANNELS))
+    if seal is not None:
+        identities = []
+        for name, root in components:
+            member = json.loads((root / "contract.json").read_text())
+            if member["binding"] != digest(member["contract"]) or member["contract"]["version"] != VERSION:
+                raise ValueError(f"Cohort member {name} has an invalid v6 contract")
+            if name != "base" and (member["contract"].get("parent_binding") != wrapper["binding"]
+                                   or member["contract"].get("authority") != wrapper["contract"].get("authority")):
+                raise ValueError(f"Cohort member {name} does not share the base's canonical authority")
+            identities.append(dict(name=name, path=str(root), binding=member["binding"]))
+        identity.update(cohort_hash=seal, dataset_members=identities)
+    return identity
 
 
 def validate_complete_market(rows):
@@ -79,13 +94,14 @@ def build_split(dataset: Path, output: Path, progress=None) -> dict:
     deliberately superseded in this separate manifest, never overwritten.
     """
     identity = dataset_identity(dataset)  # Pin production schema/authority before indexing any publication.
-    paths = sorted((dataset / "jobs").rglob("receipt.json"))
+    components = identity.get("dataset_members", [dict(path=str(dataset), binding=identity.get("dataset_binding"))])
+    paths = [(path, component["binding"]) for component in components
+             for path in sorted((Path(component["path"]) / "jobs").rglob("receipt.json"))]
     if not paths:
         raise ValueError("No published sample receipts found.")
     entries = []
     with ThreadPoolExecutor(max_workers=8) as pool:
-        reader = partial(read_receipt, expected_binding=identity.get("dataset_binding"))
-        for index, result in enumerate(pool.map(reader, paths)):
+        for index, result in enumerate(pool.map(lambda item: read_receipt(item[0], item[1]), paths)):
             entries.extend(result)
             if progress and index % 500 == 0:
                 progress(stage="indexing receipts", done=index, total=len(paths))
@@ -140,7 +156,7 @@ def load_split(path: Path) -> dict:
     if digest({k: v for k, v in manifest.items() if k != "manifest_hash"}) != manifest["manifest_hash"]:
         raise ValueError("Split manifest was modified.")
     dataset = Path(manifest["dataset"])
-    if manifest.get("dataset_binding") and not (dataset / "contract.json").is_file():
+    if manifest.get("dataset_binding") and not (dataset / "contract.json").is_file() and not (dataset / "cohort.json").is_file():
         raise ValueError("The split's sealed dataset contract is missing.")
     for key, value in dataset_identity(dataset).items():
         if manifest.get(key) != value:
