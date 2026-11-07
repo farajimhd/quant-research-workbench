@@ -11,6 +11,14 @@ Startup/controller exceptions publish a terminal failure instead of leaving a
 stale planning panel. Operational supervisors must capture stdout and stderr
 separately and retain the child exit code; migration need not repeat on resume.
 
+The guarded launcher also records a `quota-aware-runtime-v1` adapter audit for
+each owned launch. Completed checkpoints are restored before reopening Parquet
+partitions. Tickers with no admissible liquidity quota are skipped; trailing
+years stop only when no future year can publish a sample. Warm-up history before
+an eligible year stays intact. Independent hourly/daily frame groups are pruned
+only when their outputs cannot be accepted. Canonical bar expressions and the
+sealed dataset binding remain unchanged; progress exposes optimization counters.
+
 ## Recorded requirements
 
 - Freeze the complete 2019–2025 canonical ordinal summary before extraction.

@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from research.bar_gpt.v5.shards.balanced_build import main as build_main, arguments
 from research.bar_gpt.v5.shards.contract import write_json
+from research.bar_gpt.v5.shards import balanced_build as builder
+from research.bar_gpt.v5.shard_runtime_v1 import scheduling_runtime
 
 
 def canonical_arguments(argv):
@@ -51,7 +53,8 @@ def main(argv=None):
     argv = canonical_arguments(sys.argv[1:] if argv is None else argv)
     output = arguments(argv).output
     try:
-        return build_main(argv)
+        with scheduling_runtime(builder, output):
+            return build_main(argv)
     except (PermissionError, BlockingIOError):
         raise  # A second launcher must not mark the actual lock owner's progress failed.
     except (Exception, KeyboardInterrupt) as error:
