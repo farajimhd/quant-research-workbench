@@ -39,19 +39,35 @@ not event-weighted random ordinal sampling or a claim of certified instrument
 identity. Each worker processes trading sessions chronologically so halt state
 and coarse context can be carried without rereading prior days repeatedly.
 
-ClickHouse aggregates one sparse 100ms base, rolls up sufficient statistics,
-and returns selected **dense** windows plus 16 hourly bars and one daily bar.
+The v2 contract imports `bar_semantics_v1.py`, shared with future model phases.
+ClickHouse aggregates a sparse 100ms base, rolls up sufficient statistics,
+and returns samples of **64 consecutive observed bars**, plus transient coarse bars.
+Observation indices are assigned before sampling; clock gaps remain in timestamps.
+Unknown reporting status and explicitly delayed trades are excluded. Receipts
+record total trades, unknown trades, delayed trades and structurally usable timely
+trades, in that order, in `reporting_counts`.
 Sessions are XNYS trading dates, 04:00–20:00 New York, including early-close
-dates under that explicitly extended-hours definition. Daily means the full
-extended session, not a regular-hours daily candle. DST changes UTC boundaries.
+dates under that explicitly extended-hours definition. Daily uses 09:30–16:00
+New York with the same trade and quote eligibility as intraday. DST changes UTC boundaries.
 
 Fine frames use a deterministic random offset in 0–63, then nonoverlapping
 64-bar blocks with 10% retention. All complete nonoverlapping coarse windows
 are retained because they are scarce. Frame counts are exposed; equal storage
 by timeframe is not forced through duplication. Coarse windows are packed by
 NumPy across sessions but never across a missing ticker-day, year, or split.
-Remainders shorter than 64 are not samples. Empty scheduled bars remain in
-windows; missing ticker-days are recorded with explicit reasons.
+Remainders shorter than 64 are not samples. No empty clock slots are manufactured;
+missing ticker-days are recorded with explicit reasons. An entirely price-empty
+status-only block is explicitly counted and excluded before publication.
+
+Quotes carry the last causal valid pair within a session when no new quote is
+available; an invalid quote message clears that state. Carry does not create
+quote counts, and no future quote is used. Existing source events and ARTE tables
+are unchanged. Only final sample arrays are persisted; partial ticker-year
+recovery replays canonical days to rebuild the small in-memory coarse context.
+
+Each sample shard records its full context bounds. The training split uses one
+chronological cutoff for all tickers/timeframes and purges crossing contexts,
+including contexts whose observed bars have gaps across that cutoff.
 
 Halt state follows source-observed halt/resume token mappings from the shared
 market-signals implementation. Open is before `[start,end)`, close is after

@@ -7,7 +7,7 @@ import time
 
 import numpy as np
 
-VERSION = "bargpt-combined-64-v1"
+VERSION = "bargpt-observed-64-v2"
 WIDTH = 64
 FRAMES = (100_000, 1_000_000, 10_000_000, 60_000_000, 3_600_000_000, 86_400_000_000)
 CHANNELS = tuple(

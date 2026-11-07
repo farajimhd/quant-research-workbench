@@ -25,7 +25,7 @@ from .contract import SAMPLE_DTYPE, digest, pack, write_json, file_hash
 from .recovery import resolve_binding
 from .progress import render
 from .source import arrow, client, preflight
-from .storage import BAR_DTYPE, Budget, publish, verify_receipt
+from .storage import BAR_DTYPE, Budget, publish, unpack_bars, verify_receipt
 
 
 class FormatTests(unittest.TestCase):
@@ -96,7 +96,8 @@ k.CloseHandle(h)
             metadata = dict(identity="test")
             result = publish(temporary, samples, np.empty(0, dtype=BAR_DTYPE), metadata, budget, 16384)
             self.assertEqual(result["samples"], 3)
-            self.assertEqual(len(result["files"]), 4)
+            self.assertEqual(len(result["files"]), 3)
+            self.assertFalse((Path(temporary) / "coarse.npy").exists())
             first = np.load(Path(temporary)/"samples-0000.npy", mmap_mode="r", allow_pickle=False)
             np.testing.assert_array_equal(first["values"][0], samples["values"][0])
             first._mmap.close()  # Release the Windows file handle before cleanup.
@@ -149,24 +150,60 @@ class SqlTests(unittest.TestCase):
             cls.client._bar_arrow_connection.close()
         cls.client.close()
 
-    def fixture(self, events, initial=2):
+    def fixture(self, events, initial=2, fill=True, limit=True, offset=0):
         """Events: (offset_us, kind, ask/trade cents, bid cents, condition IDs)."""
+        sampling_offset = offset  # Keep the sampling seed independent of event timestamps below.
         opened = sql.clock("2019-01-03", 4)
+        if fill:
+            # Complete an observed 64-bar block without altering the first two seconds.
+            events = list(events) + [(i*1_000_000, 0, 1200, 1100, []) for i in range(2, 66)]
         columns = ("ticker String,ordinal UInt64,event_meta UInt8,sip_timestamp_us UInt64,"
                    "price_primary_int UInt32,price_secondary_int UInt32,size_primary Float32,"
                    "size_secondary Float32,condition_token_1 UInt8,condition_token_2 UInt8,"
                    "condition_token_3 UInt8,condition_token_4 UInt8,condition_token_5 UInt8")
         data = []
         for ordinal, (offset, kind, price, bid, tokens) in enumerate(events):
+            kind = 65 if kind == 1 else kind  # Normal fixture trades carry ARTE's verified-timely bit.
             token_values = list(tokens) + [0]*(5-len(tokens))
             data.append("("+",".join(map(str, ["'TEST'",ordinal,kind,opened+offset,
                                                price,bid,10,20,*token_values]))+")")
         raw = f"SELECT * FROM values('{columns}',"+",".join(data)+")"
-        with patch.object(sql, "source", return_value=raw), patch.object(sql,"seed_for",return_value=0):
+        with patch.object(sql, "source", return_value=raw), patch.object(sql,"seed_for",return_value=sampling_offset):
             statement = sql.day_query("TEST","2019-01-03",[],self.rules,initial,0,100)
-        statement = statement.replace("ORDER BY g.frame,g.bucket FORMAT ArrowStream",
-            "WHERE g.frame=1000000 AND g.bucket<3 ORDER BY g.frame,g.bucket FORMAT ArrowStream")
+        if limit:
+            statement = statement.replace("ORDER BY g.frame,g.bucket FORMAT ArrowStream",
+                "WHERE g.frame=1000000 AND g.bucket<3 ORDER BY g.frame,g.bucket FORMAT ArrowStream")
         return arrow(self.client, statement, "bargpt-v5-test-"+digest(events)[:16])
+
+    def test_successive_observed_bars_preserve_clock_gaps(self):
+        """Sparse canonical events must yield 64 consecutive observations, not 6.4 empty seconds."""
+        events = [(i*10_000_000, 0, 1200, 1100, []) for i in range(64)]
+        result = self.fixture(events, fill=False, limit=False)
+        samples, coarse = unpack_bars(result, 0)
+        self.assertEqual(len(samples), 3)  # 100ms, 1s and 10s each have exactly 64 observed bars.
+        self.assertEqual(len(coarse), 1)  # Premarket-only observations do not create a regular-session daily bar.
+        self.assertTrue(np.all(np.diff(samples["end_us"], axis=1) == 10_000_000))
+        self.assertTrue(samples["valid"][..., [9, 15]].all())
+        for frame in (100000, 1000000, 10000000):
+            rows = result.filter(result["g.frame"] == frame)
+            self.assertEqual(rows["observed_index"].to_list(), list(range(64)))
+
+    def test_observed_windows_do_not_overlap(self):
+        events = [(i*10_000_000, 0, 1200, 1100, []) for i in range(128)]
+        result = self.fixture(events, fill=False, limit=False)
+        samples, _ = unpack_bars(result, 0)
+        for frame in (100000, 1000000, 10000000):
+            selected = samples[samples["timeframe_us"] == frame]
+            self.assertEqual(len(selected), 2)
+            self.assertEqual(len(np.unique(selected["end_us"])), 128)
+            self.assertLess(selected["end_us"][0, -1], selected["end_us"][1, 0])
+
+    def test_no_eligible_events_only_returns_metadata(self):
+        result = self.fixture([(0, 3, 0, 0, [])], fill=False, limit=False)
+        samples, coarse = unpack_bars(result, 0)
+        self.assertEqual(len(samples), 0)
+        self.assertEqual(len(coarse), 0)
+        self.assertEqual(result["g.frame"].to_list(), [0])
 
     def token(self, family, modifier):
         return next(int(r["token_id"]) for r in self.rules
@@ -185,11 +222,45 @@ class SqlTests(unittest.TestCase):
         self.assertEqual(values[1][-3:], [1,0,0])
         self.assertEqual(valid[0][-3:], [1,1,1])
         self.assertAlmostEqual(values[0][0],11.5)
-        self.assertEqual(values[0][6:10], [11]*4)
-        self.assertEqual(values[0][12:16], [12]*4)
+        self.assertEqual(values[0][6:10], [11,11,11,0])
+        self.assertEqual(values[0][12:16], [12,12,12,0])
+        self.assertEqual(valid[0][9], 0)  # Later zero/invalid quote clears the earlier valid close.
         self.assertEqual(values[0][5],1)
         self.assertEqual(values[0][11],1)
         self.assertEqual(values[0][17],1)
+
+    def test_quote_carry_clears_on_invalidation_and_never_looks_ahead(self):
+        events = [(i*1_000_000, 65, 1150, 0, []) for i in range(64)]
+        events += [(0, 0, 1200, 1100, []), (20_500_000, 0, 0, 0, []),
+                   (40_000_000, 0, 1400, 1300, [])]
+        result = self.fixture(events, fill=False, limit=False)
+        seconds = result.filter(result["g.frame"] == 1_000_000)
+        values = np.array(seconds["values"].to_list())
+        masks = np.array(seconds["valid"].to_list())
+        self.assertEqual(len(seconds), 64)
+        np.testing.assert_array_equal(values[1:20, 9], np.full(19, 11.))
+        self.assertTrue((values[1:20, 11] == 0).all())  # Carry is not a new quote event.
+        self.assertTrue((masks[20:40, 9] == 0).all())
+        self.assertTrue((values[40:, 9] == 13).all())
+
+    def test_quote_carry_is_seeded_before_sample_start(self):
+        events = [(i*1_000_000, 65, 1150, 0, []) for i in range(128)]
+        events += [(0, 0, 1200, 1100, [])]
+        result = self.fixture(events, fill=False, limit=False, offset=32)
+        seconds = result.filter(result["g.frame"] == 1_000_000)
+        values = np.array(seconds["values"].to_list())
+        self.assertEqual(len(seconds), 64)
+        self.assertTrue((values[:, 9] == 11).all())
+        self.assertTrue((values[:, 11] == 0).all())
+
+    def test_unknown_delayed_and_invalid_trades_do_not_update_prices(self):
+        events = [(i*1_000_000, 0, 1200, 1100, []) for i in range(64)]
+        # 193 = evaluated+delayed; 3 = unknown reporting with high-precision price encoding.
+        events += [(10, 65, 1150, 0, []), (20, 193, 9900, 0, []),
+                   (30, 3, 990000, 0, []), (40, 65, 0, 0, [])]
+        result = self.fixture(events, fill=False, limit=False)
+        row = result.filter(result["g.frame"] == 1_000_000)["values"][0].to_list()
+        self.assertEqual(row[:6], [11.5, 11.5, 11.5, 11.5, 10., 1.])
 
     def test_unknown_is_not_normal_and_conflicts_invalidate(self):
         halt = self.token("cta_security_status",102)

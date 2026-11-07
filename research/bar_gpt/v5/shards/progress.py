@@ -43,7 +43,7 @@ def render(snapshot, width=100):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v1"))
+    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v2"))
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
     console = Console()

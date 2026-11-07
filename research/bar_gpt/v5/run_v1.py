@@ -36,7 +36,7 @@ CONFIGURATIONS = {
 def arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mode", choices=("profile", "train"), default="profile")
-    parser.add_argument("--dataset", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v1"))
+    parser.add_argument("--dataset", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v2"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--split-manifest", type=Path)
     parser.add_argument("--calibration", type=Path)

@@ -54,6 +54,26 @@ def test_chronological_split_and_manifest_seal(inventory, tmp_path):
         load_split(tmp_path / "bad.json")
 
 
+def test_split_purges_observed_window_with_gap_across_boundary(inventory, tmp_path):
+    """A 64-bar context with an overnight gap cannot leak across the shared cutoff."""
+    from research.bar_gpt.v5.shards.storage import BAR_DTYPE, Budget, publish
+    directory = tmp_path / "dataset/jobs/extra/coarse"
+    rows = np.zeros(3, dtype=SAMPLE_DTYPE)
+    rows["values"] = 10
+    rows["valid"] = 1
+    rows["timeframe_us"] = 1_000_000
+    jan8 = int(datetime(2024, 1, 8, 10, tzinfo=timezone.utc).timestamp()*1e6)
+    jan9 = int(datetime(2024, 1, 9, 10, tzinfo=timezone.utc).timestamp()*1e6)
+    rows["end_us"][0] = jan8 + np.arange(64)*1_000_000
+    rows["end_us"][1] = np.r_[jan8+np.arange(32)*1_000_000, jan9+np.arange(32)*1_000_000]
+    rows["end_us"][2] = jan9 + np.arange(64)*1_000_000
+    publish(directory, rows, np.empty(0, dtype=BAR_DTYPE),
+            dict(identity="gap-split", day="coarse"), Budget(10**7), 1024**2)
+    result = build_split(tmp_path / "dataset", tmp_path / "split-with-gap.json")
+    assert result["counts"] == {"train": 129, "validation": 33}
+    assert result["purged_crossing"] == 1
+
+
 def test_loader_resume_and_tail_no_drops(inventory):
     manifest, stats = inventory
     dataset = ShardBatches(manifest, "train", stats, 25, seed=4)

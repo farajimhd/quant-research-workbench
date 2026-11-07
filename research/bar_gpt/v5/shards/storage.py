@@ -11,7 +11,7 @@ import polars as pl
 from .contract import FRAMES, SAMPLE_DTYPE, WIDTH, digest, file_hash, pack, write_json
 
 # These intermediate rows are already final market aggregates, not raw events.
-# They are kept as tiny restart checkpoints to build cross-session contexts.
+# They remain transient in memory while forming cross-session sample contexts.
 BAR_DTYPE = np.dtype([
     ("values", "<f4", (21,)), ("valid", "u1", (21,)),
     ("end_us", "<i8"), ("timeframe_us", "<i8"), ("split", "u1"),
@@ -39,12 +39,16 @@ class Budget:
 
 
 def unpack_bars(frame, development):
-    """Arrow lists → aligned NumPy arrays, without per-bar Python loops."""
+    """Arrow lists → aligned NumPy arrays, without per-bar Python loops.
+
+    Frame zero is a metadata-only SQL row for sessions with no eligible bars;
+    it carries source/halt continuity but is never packed into a sample.
+    """
     values = frame["values"].list.to_array(21).to_numpy().astype(np.float32, copy=False)
     valid = frame["valid"].list.to_array(21).to_numpy().astype(np.uint8, copy=False)
     ends = frame["end_us"].to_numpy().astype(np.int64, copy=False)
     frames = frame["g.frame"].to_numpy()
-    buckets = frame["g.bucket"].to_numpy()
+    positions = frame["observed_index"].to_numpy()
     if not np.isfinite(values).all() or not np.isin(valid, (0, 1)).all():
         raise ValueError("Malformed SQL result.")
     samples = []
@@ -54,8 +58,8 @@ def unpack_bars(frame, development):
         if count % WIDTH:
             raise ValueError("Selected SQL windows are not complete 64-bar blocks.")
         if count:
-            if np.any(np.diff(buckets[take].reshape(-1, WIDTH), axis=1) != 1):
-                raise ValueError("Missing or duplicated scheduled bar inside a window.")
+            if np.any(np.diff(positions[take].reshape(-1, WIDTH), axis=1) != 1):
+                raise ValueError("Missing or duplicated observed bar inside a window.")
             samples.append(pack(values[take].reshape(-1, WIDTH, 21),
                                 valid[take].reshape(-1, WIDTH, 21),
                                 ends[take].reshape(-1, WIDTH), resolution, development))
@@ -63,8 +67,8 @@ def unpack_bars(frame, development):
     take = frames >= FRAMES[4]
     coarse["values"], coarse["valid"], coarse["end_us"] = values[take], valid[take], ends[take]
     coarse["timeframe_us"], coarse["split"] = frames[take], development
-    if len(coarse) != 17:
-        raise ValueError("Expected 16 scheduled extended-session hours and one daily bar.")
+    if len(coarse) > 17:
+        raise ValueError("More than 16 observed session hours and one daily bar.")
     result = np.concatenate(samples) if samples else np.empty(0, dtype=SAMPLE_DTYPE)
     return result, coarse
 
@@ -122,16 +126,22 @@ def publish(directory, samples, coarse, metadata, budget, shard_bytes):
     existing = verify_receipt(directory, metadata["identity"])
     if existing:
         return existing
+    # A rare all-status/all-volume block can still lack a price reference. Record
+    # its exclusion explicitly; never manufacture prices or change its 64-bar span.
+    candidate_samples = len(samples)
+    observed_price = samples["valid"][..., [3, 9, 15]].any(axis=(1, 2))
+    samples = samples[observed_price]
     per_shard = max(1, (shard_bytes - 4096) // SAMPLE_DTYPE.itemsize)
     # Include conservative file-header and receipt overhead in the hard budget.
-    reserve = samples.nbytes + coarse.nbytes + 65536 + (len(samples) // per_shard + 1) * 4096
+    reserve = samples.nbytes + 65536 + (len(samples) // per_shard + 1) * 4096
     if not budget.reserve(reserve):
         return None
     files = []
     try:
         arrays = [(f"samples-{i//per_shard:04d}.npy", samples[i:i+per_shard])
                   for i in range(0, len(samples), per_shard)]
-        arrays.append(("coarse.npy", coarse))
+        # Intermediate coarse bars remain in controller memory. A partial
+        # ticker-year resume replays canonical days rather than persisting bars.
         for name, array in arrays:
             target = directory / name
             temporary = directory / (name + ".partial")
@@ -140,8 +150,15 @@ def publish(directory, samples, coarse, metadata, budget, shard_bytes):
                 handle.flush()
                 os.fsync(handle.fileno())
             temporary.replace(target)
-            files.append(dict(name=name, bytes=target.stat().st_size, sha256=file_hash(target)))
+            item = dict(name=name, bytes=target.stat().st_size, sha256=file_hash(target))
+            if name.startswith("samples-") and len(array):
+                # Full context spans, including gaps, permit safe cross-timeframe split assignment.
+                item.update(first_start_us=int((array["end_us"][:, 0]-array["timeframe_us"]).min()),
+                            last_end_us=int(array["end_us"][:, -1].max()))
+            files.append(item)
         receipt = dict(metadata, files=files, samples=len(samples),
+                       candidate_samples=candidate_samples,
+                       excluded_no_price=candidate_samples-len(samples),
                        frames={str(f): int((samples["timeframe_us"] == f).sum()) for f in FRAMES},
                        bytes=sum(item["bytes"] for item in files))
         receipt["receipt_hash"] = digest(receipt)

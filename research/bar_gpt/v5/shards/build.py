@@ -20,6 +20,7 @@ from .contract import CHANNELS, FRAMES, SAMPLE_DTYPE, VERSION, digest, file_hash
 from .sql import clock, day_query
 from .storage import BAR_DTYPE, Budget, coarse_samples, publish, unpack_bars, verify_receipt
 from .recovery import resolve_binding
+from research.bar_gpt.v5 import bar_semantics_v1
 
 
 class Status:
@@ -127,12 +128,8 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
                                  previous_close=previous_close))
             target = directory / day
             saved = verify_receipt(target, day_id)
-            if saved:
-                coarse_segment.append(np.load(target / "coarse.npy", allow_pickle=False))
-                initial_state = saved["final_state"]
-                previous_close = clock(day, 20)
-                status.update(worker, day=day, phase="reused", done=status.workers[worker]["done"] + 1)
-                continue  # Startup already counted durable bytes and samples.
+            # Recompute transient coarse bars for a partial job. Fully completed
+            # ticker-years still reuse their receipts without any event rescan.
             # Two writes per extraction worker bound queued arrays and disk load.
             if len(pending) >= 2 and not collect_one():
                 break
@@ -163,8 +160,15 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
                 raise ValueError("Source evidence changed inside query response.")
             metadata = dict(identity=day_id, ticker=ticker, year=year, day=day,
                             source_hash=result["source_hash"][0], query_hash=digest(statement),
+                            reporting_counts=result["reporting_counts"][0],
+                            query_seconds=time.perf_counter()-began,
                             final_state=initial_state, binding=binding)
             coarse_segment.append(coarse)
+            if saved:
+                if any(saved[key] != metadata[key] for key in ("source_hash", "query_hash", "final_state")):
+                    raise ValueError("Canonical replay differs from the saved day receipt.")
+                status.update(worker, day=day, phase="reused", done=status.workers[worker]["done"] + 1)
+                continue
             pending.append(disk.submit(publish, target, samples, coarse, metadata, budget,
                                        args.shard_mib * 1024**2))
             status.update(worker, phase="writing", io_pending=len(pending))
@@ -200,7 +204,7 @@ def run_job(worker, job, args, binding, rules, calendar, budget, status, disk, s
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v1"))
+    parser.add_argument("--output", type=Path, default=Path("D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v2"))
     parser.add_argument("--target-bytes", type=int, default=10**12)
     parser.add_argument("--workers", type=int, default=6)
     parser.add_argument("--io-workers", type=int, default=2)
@@ -280,15 +284,17 @@ def campaign(args, years):
             if shutil.disk_usage(args.output).free + existing_size < args.target_bytes + args.free_reserve_gb * 10**9:
                 raise ValueError("Insufficient free space for target plus reserve.")
         source_files = [*Path(__file__).parent.glob("*.py"),
+                        Path(bar_semantics_v1.__file__),
                         Path(source.__file__).parents[4] / "pipelines/market_sip/events/market_day_sql.py",
                         Path(source.__file__).parents[4] / "pipelines/market_sip/events/market_signals.py"]
         contract = dict(version=VERSION, channels=CHANNELS, frames=FRAMES, width=64,
+                        bar_semantics=bar_semantics_v1.CONTRACT,
                         sample_bytes=SAMPLE_DTYPE.itemsize, seed=args.seed, keep_percent=args.keep_percent,
                         years=years, tickers=args.tickers, max_days=args.max_days, max_jobs=args.max_jobs,
                         development_start=args.development_start, target_bytes=args.target_bytes,
                         authority=authority, code={str(p.name): file_hash(p) for p in source_files},
-                        session="XNYS dates, 04:00–20:00 America/New_York; unadjusted canonical prices",
-                        sampling="random-offset nonoverlapping fine windows; retain hash fraction; all coarse windows",
+                        session="XNYS dates; intraday 04:00–20:00, daily 09:30–16:00 America/New_York; unadjusted prices",
+                        sampling="consecutive observed bars; random-offset nonoverlapping fine windows; retain hash fraction; observed coarse windows",
                         transform="unscaled Float32; masks separate; no fitted normalization or augmentation",
                         evidence="canonical finalized events; no assertion of causal correction-pair reconstruction")
         binding = digest(contract)

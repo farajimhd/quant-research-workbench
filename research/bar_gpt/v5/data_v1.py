@@ -33,6 +33,7 @@ def read_receipt(path: Path) -> list[dict]:
             raise ValueError(f"Wrong sample contract: {target}")
         entries.append(dict(path=str(target.resolve()), rows=len(data), start=0, stop=len(data),
                             day=receipt["day"], sha256=item["sha256"], bytes=item["bytes"],
+                            first_start_us=item.get("first_start_us"), last_end_us=item.get("last_end_us"),
                             receipt_hash=receipt["receipt_hash"], frames=receipt["frames"]))
     if sum(item["rows"] for item in entries) != receipt["samples"]:
         raise ValueError(f"Receipt sample count mismatch: {path}")
@@ -70,7 +71,13 @@ def build_split(dataset: Path, output: Path, progress=None) -> dict:
     cutoff = int(datetime.fromisoformat(cutoff_day + "T04:00:00+00:00").timestamp()*1e6)
     splits, purged = {"train": [], "validation": []}, 0
     for item in entries:
-        if item["day"] != "coarse":
+        if item["last_end_us"] is not None and item["last_end_us"] < cutoff:
+            splits["train"].append(item)
+            continue
+        if item["first_start_us"] is not None and item["first_start_us"] >= cutoff:
+            splits["validation"].append(item)
+            continue
+        if item["day"] != "coarse" and item["first_start_us"] is None:
             splits["train" if item["day"] < cutoff_day else "validation"].append(item)
             continue
         data = np.load(item["path"], mmap_mode="r", allow_pickle=False)
