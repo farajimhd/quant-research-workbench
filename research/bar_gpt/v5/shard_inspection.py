@@ -158,4 +158,4 @@ def sample(job="", shard="", file="", row=0, timeframe=0, randomize=False, searc
                 samples=sample_rows, bars=bars, channels=CHANNELS, sha256=entry["sha256"],
                 receipt_hash=receipt["receipt_hash"], binding=receipt["binding"],
                 observed=sum(not b["padding"] for b in bars), reporting_counts=receipt.get("reporting_counts"),
-                basis="sample-end executed split basis" if shard == "coarse" else "session raw share basis")
+                basis="sample-end executed split basis" if _plan()[0]['contract']['version']==BALANCED_VERSION or shard == "coarse" else "session raw share basis")
