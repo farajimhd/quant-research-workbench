@@ -24,7 +24,7 @@ import psutil
 from .contract import CAPACITY, write_json
 from .plan import freeze, inventory_jobs
 from .producer import Gate, Worker, NoFullBlock, EndOfStream
-from .storage import Catalog
+from .ledger_process import LedgerProcess
 from .telemetry import Telemetry
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -117,7 +117,7 @@ def run(args):
         history / f"{int(execution['started'] * 1000)}-{os.getpid()}.json", execution
     )
     write_json(root / "execution.json", execution)
-    catalog = Catalog(root)
+    catalog = LedgerProcess(root)
     catalog.recover()
     telemetry = Telemetry(root, execution, args.wandb_mode, args.wandb_project)
     gate = Gate(
@@ -174,6 +174,7 @@ def run(args):
             chunk_events=args.chunk_events,
             free_memory_gib=psutil.virtual_memory().available / 1024**3,
             process_memory_gib=psutil.Process().memory_info().rss / 1024**3,
+            ledger_pid=catalog.process.pid,
             free_disk_gib=shutil.disk_usage(root).free / 1024**3,
             reserved_query_gib=gate.reserved / 1024**3,
             resource_waits=list(gate.waiting.values()),
@@ -204,7 +205,7 @@ def run(args):
             while positions[liquid] < len(queues[liquid]):
                 stream = queues[liquid][positions[liquid]]
                 positions[liquid] += 1
-                proof, skipped = catalog.check(stream["key"])
+                proof, skipped, committed_unit = catalog.lane_status(stream["key"])
                 if skipped:
                     continue
                 worker = reusable.pop(stream["key"], None)
@@ -223,7 +224,7 @@ def run(args):
                 reusable[stream["key"]] = worker
                 while len(reusable) > 2 * args.workers:
                     reusable.popitem(last=False)
-                cursor = catalog.cursor(stream["key"]) + 1
+                cursor = committed_unit + 1
                 if worker.units is None or cursor < len(worker.units):
                     return worker, cursor
                 reusable.pop(stream["key"], None)
@@ -382,7 +383,7 @@ def run(args):
     finally:
         gate.cancel.set()
         gate.close()
-        catalog.db.close()
+        catalog.close()
         telemetry.finish()
         power(0x80000000)
         lock.close()

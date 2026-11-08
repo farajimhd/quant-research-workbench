@@ -247,3 +247,25 @@ def test_bulk_selection_preserves_row_order_and_purges(tmp_path):
         == 0
     )
     catalog.db.close()
+
+
+def test_isolated_ledger_acknowledges_commits_and_preserves_failed_batches(tmp_path):
+    """Exercise the actual spawned owner, including propagation of a sealed-input failure."""
+    from research.bar_gpt.v5.phase2_shards.ledger_process import LedgerProcess
+
+    ledger = LedgerProcess(tmp_path)
+    row = dict(stream="committed", unit=0, bytes=100, timing={}, liquid=1, splits=[0])
+    receipt = dict(row, hash=digest(row))
+    try:
+        ledger.register_many([receipt])
+        assert ledger.stats()["units"] == 1
+        assert ledger.lane_status("committed") == (None, False, 0)
+        with pytest.raises(RuntimeError, match="Receipt seal mismatch"):
+            ledger.register_many([dict(receipt, hash="invalid")])
+        assert ledger.stats()["units"] == 1
+    finally:
+        ledger.close()
+    assert not ledger.process.is_alive()
+    reopened = Catalog(tmp_path)
+    assert reopened.stats()["units"] == 1
+    reopened.db.close()

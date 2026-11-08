@@ -204,6 +204,11 @@ class Catalog:
         ).fetchone()
         return (json.loads(row[0]), bool(row[1])) if row else (None, False)
 
+    def lane_status(self, key):
+        """Read one admission record without separate coordinator round trips."""
+        proof, skipped = self.check(key)
+        return proof, skipped, self.cursor(key)
+
     def remember_check(self, proof, skipped=False):
         """A trade-count bound can only skip streams with zero possible blocks.
 

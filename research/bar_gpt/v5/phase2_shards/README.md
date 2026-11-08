@@ -93,3 +93,12 @@ W&B is online by default in `bargpt-phase2-shards-v1`; progress is coalesced and
 uploaded by a separate thread every 30 seconds. Its persistent local journal is
 uploaded live. Failures remain visible in progress metadata and local evidence.
 Use `--wandb-mode disabled` only for isolated offline fixtures or local tests.
+
+Publication buffers one <=16 MiB segment per I/O worker, preserving NPY/NPZ
+formats and fsync boundaries while hashing serialized source bytes. Audits/readers
+still verify disk hashes. Frozen yearly proofs are not rewritten for every unit.
+Lane metadata loads on extraction workers. A single CPU-only ledger process owns
+bounded batch transactions, bulk SQL selection and commit acknowledgments; lanes
+advance only after acknowledgment. This isolates SQLite from extraction-thread
+GIL contention without moving any bar arrays through IPC. Existing units, plan,
+phase-one bar math and exact per-split 75/25 selection remain unchanged.
