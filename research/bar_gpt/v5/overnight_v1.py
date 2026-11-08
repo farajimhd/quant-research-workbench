@@ -598,6 +598,16 @@ def main(argv=None):
         msvcrt.locking(owner.fileno(), msvcrt.LK_NBLCK, 1)
         controller = Controller(args)
         controller.update(state="running", stage="controller starting", error=None)
+        import ctypes
+
+        # Hold only a process-lifetime system request. The display can sleep;
+        # do not alter the user's machine-wide power plan or update settings.
+        execution_state = ctypes.windll.kernel32.SetThreadExecutionState
+        execution_state.argtypes = [ctypes.c_uint]
+        execution_state.restype = ctypes.c_uint
+        if not execution_state(0x80000001):
+            raise OSError("Could not hold the workstation awake for the overnight job")
+        controller.update(system_awake_request=True)
         try:
             controller.run()
         except BaseException as error:
@@ -607,6 +617,8 @@ def main(argv=None):
                 error=f"{type(error).__name__}: {error}",
             )
             raise
+        finally:
+            execution_state(0x80000000)  # Release only this controller thread's own request.
 
 
 if __name__ == "__main__":
