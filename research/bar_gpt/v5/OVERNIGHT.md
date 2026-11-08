@@ -58,3 +58,12 @@ validation-phase checkpoints avoid repeating completed training. A 20-minute
 lack of progress requests STOP, followed by termination of only the owned child
 tree if it cannot drain in two minutes. Numerical failures use the bounded LR
 investigation instead of repeatedly resuming poisoned state.
+
+On Windows, repeated opens of a growing metrics journal can stall the training
+thread at upload boundaries. Reporter keeps one line-buffered handle, preserving
+each loss row's immediate visibility and upload cadence. A telemetry-only source
+upgrade can use `run_epoch_upgrade.py` to wait for an immutable complete-epoch
+checkpoint and successful learning review, drain the owned controller, then use
+its ordinary checkpoint-retry path under the new committed snapshot. Existing
+STOP files cancel the handoff. This changes no model/data/optimizer contract and
+discards no completed epoch; the new W&B run continues the saved global steps.
