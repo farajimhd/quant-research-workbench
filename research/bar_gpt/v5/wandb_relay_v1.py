@@ -34,6 +34,24 @@ def complete_rows(path, offset=0):
             yield stream.tell(), json.loads(line)
 
 
+def read_progress(path, attempts=10):
+    """Read a concurrently replaced status JSON with at most one second of retries.
+
+    Windows sharing checks and replacement races can briefly deny access. Return
+    explicit unavailable evidence after bounded retries; never infer that the
+    trainer stopped or discard unread metric offsets from a missing status file.
+    """
+    error = None
+    for attempt in range(attempts):
+        try:
+            return json.loads(path.read_text(encoding="utf-8")), None
+        except (OSError, ValueError) as exception:
+            error = f"{type(exception).__name__}: {exception}"
+            if attempt + 1 < attempts:
+                time.sleep(0.1)
+    return None, error
+
+
 def upload_attempts(run, sources, output):
     """Attach separate, immutable snapshots; never replace the original evidence."""
     for source in sources:
@@ -118,34 +136,47 @@ def main(argv=None):
         }
         offsets = {str(source): 0 for source in args.sources[1:]}
         uploaded = duplicates = 0
+        last_global_step = None  # Expose the latest row submitted to the SDK.
         stop = Path(identity["root"]) / "wandb-relay.STOP"
         if stop.exists():
             raise RuntimeError("Existing relay STOP must be reviewed before launching")
         while True:
+            # Retry blocked journals without advancing their byte cursors.
+            source_errors = {}
             for source in args.sources[1:]:
                 key = str(source)
-                for offset, row in complete_rows(
-                    source / "metrics.jsonl", offsets[key]
-                ):
-                    event = fingerprint(row)
-                    if event not in seen and event not in acknowledged:
-                        metrics = dict(row)
-                        step = metrics.pop("step")
-                        run.log(
-                            dict(
-                                metrics,
-                                global_step=step,
-                                **{"migration/event_id": event},
+                try:
+                    for offset, row in complete_rows(
+                        source / "metrics.jsonl", offsets[key]
+                    ):
+                        event = fingerprint(row)
+                        if event not in seen and event not in acknowledged:
+                            metrics = dict(row)
+                            step = metrics.pop("step")
+                            run.log(
+                                dict(
+                                    metrics,
+                                    global_step=step,
+                                    **{"migration/event_id": event},
+                                )
                             )
-                        )
-                        uploaded += 1
-                    else:
-                        duplicates += 1
-                    seen.add(event)
-                    offsets[key] = offset
-            status = json.loads((args.sources[-1] / "progress.json").read_text())
+                            uploaded += 1
+                            last_global_step = step
+                        else:
+                            duplicates += 1
+                        seen.add(event)
+                        offsets[key] = offset
+                except OSError as exception:
+                    source_errors[key] = f"{type(exception).__name__}: {exception}"
+            status, status_error = read_progress(args.sources[-1] / "progress.json")
             following = (
-                args.follow and status["state"] == "running" and not stop.exists()
+                args.follow
+                and (
+                    status is None
+                    or status["state"] == "running"
+                    or bool(source_errors)
+                )
+                and not stop.exists()
             )
             write_json(
                 args.output / "progress.json",
@@ -157,10 +188,15 @@ def main(argv=None):
                     duplicates=duplicates,
                     previously_acknowledged=len(acknowledged),
                     offsets=offsets,
-                    trainer_epoch=status.get("epoch"),
-                    trainer_done=status.get("done"),
+                    last_global_step=last_global_step,
+                    source_errors=source_errors,
+                    trainer_status_error=status_error,
+                    trainer_epoch=(status or {}).get("epoch"),
+                    trainer_done=(status or {}).get("done"),
                 ),
             )
+            if not following and (status_error or source_errors):
+                raise RuntimeError("Consolidation ended with unread source evidence")
             if not following:
                 break
             time.sleep(5)

@@ -57,6 +57,37 @@ def test_writer_lease_prevents_two_sdk_writers(tmp_path):
     WriterLease(tmp_path).acquire().close()
 
 
+def test_progress_read_recovers_from_windows_sharing_and_replace_races(monkeypatch):
+    calls = []
+
+    class ConcurrentStatus:
+        def read_text(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise PermissionError("Windows sharing violation")
+            if len(calls) == 2:
+                return "{"  # A partial replacement must not become stopped evidence.
+            return '{"state":"running","epoch":13}'
+
+    monkeypatch.setattr(relay.time, "sleep", lambda delay: None)
+    status, error = relay.read_progress(ConcurrentStatus())
+    assert status == dict(state="running", epoch=13) and error is None
+    assert len(calls) == 3
+
+
+def test_progress_read_is_bounded_and_reports_unavailable_evidence(monkeypatch):
+    waits = []
+
+    class UnavailableStatus:
+        def read_text(self, **kwargs):
+            raise PermissionError("Windows sharing violation")
+
+    monkeypatch.setattr(relay.time, "sleep", waits.append)
+    status, error = relay.read_progress(UnavailableStatus(), attempts=3)
+    assert status is None and "PermissionError" in error
+    assert waits == [0.1, 0.1]
+
+
 def test_reporter_passes_original_id_and_name_to_sdk(tmp_path, monkeypatch):
     config = dict(model="large", learning_rate=0.001)
     first = attempt(tmp_path / "train-01", config, "original")
@@ -88,7 +119,10 @@ def test_reporter_passes_original_id_and_name_to_sdk(tmp_path, monkeypatch):
         reporter.writer_lease.close()
 
 
-def test_relay_replays_only_missing_complete_payloads(tmp_path, monkeypatch):
+@pytest.mark.parametrize("transient_source_errors", [False, True])
+def test_relay_replays_only_missing_complete_payloads(
+    tmp_path, monkeypatch, transient_source_errors
+):
     config = dict(model="large", learning_rate=0.001)
     first = attempt(tmp_path / "train-01", config, "original")
     second = attempt(
@@ -126,9 +160,31 @@ def test_relay_replays_only_missing_complete_payloads(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(relay, "init_wandb", start)
     monkeypatch.setattr(relay, "load_env_files", lambda *a, **k: None)
+    if transient_source_errors:
+        real_rows, real_progress = relay.complete_rows, relay.read_progress
+        attempted, status_calls = [], []
+
+        def concurrent_rows(path, offset=0):
+            if path.parent == second and not attempted:
+                attempted.append(path)
+                raise PermissionError("Concurrent metric-file access")
+            yield from real_rows(path, offset)
+
+        def concurrent_progress(path):
+            status_calls.append(path)
+            if len(status_calls) == 1:
+                return None, "PermissionError: Concurrent status-file access"
+            return real_progress(path)
+
+        monkeypatch.setattr(relay, "complete_rows", concurrent_rows)
+        monkeypatch.setattr(relay, "read_progress", concurrent_progress)
+        monkeypatch.setattr(relay.time, "sleep", lambda delay: None)
     output = tmp_path / "relay"
     assert (
-        relay.main(["--sources", str(first), str(second), "--output", str(output)]) == 0
+        relay.main(
+            ["--sources", str(first), str(second), "--output", str(output), "--follow"]
+        )
+        == 0
     )
     assert len(rows) == 1 and rows[0]["global_step"] == 20
     assert init[0]["run_id"] == "original" and init[0]["resume_mode"] == "must"

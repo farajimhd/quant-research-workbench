@@ -96,3 +96,10 @@ deduplicate overlap and remote migration acknowledgments make retries idempotent
 A writer lease prevents the relay and a future resumed reporter from uploading
 concurrently. A resumed reporter requests relay handoff and waits for its uploads
 to drain; this marker never stops or controls a trainer.
+
+The relay retries transient Windows status-file sharing/replacement failures.
+Unread journals retain their byte offsets and are retried on the next pass;
+unavailable status is reported explicitly and never interpreted as trainer exit.
+Its progress includes the last submitted global step and source-read errors.
+The native relay task should also allow bounded restart after a genuine process
+failure, independently of the trainer task.

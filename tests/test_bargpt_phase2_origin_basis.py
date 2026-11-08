@@ -5,6 +5,7 @@ import pytest
 
 from research.bar_gpt.v5.phase2_shards.contract import (
     BAR,
+    BLOCK,
     FRAMES,
     Context,
     encoder_window,
@@ -97,3 +98,21 @@ def test_daily_availability_tracks_completed_regular_session_close():
     context = Context()
     context.append(arrays)
     np.testing.assert_array_equal(context.pending["latest"][:, 4], [0, 1])
+
+
+def test_every_decision_origin_is_exactly_its_last_one_second_bar_close():
+    arrays = [np.empty(0, dtype=BAR) for _ in FRAMES]
+    arrays[0] = np.zeros(BLOCK, dtype=BAR)
+    arrays[0]["end_us"] = clock("2025-06-03", 10) + np.arange(1, BLOCK + 1) * FRAMES[0]
+    arrays[1] = np.zeros(26, dtype=BAR)
+    arrays[1]["end_us"] = clock("2025-06-03", 10) + np.arange(1, 27) * FRAMES[1]
+    blocks, _ = Context().append(arrays)
+    np.testing.assert_array_equal(blocks["end_us"][0], arrays[0]["end_us"])
+    np.testing.assert_array_equal(blocks["latest"][0, :, 0], np.arange(BLOCK))
+    latest = blocks["latest"][0, :, 1]
+    # The 10s bar becomes visible exactly at its close.
+    assert latest[8] == -1 and latest[9] == 0
+    available = latest >= 0
+    assert (
+        arrays[1]["end_us"][latest[available]] <= blocks["end_us"][0, available]
+    ).all()
