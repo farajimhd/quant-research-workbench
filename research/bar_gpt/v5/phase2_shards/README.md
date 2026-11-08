@@ -116,3 +116,9 @@ fsyncs; offsets, dtypes, shapes and source checksums are sealed in the receipt.
 Legacy NPY/NPZ units stay immutable and readable in the same cohort. Context
 restore verifies packed checksums, including when abandoned legacy files exist.
 No timestamps, values, masks, split rules or encoder-window geometry change.
+
+`--training-campaign PATH --validation-lanes 4` reads the current controller and
+trainer status without modifying them. It caps admitted lanes during validation,
+startup or stale evidence, then restores the configured full admission limit
+during training. Already-admitted units drain; no producer/trainer restart is
+needed at an epoch transition. The panel and W&B expose the current cap.

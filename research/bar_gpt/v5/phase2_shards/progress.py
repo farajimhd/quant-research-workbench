@@ -63,6 +63,10 @@ def render(status, width=110, height=36):
         ", ".join(sorted(set(status.get("resource_waits", []))))
         or f"{workers} | {status.get('io_workers', 0)} I/O slots | CPU only"
     )
+    guard = Text(
+        f"Admission cap {status.get('admission_lanes', status.get('workers', 0))} | {status.get('training_guard', 'trainer guard not configured')}",
+        style="dim",
+    )
     lanes = Table(expand=True, box=None)
     lanes.add_column("Ticker", width=12)
     lanes.add_column("Year", width=5)
@@ -82,6 +86,7 @@ def render(status, width=110, height=36):
         queue,
         resources,
         waits,
+        guard,
         coverage,
         *([lanes] if lane_count else []),
         *messages,

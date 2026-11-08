@@ -27,6 +27,7 @@ from .plan import freeze, inventory_jobs
 from .producer import Gate, Worker, NoFullBlock, EndOfStream
 from .ledger_process import LedgerProcess
 from .process_pool import executor, produce, ProducedUnit
+from .training_guard import TrainingGuard
 from .telemetry import Telemetry
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -46,6 +47,8 @@ def arguments():
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--io-workers", type=int, default=2)
     parser.add_argument("--process-workers", type=int, default=0)
+    parser.add_argument("--training-campaign")
+    parser.add_argument("--validation-lanes", type=int, default=4)
     parser.add_argument("--receipt-batch-size", type=int, default=32)
     parser.add_argument("--receipt-batch-ms", type=float, default=250)
     parser.add_argument(
@@ -92,6 +95,8 @@ def run(args):
         raise ValueError("Python switch interval must be 0.1..10 milliseconds")
     if not 0 <= args.process_workers <= args.workers:
         raise ValueError("Process workers must be between zero and admitted lanes")
+    if args.validation_lanes < 1:
+        raise ValueError("Validation lane cap must be positive")
     if (
         not 1 <= args.receipt_batch_size <= 1024
         or not 0 <= args.receipt_batch_ms <= 1000
@@ -173,6 +178,9 @@ def run(args):
     initial_bytes = catalog.stats()["bytes"]
     state = "running"
     pending_since = None
+    training_guard = TrainingGuard(
+        args.training_campaign, args.workers, args.validation_lanes
+    )
     coordinator_seconds = dict(dispatch=0.0, registration=0.0)
 
     def snapshot():
@@ -196,6 +204,8 @@ def run(args):
             workers=args.workers,
             io_workers=args.io_workers,
             process_workers=args.process_workers,
+            admission_lanes=training_guard.limit,
+            training_guard=training_guard.reason,
             query_allowance_gib=(
                 (args.process_workers * (args.query_memory_gib + 0.25))
                 if args.process_workers
@@ -273,6 +283,7 @@ def run(args):
             args.io_workers, thread_name_prefix="phase2-io"
         ) as io, executor(args, gate.cancel, io_slots) as pool:
             while True:
+                admission_limit = training_guard.refresh()
                 if (root / "STOP").exists():
                     gate.cancel.set()
                 stats = catalog.stats()
@@ -288,7 +299,7 @@ def run(args):
                     and completed + len(active) + len(publications) >= args.max_units
                 )
                 if not gate.cancel.is_set() and not cap and not limit:
-                    while len(active) + len(publications) < args.workers:
+                    while len(active) + len(publications) < admission_limit:
                         if (
                             stats["bytes"]
                             + (len(active) + len(publications) + 1) * 128 * 1024**2

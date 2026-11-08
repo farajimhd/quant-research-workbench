@@ -86,6 +86,8 @@ class Telemetry:
                 "free_disk_gib",
                 "active",
                 "saving",
+                "process_workers",
+                "admission_lanes",
                 "target_bytes",
             )
         }
