@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import shutil
 import signal
+import sys
 import time
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -47,6 +48,7 @@ def arguments():
     parser.add_argument("--reserve-disk-gib", type=float, default=150)
     parser.add_argument("--chunk-events", type=int, default=2_000_000)
     parser.add_argument("--query-threads", type=int, default=4)
+    parser.add_argument("--python-switch-ms", type=float, default=1.0)
     parser.add_argument("--fine-warmup-events", type=int, default=250_000)
     parser.add_argument("--coarse-warmup-events", type=int, default=32_000_000)
     parser.add_argument("--fine-warmup-sessions", type=int, default=120)
@@ -78,6 +80,11 @@ def run(args):
         or min(args.fine_warmup_events, args.coarse_warmup_events) < 1
     ):
         raise ValueError("Query threads must be 1..8 and warmup budgets positive")
+    if not 0.1 <= args.python_switch_ms <= 10:
+        raise ValueError("Python switch interval must be 0.1..10 milliseconds")
+    # Shorter generator-only GIL slices prevent metadata/serialization threads
+    # delaying the coordinator after each native I/O call. No trainer is changed.
+    sys.setswitchinterval(args.python_switch_ms / 1000)
     root.mkdir(parents=True, exist_ok=True)
     # Exclusive file handle survives stale files but prevents duplicate producers.
     # Windows locks release on process exit; never infer ownership from a PID file.

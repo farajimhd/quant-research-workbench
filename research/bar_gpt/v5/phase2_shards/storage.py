@@ -261,12 +261,18 @@ class Catalog:
                 "INSERT INTO units VALUES(?,?,?,?)",
                 (receipt["stream"], receipt["unit"], receipt["bytes"], receipt["hash"]),
             )
-            self.db.executemany(
-                "INSERT INTO blocks VALUES(?,?,?,?,?,NULL)",
-                [
-                    (receipt["stream"], receipt["unit"], i, receipt["liquid"], split)
-                    for i, split in enumerate(receipt["splits"])
-                ],
+            # Expand the existing small JSON vector inside SQLite. One native
+            # call avoids a GIL release/reacquire for every individual block
+            # while dozens of extraction threads compete for Python execution.
+            self.db.execute(
+                "INSERT INTO blocks SELECT ?,?,CAST(key AS INTEGER),?,"
+                "CAST(value AS INTEGER),NULL FROM json_each(?)",
+                (
+                    receipt["stream"],
+                    receipt["unit"],
+                    receipt["liquid"],
+                    json.dumps(receipt["splits"]),
+                ),
             )
         self.used += receipt["bytes"]
         self.unit_count += 1
@@ -291,15 +297,22 @@ class Catalog:
                 continue
             with self.transaction():
                 for liquid, count in ((1, groups * 3), (0, groups)):
-                    rows = self.db.execute(
-                        "SELECT rowid FROM blocks WHERE split=? AND liquid=? AND selection IS NULL ORDER BY rowid LIMIT ?",
-                        (split, liquid, count),
-                    ).fetchall()
-                    self.db.executemany(
-                        "UPDATE blocks SET selection=? WHERE rowid=?",
-                        [(order + i, row[0]) for i, row in enumerate(rows)],
+                    # Materialize the same rowid order once, then assign the
+                    # identical contiguous selection IDs in a single native call.
+                    self.db.execute(
+                        "WITH chosen AS MATERIALIZED (SELECT rowid AS id,"
+                        "row_number() OVER(ORDER BY rowid)-1 AS offset FROM blocks "
+                        "WHERE split=? AND liquid=? AND selection IS NULL "
+                        "ORDER BY rowid LIMIT ?) UPDATE blocks SET selection=?+"
+                        "(SELECT offset FROM chosen WHERE chosen.id=blocks.rowid) "
+                        "WHERE rowid IN (SELECT id FROM chosen)",
+                        (split, liquid, count, order),
                     )
-                    order += len(rows)
+                    if self.db.execute("SELECT changes()").fetchone()[0] != count:
+                        raise ValueError(
+                            "Balanced selection count disagrees with ledger"
+                        )
+                    order += count
             for liquid, count in ((1, groups * 3), (0, groups)):
                 self.totals[(split, liquid)][1] += count
 

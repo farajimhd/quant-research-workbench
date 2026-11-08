@@ -201,3 +201,49 @@ def test_deferred_metadata_is_loaded_only_in_the_lane_task(tmp_path, monkeypatch
     assert not calls and worker.units is None
     assert isinstance(worker.step(0), producer.EndOfStream)
     assert calls == [True]
+
+
+def test_bulk_selection_preserves_row_order_and_purges(tmp_path):
+    """Native window assignment must retain the original exact per-split 3:1 rule."""
+    catalog = Catalog(tmp_path)
+    receipts = []
+    for key, liquid, splits in (
+        ("first", 1, [0, 1, 0, 2, 1, 0, 1]),
+        ("second", 0, [1, 0, 2]),
+        ("third", 1, [0, 1]),
+    ):
+        receipt = dict(
+            stream=key, unit=0, bytes=100, timing={}, liquid=liquid, splits=splits
+        )
+        receipts.append(dict(receipt, hash=digest(receipt)))
+    catalog.register_many(receipts)
+    rows = catalog.db.execute(
+        "SELECT stream,ordinal,liquid,split FROM blocks ORDER BY rowid"
+    ).fetchall()
+    expected = []
+    for split in (0, 1):
+        liquid = [
+            (key, ordinal)
+            for key, ordinal, group, label in rows
+            if label == split and group == 1
+        ]
+        sparse = [
+            (key, ordinal)
+            for key, ordinal, group, label in rows
+            if label == split and group == 0
+        ]
+        groups = min(len(liquid) // 3, len(sparse))
+        expected.extend(liquid[: groups * 3] + sparse[:groups])
+    assert (
+        catalog.db.execute(
+            "SELECT stream,ordinal FROM blocks WHERE selection IS NOT NULL ORDER BY selection"
+        ).fetchall()
+        == expected
+    )
+    assert (
+        catalog.db.execute(
+            "SELECT count(selection) FROM blocks WHERE split=2"
+        ).fetchone()[0]
+        == 0
+    )
+    catalog.db.close()
