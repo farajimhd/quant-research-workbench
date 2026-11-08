@@ -41,8 +41,8 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def fingerprint(path):
-    s = os.stat(native(path), follow_symlinks=False)
+def fingerprint(path, info=None):
+    s = info if info is not None else os.stat(native(path), follow_symlinks=False)
     if getattr(s, 'st_file_attributes', 0) & 0x400 or stat.S_ISLNK(s.st_mode):
         return 'link', 0, 0, os.readlink(native(path))
     if stat.S_ISDIR(s.st_mode):
@@ -185,7 +185,7 @@ class Relocation:
             with os.scandir(native(folder)) as entries:
                 for entry in entries:
                     path = folder/entry.name
-                    kind, size, mtime, link = fingerprint(path)
+                    kind, size, mtime, link = fingerprint(path, entry.stat(follow_symlinks=False))
                     rel = path.relative_to(root).as_posix()
                     batch.append((index,rel,kind,size,mtime,link,'pending','',token))
                     if kind == 'dir':
