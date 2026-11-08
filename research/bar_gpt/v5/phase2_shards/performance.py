@@ -38,6 +38,7 @@ def compare(
     threads,
     memory_gib=3,
     fine_events=250_000,
+    fine_sessions=120,
 ):
     stream = next(
         s for s in plan["streams"] if s["ticker"] == ticker and s["year"] == year
@@ -54,6 +55,7 @@ def compare(
         memory_gib=memory_gib,
         query_threads=threads,
         fine_warmup_events=fine_events,
+        fine_warmup_sessions=fine_sessions,
     ) as gate:
         worker = Worker(root, plan, stream, gate, None, sink, layout["chunk_events"])
         worker.revision = revision
@@ -124,6 +126,7 @@ def main():
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--memory-gib", type=float, default=3)
     parser.add_argument("--fine-events", type=int, default=250_000)
+    parser.add_argument("--fine-sessions", type=int, default=120)
     args = parser.parse_args()
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -142,6 +145,7 @@ def main():
                 args.threads,
                 args.memory_gib,
                 args.fine_events,
+                args.fine_sessions,
             )
         )
         write_json(output / "performance.json", dict(cases=results, plan=plan["hash"]))

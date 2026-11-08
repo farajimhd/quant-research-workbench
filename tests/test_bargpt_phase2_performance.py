@@ -29,7 +29,9 @@ def test_sparse_history_coalesces_without_changing_any_bar():
     worker = Worker.__new__(Worker)
     worker.units, worker.rows = [[rows[-1]]], rows
     worker.gate = SimpleNamespace(
-        fine_warmup_events=250000, coarse_warmup_events=32000000
+        fine_warmup_events=250000,
+        coarse_warmup_events=32000000,
+        fine_warmup_sessions=120,
     )
     calls = []
 
@@ -41,8 +43,8 @@ def test_sparse_history_coalesces_without_changing_any_bar():
     actual = worker.warmup()
     for array, (_, width, _) in zip(actual, SPECS):
         np.testing.assert_array_equal(array, observed(rows[:-1])[-width:])
-    assert sum(not coarse for _, coarse in calls) == 39  # Formerly 544 requests.
-    assert all(count <= 14 for count, coarse in calls if not coarse)
+    assert sum(not coarse for _, coarse in calls) == 5  # Formerly 544 requests.
+    assert all(count <= 120 for count, coarse in calls if not coarse)
 
 
 def test_empty_ranges_defer_warmup_until_first_observation(tmp_path):

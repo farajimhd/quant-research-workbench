@@ -42,6 +42,7 @@ class Gate:
         query_threads=2,
         fine_warmup_events=250_000,
         coarse_warmup_events=32_000_000,
+        fine_warmup_sessions=120,
     ):
         self.root, self.memory = root, int(memory_gib * 1024**3)
         self.reserve, self.disk = int(reserve_gib * 1024**3), int(disk_gib * 1024**3)
@@ -54,6 +55,12 @@ class Gate:
             coarse_warmup_events,
         )
         self.local, self.clients = threading.local(), []
+        # More sparse sessions can share a query without materializing their
+        # empty clock buckets. At <=350k events, <=3 bars/event and <=114 Arrow
+        # bytes/bar bound the final fine response below the 128 MiB limit.
+        if fine_warmup_sessions > 14 and fine_warmup_events > 350_000:
+            raise ValueError("Fine histories above 14 sessions require <=350k events")
+        self.fine_warmup_sessions = fine_warmup_sessions
 
     def transport(self, endpoint):
         """Reuse private worker-thread connections, never share a live socket."""
@@ -251,7 +258,7 @@ class Worker:
                     if coarse
                     else self.gate.fine_warmup_events
                 )
-                max_sessions = 120 if coarse else 14
+                max_sessions = 120 if coarse else self.gate.fine_warmup_sessions
                 while (
                     start
                     and position - start < max_sessions

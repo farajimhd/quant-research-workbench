@@ -49,6 +49,7 @@ def arguments():
     parser.add_argument("--query-threads", type=int, default=4)
     parser.add_argument("--fine-warmup-events", type=int, default=250_000)
     parser.add_argument("--coarse-warmup-events", type=int, default=32_000_000)
+    parser.add_argument("--fine-warmup-sessions", type=int, default=120)
     parser.add_argument("--max-units", type=int, default=0)
     parser.add_argument(
         "--only-stream",
@@ -117,6 +118,7 @@ def run(args):
         args.query_threads,
         args.fine_warmup_events,
         args.coarse_warmup_events,
+        args.fine_warmup_sessions,
     )
     signal.signal(signal.SIGINT, lambda *_: gate.cancel.set())
     signal.signal(signal.SIGTERM, lambda *_: gate.cancel.set())
