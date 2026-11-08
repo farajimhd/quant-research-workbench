@@ -25,9 +25,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from research.bar_gpt.v5.shards.phase1_contract import write_json
 
 
+def metadata_io(operation):
+    """Retry brief Windows sharing conflicts around atomic status replacement.
+
+    Another process can replace progress.json between exists/open operations.
+    Retry only access/disappearance races for at most 1.4 seconds. Persistent
+    permission failures and corrupt JSON still fail visibly; no stale snapshot
+    or invented successful state is substituted.
+    """
+    for attempt in range(8):
+        try:
+            return operation()
+        except (PermissionError, FileNotFoundError):
+            if attempt == 7:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
 def read(path):
     """Read atomic runtime evidence; absence is explicit, not a successful state."""
-    return json.loads(path.read_text()) if path.exists() else {}
+    return metadata_io(lambda: json.loads(path.read_text())) if path.exists() else {}
 
 
 class Controller:
@@ -42,7 +59,7 @@ class Controller:
         self.state.update(
             values, updated=time.time(), source_revision=self.args.source_revision
         )
-        write_json(self.root / "progress.json", self.state)
+        metadata_io(lambda: write_json(self.root / "progress.json", self.state))
 
     def stopped(self):
         return (self.root / "STOP").exists()
@@ -83,7 +100,7 @@ class Controller:
                             first_failure[name] = time.monotonic()
                     else:
                         first_failure.pop(name, None)
-                    owner = dependency_ready(root)
+                    owner = metadata_io(lambda: dependency_ready(root))
                     if owner is None:
                         ready = False
                     else:
@@ -618,7 +635,9 @@ def main(argv=None):
             )
             raise
         finally:
-            execution_state(0x80000000)  # Release only this controller thread's own request.
+            execution_state(
+                0x80000000
+            )  # Release only this controller thread's own request.
 
 
 if __name__ == "__main__":

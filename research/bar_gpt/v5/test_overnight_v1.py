@@ -1,9 +1,41 @@
 """Verify automatic handoff arguments without starting processes or long training."""
 
 from types import SimpleNamespace
+import pytest
 
 from research.bar_gpt.v5.overnight_v1 import Controller
 from research.bar_gpt.v5.shards.phase1_contract import write_json
+
+
+def test_metadata_sharing_race_retries_without_hiding_persistent_failures(monkeypatch):
+    from research.bar_gpt.v5 import overnight_v1 as module
+
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    calls = []
+
+    def operation():
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError("atomic replacement sharing conflict")
+        return {"state": "running"}
+
+    assert module.metadata_io(operation) == {"state": "running"}
+    assert len(calls) == 3
+    calls.clear()
+
+    def denied():
+        calls.append(1)
+        raise PermissionError("persistent denial")
+
+    with pytest.raises(PermissionError, match="persistent denial"):
+        module.metadata_io(denied)
+    assert len(calls) == 8
+
+    def corrupt():
+        raise ValueError("corrupt evidence")
+
+    with pytest.raises(ValueError, match="corrupt evidence"):
+        module.metadata_io(corrupt)
 
 
 def test_successful_handoff_runs_only_short_checks_before_full_guarded_training(
