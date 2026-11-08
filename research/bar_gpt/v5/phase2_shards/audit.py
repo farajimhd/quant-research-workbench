@@ -11,7 +11,7 @@ import polars as pl
 from .contract import BAR, BLOCK, FRAMES, SPECS, windows, file_hash, write_json, digest
 from .plan import bounds, verify_code
 from .producer import Gate, Worker
-from .storage import Catalog, read_window
+from .storage import Catalog, read_window, load_array, block_segments
 from ..shards import source
 from ..shards.range_sql import range_query
 from ..shards.sql import clock
@@ -58,9 +58,7 @@ def content(root, max_receipts=6, latest=False):
             evidence = np.zeros((5, 18), dtype=np.int64)
             carried = [0] * 5
             for segment in receipt["segments"]:
-                data = np.load(
-                    path / segment["name"], mmap_mode="r", allow_pickle=False
-                )
+                data = load_array(path, segment)
                 if data.dtype != BAR or not np.isfinite(data["values"]).all():
                     raise ValueError("Market schema/finite-value mismatch")
                 if not data["valid"][:, :6].all() or (data["values"][:, :6] <= 0).any():
@@ -80,10 +78,10 @@ def content(root, max_receipts=6, latest=False):
                         & data["valid"][:, 15].astype(bool)
                     ).sum()
                 )
-            block_files = sorted(path.glob("blocks-*.npy"))
+            block_files = block_segments(receipt)
             complete = [0] * 5
             if block_files:
-                block = np.load(block_files[0], mmap_mode="r", allow_pickle=False)[0]
+                block = load_array(path, block_files[0])[0]
                 if len(block) != BLOCK or (np.diff(block["end_us"]) <= 0).any():
                     raise ValueError("Unordered decision block")
                 # Read all 38 views for one final decision, including original

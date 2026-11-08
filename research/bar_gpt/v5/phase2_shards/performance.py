@@ -15,13 +15,13 @@ import numpy as np
 
 from .contract import BAR, DECISION, file_hash, write_json
 from .producer import Gate, Worker, NoFullBlock
-from .storage import publish
+from .storage import publish, load_array, block_segments
 
 
 class Capture:
     """Hold one bounded unit payload rather than writing to the real dataset."""
 
-    def submit(self, function, *args):
+    def submit(self, function, *args, **kwargs):
         self.args = args
         result = Future()
         result.set_result(None)
@@ -78,7 +78,7 @@ def compare(
     original = []
     for frame in range(5):
         pieces = [
-            np.load(old / segment["name"], allow_pickle=False)
+            load_array(old, segment)
             for segment in receipt["segments"]
             if segment["frame"] == frame
         ]
@@ -93,10 +93,7 @@ def compare(
     else:
         for before, after in zip(original, arrays):
             np.testing.assert_array_equal(before, after)
-        pieces = [
-            np.load(path, allow_pickle=False)
-            for path in sorted(old.glob("blocks-*.npy"))
-        ]
+        pieces = [load_array(old, descriptor) for descriptor in block_segments(receipt)]
         expected = (
             np.concatenate(pieces) if pieces else np.empty((0, 256), dtype=DECISION)
         )

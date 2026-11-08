@@ -13,17 +13,28 @@ from rich.console import Group
 from rich.text import Text
 
 
-def render(status, width=110):
+def render(status, width=110, height=36):
     """Render one bounded snapshot, retaining critical health at narrow widths."""
     age = max(0, time.time() - status.get("updated", 0))
     state = status.get("state", "starting")
     color = "red" if "failed" in state else "yellow" if age > 20 else "cyan"
     header = Text(f"BarGPT phase 2 | {state} | updated {age:.0f}s ago", style=color)
-    used, target = status.get("bytes", 0), status.get("target_bytes", 2e12)
+    used, target = status.get("bytes", 0), status.get("target_bytes", 4e12)
     progress = Text(
         f"{used / 1e12:.4f} / {target / 1e12:.2f} TB saved | 4 TB inventory | {status.get('units', 0):,} sealed units"
     )
     bar = ProgressBar(total=target, completed=used, width=None)
+    rate = status.get("bytes_per_second", 0)
+    # Do not extrapolate startup or stale/stopped snapshots into a false ETA.
+    estimating = status.get("elapsed_seconds", 0) < 120 or rate <= 0
+    eta = (
+        "ETA warming up"
+        if estimating
+        else f"ETA ~{max(0, target-used)/rate/3600:.0f}h at this rate"
+    )
+    if age > 20 or state != "running":
+        eta = "ETA unavailable"
+    throughput = Text(f"Session average {rate/1e6:.1f} MB/s | {eta}")
     coverage = Table(expand=True, box=None)
     coverage.add_column("Split / group")
     coverage.add_column("Selected blocks", justify="right")
@@ -38,20 +49,26 @@ def render(status, width=110):
             f"{item['total'] - item['selected']:,}",
         )
     resources = Text(
-        f"RAM free {status.get('free_memory_gib', 0):.1f} GiB | query reserved {status.get('reserved_query_gib', 0):.1f} GiB | disk free {status.get('free_disk_gib', 0):.1f} GiB"
+        f"RAM free {status.get('free_memory_gib', 0):.1f} GiB | disk free {status.get('free_disk_gib', 0):.0f} GiB"
     )
     queue = Text(
         f"Active {status.get('active', 0)} | saving {status.get('saving', 0)} | queued streams {status.get('queued_streams', 0):,} | failed {status.get('failed', 0)}"
     )
+    workers = (
+        f"{status['process_workers']} processes | {status.get('workers', 0)} lanes"
+        if status.get("process_workers")
+        else f"{status.get('workers', 0)} query workers"
+    )
     waits = Text(
         ", ".join(sorted(set(status.get("resource_waits", []))))
-        or f"{status.get('workers', 0)} query / {status.get('io_workers', 0)} I/O workers | no GPU work"
+        or f"{workers} | {status.get('io_workers', 0)} I/O slots | CPU only"
     )
     lanes = Table(expand=True, box=None)
     lanes.add_column("Ticker", width=12)
     lanes.add_column("Year", width=5)
     lanes.add_column("Current work", overflow="ellipsis", no_wrap=True)
-    for lane in status.get("lanes", [])[:8]:
+    lane_count = min(8, max(0, height - 23))
+    for lane in status.get("lanes", [])[:lane_count]:
         lanes.add_row(lane["ticker"], str(lane["year"]), lane["stage"])
     messages = [
         Text(error["reason"][: max(30, width - 2)], style="red")
@@ -61,14 +78,15 @@ def render(status, width=110):
         header,
         progress,
         bar,
+        throughput,
         queue,
         resources,
         waits,
         coverage,
-        lanes,
+        *([lanes] if lane_count else []),
         *messages,
         Text(
-            "STOP file: graceful stop after admitted work. Panel Ctrl+C closes only this viewer.",
+            "STOP drains generation. Ctrl+C closes this panel only.",
             style="dim",
         ),
     )
@@ -87,18 +105,23 @@ def main():
     if args.once or not console.is_terminal:
         if path.exists():
             previous = json.loads(path.read_text())
-        console.print(render(previous, console.width))
+        console.print(render(previous, console.width, console.height))
         return
     try:
         with Live(
-            render(previous), console=console, auto_refresh=False, transient=False
+            render(previous, console.width, console.height),
+            console=console,
+            auto_refresh=False,
+            transient=False,
         ) as live:
             while True:
                 try:
                     previous = json.loads(path.read_text())
                 except (FileNotFoundError, PermissionError, json.JSONDecodeError):
                     pass  # Preserve the last trustworthy snapshot and its age.
-                live.update(render(previous, console.width), refresh=True)
+                live.update(
+                    render(previous, console.width, console.height), refresh=True
+                )
                 time.sleep(1)
     except KeyboardInterrupt:
         pass

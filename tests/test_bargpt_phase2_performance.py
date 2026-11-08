@@ -52,6 +52,7 @@ def test_empty_ranges_defer_warmup_until_first_observation(tmp_path):
     worker.root = tmp_path
     worker.stream = dict(key="stream", ticker="EXAMPLE", year=2023, liquid=0)
     worker.plan, worker.revision = dict(hash="plan"), "source"
+    worker.gate = SimpleNamespace()
     worker.units = [
         [dict(source_date=f"2023-01-0{d}", event_count=100)] for d in (3, 4)
     ]

@@ -109,3 +109,10 @@ limited publication slots. Each producer writes its own arrays directly; only
 sealed receipts return to the coordinator. Aggregate per-process query/response
 allowances cannot exceed 128 GiB, and actual memory/disk admission gates remain.
 The default `--process-workers 0` retains the thread topology for comparisons.
+
+`--storage-format packed-v2` packs each unit's identical BAR/DECISION/context
+bytes into mmap containers capped at 16 MiB. It reduces per-unit small files and
+fsyncs; offsets, dtypes, shapes and source checksums are sealed in the receipt.
+Legacy NPY/NPZ units stay immutable and readable in the same cohort. Context
+restore verifies packed checksums, including when abandoned legacy files exist.
+No timestamps, values, masks, split rules or encoder-window geometry change.

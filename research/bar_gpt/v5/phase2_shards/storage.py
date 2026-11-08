@@ -44,13 +44,33 @@ def save_payload(directory, name, payload, rows):
     )
 
 
-def publish(root, stream, unit, arrays, starts, blocks, splits, context, timing):
+def publish(
+    root,
+    stream,
+    unit,
+    arrays,
+    starts,
+    blocks,
+    splits,
+    context,
+    timing,
+    *,
+    storage_format="legacy",
+):
     """Seal one source range. Payloads <=16 MiB; receipt is the commit marker.
 
     Bars are five BAR[N] arrays. Blocks are DECISION[B,256], with Int64 causal
     indices into the stream; split=2 rows are explicitly purged, never selected.
     Atomic directory rename exposes the complete receipt and checkpoint at once.
     """
+    if storage_format == "packed-v2":
+        from .packed_storage_v2 import publish as packed_publish
+
+        return packed_publish(
+            root, stream, unit, arrays, starts, blocks, splits, context, timing
+        )
+    if storage_format != "legacy":
+        raise ValueError("Unknown publication format")
     began = time.monotonic()
     timing = dict(timing)
     timing["publication_queue_seconds"] = max(
@@ -119,6 +139,13 @@ def restore(root, stream, unit):
     if unit < 0:
         return Context()
     path = Path(root) / "streams" / stream["key"] / f"{unit:04d}" / "context.npz"
+    receipt = json.loads((path.parent / "receipt.json").read_text())
+    if receipt.get("storage") == "packed-v2":
+        from .packed_storage_v2 import restore as packed_restore
+
+        if receipt["hash"] != digest({k: v for k, v in receipt.items() if k != "hash"}):
+            raise ValueError("Invalid packed context receipt")
+        return packed_restore(path.parent, receipt)
     with np.load(path, allow_pickle=False) as saved:
         return Context(
             saved["counts"].tolist(),
@@ -390,6 +417,26 @@ class Catalog:
         return str(path)
 
 
+def load_array(path, descriptor):
+    """Read legacy NPY or new bounded packed slices through one contract."""
+    if "offset" in descriptor:
+        from .packed_storage_v2 import load
+
+        return load(path, descriptor)
+    return np.load(Path(path) / descriptor["name"], mmap_mode="r", allow_pickle=False)
+
+
+def block_segments(receipt):
+    """Return logical block descriptors for either immutable storage generation."""
+    return receipt.get(
+        "block_segments",
+        sorted(
+            (item for item in receipt["files"] if item["name"].startswith("blocks-")),
+            key=lambda item: item["name"],
+        ),
+    )
+
+
 def read_window(root, stream, latest, frame, actions):
     """Read one full encoder view across immutable small NPY segments.
 
@@ -415,7 +462,7 @@ def read_window(root, stream, latest, frame, actions):
             file = path.parent / item["name"]
             if file_hash(file) != item["sha256"]:
                 raise ValueError("Raw bar payload mutation")
-            bars = np.load(file, mmap_mode="r", allow_pickle=False)
+            bars = load_array(path.parent, item)
             target = slice(left - (latest - 63), right - (latest - 63))
             result[target] = bars[left - item["start"] : right - item["start"]]
             filled[target] = True

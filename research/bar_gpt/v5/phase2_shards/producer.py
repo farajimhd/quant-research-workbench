@@ -359,4 +359,5 @@ class Worker:
             splits,
             context,
             timing,
+            storage_format=getattr(self.gate, "storage_format", "legacy"),
         )

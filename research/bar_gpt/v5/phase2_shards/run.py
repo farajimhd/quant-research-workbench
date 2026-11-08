@@ -48,6 +48,9 @@ def arguments():
     parser.add_argument("--process-workers", type=int, default=0)
     parser.add_argument("--receipt-batch-size", type=int, default=32)
     parser.add_argument("--receipt-batch-ms", type=float, default=250)
+    parser.add_argument(
+        "--storage-format", choices=("legacy", "packed-v2"), default="legacy"
+    )
     parser.add_argument("--query-memory-gib", type=float, default=3)
     parser.add_argument("--reserve-memory-gib", type=float, default=96)
     parser.add_argument("--reserve-disk-gib", type=float, default=150)
@@ -148,6 +151,7 @@ def run(args):
     # Process mode has at most one live query per process. Its aggregate bounded
     # allowance is checked above; each gate also preserves actual free headroom.
     gate.cancel = context.Event()
+    gate.storage_format = args.storage_format
     io_slots = context.BoundedSemaphore(args.io_workers)
     signal.signal(signal.SIGINT, lambda *_: gate.cancel.set())
     signal.signal(signal.SIGTERM, lambda *_: gate.cancel.set())
@@ -192,6 +196,11 @@ def run(args):
             workers=args.workers,
             io_workers=args.io_workers,
             process_workers=args.process_workers,
+            query_allowance_gib=(
+                (args.process_workers * (args.query_memory_gib + 0.25))
+                if args.process_workers
+                else None
+            ),
             chunk_events=args.chunk_events,
             free_memory_gib=psutil.virtual_memory().available / 1024**3,
             process_memory_gib=psutil.Process().memory_info().rss / 1024**3,

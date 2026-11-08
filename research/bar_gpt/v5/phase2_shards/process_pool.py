@@ -32,10 +32,10 @@ class DirectPublisher:
     def __init__(self, slots):
         self.slots = slots
 
-    def submit(self, function, *args):
+    def submit(self, function, *args, **kwargs):
         """Durably publish in the owning process without copying its bar arrays."""
         with self.slots:
-            receipt = function(*args)
+            receipt = function(*args, **kwargs)
         result = Future()
         result.set_result(receipt)
         return result
@@ -57,6 +57,7 @@ def initialize(configuration, cancel, slots):
         configuration["fine_warmup_sessions"],
     )
     gate.cancel = cancel
+    gate.storage_format = configuration["storage_format"]
     Finalize(None, gate.close, exitpriority=10)
     _state = dict(
         root=root,

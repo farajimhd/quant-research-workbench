@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from research.bar_gpt.v5.phase2_shards.contract import (
     BAR,
@@ -79,7 +80,8 @@ def test_chunked_and_unbroken_decisions_are_identical():
     np.testing.assert_array_equal(labels, expected_split)
 
 
-def test_receipt_recovery_preserves_context_and_exact_75_25(tmp_path):
+@pytest.mark.parametrize("storage_format", ["legacy", "packed-v2"])
+def test_receipt_recovery_preserves_context_and_exact_75_25(tmp_path, storage_format):
     context = Context()
     arrays = [bars(CUTOFF + 10**13 + np.arange(1024) * f) for f in FRAMES]
     blocks, _ = context.append(arrays)
@@ -97,6 +99,7 @@ def test_receipt_recovery_preserves_context_and_exact_75_25(tmp_path):
                 np.zeros(len(blocks), dtype=np.uint8),
                 context,
                 {},
+                storage_format=storage_format,
             )
         )
         resumed = restore(tmp_path, stream, 0)
