@@ -148,11 +148,11 @@ def test_relay_replays_only_missing_complete_payloads(
         init.append(kwargs)
         return run
 
-    remote = SimpleNamespace(
-        scan_history=lambda **k: [
-            {"migration/event_id": relay.fingerprint(acknowledged)}
-        ]
-    )
+    def scan_history(**kwargs):
+        assert "keys" not in kwargs  # Filtered scans use a sampled server API.
+        return [{"migration/event_id": relay.fingerprint(acknowledged)}]
+
+    remote = SimpleNamespace(scan_history=scan_history)
     monkeypatch.setitem(
         sys.modules,
         "wandb",

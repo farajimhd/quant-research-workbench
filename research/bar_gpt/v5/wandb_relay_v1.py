@@ -104,10 +104,12 @@ def main(argv=None):
         remote = wandb.Api(timeout=30).run(
             f'{identity["entity"]}/{identity["project"]}/{identity["id"]}'
         )
+        # Use unsampled history for exact deduplication. In this SDK, supplying
+        # keys selects sampledHistory and can omit rows at page boundaries.
         # A retry reconciles remote acknowledgments, not merely a local cursor.
         acknowledged = {
             row["migration/event_id"]
-            for row in remote.scan_history(keys=["migration/event_id"], page_size=1000)
+            for row in remote.scan_history(page_size=1000)
             if row.get("migration/event_id")
         }
         run = init_wandb(
