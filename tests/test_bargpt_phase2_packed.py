@@ -66,7 +66,9 @@ def test_mixed_legacy_and_packed_units_keep_every_array_and_context(tmp_path):
             # A stale legacy artifact must never override a packed receipt.
             (path / "context.npz").write_bytes(b"stale abandoned attempt")
             assert restore(tmp_path, stream, unit).counts == context.counts
-    sample = read_window(tmp_path, stream["key"], 340, 0, [])
+    sample = read_window(
+        tmp_path, stream["key"], 340, 0, [], origin_us=int(CUTOFF + FRAMES[0] * 341)
+    )
     assert sample["end_us"].shape == (1, 64)
     np.testing.assert_array_equal(
         sample["end_us"][0], CUTOFF + FRAMES[0] * np.arange(278, 342)

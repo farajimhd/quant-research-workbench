@@ -1,9 +1,9 @@
 """Immutable phase-two input geometry and mmap storage types.
 
 Market values come exclusively from the phase-one canonical bar producer.
-Raw bars remain on their original share basis: each reconstructed 64-bar window
-uses phase one's split adjustment at its own endpoint, before the same Torch
-transform adds nine UTC inputs. No labels, decoder outputs or GPU embeddings
+Raw bars remain on their original share basis: every reconstructed 64-bar window
+uses phase one's adjustment math at the common 1s decision origin. The same
+Torch transform then adds nine UTC inputs. No labels, decoder outputs or GPU embeddings
 are materialized here; the encoder checkpoint is still changing in phase one.
 """
 
@@ -15,6 +15,7 @@ from ..shards.storage import adjust_splits
 from ..shards.contract import digest, file_hash, seed_for, write_json
 
 VERSION = "bargpt-phase2-stream-v1"
+VIEW_VERSION = "bargpt-phase2-origin-share-basis-v2"
 # Each tuple is (microseconds, observed context bars, historical window stride).
 SPECS = (
     (1_000_000, 544, 32),
@@ -47,19 +48,22 @@ def windows(latest, frame_index):
     return last[..., None] - np.arange(63, -1, -1), last >= 63
 
 
-def encoder_window(bars, frame, actions):
-    """Prepare one [64,18] raw window using phase one's exact split semantics.
+def encoder_window(bars, frame, actions, *, origin_us):
+    """Prepare [64,18] raw bars in the current 1s origin's share basis.
 
     ``bars`` is BAR[64] from the stream's immutable segments; ``actions`` is the
-    frozen ticker-specific executed-action catalog. Return phase-one records
-    [1], ready for its existing scaling and nine-channel UTC transform.
+    frozen ticker-specific executed-action catalog. origin_us is the explicit
+    integer UTC end timestamp of the last completed observed 1s decision bar.
+    It is shared by all 38 views, not replaced with an older window's endpoint.
+    Return phase-one records [1], ready for its scaling and nine UTC features.
+    No input bar may close after origin_us; forming bars are not accepted.
     """
     if len(bars) != 64:
         raise ValueError("An encoder window requires 64 actual observations")
     sample = pack(
         bars["values"][None], bars["valid"][None], bars["end_us"][None], frame, 0
     )
-    adjust_splits(sample, actions)
+    adjust_splits(sample, actions, origin_us=origin_us)
     return sample
 
 

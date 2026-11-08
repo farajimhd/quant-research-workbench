@@ -8,7 +8,17 @@ import time
 import numpy as np
 import polars as pl
 
-from .contract import BAR, BLOCK, FRAMES, SPECS, windows, file_hash, write_json, digest
+from .contract import (
+    BAR,
+    BLOCK,
+    FRAMES,
+    SPECS,
+    VIEW_VERSION,
+    windows,
+    file_hash,
+    write_json,
+    digest,
+)
 from .plan import bounds, verify_code
 from .producer import Gate, Worker
 from .storage import Catalog, read_window, load_array, block_segments
@@ -94,7 +104,14 @@ def content(root, max_receipts=6, latest=False):
                 for i, frame in enumerate(FRAMES):
                     indices, present = windows(np.asarray([block["latest"][-1, i]]), i)
                     for last in indices[0, present[0], -1]:
-                        sample = read_window(root, key, int(last), i, actions)
+                        sample = read_window(
+                            root,
+                            key,
+                            int(last),
+                            i,
+                            actions,
+                            origin_us=int(block["end_us"][-1]),
+                        )
                         if sample["end_us"].max() > block["end_us"][-1]:
                             raise ValueError("Future bar leaked into causal token")
                         complete[i] += 1
@@ -122,6 +139,7 @@ def content(root, max_receipts=6, latest=False):
             ledger=stats,
             source_math=plan["code"],
             channels=18,
+            view_version=VIEW_VERSION,
             utc_transform_channels=9,
             timeframes=FRAMES,
         )

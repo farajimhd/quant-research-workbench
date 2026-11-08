@@ -41,11 +41,22 @@ halts and no 100ms output. The selection adapter changes only arbitrary chunk
 edge cuts to known session boundaries. Source parity is checked against the
 original producer over a wider span.
 
-Small immutable NPY segments contain raw `[18]` Float32 values, `[18]` UInt8 masks
-and Int64 bar-end clocks. The reference window reader applies phase one's own
-backward split adjustment at each 64-bar window endpoint. Raw caches never use
-a future range-end share basis. The existing input transform adds nine UTC
+Small immutable NPY/packed segments contain raw `[18]` Float32 values, `[18]` UInt8
+masks and Int64 bar-end clocks. Model-ready view contract
+`bargpt-phase2-origin-share-basis-v2` requires the explicit current 1s decision
+origin for every 64-bar view. The reader uses phase one's adjustment math to
+rebase all historical prices and sizes to that common origin, including a split
+effective after an older daily/hourly window ended. Future executions are excluded.
+Raw caches retain their original share basis. The existing input transform adds nine UTC
 features, for 27 encoder channels; transformed tensors are not duplicated here.
+
+Only completed bars with `bar.end_us <= origin_us` are eligible in any timeframe;
+forming bars are not inputs. The current daily contract is regular hours, closing
+at 16:00 New York time: before that close the latest daily is the previous trading
+session, and at/after it today's completed daily becomes available. Embedding
+cache identity must include the stock-split basis at the origin, so entries from
+an earlier basis are rebuilt when a split takes effect. Existing raw shards and
+causal indices remain usable; this correction changes model-ready views only.
 
 The append-only catalog accepts exactly three liquid blocks per less-liquid
 block within each chronological split. Classification is inherited from phase

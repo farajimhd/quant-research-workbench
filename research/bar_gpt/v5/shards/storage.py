@@ -110,27 +110,48 @@ def coarse_samples(day_rows, actions=()):
     return samples
 
 
-def adjust_splits(samples, actions):
-    """Adjust [N,64,21] coarse samples in place to each sample's final share basis.
+def adjust_splits(samples, actions, *, origin_us=None):
+    """Adjust [N,64,18/21] samples in place to their causal share basis.
 
     actions are frozen q_live corporate-action rows for this ticker. As in
     ARTE market_day_sql.split_factor, prices before execution multiply by
     split_from/split_to; volume and quote sizes multiply by the reciprocal.
-    Counts, timestamps and masks stay unchanged. Future executions do not affect
-    samples ending before the action. Canonical event prices are never modified.
+    Counts, timestamps and masks stay unchanged. Executions after the selected
+    basis origin never affect inputs. Canonical event prices are never modified.
+
+    origin_us is an optional UTC microsecond integer scalar or Int64[N] vector.
+    Phase one omits it and retains each sample's final-bar basis. Phase two must
+    pass the current 1s decision origin for every historical/timeframe view,
+    even when that view ends before a split effective on the decision day.
     """
     from .sql import clock
 
     price_columns = [0, 1, 2, 3, 6, 7, 8, 9, 12, 13, 14, 15]
     size_columns = [4, 10, 16]
     ends = samples["end_us"]  # [N,64], full observed coarse contexts.
+    endpoints = ends.max(axis=1)  # [N], the unchanged phase-one default basis.
+    basis = endpoints
+    if origin_us is not None:
+        origin = np.asarray(origin_us)
+        if origin.dtype.kind not in "iu":
+            raise ValueError("Split origins must be integer UTC microseconds")
+        try:
+            basis = np.broadcast_to(origin.astype(np.int64), endpoints.shape)
+        except ValueError as error:
+            raise ValueError("Split origins must be scalar or shape [N]") from error
+        if np.any(basis <= 0) or np.any(basis < endpoints):
+            raise ValueError("A split origin cannot precede an input bar")
     factor = np.ones(ends.shape, dtype=np.float64)
     for action in sorted(actions, key=lambda row: row["execution_date"]):
         effective = clock(action["execution_date"], 4)
         before, after = float(action["split_from"]), float(action["split_to"])
         if not (np.isfinite(before) and np.isfinite(after) and before > 0 and after > 0):
             raise ValueError("Invalid split ratio; never publish unadjusted fallback.")
-        affected = (ends > 0) & (ends < effective) & (ends.max(axis=1)[:, None] >= effective)
+        affected = (
+            (ends > 0)
+            & (ends < effective)
+            & (basis[:, None] >= effective)
+        )
         factor *= np.where(affected, before / after, 1.)  # Compound executions within each context.
     samples["values"][..., price_columns] *= factor[..., None]
     samples["values"][..., size_columns] /= factor[..., None]

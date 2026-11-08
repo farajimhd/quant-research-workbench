@@ -437,11 +437,12 @@ def block_segments(receipt):
     )
 
 
-def read_window(root, stream, latest, frame, actions):
+def read_window(root, stream, latest, frame, actions, *, origin_us):
     """Read one full encoder view across immutable small NPY segments.
 
     This audit/reference reader deliberately verifies hashes. A future loader
     can cache validated mmaps and prefetch these exact same segment references.
+    origin_us is the current 1s decision's UTC end, shared across all views.
     """
     from .contract import FRAMES, encoder_window
 
@@ -468,4 +469,4 @@ def read_window(root, stream, latest, frame, actions):
             filled[target] = True
     if not filled.all():
         raise ValueError("Missing referenced bar segment")
-    return encoder_window(result, FRAMES[frame], actions)
+    return encoder_window(result, FRAMES[frame], actions, origin_us=origin_us)
