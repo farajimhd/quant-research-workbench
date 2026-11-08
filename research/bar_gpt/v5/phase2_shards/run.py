@@ -7,8 +7,9 @@ The execution cap and immutable inventory both default to four decimal TB.
 
 import argparse
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
+from concurrent.futures import Future, ThreadPoolExecutor, wait, FIRST_COMPLETED
 import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 import shutil
@@ -25,6 +26,7 @@ from .contract import CAPACITY, write_json
 from .plan import freeze, inventory_jobs
 from .producer import Gate, Worker, NoFullBlock, EndOfStream
 from .ledger_process import LedgerProcess
+from .process_pool import executor, produce, ProducedUnit
 from .telemetry import Telemetry
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
@@ -43,6 +45,7 @@ def arguments():
     parser.add_argument("--target-bytes", type=int, default=4_000_000_000_000)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--io-workers", type=int, default=2)
+    parser.add_argument("--process-workers", type=int, default=0)
     parser.add_argument("--query-memory-gib", type=float, default=3)
     parser.add_argument("--reserve-memory-gib", type=float, default=96)
     parser.add_argument("--reserve-disk-gib", type=float, default=150)
@@ -82,6 +85,10 @@ def run(args):
         raise ValueError("Query threads must be 1..8 and warmup budgets positive")
     if not 0.1 <= args.python_switch_ms <= 10:
         raise ValueError("Python switch interval must be 0.1..10 milliseconds")
+    if not 0 <= args.process_workers <= args.workers:
+        raise ValueError("Process workers must be between zero and admitted lanes")
+    if args.process_workers * (args.query_memory_gib + 0.25) > 128:
+        raise ValueError("Extraction process query/response allowances exceed 128 GiB")
     # Shorter generator-only GIL slices prevent metadata/serialization threads
     # delaying the coordinator after each native I/O call. No trainer is changed.
     sys.setswitchinterval(args.python_switch_ms / 1000)
@@ -130,6 +137,11 @@ def run(args):
         args.coarse_warmup_events,
         args.fine_warmup_sessions,
     )
+    context = mp.get_context("spawn")
+    # Process mode has at most one live query per process. Its aggregate bounded
+    # allowance is checked above; each gate also preserves actual free headroom.
+    gate.cancel = context.Event()
+    io_slots = context.BoundedSemaphore(args.io_workers)
     signal.signal(signal.SIGINT, lambda *_: gate.cancel.set())
     signal.signal(signal.SIGTERM, lambda *_: gate.cancel.set())
     streams = [
@@ -171,6 +183,7 @@ def run(args):
             errors=errors[-6:],
             workers=args.workers,
             io_workers=args.io_workers,
+            process_workers=args.process_workers,
             chunk_events=args.chunk_events,
             free_memory_gib=psutil.virtual_memory().available / 1024**3,
             process_memory_gib=psutil.Process().memory_info().rss / 1024**3,
@@ -241,9 +254,7 @@ def run(args):
     try:
         with ThreadPoolExecutor(
             args.io_workers, thread_name_prefix="phase2-io"
-        ) as io, ThreadPoolExecutor(
-            args.workers, thread_name_prefix="phase2-query"
-        ) as pool:
+        ) as io, executor(args, gate.cancel, io_slots) as pool:
             while True:
                 if (root / "STOP").exists():
                     gate.cancel.set()
@@ -276,7 +287,16 @@ def run(args):
                             break
                         worker, unit = task
                         lanes[worker.stream["key"]] = worker
-                        active[pool.submit(worker.step, unit)] = (worker, unit)
+                        if args.process_workers:
+                            worker.label = f"{worker.stream['ticker']} {worker.stream['year']} unit {unit}"
+                        future = (
+                            pool.submit(
+                                produce, worker.stream, unit, worker.trade_proof
+                            )
+                            if args.process_workers
+                            else pool.submit(worker.step, unit)
+                        )
+                        active[future] = (worker, unit)
                         if (
                             args.max_units
                             and completed + len(active) + len(publications)
@@ -336,6 +356,13 @@ def run(args):
                                 lanes.pop(worker.stream["key"], None)
                                 reusable.pop(worker.stream["key"], None)
                                 completed += 1  # Bounded pilots count resolved no-block work too.
+                            elif isinstance(result, ProducedUnit):
+                                # The process already sealed its payload. Keep the
+                                # original commit-before-advance coordinator path.
+                                worker.units = range(result.unit_count)
+                                publication = Future()
+                                publication.set_result(result.receipt)
+                                publications[publication] = (worker, unit)
                             else:
                                 publications[result] = (worker, unit)
                         except InterruptedError:

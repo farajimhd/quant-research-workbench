@@ -102,3 +102,10 @@ bounded batch transactions, bulk SQL selection and commit acknowledgments; lanes
 advance only after acknowledgment. This isolates SQLite from extraction-thread
 GIL contention without moving any bar arrays through IPC. Existing units, plan,
 phase-one bar math and exact per-split 75/25 selection remain unchanged.
+
+`--process-workers 16 --workers 64 --io-workers 16` runs up to sixteen independent
+CPU-only producers, sixty-four bounded in-flight lanes, and sixteen globally
+limited publication slots. Each producer writes its own arrays directly; only
+sealed receipts return to the coordinator. Aggregate per-process query/response
+allowances cannot exceed 128 GiB, and actual memory/disk admission gates remain.
+The default `--process-workers 0` retains the thread topology for comparisons.
