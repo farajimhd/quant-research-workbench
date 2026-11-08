@@ -96,6 +96,8 @@ def run(args):
         raise ValueError("Python switch interval must be 0.1..10 milliseconds")
     if not 0 <= args.process_workers <= args.workers:
         raise ValueError("Process workers must be between zero and admitted lanes")
+    if args.background_workers and not args.process_workers:
+        raise ValueError("Background publication scheduling requires process workers")
     if args.validation_lanes < 1:
         raise ValueError("Validation lane cap must be positive")
     if (
@@ -247,6 +249,9 @@ def run(args):
         preference = wanted()
         for liquid in (preference, 1 - preference):
             while positions[liquid] < len(queues[liquid]):
+                if gate.cancel.is_set() or (root / "STOP").exists():
+                    gate.cancel.set()
+                    return None
                 stream = queues[liquid][positions[liquid]]
                 positions[liquid] += 1
                 proof, skipped, committed_unit = catalog.lane_status(stream["key"])
@@ -304,6 +309,9 @@ def run(args):
                 )
                 if not gate.cancel.is_set() and not cap and not limit:
                     while len(active) + len(publications) < admission_limit:
+                        if gate.cancel.is_set() or (root / "STOP").exists():
+                            gate.cancel.set()
+                            break
                         if (
                             stats["bytes"]
                             + (len(active) + len(publications) + 1) * 128 * 1024**2
