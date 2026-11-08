@@ -85,3 +85,30 @@ def test_existing_unowned_archive_is_never_overwritten(tmp_path):
     with pytest.raises(ValueError,match='pre-existing'):
         M.Relocation(tmp_path/'control',archive,[source])
     assert (archive/'retain').read_text()=='existing backup'
+
+
+def test_retained_parent_allows_new_versions_on_original_volume(tmp_path):
+    source=tmp_path/'backtests';source.mkdir()
+    version=source/'v68';version.mkdir();(version/'receipt').write_text('sealed')
+    j=M.Relocation(tmp_path/'control',tmp_path/'archive',[source],keep_containers=(0,))
+    j.backup();j.finalize()
+    assert source.resolve()==source
+    assert (source/'v68').resolve()==(j.destination(0)/'v68').resolve()
+    assert (source/'v68'/'receipt').read_text()=='sealed'
+    (source/'v69').mkdir()
+    assert (source/'v69').resolve().is_relative_to(source)
+    assert not (j.destination(0)/'v69').exists()
+    j.db.close()
+
+
+def test_partial_container_alias_installation_recovers_before_deletion(tmp_path):
+    source=tmp_path/'backtests';source.mkdir();(source/'v68').mkdir()
+    (source/'v68'/'receipt').write_text('sealed')
+    j=M.Relocation(tmp_path/'control',tmp_path/'archive',[source],keep_containers=(0,))
+    j.backup();j.state['roots']['0']['phase']='cutover_intent';j.save()
+    os.rename(source,j.retiring(0));source.mkdir();M.junction(source/'v68',j.destination(0)/'v68');j.db.close()
+    resumed=M.Relocation(tmp_path/'control',tmp_path/'archive',[source],keep_containers=(0,))
+    assert (source/'v68'/'receipt').read_text()=='sealed'
+    assert (source/'v68').resolve()==source/'v68'
+    resumed.finalize();assert resumed.aliases_valid(0)
+    resumed.db.close()

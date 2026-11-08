@@ -66,7 +66,7 @@ def junction(source, destination):
 
 
 class Relocation:
-    def __init__(self, output, archive, sources=SOURCES, workers=4):
+    def __init__(self, output, archive, sources=SOURCES, workers=4, keep_containers=()):
         self.output, self.archive = Path(output), Path(archive)
         self.output.mkdir(parents=True, exist_ok=True)
         if not (self.output/'state.json').exists() and self.archive.exists() and any(self.archive.iterdir()):
@@ -74,6 +74,9 @@ class Relocation:
         if self.archive.exists() and self.archive.resolve()!=self.archive:
             raise ValueError('Archive root is redirected')
         self.sources = tuple(Path(p) for p in sources)
+        self.keep_containers = tuple(keep_containers)
+        if any(i not in range(len(self.sources)) for i in self.keep_containers):
+            raise ValueError('Invalid retained container index')
         self.workers = workers
         self.db = sqlite3.connect(self.output/'journal.sqlite')
         self.db.execute('PRAGMA journal_mode=WAL')
@@ -85,6 +88,11 @@ class Relocation:
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else dict(**expected, roots={})
         if any(self.state[k] != v for k, v in expected.items()):
             raise ValueError('Journal is bound to different source/archive roots')
+        if 'keep_containers' in self.state and self.state['keep_containers']!=list(self.keep_containers):
+            raise ValueError('Journal has a different path-compatibility policy')
+        if 'keep_containers' not in self.state and any(v.get('phase') in ('cutover_intent','cutover','complete') for v in self.state['roots'].values()):
+            raise ValueError('Cannot adopt a new path policy after an older cutover')
+        self.state['keep_containers']=list(self.keep_containers)
         self.save()
         self.started = time.time()
         self.last = 0
@@ -98,7 +106,16 @@ class Relocation:
             state = self.state['roots'].get(str(index), {})
             if state.get('phase') == 'cutover_intent':
                 source, old = self.sources[index], self.retiring(index)
-                if source.is_dir() and source.resolve() == self.destination(index).resolve() and old.is_dir():
+                if index in self.keep_containers and old.is_dir() and source.is_dir():
+                    # Roll back only links created by this cutover. Unknown or new
+                    # files are preserved and prevent automatic reconciliation.
+                    for p in source.iterdir():
+                        if fingerprint(p)[0]!='link' or p.resolve()!=(self.destination(index)/p.name).resolve():
+                            raise RuntimeError('Unexpected entry in interrupted container cutover')
+                        if os.stat(native(p),follow_symlinks=False).st_file_attributes&0x10:os.rmdir(native(p))
+                        else:os.unlink(native(p))
+                    os.rmdir(native(source));os.rename(native(old),native(source));state['phase']='backed_up'
+                elif source.is_dir() and source.resolve() == self.destination(index).resolve() and old.is_dir():
                     state['phase'] = 'cutover'
                 elif not os.path.lexists(native(source)) and old.is_dir() and old.resolve() == old:
                     os.rename(native(old), native(source)); state['phase'] = 'backed_up'
@@ -114,6 +131,26 @@ class Relocation:
     def retiring(self, index):
         p = self.sources[index]
         return p.with_name(p.name + '.retiring-20261108')
+
+    def install_aliases(self, index):
+        source,destination,old=self.sources[index],self.destination(index),self.retiring(index)
+        if index not in self.keep_containers:
+            junction(source,destination)
+            return
+        os.mkdir(native(source))
+        with os.scandir(native(old)) as entries:
+            for entry in entries:
+                target=destination/entry.name;alias=source/entry.name
+                if entry.is_dir(follow_symlinks=False):junction(alias,target)
+                else:os.symlink(str(target),native(alias),target_is_directory=False)
+
+    def aliases_valid(self,index):
+        source,destination=self.sources[index],self.destination(index)
+        if index not in self.keep_containers:
+            return source.resolve()==destination.resolve()
+        if source.resolve()!=source:return False
+        with os.scandir(native(destination)) as entries:
+            return all((source/entry.name).resolve()==(destination/entry.name).resolve() for entry in entries)
 
     def save(self):
         write_json(self.state_path, self.state)
@@ -264,11 +301,15 @@ class Relocation:
                 # Persist intent before the rename, so interruption is recoverable.
                 state.update(phase='cutover_intent',source=str(source),destination=str(destination),retiring=str(old));self.save()
                 os.rename(native(source),native(old))
-                try:junction(source,destination)
+                try:self.install_aliases(index)
                 except Exception:
-                    os.rename(native(old),native(source));state['phase']='backed_up';self.save();raise
+                    # Leave cutover_intent intact if a partially installed
+                    # container needs link-by-link recovery on restart.
+                    if not os.path.lexists(native(source)):
+                        os.rename(native(old),native(source));state['phase']='backed_up';self.save()
+                    raise
                 state['phase']='cutover';self.save()
-            if source.resolve()!=destination.resolve() or not old.is_dir() or old.resolve()!=old:
+            if not self.aliases_valid(index) or not old.is_dir() or old.resolve()!=old:
                 raise RuntimeError('Cutover paths do not match the sealed plan')
             self.stage='Remove verified D copy';self.completed=0;self.publish(True)
             for row in self.db.execute("SELECT rel,kind,size,mtime,target,digest FROM entries WHERE root=? AND kind<>'dir'",(index,)):
@@ -295,7 +336,7 @@ class Relocation:
                         if fingerprint(p)[0]!='dir':raise RuntimeError('Unexpected retained entry; refusing recursive deletion: '+str(p))
                         stack.append((p,False))
             state['phase']='complete';self.save();self.publish(True)
-        self.stage='Complete';self.active='four G trees verified; D paths are junctions';self.publish(True)
+        self.stage='Complete';self.active='four G trees verified; D payloads retired with compatible paths';self.publish(True)
 
 
 def main():
@@ -316,7 +357,7 @@ def main():
     import msvcrt
     with (args.output/'controller.lock').open('a+b') as lock:
         lock.write(b'0');lock.flush();lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
-        job=Relocation(args.output,args.archive,workers=args.workers)
+        job=Relocation(args.output,args.archive,workers=args.workers,keep_containers=(0,))
         try:
             if args.stage=='backup':job.backup()
             else:job.finalize()
