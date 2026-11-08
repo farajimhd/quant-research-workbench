@@ -269,3 +269,38 @@ def test_isolated_ledger_acknowledges_commits_and_preserves_failed_batches(tmp_p
     reopened = Catalog(tmp_path)
     assert reopened.stats()["units"] == 1
     reopened.db.close()
+
+
+def test_bulk_selection_vm_work_does_not_grow_quadratically(tmp_path):
+    """Doubling a balanced batch must not rescan every chosen row per update."""
+    work = []
+    for scale in (1, 2):
+        root = tmp_path / str(scale)
+        root.mkdir()
+        catalog = Catalog(root)
+        ticks = [0]
+
+        def progress():
+            ticks[0] += 1
+            return 0
+
+        catalog.db.set_progress_handler(progress, 1000)
+        receipts = []
+        for key, liquid, count in (
+            ("liquid", 1, 3000 * scale),
+            ("sparse", 0, 1000 * scale),
+        ):
+            row = dict(
+                stream=key,
+                unit=0,
+                bytes=100,
+                timing={},
+                liquid=liquid,
+                splits=[0] * count,
+            )
+            receipts.append(dict(row, hash=digest(row)))
+        catalog.register_many(receipts)
+        assert sum(row["selected"] for row in catalog.stats()["blocks"]) == 4000 * scale
+        work.append(ticks[0])
+        catalog.db.close()
+    assert work[1] < work[0] * 3

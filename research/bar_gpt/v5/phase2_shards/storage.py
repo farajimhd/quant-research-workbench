@@ -309,8 +309,7 @@ class Catalog:
                         "row_number() OVER(ORDER BY rowid)-1 AS offset FROM blocks "
                         "WHERE split=? AND liquid=? AND selection IS NULL "
                         "ORDER BY rowid LIMIT ?) UPDATE blocks SET selection=?+"
-                        "(SELECT offset FROM chosen WHERE chosen.id=blocks.rowid) "
-                        "WHERE rowid IN (SELECT id FROM chosen)",
+                        "chosen.offset FROM chosen WHERE blocks.rowid=chosen.id",
                         (split, liquid, count, order),
                     )
                     if self.db.execute("SELECT changes()").fetchone()[0] != count:

@@ -46,6 +46,8 @@ def arguments():
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--io-workers", type=int, default=2)
     parser.add_argument("--process-workers", type=int, default=0)
+    parser.add_argument("--receipt-batch-size", type=int, default=32)
+    parser.add_argument("--receipt-batch-ms", type=float, default=250)
     parser.add_argument("--query-memory-gib", type=float, default=3)
     parser.add_argument("--reserve-memory-gib", type=float, default=96)
     parser.add_argument("--reserve-disk-gib", type=float, default=150)
@@ -87,6 +89,11 @@ def run(args):
         raise ValueError("Python switch interval must be 0.1..10 milliseconds")
     if not 0 <= args.process_workers <= args.workers:
         raise ValueError("Process workers must be between zero and admitted lanes")
+    if (
+        not 1 <= args.receipt_batch_size <= 1024
+        or not 0 <= args.receipt_batch_ms <= 1000
+    ):
+        raise ValueError("Receipt batching requires size 1..1024 and delay 0..1000 ms")
     if args.process_workers * (args.query_memory_gib + 0.25) > 128:
         raise ValueError("Extraction process query/response allowances exceed 128 GiB")
     # Shorter generator-only GIL slices prevent metadata/serialization threads
@@ -161,6 +168,7 @@ def run(args):
     started, last_status = time.monotonic(), 0.0
     initial_bytes = catalog.stats()["bytes"]
     state = "running"
+    pending_since = None
     coordinator_seconds = dict(dispatch=0.0, registration=0.0)
 
     def snapshot():
@@ -307,7 +315,7 @@ def run(args):
                 for future in list(publications):
                     if not future.done():
                         continue
-                    worker, unit = publications.pop(future)
+                    worker, unit = publications[future]
                     try:
                         receipt = future.result()
                     except Exception as error:
@@ -319,22 +327,39 @@ def run(args):
                             )
                         )
                         gate.cancel.set()
+                        publications.pop(future)
                         lanes.pop(worker.stream["key"], None)
                         continue
-                    ready.append((worker, unit, receipt))
+                    ready.append((future, worker, unit, receipt))
+                if ready and pending_since is None:
+                    pending_since = time.monotonic()
+                # Retain completed futures within the existing in-flight bound
+                # until a useful FULL-sync batch forms, or its short delay expires.
+                flush = ready and (
+                    len(ready) >= args.receipt_batch_size
+                    or not active
+                    or gate.cancel.is_set()
+                    or time.monotonic() - pending_since >= args.receipt_batch_ms / 1000
+                )
+                if not flush:
+                    ready = []
+                else:
+                    pending_since = None
+                    for future, _, _, _ in ready:
+                        publications.pop(future)
                 registration_started = time.monotonic()
                 try:
-                    catalog.register_many([receipt for _, _, receipt in ready])
+                    catalog.register_many([receipt for _, _, _, receipt in ready])
                 except Exception as error:
                     errors.append(dict(reason=f"Receipt batch failed: {error}"[:2000]))
                     gate.cancel.set()
-                    for worker, _, _ in ready:
+                    for _, worker, _, _ in ready:
                         lanes.pop(worker.stream["key"], None)
                     ready = []
                 coordinator_seconds["registration"] += (
                     time.monotonic() - registration_started
                 )
-                for worker, unit, _ in ready:
+                for _, worker, unit, _ in ready:
                     completed += 1
                     lanes.pop(worker.stream["key"], None)
                     # Put this stream at the next class queue position, so its
