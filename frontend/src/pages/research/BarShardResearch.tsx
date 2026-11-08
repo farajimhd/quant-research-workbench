@@ -95,12 +95,12 @@ export function BarShardResearch() {
 }
 
 /** Draw only available OHLC fields; missing bodies never become synthetic candles. */
-function ShardCandles({ bars, family, selected, onSelect }: { bars: Bar[]; family: string; selected: number; onSelect: (index: number) => void }) {
+export function ShardCandles({ bars, family, selected, onSelect }: { bars: Bar[]; family: string; selected: number; onSelect: (index: number) => void }) {
   const families = [{ name: "trade", offset: 0 }, { name: "bid", offset: 6 }, { name: "ask", offset: 12 }].filter(f => family === "all" || family === f.name);
   const prices = bars.flatMap(b => families.flatMap(f => b.values.slice(f.offset, f.offset + 4).filter((v): v is number => v !== null)));
   const low = Math.min(...prices), high = Math.max(...prices); const range = Math.max(high - low, high * .0001);
   const y = (v: number) => 300 - (v - low) / range * 260;
-  return <><div className="bar-shard-legend">{families.map(f => <span key={f.name} className={`shard-${f.name}`}>● {f.name}</span>)}<span>Shaded slots: padding · click a bar for exact values</span></div>
+  return <><div className="bar-shard-legend">{families.map(f => <span key={f.name} className={`shard-${f.name}`}>● {f.name}</span>)}<span>{bars.some(bar => bar.padding) ? "Shaded slots: padding · " : ""}Click a bar for exact values</span></div>
     {!prices.length && <p className="research-muted">No valid prices in the selected series. Raw masks remain available below.</p>}
     <svg className="bar-shard-chart" viewBox="0 0 1200 350" role="group" aria-label="64-bar candlestick inspection">
       {prices.length > 0 && [0, 1, 2, 3, 4].map(i => { const value = low + range * i / 4; return <g key={i} className="bar-shard-grid"><line x1={65} x2={1190} y1={y(value)} y2={y(value)} /><text x={60} y={y(value) + 4} textAnchor="end">{value.toLocaleString("en-US", { maximumSignificantDigits: 6 })}</text></g>; })}

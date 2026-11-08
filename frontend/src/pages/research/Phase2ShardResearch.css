@@ -1,0 +1,23 @@
+.phase2-shard-research .phase2-origin {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  border-left: 3px solid var(--primary);
+  padding-left: 0.75rem;
+}
+.phase2-shard-research .phase2-origin span {
+  color: var(--muted-foreground);
+}
+.phase2-shard-research .research-controls label {
+  min-width: 0;
+  max-width: 100%;
+}
+.phase2-shard-research .research-controls select {
+  max-width: 100%;
+}
+.phase2-shard-research .research-source {
+  overflow-wrap: anywhere;
+}
+.phase2-shard-research input[type="number"] {
+  width: 6rem;
+}

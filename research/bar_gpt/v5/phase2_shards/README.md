@@ -5,6 +5,15 @@ does not control or restart the phase-one trainer, and does not cache embeddings
 from a checkpoint that is still learning. Each future encoder view produces 512
 values through the existing full-feature path.
 
+The app exposes a read-only inspector at Research → BarGPT phase 2, or
+`http://localhost:5173/?research=phase2-shards#research-workspace`. Select a saved
+ticker-year/unit/block and any of its 256 decisions. The five timeframes expose
+all available overlapping 64-bar views, with raw versus origin-adjusted prices,
+sizes, validity masks, actual UTC clocks/gaps, and nine shared UTC features.
+Market values are displayed before training scaling; no encoder/GPU is invoked.
+Receipt/hash checks cover each selected payload. Candidate cutoff eligibility
+is shown separately from admission into a balanced selected-block release.
+
 | Frame | Observed context | Window width | Stride | Views per decision |
 | --- | ---: | ---: | ---: | ---: |
 | 1 second | 544 | 64 | 32 | 16 |

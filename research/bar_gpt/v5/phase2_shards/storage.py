@@ -437,36 +437,52 @@ def block_segments(receipt):
     )
 
 
-def read_window(root, stream, latest, frame, actions, *, origin_us):
-    """Read one full encoder view across immutable small NPY segments.
+def read_raw_window(root, stream, latest, frame, *, receipts=None, verify_payload=None):
+    """Assemble BAR[64] across sealed legacy/packed segments without adjustment.
 
-    This audit/reference reader deliberately verifies hashes. A future loader
-    can cache validated mmaps and prefetch these exact same segment references.
-    origin_us is the current 1s decision's UTC end, shared across all views.
+    Optional ``receipts`` supplies cached (unit directory, sealed receipt) pairs.
+    ``verify_payload(path, descriptor)`` may cache SHA verification by file identity;
+    the default verifies every read. These hooks avoid repeated SMB metadata and
+    payload scans in the read-only inspector without changing window semantics.
     """
-    from .contract import FRAMES, encoder_window
-
     if latest < 63:
         return None
     result = np.empty(64, dtype=BAR)
     filled = np.zeros(64, dtype=bool)
-    for path in sorted((Path(root) / "streams" / stream).glob("*/receipt.json")):
-        if path.parent.name.endswith(".partial"):
-            continue
-        receipt = json.loads(path.read_text())
+    if receipts is None:
+        receipts = (
+            (path.parent, json.loads(path.read_text()))
+            for path in sorted((Path(root) / "streams" / stream).glob("*/receipt.json"))
+            if not path.parent.name.endswith(".partial")
+        )
+    for directory, receipt in receipts:
         for item in receipt["segments"]:
             left, right = max(latest - 63, item["start"]), min(
                 latest + 1, item["start"] + item["rows"]
             )
             if item["frame"] != frame or left >= right:
                 continue
-            file = path.parent / item["name"]
-            if file_hash(file) != item["sha256"]:
+            file = directory / item["name"]
+            if verify_payload is not None:
+                verify_payload(file, item)
+            elif file_hash(file) != item["sha256"]:
                 raise ValueError("Raw bar payload mutation")
-            bars = load_array(path.parent, item)
+            bars = load_array(directory, item)
             target = slice(left - (latest - 63), right - (latest - 63))
             result[target] = bars[left - item["start"] : right - item["start"]]
             filled[target] = True
     if not filled.all():
         raise ValueError("Missing referenced bar segment")
-    return encoder_window(result, FRAMES[frame], actions, origin_us=origin_us)
+    return result
+
+
+def read_window(root, stream, latest, frame, actions, *, origin_us):
+    """Read [1] encoder record on the explicit current 1s decision's share basis."""
+    from .contract import FRAMES, encoder_window
+
+    result = read_raw_window(root, stream, latest, frame)
+    return (
+        None
+        if result is None
+        else encoder_window(result, FRAMES[frame], actions, origin_us=origin_us)
+    )
