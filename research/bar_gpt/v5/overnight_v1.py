@@ -430,6 +430,18 @@ class Controller:
                     training_output=str(training),
                 )
                 return
+            stop_file = training / "STOP"
+            if (
+                stop_file.exists()
+                and stop_file.read_text(encoding="utf-8")
+                != "Controller stop or 20-minute progress stall"
+            ):
+                self.update(
+                    state="stopped",
+                    stage="training STOP preserved",
+                    training_output=str(training),
+                )
+                return  # A human stop is never interpreted as permission to restart.
             error = str(status.get("error", ""))
             if "nonfinite" in error.lower() and not learning_repaired:
                 repaired = self.repair_learning(

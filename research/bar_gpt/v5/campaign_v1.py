@@ -97,7 +97,10 @@ def train_campaign(args, manifest, stats, reporter):
     probe_baseline = None
     if guarded:
         contract["learning_guard"] = dict(
-            version=1, probe_steps=args.guard_probe_steps, patience=3
+            version=1,
+            probe_steps=args.guard_probe_steps,
+            probe_workers=min(4, args.workers),
+            patience=3,
         )
     phase, history, best, training_metrics = "train", [], None, None
     if args.resume:
@@ -151,7 +154,7 @@ def train_campaign(args, manifest, stats, reporter):
             stats,
             split,
             args.batch_size,
-            args.workers,
+            min(4, args.workers) if probe else args.workers,
             epoch if training else 0,
         )
         limit = (args.train_steps if training else args.validation_steps) or len(loader)
