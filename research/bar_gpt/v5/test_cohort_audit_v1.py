@@ -20,7 +20,7 @@ def test_audit_checks_both_members_and_rejects_counter_mismatch(tmp_path, monkey
     roots = [(name, tmp_path / name) for name in ("base", "extra")]
     for name, root in roots:
         root.mkdir()
-        body = dict(version="fixture")
+        body = dict(version="fixture", configuration=dict(target_bytes=100000))
         binding = digest(body)
         write_json(root / "contract.json", dict(contract=body, binding=binding))
         frames = Counter()
@@ -37,10 +37,10 @@ def test_audit_checks_both_members_and_rejects_counter_mismatch(tmp_path, monkey
                 32 * 1024**2,
             )
             frames[str(frame)] = 2
-        write_json(
-            root / "result.json",
-            dict(samples=12, frames=frames, bytes=100000, target_bytes=100000),
-        )
+        completion = dict(samples=12, frames=frames, bytes=100000)
+        if name != "base":
+            completion["target_bytes"] = 100000
+        write_json(root / "result.json", completion)
     monkeypatch.setattr(audit_module, "members", lambda *a, **kw: ("fixture", roots))
     result = audit_module.audit(roots[0][1], tmp_path / "audit.json")
     assert result["state"] == "passed" and result["samples"] == 24

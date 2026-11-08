@@ -40,7 +40,12 @@ def audit(dataset, output, progress=None):
         if digest(wrapper["contract"]) != wrapper["binding"]:
             raise ValueError("Completion contract seal mismatch")
         completion = json.loads((root / "result.json").read_text())
-        if completion["bytes"] < completion["target_bytes"] * 0.95:
+        # The original base result omits the byte target; its sealed contract
+        # remains the authority for the allocation, for both producer formats.
+        target = wrapper["contract"]["configuration"]["target_bytes"]
+        if "target_bytes" in completion and completion["target_bytes"] != target:
+            raise ValueError("Completion target differs from sealed allocation")
+        if completion["bytes"] < target * 0.95:
             raise ValueError(
                 f"{name}: completed inventory falls short of intended corpus size"
             )
