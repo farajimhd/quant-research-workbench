@@ -597,6 +597,7 @@ def main(argv=None):
         owner.seek(0)
         msvcrt.locking(owner.fileno(), msvcrt.LK_NBLCK, 1)
         controller = Controller(args)
+        controller.update(state="running", stage="controller starting", error=None)
         try:
             controller.run()
         except BaseException as error:
