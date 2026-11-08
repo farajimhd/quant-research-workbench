@@ -1,8 +1,8 @@
 """Bounded completion audit for the complete v6 training cohort.
 
-Every receipt, file size/header, declared feature count and final run counter is
-checked. First/middle/last records of every payload are inspected; stratified
-payloads are SHA-256 verified in full. Training still verifies every accessed
+Every receipt seal, declared feature count and final run counter is checked.
+Headers, first/middle/last records and SHA256 are checked on payloads stratified
+by member, timeframe, year and liquidity. Training still verifies every accessed
 payload and every consumed record. This is not a claim of a second full-byte
 scan of 1.5 TB before training.
 """
@@ -20,7 +20,7 @@ from .shards.phase1_contract import CHANNELS, FRAMES, digest, file_hash, write_j
 
 
 def audit(dataset, output, progress=None):
-    """Audit all immutable publications and stratified content using eight I/O lanes.
+    """Audit all publication metadata and targeted content using 32 bounded I/O lanes.
 
     dataset is the base root that resolves both completed cohort members.
     output is a runtime JSON report. Validity masks may legitimately be zero
@@ -33,7 +33,7 @@ def audit(dataset, output, progress=None):
     report = dict(
         cohort_hash=seal,
         members=[],
-        evidence="all receipts/headers; three records per payload; stratified full SHA256; every consumed record checked by loader",
+        evidence="all receipt seals and declared coverage; stratified headers/content/SHA256 by member/frame/year/liquidity; every consumed file and record checked by loader",
     )
     for name, root in components:
         wrapper = json.loads((root / "contract.json").read_text())
@@ -56,7 +56,19 @@ def audit(dataset, output, progress=None):
 
         def inspect(path):
             receipt = json.loads(path.read_text())
-            entries = read_receipt(path, wrapper["binding"])
+            if receipt["binding"] != wrapper["binding"] or receipt[
+                "receipt_hash"
+            ] != digest({k: v for k, v in receipt.items() if k != "receipt_hash"}):
+                raise ValueError(f"Foreign or corrupt publication receipt: {path}")
+            if sum(receipt["frames"].values()) != receipt["samples"] or any(
+                int(f) not in FRAMES and n for f, n in receipt["frames"].items()
+            ):
+                raise ValueError(f"Inconsistent timeframe counts: {path}")
+            for item in receipt["files"]:
+                if Path(item["name"]).name != item["name"] or not item[
+                    "name"
+                ].startswith("samples-"):
+                    raise ValueError(f"Invalid payload identity: {path}")
             counts = np.asarray(receipt["valid_bars_by_channel"], dtype=np.int64)
             if counts.shape != (18,) or not np.all(
                 counts[:6] == receipt["samples"] * 64
@@ -66,34 +78,28 @@ def audit(dataset, output, progress=None):
                 raise ValueError(
                     f"Unexpected exclusions/padding in observed-bar corpus: {path}"
                 )
-            checked = 0
-            for item in entries:
-                array = np.load(item["path"], mmap_mode="r", allow_pickle=False)
-                try:
-                    ids = np.unique([0, len(array) // 2, len(array) - 1])
-                    rows = array[ids]
-                    validate_complete_market(rows)
-                    if not np.isin(rows["timeframe_us"], FRAMES).all():
-                        raise ValueError("Unexpected timeframe in published payload")
-                    checked += len(rows)
-                finally:
-                    array._mmap.close()
-            return receipt, entries, counts, checked
+            return receipt, path, counts
 
-        with ThreadPoolExecutor(8) as pool:
-            for begin in range(0, len(paths), 256):
-                for local, (receipt, entries, counts, checked) in enumerate(
-                    pool.map(inspect, paths[begin : begin + 256])
+        with ThreadPoolExecutor(32) as pool:
+            for begin in range(0, len(paths), 1024):
+                for local, (receipt, path, counts) in enumerate(
+                    pool.map(inspect, paths[begin : begin + 1024])
                 ):
                     index = begin + local
                     samples += receipt["samples"]
-                    files += len(entries)
-                    inspected += checked
+                    files += len(receipt["files"])
                     features += counts
                     frames.update({int(f): n for f, n in receipt["frames"].items()})
                     for frame, count in receipt["frames"].items():
                         if count:
-                            representatives.setdefault(int(frame), entries[0])
+                            representatives.setdefault(
+                                (
+                                    int(frame),
+                                    receipt.get("year", -1),
+                                    receipt.get("liquid", -1),
+                                ),
+                                path,
+                            )
                     if progress and index % 1000 == 0:
                         progress(stage="auditing " + name, done=index, total=len(paths))
         if samples != completion["samples"] or any(
@@ -105,7 +111,22 @@ def audit(dataset, output, progress=None):
         if any(frames[f] <= 0 for f in FRAMES) or np.any(features <= 0):
             raise ValueError("Missing timeframe or market feature coverage")
         hashes = []
-        for frame, item in sorted(representatives.items()):
+        for (frame, year, liquid), path in sorted(representatives.items()):
+            # Target headers/content instead of opening every payload twice.
+            # The loader still validates every consumed file and record.
+            item = read_receipt(path, wrapper["binding"])[0]
+            array = np.load(item["path"], mmap_mode="r", allow_pickle=False)
+            try:
+                ids = np.unique([0, len(array) // 2, len(array) - 1])
+                rows = array[ids]
+                validate_complete_market(rows)
+                if not np.all(rows["timeframe_us"] == frame):
+                    raise ValueError(
+                        "Payload frame differs from publication declaration"
+                    )
+                inspected += len(rows)
+            finally:
+                array._mmap.close()
             if file_hash(item["path"]) != item["sha256"]:
                 raise ValueError("Stratified payload SHA256 mismatch")
             hashes.append(dict(frame=frame, path=item["path"], sha256=item["sha256"]))
