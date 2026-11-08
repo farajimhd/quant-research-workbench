@@ -189,6 +189,8 @@ class Catalog:
     def recover(self):
         """Discover only receipt directories; payload hashes are checked on read."""
         for path in sorted((self.root / "streams").glob("*/*/receipt.json")):
+            if path.parent.name.endswith(".partial"):
+                continue  # A receipt inside staging has not crossed rename.
             self.register(json.loads(path.read_text()))
         # Repair a crash between registration and balanced-group selection.
         self.select()
@@ -260,6 +262,8 @@ def read_window(root, stream, latest, frame, actions):
     result = np.empty(64, dtype=BAR)
     filled = np.zeros(64, dtype=bool)
     for path in sorted((Path(root) / "streams" / stream).glob("*/receipt.json")):
+        if path.parent.name.endswith(".partial"):
+            continue
         receipt = json.loads(path.read_text())
         for item in receipt["segments"]:
             left, right = max(latest - 63, item["start"]), min(

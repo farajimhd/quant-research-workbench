@@ -31,10 +31,14 @@ def content(root, max_receipts=6):
     receipts = []
     try:
         # Sample different liquidity groups and chronological split eras.
-        chosen = catalog.db.execute(
-            "SELECT stream,min(unit) FROM units GROUP BY stream ORDER BY stream LIMIT ?",
+        candidates = catalog.db.execute(
+            "SELECT stream,min(unit),max(unit) FROM units GROUP BY stream ORDER BY stream LIMIT ?",
             (max_receipts,),
         ).fetchall()
+        chosen = []
+        for key, first, last in candidates:
+            chosen.extend((key, unit) for unit in sorted({first, last}))
+        chosen = chosen[:max_receipts]
         for key, unit in chosen:
             path = root / "streams" / key / f"{unit:04d}"
             receipt = json.loads((path / "receipt.json").read_text())

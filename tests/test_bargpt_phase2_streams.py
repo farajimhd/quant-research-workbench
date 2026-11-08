@@ -103,6 +103,11 @@ def test_receipt_recovery_preserves_context_and_exact_75_25(tmp_path):
         assert resumed.counts == context.counts
         np.testing.assert_array_equal(resumed.pending, context.pending)
     catalog = Catalog(tmp_path)
+    # A staged receipt is not a publication; recovery must ignore it even when
+    # a crash happened immediately before the atomic directory rename.
+    staged = tmp_path / "streams" / "unpublished" / "0000.partial"
+    staged.mkdir(parents=True)
+    (staged / "receipt.json").write_text("{}")
     catalog.recover()
     first = catalog.stats()
     catalog.recover()  # Re-registering receipts must not select duplicate IDs.
