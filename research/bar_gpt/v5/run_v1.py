@@ -315,7 +315,9 @@ def main(argv=None):
         remove_panel_task(panel)
 
 
-def loader_for(args, manifest, stats, split, batch, workers, epoch=0, cursor=0):
+def loader_for(
+    args, manifest, stats, split, batch, workers, epoch=0, cursor=0, *, ordered=True
+):
     """Create an explicit data-order epoch; caller owns worker lifetime and resume cursor."""
     dataset = EligibleStream(
         manifest,
@@ -327,7 +329,7 @@ def loader_for(args, manifest, stats, split, batch, workers, epoch=0, cursor=0):
         cursor,
         telemetry=str(args.output / "workers"),
     )
-    return make_loader(dataset, workers, args.prefetch)
+    return make_loader(dataset, workers, args.prefetch, ordered=ordered)
 
 
 def profile(args, manifest, stats, reporter):

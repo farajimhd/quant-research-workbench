@@ -1,5 +1,22 @@
 # Unattended v6 handoff
 
+Performance maintenance keeps the existing model, sample order, masks,
+optimizer and scheduler contracts. The derived loader-index-v1 files bind the
+sealed split hash and are mmap metadata, not a new dataset. All market payload
+hashes and complete-bar checks still run. Training and bounded learning probes
+remain ordered. Full validation may deliver ready batches out of order: every
+worker emits the same original batches/masks, all tails are retained, and the
+final equal-feature sufficient-statistic reduction is unchanged. Bounded native
+probes must confirm identical full target counts and reconstruction metrics.
+
+Deploy performance changes at a validation checkpoint boundary. Native task
+administration must run in an interactive scheduled task with RunLevel Highest;
+the workstation's ordinary SSH token cannot disable the existing trainer task.
+Do not leave a failed handoff marked as draining. Preserve the completed training
+phase checkpoint, request an owned controller STOP, wait for both processes to
+exit, and only then update the pinned source and resume through the normal
+controller retry path. Never remove an unrelated human STOP.
+
 Run `overnight_v1.py --output <workstation runtime directory> --source-revision <commit>`
 from a committed, verified workstation snapshot. A native interactive scheduled
 task owns this single job and survives laptop disconnection. It is not a recurring

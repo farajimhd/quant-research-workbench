@@ -24,7 +24,7 @@ from .engine_v1 import run_steps
 from .loader_index_v1 import attach
 from .pretraining_v1 import ActivityStats, PreparedBatch
 from .reporting_v1 import Reporter
-from .shards.contract import write_json
+from .shards.contract import write_json, digest
 from .trainer_v1 import reconstruction_loss
 
 
@@ -79,6 +79,71 @@ def resident(model, batch, inference, steps):
         )
 
 
+def validation_delivery(model, manifest, stats, args):
+    """Compare complete identical small target sets, not differing fast prefixes.
+
+    This diagnostic metadata prefix holds about steps*4096 actual samples.
+    Both delivery modes consume all worker tails. The original split is
+    untouched and training-only calibration is reused without fitting.
+    """
+    rows, samples = [], 0
+    for item in manifest["splits"]["validation"]:
+        rows.append(item)
+        samples += item["stop"] - item["start"]
+        if samples >= args.steps * 4096:
+            break
+    subset = dict(manifest)
+    subset.pop("loader_index", None)
+    subset["splits"] = dict(train=rows, validation=rows)
+    subset["manifest_hash"] = digest(
+        [manifest["manifest_hash"], "delivery-probe", len(rows)]
+    )
+    attach(subset, args.output)
+    results = []
+    for ordered in (True, False):
+        dataset = EligibleStream(subset, "validation", stats, 4096, seed=17)
+        loader = make_loader(dataset, args.workers, 2, ordered=ordered)
+        directory = args.output / ("ordered" if ordered else "ready-batch")
+        directory.mkdir(exist_ok=True)
+        reporter = Reporter(directory, {}, mode="disabled")
+        try:
+            result = run_steps(
+                model,
+                None,
+                loader,
+                steps=len(loader) + 1,
+                training=False,
+                reporter=reporter,
+                seconds_limit=60,
+                metrics_every=1000,
+                loss_every=10,
+            )
+            if result["samples"] != samples:
+                raise ValueError(
+                    "Delivery probe did not consume its complete target set"
+                )
+            results.append(result)
+        finally:
+            close_loader(loader)
+            reporter.finish()
+    if results[0]["target_counts"] != results[1]["target_counts"]:
+        raise ValueError("Ready delivery changed validation target masks")
+    for name in ("feature_loss", "feature_mae", "feature_rmse"):
+        torch.testing.assert_close(
+            torch.tensor(results[0][name]),
+            torch.tensor(results[1][name]),
+            rtol=1e-6,
+            atol=1e-8,
+        )
+    return dict(
+        ordered=results[0],
+        ready_batch=results[1],
+        identical_full_target_set=True,
+        metadata_entries=len(rows),
+        samples=samples,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--campaign", type=Path, required=True)
@@ -86,6 +151,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--steps", type=int, default=48)
     parser.add_argument("--workers", type=int, default=32)
+    parser.add_argument("--delivery-only", action="store_true")
     args = parser.parse_args()
     if not 8 <= args.steps <= 128:
         raise ValueError("Performance probes are bounded to 8..128 updates")
@@ -124,6 +190,14 @@ def main():
     if saved["contract"]["split_hash"] != manifest["manifest_hash"]:
         raise ValueError("Performance checkpoint and split disagree")
     model = MaskedAutoencoderV1(EncoderConfig(**saved["contract"]["model"])).cuda()
+    if args.delivery_only:
+        model.load_state_dict(saved["model"])
+        evidence["validation_delivery"] = validation_delivery(
+            model, manifest, stats, args
+        )
+        write_json(args.output / "performance.json", evidence)
+        print(json.dumps(evidence))
+        return
     cached = None
     for split in ("train", "validation"):
         model.load_state_dict(saved["model"])
@@ -173,6 +247,7 @@ def main():
     evidence["resident_validation"] = dict(
         no_grad=baseline, inference_mode=optimized, equivalent_predictions=True
     )
+    evidence["validation_delivery"] = validation_delivery(model, manifest, stats, args)
     # A four-step operator trace confirms the actual attention backend. Its
     # overhead is excluded from every latency/throughput comparison above.
     with torch.profiler.profile(

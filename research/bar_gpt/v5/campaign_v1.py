@@ -156,6 +156,11 @@ def train_campaign(args, manifest, stats, reporter):
             args.batch_size,
             min(4, args.workers) if probe else args.workers,
             epoch if training else 0,
+            # Complete validation is an order-independent reduction. Let ready
+            # batches bypass a slow worker, retaining every worker's original
+            # batches and mask seeds. Bounded learning probes MUST stay ordered
+            # so their sample subset remains identical to its frozen baseline.
+            ordered=training or probe or args.validation_steps != 0,
         )
         limit = (args.train_steps if training else args.validation_steps) or len(loader)
         if probe:

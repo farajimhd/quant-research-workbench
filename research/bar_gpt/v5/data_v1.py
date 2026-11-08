@@ -588,7 +588,7 @@ class EligibleStream(IterableDataset):
 
 
 def make_loader(
-    dataset: ShardBatches, workers: int = 8, prefetch: int = 2
+    dataset: ShardBatches, workers: int = 8, prefetch: int = 2, *, ordered: bool = True
 ) -> DataLoader:
     """Bound ready batches to workers*prefetch and pin only prepared CPU tensors."""
     if not 0 <= workers <= 32 or not 1 <= prefetch <= 4:
@@ -624,6 +624,7 @@ def make_loader(
             prefetch_factor=prefetch,
             persistent_workers=True,
             multiprocessing_context="spawn",
+            in_order=ordered,
         )
     return DataLoader(dataset, **options)
 
