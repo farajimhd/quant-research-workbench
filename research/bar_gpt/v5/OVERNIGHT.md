@@ -1,0 +1,56 @@
+# Unattended v6 handoff
+
+Run `overnight_v1.py --output <workstation runtime directory> --source-revision <commit>`
+from a committed, verified workstation snapshot. A native interactive scheduled
+task owns this single job and survives laptop disconnection. It is not a recurring
+calendar automation. `progress.json`, per-child ledgers/logs and `incident.json`
+are the operational evidence. An output-root `STOP` requests graceful shutdown.
+
+The controller waits for BOTH completed cohort members, matching final counters
+and released controller locks. It never freezes a growing dataset. The nominal
+1.5 TB allocation produces somewhat less payload after reserved overhead; each
+member must reach at least 95% of its byte allocation. Early source exhaustion
+is reported, not silently accepted as the intended corpus.
+
+The completion audit checks every receipt, NPY header, file size, declared feature
+count and final run counter, plus first/middle/last records in every payload and
+one full SHA256 payload per member/timeframe. This bounded audit does not certify
+every payload byte in advance. Every file used by training is SHA256 checked and
+every consumed record is validated by the loader. Missing quote evidence retains
+its validity mask; missing trades fail the run. All six timeframes and all 18
+market channels need real evidence in both members.
+
+A single chronological approximately 80/20 split covers the entire cohort.
+Full contexts crossing the boundary are purged, including hourly/daily windows.
+Calibration is training-only. A short actual-loader large/BF16 profile compares
+batch 4096 and 2048 with 32 workers and prefetch two. Keep batch 4096 if valid;
+2048 is only an OOM fallback. A 128-update training/16-batch validation smoke run
+must save valid resumable state before the full 50-epoch campaign begins.
+
+Full training keeps the agreed large encoder, BF16, SDPA, batch 4096, 32 workers,
+cosine 1e-3 to 5e-5, 1000-update warmup, 10-step losses and 1000-step metric uploads.
+Full validation and epoch/best/last checkpoints run each epoch. W&B project:
+`bargpt-v6-latest-bar-overnight`. The workstation training panel opens with each
+child; the shard panel remains during extraction.
+
+Learning review uses a fixed 32-batch validation probe before training and after
+each epoch, with identical masks and membership. It stops for nonfinite evidence,
+a probe regression over 50%, three epochs without 0.5% improvement, or three
+validations over 2% worse than an earlier best while training loss improves over
+1%. One noisy validation result or a train/validation gap alone never stops it.
+
+For divergence/no learning, at most one bounded optimizer investigation runs:
+two 128-update trials at 3e-4 and 1e-4 with identical initialization/data/masks.
+A fresh full campaign starts at the better lower rate only if a trial measures
+at least 0.5% probe improvement. This tests an LR-instability hypothesis; it is
+not a claim that every learning failure is caused by LR. Persistent overfit keeps
+the best checkpoint and stops. Unknown data/architecture failures preserve the
+incident and stop rather than weakening data checks or inventing a model repair.
+Any future model change must use a new encoder module.
+
+Infrastructure failures allow two checkpoint resumes, each in a fresh output
+directory. Partial training epochs replay from their last durable epoch boundary;
+validation-phase checkpoints avoid repeating completed training. A 20-minute
+lack of progress requests STOP, followed by termination of only the owned child
+tree if it cannot drain in two minutes. Numerical failures use the bounded LR
+investigation instead of repeatedly resuming poisoned state.
