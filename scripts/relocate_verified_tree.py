@@ -283,7 +283,7 @@ class Relocation:
             self.inventory(index);self.copy_pending(index)
             self.state['roots'][str(index)]=dict(phase='backed_up',source=str(self.sources[index]),destination=str(self.destination(index)))
             self.save()
-        self.stage='Backup verified; awaiting writer quiescence';self.active='all four trees';self.publish(True)
+        self.stage='Backup verified; awaiting writer quiescence';self.active=f'all {len(self.sources)} selected trees';self.publish(True)
 
     def check_entry(self, index, root, row, check_hash=False):
         rel,kind,size,mtime,target,digest=row
@@ -347,7 +347,7 @@ class Relocation:
                         if fingerprint(p)[0]!='dir':raise RuntimeError('Unexpected retained entry; refusing recursive deletion: '+str(p))
                         stack.append((p,False))
             state['phase']='complete';self.save();self.publish(True)
-        self.stage='Complete';self.active='four G trees verified; D payloads retired with compatible paths';self.publish(True)
+        self.stage='Complete';self.active=f'{len(self.sources)} G trees verified; D payloads retired with compatible paths';self.publish(True)
 
 
 def main():
