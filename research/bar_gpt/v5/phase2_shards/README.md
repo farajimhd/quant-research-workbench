@@ -123,7 +123,8 @@ startup or stale evidence, then restores the configured full admission limit
 during training. Already-admitted units drain; no producer/trainer restart is
 needed at an epoch transition. The panel and W&B expose the current cap.
 
-`--background-workers` applies Windows background CPU/I/O/memory scheduling only
-to generator and ledger subprocesses. It never changes the trainer, ClickHouse
-server settings or system security. Use it alongside measured producer counts
-when training shares D:; failures to apply the requested priority fail visibly.
+`--background-workers` applies Windows background scheduling only while a
+producer writes its publication, then restores priority before querying or
+reading metadata. The ledger remains at normal scheduling priority. It never
+changes the trainer, ClickHouse server settings or system security. Failures to
+apply/restore the requested priority fail visibly and preserve sealed receipts.

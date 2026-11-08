@@ -14,7 +14,7 @@ from multiprocessing.util import Finalize
 from pathlib import Path
 
 from .producer import Gate, Worker, NoFullBlock, EndOfStream
-from .resource_priority import background
+from .resource_priority import publication
 
 _state = None
 
@@ -30,13 +30,14 @@ class ProducedUnit:
 class DirectPublisher:
     """Preserve Worker's submit/result contract, with a global I/O slot bound."""
 
-    def __init__(self, slots):
-        self.slots = slots
+    def __init__(self, slots, background_writes=False):
+        self.slots, self.background_writes = slots, background_writes
 
     def submit(self, function, *args, **kwargs):
         """Durably publish in the owning process without copying its bar arrays."""
         with self.slots:
-            receipt = function(*args, **kwargs)
+            with publication(self.background_writes):
+                receipt = function(*args, **kwargs)
         result = Future()
         result.set_result(receipt)
         return result
@@ -45,7 +46,6 @@ class DirectPublisher:
 def initialize(configuration, cancel, slots):
     """Load one frozen plan and resource gate per spawned extraction process."""
     global _state
-    background(configuration["background_workers"])
     root = Path(configuration["output"])
     plan = json.loads((root / "plan.json").read_text())
     gate = Gate(
@@ -66,7 +66,7 @@ def initialize(configuration, cancel, slots):
         plan=plan,
         gate=gate,
         lanes=OrderedDict(),
-        publisher=DirectPublisher(slots),
+        publisher=DirectPublisher(slots, configuration["background_workers"]),
         configuration=configuration,
     )
 

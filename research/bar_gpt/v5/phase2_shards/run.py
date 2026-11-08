@@ -140,7 +140,9 @@ def run(args):
         history / f"{int(execution['started'] * 1000)}-{os.getpid()}.json", execution
     )
     write_json(root / "execution.json", execution)
-    catalog = LedgerProcess(root, args.background_workers)
+    # Keep the ledger responsive; only the actual publication phase yields its
+    # worker's scheduling priority to training. No trainer process is changed.
+    catalog = LedgerProcess(root)
     catalog.recover()
     telemetry = Telemetry(root, execution, args.wandb_mode, args.wandb_project)
     gate = Gate(
