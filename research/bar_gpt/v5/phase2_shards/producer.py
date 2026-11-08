@@ -1,6 +1,8 @@
 """Bounded CPU/ClickHouse extraction lanes, rolling warmup and async publication."""
 
 from datetime import date
+import json
+from pathlib import Path
 import threading
 import time
 
@@ -72,6 +74,12 @@ class Worker:
 
     def __init__(self, root, plan, stream, gate, endpoint, io_pool, chunk_events):
         self.root, self.plan, self.stream = root, plan, stream
+        execution = Path(root) / "execution.json"
+        self.revision = (
+            json.loads(execution.read_text())["source_revision"]
+            if execution.exists()
+            else plan["revision"]
+        )
         self.gate, self.endpoint, self.io = gate, endpoint, io_pool
         self.rows = bounds(root, plan, stream)
         self.units = []
@@ -179,6 +187,8 @@ class Worker:
         # context contains timestamps only, keeping resident memory very small.
         saved = [np.concatenate((b, a)) for b, a in zip(bootstrap, arrays)]
         timing = dict(
+            plan=self.plan["hash"],
+            producer_revision=self.revision,
             query_seconds=self.query_seconds,
             processing_seconds=time.monotonic() - started,
             source_sessions=len(rows),

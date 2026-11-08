@@ -121,6 +121,9 @@ def test_receipt_recovery_preserves_context_and_exact_75_25(tmp_path):
         == 4
     )
     catalog.db.close()
+    reopened = Catalog(tmp_path)
+    assert reopened.stats() == first
+    reopened.db.close()
     # Exercise the real reader with the canonical action catalog's identity.
     from research.bar_gpt.v5.phase2_shards.audit import content
 

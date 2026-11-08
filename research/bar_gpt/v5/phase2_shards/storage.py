@@ -118,7 +118,6 @@ class Catalog:
 
     def __init__(self, root):
         self.root = Path(root)
-        self._cached = None
         self.db = sqlite3.connect(self.root / "catalog.sqlite", timeout=30)
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
@@ -130,6 +129,17 @@ class Catalog:
               PRIMARY KEY(stream,unit,ordinal));
             CREATE INDEX IF NOT EXISTS pending ON blocks(split,liquid,selection);
         """)
+        # Reconcile once on open, then update counters from committed deltas.
+        # Repeated GROUP BY scans would otherwise grow with a multi-TB corpus.
+        self.used, self.unit_count = self.db.execute(
+            "SELECT coalesce(sum(bytes),0),count(*) FROM units"
+        ).fetchone()
+        self.totals = {
+            (s, l): [n, k]
+            for s, l, n, k in self.db.execute(
+                "SELECT split,liquid,count(*),count(selection) FROM blocks GROUP BY split,liquid"
+            )
+        }
 
     def register(self, receipt):
         """Idempotent receipt registration; detect conflicting immutable units."""
@@ -155,8 +165,14 @@ class Catalog:
                     for i, split in enumerate(receipt["splits"])
                 ],
             )
+        self.used += receipt["bytes"]
+        self.unit_count += 1
+        for split, count in enumerate(np.bincount(receipt["splits"], minlength=3)):
+            if count:
+                self.totals.setdefault((split, receipt["liquid"]), [0, 0])[0] += int(
+                    count
+                )
         self.select()
-        self._cached = None
 
     def select(self):
         """Commit balanced groups deterministically in publication order."""
@@ -164,13 +180,8 @@ class Catalog:
             "SELECT coalesce(max(selection),-1)+1 FROM blocks"
         ).fetchone()[0]
         for split in (0, 1):
-            counts = [
-                self.db.execute(
-                    "SELECT count(*) FROM blocks WHERE split=? AND liquid=? AND selection IS NULL",
-                    (split, liquid),
-                ).fetchone()[0]
-                for liquid in (1, 0)
-            ]
+            counts = [self.totals.get((split, liquid), [0, 0]) for liquid in (1, 0)]
+            counts = [total - selected for total, selected in counts]
             groups = min(counts[0] // 3, counts[1])
             if not groups:
                 continue
@@ -185,6 +196,8 @@ class Catalog:
                         [(order + i, row[0]) for i, row in enumerate(rows)],
                     )
                     order += len(rows)
+            for liquid, count in ((1, groups * 3), (0, groups)):
+                self.totals[(split, liquid)][1] += count
 
     def recover(self):
         """Discover only receipt directories; payload hashes are checked on read."""
@@ -194,26 +207,17 @@ class Catalog:
             self.register(json.loads(path.read_text()))
         # Repair a crash between registration and balanced-group selection.
         self.select()
-        self._cached = None
 
     def stats(self):
         """Small bounded aggregate used by scheduler and live panel."""
-        if self._cached is not None:
-            return self._cached
-        result = dict(
-            bytes=self.db.execute(
-                "SELECT coalesce(sum(bytes),0) FROM units"
-            ).fetchone()[0],
-            units=self.db.execute("SELECT count(*) FROM units").fetchone()[0],
+        return dict(
+            bytes=self.used,
+            units=self.unit_count,
+            blocks=[
+                dict(split=s, liquid=l, total=n, selected=k)
+                for (s, l), (n, k) in sorted(self.totals.items())
+            ],
         )
-        result["blocks"] = [
-            dict(split=s, liquid=l, total=n, selected=k)
-            for s, l, n, k in self.db.execute(
-                "SELECT split,liquid,count(*),count(selection) FROM blocks GROUP BY split,liquid"
-            )
-        ]
-        self._cached = result
-        return result
 
     def cursor(self, key):
         return self.db.execute(

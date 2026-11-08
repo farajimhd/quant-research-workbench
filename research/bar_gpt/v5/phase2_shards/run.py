@@ -81,10 +81,15 @@ def run(args):
             )
     else:
         write_json(layout, dict(chunk_events=args.chunk_events, plan=plan["hash"]))
-    write_json(
-        root / "execution.json",
-        dict(**vars(args), pid=os.getpid(), started=time.time(), plan=plan["hash"]),
+    execution = dict(
+        **vars(args), pid=os.getpid(), started=time.time(), plan=plan["hash"]
     )
+    history = root / "executions"
+    history.mkdir(exist_ok=True)
+    write_json(
+        history / f"{int(execution['started'] * 1000)}-{os.getpid()}.json", execution
+    )
+    write_json(root / "execution.json", execution)
     catalog = Catalog(root)
     catalog.recover()
     gate = Gate(
