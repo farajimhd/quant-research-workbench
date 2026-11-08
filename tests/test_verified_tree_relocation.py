@@ -112,3 +112,15 @@ def test_partial_container_alias_installation_recovers_before_deletion(tmp_path)
     assert (source/'v68').resolve()==source/'v68'
     resumed.finalize();assert resumed.aliases_valid(0)
     resumed.db.close()
+
+
+def test_staging_name_collision_preserves_input(tmp_path):
+    import hashlib
+    j,source=job(tmp_path)
+    name='.verified-copy-'+hashlib.sha256(b'0/data.bin').hexdigest()+'.part'
+    (source/name).write_text('authoritative input with a reserved-looking name')
+    expected=(source/'data.bin').read_bytes()
+    with pytest.raises(RuntimeError,match='conflicts with an input'):j.backup()
+    assert (source/name).read_text()=='authoritative input with a reserved-looking name'
+    assert (source/'data.bin').read_bytes()==expected
+    j.db.close()

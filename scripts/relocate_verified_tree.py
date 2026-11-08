@@ -227,9 +227,17 @@ class Relocation:
             if fingerprint(destination) != ('link',0,0,target):
                 raise RuntimeError('Link readback mismatch: '+str(destination))
             return ''
-        part_root = self.archive/'.parts'
-        os.makedirs(native(part_root), exist_ok=True)
-        temp = part_root/hashlib.sha256(f'{index}/{rel}'.encode()).hexdigest()
+        # Same-directory replacement avoids serializing every small-file copy
+        # through one shared staging directory and changing two directory indexes.
+        name='.verified-copy-'+hashlib.sha256(f'{index}/{rel}'.encode()).hexdigest()+'.part'
+        if os.path.lexists(native(source.parent/name)):
+            raise RuntimeError('Staging name conflicts with an input file: '+str(source.parent/name))
+        temp=destination.parent/name
+        if os.path.lexists(native(temp)):
+            previous=os.stat(native(temp),follow_symlinks=False)
+            if fingerprint(temp)[0]!='file' or previous.st_nlink!=1:
+                raise RuntimeError('Staging path is redirected or hard-linked: '+str(temp))
+            if not previous.st_mode&stat.S_IWRITE:os.chmod(native(temp),stat.S_IWRITE)
         if os.path.lexists(native(destination)) and fingerprint(destination)[0] != 'file':
             raise RuntimeError('Archive entry type conflicts: '+str(destination))
         digest = hashlib.sha256()
