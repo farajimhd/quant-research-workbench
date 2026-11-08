@@ -259,6 +259,8 @@ def test_isolated_ledger_acknowledges_commits_and_preserves_failed_batches(tmp_p
     try:
         ledger.register_many([receipt])
         assert ledger.stats()["units"] == 1
+        assert ledger.stats()["ledger_settings"]["synchronous"] == 2
+        assert ledger.stats()["ledger_settings"]["cache_size"] == -2097152
         assert ledger.lane_status("committed") == (None, False, 0)
         with pytest.raises(RuntimeError, match="Receipt seal mismatch"):
             ledger.register_many([dict(receipt, hash="invalid")])

@@ -7,6 +7,7 @@ failure stops generation; immutable unregistered receipts remain recoverable.
 """
 
 import multiprocessing as mp
+import time
 
 from .storage import Catalog
 
@@ -17,6 +18,11 @@ def serve(root, connection):
     try:
         catalog = Catalog(root)
         connection.send((True, None, catalog.stats()))
+        timings = {}
+        settings = {
+            name: catalog.db.execute(f"PRAGMA {name}").fetchone()[0]
+            for name in ("cache_size", "mmap_size", "wal_autocheckpoint", "synchronous")
+        }
         while True:
             name, args = connection.recv()
             if name == "close":
@@ -30,8 +36,20 @@ def serve(root, connection):
             }:
                 raise ValueError("Unknown ledger operation")
             try:
+                began = time.monotonic()
                 result = getattr(catalog, name)(*args)
-                connection.send((True, result, catalog.stats()))
+                timings[name] = timings.get(name, 0.0) + time.monotonic() - began
+                connection.send(
+                    (
+                        True,
+                        result,
+                        dict(
+                            catalog.stats(),
+                            ledger_seconds=dict(timings),
+                            ledger_settings=settings,
+                        ),
+                    )
+                )
             except Exception as error:
                 connection.send((False, f"{type(error).__name__}: {error}", None))
                 # The coordinator drains publication on a failed transaction.

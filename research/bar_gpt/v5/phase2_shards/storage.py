@@ -141,9 +141,15 @@ class Catalog:
     def __init__(self, root):
         self.root = Path(root)
         self.db = sqlite3.connect(self.root / "catalog.sqlite", timeout=30)
+        # A multi-TB corpus outgrows SQLite's ~2 MiB default cache. Permit up to
+        # 2 GiB of demand-allocated pages and mapped reads, and checkpoint WAL
+        # every 64 MiB. Each acknowledged batch remains FULL-sync durable.
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=FULL;
+            PRAGMA cache_size=-2097152;
+            PRAGMA mmap_size=2147483648;
+            PRAGMA wal_autocheckpoint=16384;
             CREATE TABLE IF NOT EXISTS units(stream TEXT, unit INTEGER, bytes INTEGER,
               hash TEXT, PRIMARY KEY(stream,unit));
             CREATE TABLE IF NOT EXISTS blocks(stream TEXT,unit INTEGER,ordinal INTEGER,
