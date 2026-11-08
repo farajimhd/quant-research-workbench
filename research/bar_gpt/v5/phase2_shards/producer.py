@@ -6,6 +6,7 @@ import time
 
 import numpy as np
 import psutil
+import polars as pl
 
 from . import sql, storage
 from .contract import BAR, SPECS
@@ -110,6 +111,10 @@ class Worker:
                     if attempt == 2:
                         raise
                     self.gate.cancel.wait(attempt + 1)
+            # Fine SQL can infer UInt32 for its resolution literal, whereas
+            # hour/day need UInt64. Normalize metadata before comparing all five
+            # frame IDs; never cast a daily ID into a fine response's UInt32.
+            result = result.with_columns(pl.col("resolution").cast(pl.Int64))
             output = []
             for frame, _, _ in SPECS:
                 part = result.filter(result["resolution"] == frame)

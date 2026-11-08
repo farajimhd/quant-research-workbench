@@ -6,6 +6,7 @@ from pathlib import Path
 import time
 
 import numpy as np
+import polars as pl
 
 from .contract import BAR, BLOCK, FRAMES, SPECS, windows, file_hash, write_json
 from .plan import bounds, verify_code
@@ -150,6 +151,7 @@ def parity(root, ticker, day, endpoint=None, memory_gib=3):
                     f"bargpt-p2-parity-{ticker}-{day}-{int(coarse)}",
                     allow_empty=True,
                 )
+                original = original.with_columns(pl.col("resolution").cast(pl.Int64))
                 for i in (range(3, 5) if coarse else range(3)):
                     part = original.filter(
                         (original["resolution"] == FRAMES[i])
