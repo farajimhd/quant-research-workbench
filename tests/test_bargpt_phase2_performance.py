@@ -99,6 +99,7 @@ def test_generation_logs_are_coalesced_and_flushed(tmp_path, monkeypatch):
 
     sent = []
     fake = SimpleNamespace(
+        config=SimpleNamespace(update=lambda *args, **kwargs: None),
         url="https://example.test/run",
         log=sent.append,
         save=lambda *args, **kwargs: None,

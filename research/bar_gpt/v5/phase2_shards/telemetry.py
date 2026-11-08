@@ -43,6 +43,10 @@ class Telemetry:
             capture_console=False,
         )
         self.url = getattr(self.run, "url", None)
+        if self.run:
+            # A resumed extraction can change its measured engineering limits;
+            # retain the same run ID while making the active configuration true.
+            self.run.config.update(configuration, allow_val_change=True)
         self.mode, self.project = mode, project
         self.lock, self.stop = threading.Lock(), threading.Event()
         self.pending, self.error = None, None
