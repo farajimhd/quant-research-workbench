@@ -134,3 +134,17 @@ def test_source_change_with_preserved_metadata_blocks_retirement(tmp_path):
     with pytest.raises(RuntimeError,match='hash changed'):j.finalize()
     assert source.resolve()==source and not j.retiring(0).exists()
     j.db.close()
+
+
+def test_pending_batch_does_not_scan_completed_prefix(tmp_path):
+    j,source=job(tmp_path)
+    j.db.executemany('INSERT INTO entries VALUES(?,?,?,?,?,?,?,?,?)',
+        [(0,f'{i:06d}','file',1,1,'','verified','sha','1') for i in range(10000)]+
+        [(0,'zz-pending','file',1,1,'','pending','','1')])
+    calls=[]
+    j.db.set_progress_handler(lambda:calls.append(1) or 0,100)
+    rows=j.db.execute("SELECT root,rel,kind,size,mtime,target FROM entries WHERE root=? AND status<>'verified' LIMIT 128",(0,)).fetchall()
+    j.db.set_progress_handler(None,0)
+    assert [r[1] for r in rows]==['zz-pending']
+    assert len(calls)<10  # Less than 1,000 VM instructions regardless of 10k completed rows.
+    j.db.close()

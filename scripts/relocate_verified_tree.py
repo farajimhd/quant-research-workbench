@@ -83,6 +83,7 @@ class Relocation:
         self.db.execute('PRAGMA synchronous=FULL')
         self.db.execute('CREATE TABLE IF NOT EXISTS entries(root INTEGER,rel TEXT,kind TEXT,size INTEGER,mtime INTEGER,target TEXT,status TEXT,digest TEXT,seen TEXT,PRIMARY KEY(root,rel)) WITHOUT ROWID')
         self.db.execute('CREATE INDEX IF NOT EXISTS queue ON entries(root,status)')
+        self.db.execute("CREATE INDEX IF NOT EXISTS pending_work_data ON entries(root,rel,kind,size,mtime,target,status) WHERE status<>'verified'")
         self.state_path = self.output/'state.json'
         expected = dict(sources=[str(p) for p in self.sources], archive=str(self.archive))
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else dict(**expected, roots={})
