@@ -345,6 +345,7 @@ def main():
     parser.add_argument('--archive',type=Path,required=True)
     parser.add_argument('--stage',choices=['backup','finalize'],default='backup')
     parser.add_argument('--writers-quiesced',action='store_true')
+    parser.add_argument('--exclude-backtests',action='store_true',help='Use a separate journal/archive for only level books, fundamentals and market data')
     parser.add_argument('--workers',type=int,default=4)
     args=parser.parse_args()
     if os.name!='nt':parser.error('Workstation Windows only')
@@ -357,7 +358,8 @@ def main():
     import msvcrt
     with (args.output/'controller.lock').open('a+b') as lock:
         lock.write(b'0');lock.flush();lock.seek(0);msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
-        job=Relocation(args.output,args.archive,workers=args.workers,keep_containers=(0,))
+        sources=SOURCES[1:] if args.exclude_backtests else SOURCES
+        job=Relocation(args.output,args.archive,sources=sources,workers=args.workers,keep_containers=() if args.exclude_backtests else (0,))
         try:
             if args.stage=='backup':job.backup()
             else:job.finalize()
