@@ -39,7 +39,7 @@ def main():
         start = next(i for i, row in enumerate(rows) if row["source_date"] >= args.day)
         cases.append((stream, rows[start : start + 3]))
     evidence, reference = [], None
-    for sessions, workers in ((1, 1), (3, 1), (3, 4)):
+    for sessions, workers in ((1, 1), (3, 1), (3, 4), (3, 8), (3, 16)):
         started = time.monotonic()
         gate = Gate(args.output)
         with ThreadPoolExecutor(1) as io, ThreadPoolExecutor(workers) as queries:

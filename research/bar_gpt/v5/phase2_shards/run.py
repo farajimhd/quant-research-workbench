@@ -192,6 +192,12 @@ def run(args):
                 )
                 if not gate.cancel.is_set() and not cap and not limit:
                     while len(active) + len(publications) < args.workers:
+                        if (
+                            stats["bytes"]
+                            + (len(active) + len(publications) + 1) * 128 * 1024**2
+                            > args.target_bytes
+                        ):
+                            break
                         task = new_lane(io)
                         if task is None:
                             break

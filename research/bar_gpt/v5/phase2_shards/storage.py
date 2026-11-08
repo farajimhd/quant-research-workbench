@@ -190,6 +190,9 @@ class Catalog:
         """Discover only receipt directories; payload hashes are checked on read."""
         for path in sorted((self.root / "streams").glob("*/*/receipt.json")):
             self.register(json.loads(path.read_text()))
+        # Repair a crash between registration and balanced-group selection.
+        self.select()
+        self._cached = None
 
     def stats(self):
         """Small bounded aggregate used by scheduler and live panel."""
