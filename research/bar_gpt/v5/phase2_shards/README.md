@@ -1,7 +1,7 @@
 # Phase-two causal input streams
 
 The generator stores raw bars and causal block references. It does no GPU work,
-does not change the running phase-one trainer, and does not cache embeddings
+does not control or restart the phase-one trainer, and does not cache embeddings
 from a checkpoint that is still learning. Each future encoder view produces 512
 values through the existing full-feature path.
 

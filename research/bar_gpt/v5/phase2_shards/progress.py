@@ -13,7 +13,7 @@ from rich.console import Group
 from rich.text import Text
 
 
-def render(status, width=110, height=36):
+def render(status, width=110, height=36, interactive=False):
     """Render one bounded snapshot, retaining critical health at narrow widths."""
     age = max(0, time.time() - status.get("updated", 0))
     state = status.get("state", "starting")
@@ -81,7 +81,7 @@ def render(status, width=110, height=36):
     return Group(
         header,
         progress,
-        bar,
+        *([bar] if interactive else []),
         throughput,
         queue,
         resources,
@@ -110,11 +110,13 @@ def main():
     if args.once or not console.is_terminal:
         if path.exists():
             previous = json.loads(path.read_text())
-        console.print(render(previous, console.width, console.height))
+        console.print(
+            render(previous, console.width, console.height, console.is_terminal)
+        )
         return
     try:
         with Live(
-            render(previous, console.width, console.height),
+            render(previous, console.width, console.height, True),
             console=console,
             auto_refresh=False,
             transient=False,
@@ -125,7 +127,7 @@ def main():
                 except (FileNotFoundError, PermissionError, json.JSONDecodeError):
                     pass  # Preserve the last trustworthy snapshot and its age.
                 live.update(
-                    render(previous, console.width, console.height), refresh=True
+                    render(previous, console.width, console.height, True), refresh=True
                 )
                 time.sleep(1)
     except KeyboardInterrupt:

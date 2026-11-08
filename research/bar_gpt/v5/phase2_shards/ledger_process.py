@@ -10,14 +10,12 @@ import multiprocessing as mp
 import time
 
 from .storage import Catalog
-from .resource_priority import background
 
 
-def serve(root, connection, background_workers=False):
+def serve(root, connection):
     """Own one catalog until the parent closes its pipe or explicitly drains it."""
     catalog = None
     try:
-        background(background_workers)
         catalog = Catalog(root)
         connection.send((True, None, catalog.stats()))
         timings = {}
@@ -77,12 +75,12 @@ class LedgerProcess:
     The spawned process imports NumPy/SQLite only and allocates no GPU memory.
     """
 
-    def __init__(self, root, background_workers=False):
+    def __init__(self, root):
         context = mp.get_context("spawn")
         self.connection, child = context.Pipe()
         self.process = context.Process(
             target=serve,
-            args=(str(root), child, background_workers),
+            args=(str(root), child),
             name="phase2-ledger",
             daemon=True,
         )
