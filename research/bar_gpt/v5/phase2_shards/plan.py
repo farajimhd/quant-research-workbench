@@ -1,6 +1,7 @@
 """Freeze the entire source inventory once, independent of execution capacity."""
 
 import json
+from functools import lru_cache
 from pathlib import Path
 import shutil
 
@@ -116,9 +117,20 @@ def bounds(root, plan, stream):
     """Read a ticker's full frozen history for one-time warmup and core ranges."""
     from ..shards.balanced_plan import ticker_bounds
 
-    manifest = json.loads((Path(root) / "inventory/plan/manifest.json").read_text())
-    job = next(j for j in manifest["jobs"] if j["ticker"] == stream["ticker"])
+    jobs = inventory_jobs(str(Path(root).resolve()))
+    job = jobs[stream["ticker"]]
     return ticker_bounds(Path(root) / "inventory", job)
+
+
+@lru_cache(maxsize=2)
+def inventory_jobs(root):
+    """Cache immutable small metadata once; never reparse 40 MB per subdivision.
+
+    The root's sealed plan pins this inventory. Only two roots can remain
+    resident, bounding memory even when profiling and production share a process.
+    """
+    manifest = json.loads((Path(root) / "inventory/plan/manifest.json").read_text())
+    return {job["ticker"]: job for job in manifest["jobs"]}
 
 
 def ranges(rows, year):

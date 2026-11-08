@@ -6,6 +6,7 @@ The first execution cap is two decimal TB; the immutable inventory plans four.
 """
 
 import argparse
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import json
 import os
@@ -103,6 +104,7 @@ def run(args):
     }
     positions = {0: 0, 1: 0}
     active, publications, lanes = {}, {}, {}
+    reusable = OrderedDict()  # At most two lanes per worker, never the whole market.
     errors, completed = [], 0
     started, last_status = time.monotonic(), 0.0
     initial_bytes = catalog.stats()["bytes"]
@@ -161,14 +163,28 @@ def run(args):
             while positions[liquid] < len(queues[liquid]):
                 stream = queues[liquid][positions[liquid]]
                 positions[liquid] += 1
-                worker = Worker(
-                    root, plan, stream, gate, args.endpoint, io, args.chunk_events
-                )
+                worker = reusable.pop(stream["key"], None)
+                if worker is None:
+                    worker = Worker(
+                        root, plan, stream, gate, args.endpoint, io, args.chunk_events
+                    )
+                reusable[stream["key"]] = worker
+                while len(reusable) > 2 * args.workers:
+                    reusable.popitem(last=False)
                 cursor = catalog.cursor(stream["key"]) + 1
                 if cursor < len(worker.units):
                     return worker, cursor
+                reusable.pop(stream["key"], None)
         return None
 
+    # Keep this CPU-only campaign awake independently of the GPU trainer. This
+    # request belongs to this coordinator thread and is released on its exit.
+    import ctypes
+
+    power = ctypes.windll.kernel32.SetThreadExecutionState
+    power.argtypes, power.restype = [ctypes.c_uint], ctypes.c_uint
+    if not power(0x80000001):
+        raise OSError("Cannot establish workstation keep-awake request")
     try:
         with ThreadPoolExecutor(
             args.io_workers, thread_name_prefix="phase2-io"
@@ -284,6 +300,7 @@ def run(args):
     finally:
         gate.cancel.set()
         catalog.db.close()
+        power(0x80000000)
         lock.close()
 
 
