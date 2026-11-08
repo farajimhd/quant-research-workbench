@@ -41,6 +41,11 @@ def test_audit_checks_both_members_and_rejects_counter_mismatch(tmp_path, monkey
         if name != "base":
             completion["target_bytes"] = 100000
         write_json(root / "result.json", completion)
+        from research.bar_gpt.v5.receipt_index_v1 import index_receipt
+        from research.bar_gpt.v5.data_v1 import read_receipt
+
+        for path in root.glob("jobs/*/*/receipt.json"):
+            assert index_receipt(path, binding) == read_receipt(path, binding)
     monkeypatch.setattr(audit_module, "members", lambda *a, **kw: ("fixture", roots))
     result = audit_module.audit(roots[0][1], tmp_path / "audit.json")
     assert result["state"] == "passed" and result["samples"] == 24

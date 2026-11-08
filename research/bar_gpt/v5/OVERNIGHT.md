@@ -12,10 +12,14 @@ and released controller locks. It never freezes a growing dataset. The nominal
 member must reach at least 95% of its byte allocation. Early source exhaustion
 is reported, not silently accepted as the intended corpus.
 
-The completion audit checks every receipt, NPY header, file size, declared feature
-count and final run counter, plus first/middle/last records in every payload and
-one full SHA256 payload per member/timeframe. This bounded audit does not certify
-every payload byte in advance. Every file used by training is SHA256 checked and
+The completion audit checks every receipt seal, declared feature count and final
+run counter. Payload size/header, first/middle/last records and full SHA256 checks
+are targeted across member, timeframe, year and liquidity strata. It avoids
+opening hundreds of thousands of payloads before training. The split index uses
+the fixed v6 record size and sealed file byte counts; NPY headers are smaller
+than one record, so integer division determines the exact row count, reconciled
+against each receipt. This bounded audit does not certify every payload byte
+in advance. Every file used by training is header/size/SHA256 checked and
 every consumed record is validated by the loader. Missing quote evidence retains
 its validity mask; missing trades fail the run. All six timeframes and all 18
 market channels need real evidence in both members.
