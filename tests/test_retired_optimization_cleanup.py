@@ -1,11 +1,13 @@
 """Deletion scope, retained inputs, changed-file protection and restart behavior."""
 import hashlib
 import json
+import os
 from pathlib import Path
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
-from scripts.cleanup_retired_optimization import Cleanup
+from scripts.cleanup_retired_optimization import Cleanup,native_path
 
 
 class RetiredCleanup(unittest.TestCase):
@@ -54,6 +56,30 @@ class RetiredCleanup(unittest.TestCase):
                 with self.assertRaises(ValueError):job.guard(job.base/'torch_backtest_v59/inputs/bars.bin')
                 with self.assertRaises(ValueError):job.guard(job.base/'../outside.txt')
             finally:job.db.close()
+
+    def test_long_paths_deleted_and_preserved_inputs_verified(self):
+        with tempfile.TemporaryDirectory(dir='D:/TradingML/runtimes') as folder:
+            job,target,_=self.setup_job(Path(folder));top=target/'long-path'
+            deep=top
+            for _ in range(5):deep=deep/('segment-'+'x'*45)
+            os.makedirs(native_path(deep))
+            with open(native_path(deep/'output.json'),'wb') as f:f.write(b'long-path output')
+            with open(native_path(deep/'input.npz'),'wb') as f:f.write(b'long-path input')
+            try:
+                with patch.object(job,'active_users'):
+                    job.plan()
+                    # Exercise recovery of the old Windows path-limit result.
+                    job.db.execute("UPDATE files SET status='absent' WHERE path=?",(str(deep/'output.json'),));job.db.commit()
+                    job.counts['pending']-=1;job.counts['absent']+=1
+                    job.sizes['pending']-=len(b'long-path output');job.sizes['absent']+=len(b'long-path output')
+                    job.execute()
+                self.assertFalse(os.path.exists(native_path(deep/'output.json')))
+                self.assertTrue(os.path.exists(native_path(deep/'input.npz')))
+                self.assertEqual(job.counts['deleted'],2);self.assertEqual(job.meta['protected_changes'],[])
+            finally:
+                job.db.close()
+                self.assertTrue(top.resolve().is_relative_to(target.resolve()))
+                shutil.rmtree(native_path(top))
 
 
 if __name__=='__main__':unittest.main()

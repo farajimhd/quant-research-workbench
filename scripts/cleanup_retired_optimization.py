@@ -15,6 +15,13 @@ RUNTIME=Path('D:/TradingML/runtimes')
 DATA_FILES={'source.json','training.json','validation.json','market.parquet','history.parquet','features.parquet','candles.parquet','bars.parquet'}
 
 
+def native_path(path):
+    value=os.fspath(path)
+    if os.name!='nt' or value.startswith('\\\\?\\'):return value
+    if value.startswith('\\\\'):return '\\\\?\\UNC\\'+value[2:]
+    return '\\\\?\\'+str(Path(value).absolute())
+
+
 def write_json(path,value):
     temporary=path.with_suffix('.tmp');temporary.write_text(json.dumps(value,indent=2),encoding='utf-8');os.replace(temporary,path)
 
@@ -92,9 +99,9 @@ class Cleanup:
             while stack:
                 folder=stack.pop()
                 if folder.resolve()!=folder:raise ValueError('Directory redirection during planning')
-                with os.scandir(folder) as entries:
+                with os.scandir(native_path(folder)) as entries:
                     for entry in entries:
-                        path=Path(entry.path);s=entry.stat(follow_symlinks=False);attrs=getattr(s,'st_file_attributes',0)
+                        path=folder/entry.name;s=entry.stat(follow_symlinks=False);attrs=getattr(s,'st_file_attributes',0)
                         if attrs&1024 or entry.is_symlink():kind='linked path'
                         elif entry.is_dir(follow_symlinks=False):
                             if entry.name.lower() in names or entry.name.lower().startswith(prefixes):kind='protected directory'
@@ -114,6 +121,13 @@ class Cleanup:
         self.active_users()
         if 'disk_free_before' not in self.meta:self.meta['disk_free_before']=psutil.disk_usage(self.base.anchor).free
         self.meta['phase']='deleting';write_json(self.meta_path,self.meta);last_guard=0
+        # Older Windows calls can report long cache paths as absent. Revisit
+        # those exact manifest entries with the extended API; never re-enumerate
+        # new files into an already sealed deletion plan.
+        for identity,name,size in self.db.execute("SELECT id,path,size FROM files WHERE status='absent'").fetchall():
+            if os.path.lexists(native_path(name)):
+                self.db.execute("UPDATE files SET status='pending',reason=NULL WHERE id=?",(identity,))
+                self.counts['absent']-=1;self.sizes['absent']-=size;self.counts['pending']+=1;self.sizes['pending']+=size
         if self.counts['failed']:
             self.meta['retried_files']=self.meta.get('retried_files',0)+self.counts['failed']
             self.db.execute("UPDATE files SET status='pending',reason=NULL WHERE status='failed'")
@@ -129,12 +143,12 @@ class Cleanup:
                 try:
                     if path.parent not in checked:self.guard(path);checked.add(path.parent)
                     elif self.protected(path):raise ValueError('Protected file in delete manifest')
-                    s=path.stat(follow_symlinks=False)
+                    s=os.stat(native_path(path),follow_symlinks=False)
                     if not stat.S_ISREG(s.st_mode) or getattr(s,'st_file_attributes',0)&1024 or s.st_nlink>1:outcome='changed';reason='Type, link or attribute changed'
                     elif (s.st_size,s.st_mtime_ns)!=(size,mtime):outcome='changed';reason='File differs from sealed plan'
                     else:
-                        if getattr(s,'st_file_attributes',0)&1:os.chmod(path,stat.S_IWRITE)
-                        path.unlink()
+                        if getattr(s,'st_file_attributes',0)&1:os.chmod(native_path(path),stat.S_IWRITE)
+                        os.unlink(native_path(path))
                 except FileNotFoundError:outcome='absent';reason='Already absent at execution'
                 except OSError as e:outcome='failed';reason=str(e)
                 self.db.execute('UPDATE files SET status=?,reason=? WHERE id=?',(outcome,reason,identity))
@@ -143,9 +157,9 @@ class Cleanup:
         changed=[]
         for name,kind,size,mtime in self.db.execute('SELECT * FROM kept'):
             path=Path(name)
-            if not os.path.lexists(path):changed.append(dict(path=name,reason='Protected path missing'))
+            if not os.path.lexists(native_path(path)):changed.append(dict(path=name,reason='Protected path missing'))
             elif kind=='input or linked file':
-                s=path.stat(follow_symlinks=False)
+                s=os.stat(native_path(path),follow_symlinks=False)
                 if (s.st_size,s.st_mtime_ns)!=(size,mtime):changed.append(dict(path=name,reason='Protected file metadata changed'))
         self.meta.update(phase='complete_with_errors' if self.counts['failed'] or changed else 'complete',disk_free_after=psutil.disk_usage(self.base.anchor).free,protected_changes=changed)
         write_json(self.meta_path,self.meta);self.publish('Complete' if self.meta['phase']=='complete' else 'Complete with errors; inspect retained files',True)
