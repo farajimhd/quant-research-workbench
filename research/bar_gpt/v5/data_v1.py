@@ -456,9 +456,16 @@ class EligibleStream(IterableDataset):
         start_batch=0,
         telemetry=None,
     ):
-        self.entries = list(manifest["splits"][split])
+        from .loader_index_v1 import Entries
+
+        compact = manifest.get("loader_index", {}).get(split)
+        self.entries = (
+            Entries(compact, seed + epoch if split == "train" else None)
+            if compact
+            else list(manifest["splits"][split])
+        )
         self.strict_market = manifest.get("dataset_version") == VERSION
-        if split == "train":
+        if split == "train" and compact is None:
             np.random.default_rng(seed + epoch).shuffle(self.entries)
         self.stats, self.batch_size, self.seed, self.epoch = (
             stats,
@@ -471,9 +478,12 @@ class EligibleStream(IterableDataset):
         self.counters = torch.zeros(
             (32, 3), dtype=torch.int64
         ).share_memory_()  # One writer per worker row.
-        self.total = math.ceil(
-            sum(item["stop"] - item["start"] for item in self.entries) / batch_size
+        samples = (
+            self.entries.sample_count()
+            if compact
+            else sum(item["stop"] - item["start"] for item in self.entries)
         )
+        self.total = math.ceil(samples / batch_size)
 
     def __len__(self):
         return max(
@@ -541,10 +551,16 @@ class EligibleStream(IterableDataset):
                 validate_complete_market(
                     data
                 )  # Invalid v6 bars stop the run instead of becoming exclusions.
-            observed = data["valid"][..., [3, 9, 15]].any(axis=(1, 2))
             scanned += len(data)
-            excluded += int((~observed).sum())
-            selected = data[observed]  # Compact eligible records once per small shard.
+            if self.strict_market:
+                # Complete-market validation already proves every trade close
+                # is observed. Keep the mmap view instead of copying every row
+                # through an all-True boolean selection for each v6 payload.
+                selected = data
+            else:
+                observed = data["valid"][..., [3, 9, 15]].any(axis=(1, 2))
+                excluded += int((~observed).sum())
+                selected = data[observed]
             offset = 0
             while offset < len(selected):
                 take = min(self.batch_size - pending_count, len(selected) - offset)
@@ -579,11 +595,17 @@ def make_loader(
         raise ValueError("Workers must be 0..32; prefetch must be 1..4.")
     if isinstance(dataset, EligibleStream):
         lanes = max(1, workers)
+        from .loader_index_v1 import Entries
+
         dataset.total = sum(
             math.ceil(
-                sum(
-                    item["stop"] - item["start"]
-                    for item in dataset.entries[lane::lanes]
+                (
+                    dataset.entries.sample_count(lane, lanes)
+                    if isinstance(dataset.entries, Entries)
+                    else sum(
+                        item["stop"] - item["start"]
+                        for item in dataset.entries[lane::lanes]
+                    )
                 )
                 / dataset.batch_size
             )

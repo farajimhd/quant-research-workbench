@@ -2,6 +2,7 @@
 
 from dataclasses import fields
 import itertools
+import math
 import time
 
 import numpy as np
@@ -35,9 +36,13 @@ class CudaBatches:
         with torch.cuda.stream(self.stream):
             # Inputs are already pinned by DataLoader; request asynchronous copies explicitly.
             from .pretraining_v1 import PreparedBatch
-            self.next_batch = PreparedBatch(**{
-                field.name: getattr(cpu, field.name).to("cuda", non_blocking=True) for field in fields(cpu)
-            })
+
+            self.next_batch = PreparedBatch(
+                **{
+                    field.name: getattr(cpu, field.name).to("cuda", non_blocking=True)
+                    for field in fields(cpu)
+                }
+            )
             self.ready = torch.cuda.Event()
             self.ready.record(self.stream)
 
@@ -53,9 +58,25 @@ class CudaBatches:
         return result
 
 
-def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precision="bf16",
-              training=True, reporter=None, log_base=0, seconds_limit=60, stop_path=None,
-              on_step=None, profiler=None, metrics_every=8, loss_every=8, before_step=None):
+def run_steps(
+    model,
+    optimizer,
+    loader,
+    *,
+    steps: int,
+    warmup: int = 0,
+    precision="bf16",
+    training=True,
+    reporter=None,
+    log_base=0,
+    seconds_limit=60,
+    stop_path=None,
+    on_step=None,
+    profiler=None,
+    metrics_every=8,
+    loss_every=8,
+    before_step=None
+):
     """Run a bounded actual-loader window; return throughput, latency, losses, and evidence counts.
 
     Warmup is excluded from timing. CUDA events measure compute; wall time includes
@@ -63,13 +84,19 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
     GPU execution; it is explicitly not a claim of GPU idle percentage.
     """
     model.train(training)
-    previous_mode = torch.is_grad_enabled()
-    torch.set_grad_enabled(training)
+    # Validation creates no autograd metadata or version counters. Training
+    # retains ordinary tensors and the caller's prior grad mode is restored.
+    mode = torch.enable_grad() if training else torch.inference_mode()
+    mode.__enter__()
     began = time.perf_counter()
     batches = CudaBatches(loader)
     startup_seconds = time.perf_counter() - began
     if reporter:
-        reporter.update(stage="warmup / attention compilation" if warmup else "measuring", done=0, total=warmup+steps)
+        reporter.update(
+            stage="warmup / attention compilation" if warmup else "measuring",
+            done=0,
+            total=warmup + steps,
+        )
     events = []
     finite = torch.ones((), device="cuda", dtype=torch.bool)
     pending_losses = []  # Keep tiny device scalars until the next metrics upload.
@@ -80,30 +107,64 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
     samples = measured = consumed = 0
     exhausted = False
     begin_measure = None
+    report_seconds = 0.0
+    last_upload_samples = 0
+    last_upload_clock = None
     torch.cuda.reset_peak_memory_stats()
 
     def publish_metrics():
         """Flush ten-step loss observations together with cumulative sufficient-statistic metrics."""
+        nonlocal report_seconds, last_upload_samples, last_upload_clock
+        report_began = time.perf_counter()
         prefix = "train/" if training else "validation/"
-        for observed_step, observed_loss in pending_losses:
-            reporter.log({prefix + "loss_sample": float(observed_loss)}, observed_step if training else log_base)
+        # One device download per vector, rather than 100 loss .item() calls
+        # and dozens of conditional scalar downloads for per-feature metrics.
+        observed = (
+            torch.stack([loss for _, loss in pending_losses]).cpu().tolist()
+            if pending_losses
+            else []
+        )
+        for (observed_step, _), observed_loss in zip(pending_losses, observed):
+            reporter.log(
+                {prefix + "loss_sample": observed_loss},
+                observed_step if training else log_base,
+            )
         pending_losses.clear()
         elapsed = max(time.perf_counter() - (begin_measure or began), 1e-9)
+        cpu_sums, cpu_mae, cpu_squared, cpu_counts = (
+            torch.stack((sums, mae_sums, squared_sums, counts.double())).cpu().numpy()
+        )
+        present = cpu_counts > 0
+        now = time.perf_counter()
         values = {
-            prefix + "loss": float((sums / counts.clamp_min(1))[counts > 0].mean()),
+            prefix
+            + "loss": float((cpu_sums / np.maximum(cpu_counts, 1))[present].mean()),
             prefix + "samples_per_second": samples / elapsed,
+            prefix
+            + "window_samples_per_second": (samples - last_upload_samples)
+            / max(now - (last_upload_clock or begin_measure or began), 1e-9),
+            prefix + "reporting_seconds": report_seconds,
             prefix + "samples": samples,
         }
         # Accumulate on device each step; materialize full metrics only at the requested cadence.
         from .shards.phase1_contract import CHANNELS
+
         for index, name in enumerate(CHANNELS):
-            if counts[index] > 0:
-                values[prefix + name + "/loss"] = float(sums[index] / counts[index])
-                values[prefix + name + "/mae"] = float(mae_sums[index] / counts[index])
-                values[prefix + name + "/rmse"] = float((squared_sums[index] / counts[index]).sqrt())
+            if present[index]:
+                values[prefix + name + "/loss"] = float(
+                    cpu_sums[index] / cpu_counts[index]
+                )
+                values[prefix + name + "/mae"] = float(
+                    cpu_mae[index] / cpu_counts[index]
+                )
+                values[prefix + name + "/rmse"] = float(
+                    np.sqrt(cpu_squared[index] / cpu_counts[index])
+                )
         if optimizer:
             values["learning_rate"] = optimizer.param_groups[0]["lr"]
         reporter.log(values, log_base + consumed if training else log_base)
+        report_seconds += time.perf_counter() - report_began
+        last_upload_samples, last_upload_clock = samples, time.perf_counter()
 
     try:
         for step in range(warmup + steps):
@@ -114,18 +175,35 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
                 begin_measure = time.perf_counter()
                 wait_start = batches.wait_seconds
                 if reporter:
-                    reporter.update(stage="measuring training" if training else "measuring validation")
+                    reporter.update(
+                        stage=(
+                            "measuring training" if training else "measuring validation"
+                        )
+                    )
             try:
                 batch = batches.pop()
             except StopIteration:
                 exhausted = True
                 break
-            start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(
+                enable_timing=True
+            )
             start.record()
             if before_step is not None:
-                before_step(consumed)  # Set the learning rate before this optimizer update.
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=precision == "bf16"):
-                _, prediction = model(batch.visible, batch.valid, batch.feature_ids, batch.hidden_ids, batch.time, batch.time_valid)
+                before_step(
+                    consumed
+                )  # Set the learning rate before this optimizer update.
+            with torch.autocast(
+                "cuda", dtype=torch.bfloat16, enabled=precision == "bf16"
+            ):
+                _, prediction = model(
+                    batch.visible,
+                    batch.valid,
+                    batch.feature_ids,
+                    batch.hidden_ids,
+                    batch.time,
+                    batch.time_valid,
+                )
                 loss, batch_sums, batch_counts = reconstruction_loss(prediction, batch)
             if training:
                 optimizer.zero_grad(set_to_none=True)
@@ -147,27 +225,52 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
                 counts += batch_counts
                 decoded = prediction.detach().float()
                 error = torch.where(batch.target_valid, decoded - batch.targets, 0)
-                mae_sums.scatter_add_(0, batch.hidden_ids.flatten(), error.abs().sum(-1).double().flatten())
-                squared_sums.scatter_add_(0, batch.hidden_ids.flatten(), error.square().sum(-1).double().flatten())
+                mae_sums.scatter_add_(
+                    0,
+                    batch.hidden_ids.flatten(),
+                    error.abs().sum(-1).double().flatten(),
+                )
+                squared_sums.scatter_add_(
+                    0,
+                    batch.hidden_ids.flatten(),
+                    error.square().sum(-1).double().flatten(),
+                )
                 measured += 1
                 samples += len(batch.visible)
             # Enqueue the next input while current kernels execute, rather than synchronizing each step.
             if step + 1 < warmup + steps:
                 batches.advance()
             if reporter and (step + 1) % loss_every == 0:
-                torch.cuda.synchronize()
-                if not torch.isfinite(loss):
+                observed_loss = float(
+                    loss.detach()
+                )  # Wait only for compute, not next-batch H2D on another stream.
+                if not math.isfinite(observed_loss):
                     raise FloatingPointError("Nonfinite loss during measured run.")
                 elapsed = time.perf_counter() - (begin_measure or began)
-                metrics = dict(loss=float(loss.detach()), samples_per_second=samples/max(elapsed, 1e-9),
-                               peak_gib=torch.cuda.max_memory_allocated()/2**30,
-                               loader_wait_pct=100*(batches.wait_seconds-(wait_start if begin_measure else 0))/max(elapsed, 1e-9))
-                reporter.update(stage="training" if training else "validation", done=step+1,
-                                total=warmup+steps, metrics=metrics,
-                                learning_rate=optimizer.param_groups[0]["lr"] if optimizer else None)
-            if reporter and (log_base + consumed if training else consumed) % metrics_every == 0:
+                metrics = dict(
+                    loss=observed_loss,
+                    samples_per_second=samples / max(elapsed, 1e-9),
+                    reporting_seconds=report_seconds,
+                    peak_gib=torch.cuda.max_memory_allocated() / 2**30,
+                    loader_wait_pct=100
+                    * (batches.wait_seconds - (wait_start if begin_measure else 0))
+                    / max(elapsed, 1e-9),
+                )
+                reporter.update(
+                    stage="training" if training else "validation",
+                    done=step + 1,
+                    total=warmup + steps,
+                    metrics=metrics,
+                    learning_rate=(
+                        optimizer.param_groups[0]["lr"] if optimizer else None
+                    ),
+                )
+            if (
+                reporter
+                and (log_base + consumed if training else consumed) % metrics_every == 0
+            ):
                 publish_metrics()
-            if begin_measure and time.perf_counter()-begin_measure >= seconds_limit:
+            if begin_measure and time.perf_counter() - begin_measure >= seconds_limit:
                 break
         torch.cuda.synchronize()
         if not measured:
@@ -179,26 +282,47 @@ def run_steps(model, optimizer, loader, *, steps: int, warmup: int = 0, precisio
             publish_metrics()  # Include the final partial interval at an epoch/window boundary.
         milliseconds = np.array([start.elapsed_time(end) for start, end in events])
         valid = counts > 0
-        per_feature = sums/counts.clamp_min(1)
-        result = dict(samples=samples, measured_steps=measured, consumed_batches=consumed, exhausted=exhausted,
-                      seconds=elapsed, startup_seconds=startup_seconds,
-                      warmup_seconds=begin_measure-began-startup_seconds, samples_per_second=samples/elapsed,
-                      compute_ms_mean=float(milliseconds.mean()), compute_ms_p95=float(np.quantile(milliseconds, .95)),
-                      compute_duty_pct=min(100., float(milliseconds.sum()/10/elapsed)),
-                      loader_wait_pct=100*(batches.wait_seconds-wait_start)/elapsed,
-                      peak_gib=torch.cuda.max_memory_allocated()/2**30,
-                      reserved_gib=torch.cuda.max_memory_reserved()/2**30,
-                      loss=float(per_feature[valid].mean()), feature_loss=per_feature.cpu().tolist(),
-                      feature_mae=(mae_sums/counts.clamp_min(1)).cpu().tolist(),
-                      feature_rmse=(squared_sums/counts.clamp_min(1)).sqrt().cpu().tolist(),
-                      target_counts=counts.cpu().tolist())
+        per_feature = sums / counts.clamp_min(1)
+        result = dict(
+            samples=samples,
+            measured_steps=measured,
+            consumed_batches=consumed,
+            exhausted=exhausted,
+            seconds=elapsed,
+            startup_seconds=startup_seconds,
+            reporting_seconds=report_seconds,
+            warmup_seconds=begin_measure - began - startup_seconds,
+            samples_per_second=samples / elapsed,
+            compute_ms_mean=float(milliseconds.mean()),
+            compute_ms_p95=float(np.quantile(milliseconds, 0.95)),
+            compute_duty_pct=min(100.0, float(milliseconds.sum() / 10 / elapsed)),
+            loader_wait_pct=100 * (batches.wait_seconds - wait_start) / elapsed,
+            peak_gib=torch.cuda.max_memory_allocated() / 2**30,
+            reserved_gib=torch.cuda.max_memory_reserved() / 2**30,
+            loss=float(per_feature[valid].mean()),
+            feature_loss=per_feature.cpu().tolist(),
+            feature_mae=(mae_sums / counts.clamp_min(1)).cpu().tolist(),
+            feature_rmse=(squared_sums / counts.clamp_min(1)).sqrt().cpu().tolist(),
+            target_counts=counts.cpu().tolist(),
+        )
         for key in ("feature_loss", "feature_mae", "feature_rmse"):
-            result[key] = [value if count else None for value, count in zip(result[key], result["target_counts"])]
+            result[key] = [
+                value if count else None
+                for value, count in zip(result[key], result["target_counts"])
+            ]
         if reporter:
             with reporter.lock:
-                readings = [reading for reading in reporter.gpu_samples if reading[0] >= begin_measure]
-            result["gpu_util_mean"] = float(np.mean([r[1] for r in readings])) if readings else None
-            result["power_w_mean"] = float(np.mean([r[3] for r in readings])) if readings else None
+                readings = [
+                    reading
+                    for reading in reporter.gpu_samples
+                    if reading[0] >= begin_measure
+                ]
+            result["gpu_util_mean"] = (
+                float(np.mean([r[1] for r in readings])) if readings else None
+            )
+            result["power_w_mean"] = (
+                float(np.mean([r[3] for r in readings])) if readings else None
+            )
         return result
     finally:
-        torch.set_grad_enabled(previous_mode)
+        mode.__exit__(None, None, None)

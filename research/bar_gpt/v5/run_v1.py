@@ -251,6 +251,15 @@ def main(argv=None):
                 reporter.update,
             )
         )
+        # Spawn workers receive only an mmap index and permutation, rather than
+        # unpickling hundreds of MB of repeated manifest dictionaries each.
+        from .loader_index_v1 import attach
+
+        attach(
+            manifest,
+            args.split_manifest.parent if args.split_manifest else args.output,
+            reporter.update,
+        )
         # Reject old production data while preserving explicit custom/test inventories.
         source_contract = Path(manifest["dataset"]) / "contract.json"
         if source_contract.is_file():
