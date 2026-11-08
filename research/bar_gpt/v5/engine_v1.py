@@ -75,7 +75,9 @@ def run_steps(
     profiler=None,
     metrics_every=8,
     loss_every=8,
-    before_step=None
+    before_step=None,
+    metric_prefix=None,
+    status_stage=None,
 ):
     """Run a bounded actual-loader window; return throughput, latency, losses, and evidence counts.
 
@@ -116,7 +118,7 @@ def run_steps(
         """Flush ten-step loss observations together with cumulative sufficient-statistic metrics."""
         nonlocal report_seconds, last_upload_samples, last_upload_clock
         report_began = time.perf_counter()
-        prefix = "train/" if training else "validation/"
+        prefix = (metric_prefix or ("train" if training else "validation")) + "/"
         # One device download per vector, rather than 100 loss .item() calls
         # and dozens of conditional scalar downloads for per-feature metrics.
         observed = (
@@ -257,7 +259,7 @@ def run_steps(
                     / max(elapsed, 1e-9),
                 )
                 reporter.update(
-                    stage="training" if training else "validation",
+                    stage=status_stage or ("training" if training else "validation"),
                     done=step + 1,
                     total=warmup + steps,
                     metrics=metrics,

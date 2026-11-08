@@ -206,6 +206,8 @@ def train_campaign(args, manifest, stats, reporter):
                 loss_every=args.loss_every,
                 before_step=set_rate if training else None,
                 on_step=advance_schedule if training else None,
+                metric_prefix="probe" if probe else None,
+                status_stage="learning probe" if probe else None,
             )
             result["complete_pass"] = (
                 result["exhausted"] or result["consumed_batches"] >= limit
@@ -282,6 +284,18 @@ def train_campaign(args, manifest, stats, reporter):
                 "epoch/train_loss": training_metrics["loss"],
                 "epoch/validation_loss": score,
                 "epoch/best_validation_loss": best,
+                "epoch/full_validation_samples_per_second": validation[
+                    "samples_per_second"
+                ],
+                **(
+                    {
+                        "epoch/probe_samples_per_second": history[-1]["probe"][
+                            "samples_per_second"
+                        ]
+                    }
+                    if guarded
+                    else {}
+                ),
             },
             step,
         )

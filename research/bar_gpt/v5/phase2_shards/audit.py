@@ -8,7 +8,7 @@ import time
 import numpy as np
 import polars as pl
 
-from .contract import BAR, BLOCK, FRAMES, SPECS, windows, file_hash, write_json
+from .contract import BAR, BLOCK, FRAMES, SPECS, windows, file_hash, write_json, digest
 from .plan import bounds, verify_code
 from .producer import Gate, Worker
 from .storage import Catalog, read_window
@@ -18,7 +18,7 @@ from ..shards.sql import clock
 from ..shards.origin_samples import arrays as unpack
 
 
-def content(root, max_receipts=6):
+def content(root, max_receipts=6, latest=False):
     """Hash/check a bounded mix of completed units; reconcile the small ledger.
 
     Full-corpus payload integrity is checked during ordinary future loader
@@ -39,9 +39,18 @@ def content(root, max_receipts=6):
         for key, first, last in candidates:
             chosen.extend((key, unit) for unit in sorted({first, last}))
         chosen = chosen[:max_receipts]
+        if latest:
+            chosen = catalog.db.execute(
+                "SELECT stream,unit FROM units ORDER BY rowid DESC LIMIT ?",
+                (max_receipts,),
+            ).fetchall()
         for key, unit in chosen:
             path = root / "streams" / key / f"{unit:04d}"
             receipt = json.loads((path / "receipt.json").read_text())
+            if receipt["hash"] != digest(
+                {k: v for k, v in receipt.items() if k != "hash"}
+            ):
+                raise ValueError("Publication receipt seal changed")
             for item in receipt["files"]:
                 if file_hash(path / item["name"]) != item["sha256"]:
                     raise ValueError("Published payload hash mismatch")
@@ -202,13 +211,14 @@ def main():
     parser.add_argument("--ticker")
     parser.add_argument("--day")
     parser.add_argument("--max-receipts", type=int, default=4)
+    parser.add_argument("--latest", action="store_true")
     parser.add_argument("--query-memory-gib", type=float, default=3)
     args = parser.parse_args()
     started = time.monotonic()
     result = (
         parity(args.output, args.ticker, args.day, memory_gib=args.query_memory_gib)
         if args.ticker
-        else content(args.output, args.max_receipts)
+        else content(args.output, args.max_receipts, args.latest)
     )
     result["seconds"] = time.monotonic() - started
     destination = Path(args.output) / (

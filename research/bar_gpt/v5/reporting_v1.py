@@ -43,6 +43,13 @@ class Reporter:
         self.journal = (self.root / "metrics.jsonl").open(
             "a", encoding="utf-8", buffering=1
         )
+        if self.run:
+            # W&B's file service handles flushed journal changes asynchronously.
+            self.run.save(
+                str(self.root / "metrics.jsonl"),
+                base_path=str(self.root),
+                policy="live",
+            )
         self.thread = threading.Thread(
             target=self._observe, name="mae-status", daemon=True
         )

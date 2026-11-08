@@ -42,6 +42,7 @@ def main(argv=None):
     parser.add_argument("--epoch", type=int, required=True)
     parser.add_argument("--old-revision", required=True)
     parser.add_argument("--new-revision", required=True)
+    parser.add_argument("--train-label", default="train-01")
     args = parser.parse_args(argv)
     root = args.output.resolve()
     runtime = Path("D:/TradingML/runtimes/bar_gpt").resolve()
@@ -57,7 +58,13 @@ def main(argv=None):
     import msvcrt
     import psutil
 
-    train = root / "train-01"
+    if not re.fullmatch(r"train-\d{2}", args.train_label):
+        raise ValueError("Require the controller's explicit training-attempt label")
+    if not ctypes.windll.shell32.IsUserAnAdmin():
+        raise PermissionError(
+            "Source handoff requires a native task with RunLevel Highest"
+        )
+    train = root / args.train_label
     evidence = root / "telemetry-upgrade.json"
     marker = "Owned telemetry upgrade at epoch " + str(args.epoch)
     with (root / "telemetry-upgrade.lock").open("a+b") as lock:
@@ -112,7 +119,7 @@ def main(argv=None):
             if not checkpoint.is_file():
                 raise ValueError("Complete epoch checkpoint is missing")
             owner = read(root / "process.json")
-            child = read(root / "train-01-child.json")
+            child = read(root / (args.train_label + "-child.json"))
             process = psutil.Process(owner["pid"])
             if (
                 "overnight_v1.py" not in " ".join(process.cmdline())
@@ -121,12 +128,12 @@ def main(argv=None):
                 not in " ".join(process.cmdline()).replace("\\", "/").lower()
             ):
                 raise ValueError("Controller source or process identity changed")
-            if read(root / "progress.json").get("stage") != "train-01":
+            if read(root / "progress.json").get("stage") != args.train_label:
                 raise ValueError("Controller changed its owned training attempt")
             if child.get("pid") and psutil.pid_exists(child["pid"]):
                 child_process = psutil.Process(child["pid"])
                 if (
-                    "train-01" not in " ".join(child_process.cmdline())
+                    args.train_label not in " ".join(child_process.cmdline())
                     or abs(child_process.create_time() - child["created"]) > 1
                 ):
                     raise ValueError("Training child ownership changed")
