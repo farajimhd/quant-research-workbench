@@ -42,6 +42,8 @@ def content(root, max_receipts=6):
                 if file_hash(path / item["name"]) != item["sha256"]:
                     raise ValueError("Published payload hash mismatch")
             available = [0] * 5
+            evidence = np.zeros((5, 18), dtype=np.int64)
+            carried = [0] * 5
             for segment in receipt["segments"]:
                 data = np.load(
                     path / segment["name"], mmap_mode="r", allow_pickle=False
@@ -56,6 +58,15 @@ def content(root, max_receipts=6):
                 ):
                     raise ValueError("Mask/order mismatch")
                 available[segment["frame"]] += len(data)
+                evidence[segment["frame"]] += data["valid"].sum(axis=0).astype(np.int64)
+                carried[segment["frame"]] += int(
+                    (
+                        (data["values"][:, 11] == 0)
+                        & (data["values"][:, 17] == 0)
+                        & data["valid"][:, 9].astype(bool)
+                        & data["valid"][:, 15].astype(bool)
+                    ).sum()
+                )
             block_files = sorted(path.glob("blocks-*.npy"))
             complete = [0] * 5
             if block_files:
@@ -67,7 +78,7 @@ def content(root, max_receipts=6):
                 actions = [
                     a
                     for a in plan["actions"]["rows"]
-                    if a["ticker"] == receipt["ticker"]
+                    if a["provider_ticker"] == receipt["ticker"]
                 ]
                 for i, frame in enumerate(FRAMES):
                     indices, present = windows(np.asarray([block["latest"][-1, i]]), i)
@@ -77,7 +88,14 @@ def content(root, max_receipts=6):
                             raise ValueError("Future bar leaked into causal token")
                         complete[i] += 1
             receipts.append(
-                dict(stream=key, unit=unit, bars=available, complete_views=complete)
+                dict(
+                    stream=key,
+                    unit=unit,
+                    bars=available,
+                    complete_views=complete,
+                    valid_observations=evidence.tolist(),
+                    carried_quote_bars=carried,
+                )
             )
         stats = catalog.stats()
         for split in (0, 1):

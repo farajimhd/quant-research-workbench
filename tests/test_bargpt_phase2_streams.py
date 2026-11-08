@@ -116,6 +116,27 @@ def test_receipt_recovery_preserves_context_and_exact_75_25(tmp_path):
         == 4
     )
     catalog.db.close()
+    # Exercise the real reader with the canonical action catalog's identity.
+    from research.bar_gpt.v5.phase2_shards.audit import content
+
+    (tmp_path / "plan.json").write_text(
+        json.dumps(
+            dict(
+                code={},
+                actions=dict(
+                    rows=[
+                        dict(
+                            provider_ticker="liquid",
+                            execution_date="2023-01-01",
+                            split_from=2,
+                            split_to=1,
+                        )
+                    ]
+                ),
+            )
+        )
+    )
+    assert len(content(tmp_path)["receipts"]) == 2
 
 
 def test_selection_adapter_changes_only_explicit_boundaries():
