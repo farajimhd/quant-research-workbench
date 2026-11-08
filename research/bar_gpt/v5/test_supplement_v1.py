@@ -3,6 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -217,7 +218,7 @@ def test_real_supplement_orchestration_and_idempotent_resume(tmp_path, monkeypat
         coarse_days=20,
         workers=2,
         io_workers=1,
-        target_bytes=20_000_000,
+        target_bytes=300_000_000,
         query_memory_gib=1.0,
         endpoint=None,
     )
@@ -245,9 +246,14 @@ def test_real_supplement_orchestration_and_idempotent_resume(tmp_path, monkeypat
         ),
     )
     calls = []
+    fine_started = threading.Event()
 
     def aggregates(c, statement, *a):
         calls.append(statement)
+        if statement["coarse"]:
+            assert fine_started.wait(3), "Coarse work must not block all fine workers"
+        else:
+            fine_started.set()
         first = statement["first"]
         year = 2024 if first < 10000 else 2025
         start = int(datetime(year, 1, 2, tzinfo=timezone.utc).timestamp() * 1e6)
@@ -308,3 +314,78 @@ def test_queue_waits_for_success_and_a_released_controller_lock(tmp_path):
     released = dependency_ready(tmp_path)
     assert released is not None
     released.close()
+
+
+def test_upgrade_preserves_payloads_and_cursors_without_overwriting_resume(tmp_path):
+    """A stopped producer upgrade must retain exact bytes, lineage and raw tails."""
+    from research.bar_gpt.v5.supplement_upgrade_v1 import upgrade
+
+    base, old_root, new_root = (tmp_path / name for name in ("base", "old", "new"))
+    (base / "plan").mkdir(parents=True)
+    plan = source_plan()
+    plan["hash"] = digest(plan)
+    write_json(base / "plan/manifest.json", plan)
+    body = dict(version=VERSION, authority={}, code={})
+    write_json(base / "contract.json", dict(contract=body, binding=digest(body)))
+    args = SimpleNamespace(
+        base=base,
+        output=new_root,
+        upgrade_from=old_root,
+        top=1,
+        seed=20261108,
+        chunk_events=1000,
+        coarse_days=20,
+        workers=2,
+        io_workers=1,
+        target_bytes=300_000_000,
+        query_memory_gib=1.0,
+    )
+    wrapper, _ = extra.prepare(args)
+    previous_body = dict(wrapper["contract"], policy="previous coarse-first scheduler")
+    previous = dict(contract=previous_body, binding=digest(previous_body))
+    old_root.mkdir()
+    write_json(old_root / "contract.json", previous)
+    old_path = old_root / "jobs/2024-ticker/coarse-unit-3600000000"
+    metadata = dict(
+        identity="original",
+        binding=previous["binding"],
+        ticker="AAPL",
+        year=2024,
+        unit="coarse-unit",
+        extraction_slot="coarse:AAPL",
+        parent_binding=wrapper["contract"]["parent_binding"],
+    )
+    receipt = publish(
+        old_path,
+        records(2, FRAMES[-2]),
+        np.empty(0, dtype=BAR_DTYPE),
+        metadata,
+        Budget(10**8),
+        32 * 1024**2,
+    )
+    write_json(old_root / "result.json", dict(state="stopped", samples=2, failed=[]))
+    write_json(old_root / "progress.json", dict(jobs_active=0))
+    (old_root / "controller.lock").write_bytes(b"0")
+    checkpoint = dict(
+        binding=previous["binding"],
+        slot="coarse:AAPL",
+        offset=20,
+        tail={"raw": [1, 2, 3]},
+    )
+    (old_root / "checkpoints").mkdir()
+    write_json(old_root / "checkpoints/cursor.json", checkpoint)
+    original = (old_path / "receipt.json").read_bytes()
+    upgrade(args, wrapper)
+    target = new_root / old_path.relative_to(old_root)
+    copied = extra.verify_receipt(target, hashes=True)
+    assert copied["samples"] == 2
+    assert copied["producer_upgrade_parent_receipt_hash"] == receipt["receipt_hash"]
+    assert (old_path / "samples-0000.npy").samefile(target / "samples-0000.npy")
+    assert (old_path / "receipt.json").read_bytes() == original
+    cursor = json.loads((new_root / "checkpoints/cursor.json").read_text())
+    assert cursor == dict(checkpoint, binding=wrapper["binding"])
+    write_json(new_root / "checkpoints/cursor.json", dict(cursor, offset=40))
+    upgrade(args, wrapper)
+    assert (
+        json.loads((new_root / "checkpoints/cursor.json").read_text())["offset"] == 40
+    )

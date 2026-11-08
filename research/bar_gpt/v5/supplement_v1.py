@@ -1,7 +1,8 @@
 """Fair, duplicate-free liquid supplement using the unchanged v6 bar mathematics.
 
-Coarse timestamp spans run first. Remaining payload capacity is divided equally
-across the four fine frames and eligible ticker-years. A second allocation pass
+Coarse timestamp spans and fine ordinal chunks run concurrently. A conservative
+coarse payload reservation prevents fine workers from consuming their capacity.
+Remaining payload capacity is divided equally across fine frames. A second pass
 redistributes unused allowances only after all initial ticker-years were visited.
 No bars or redundant windows are materialized by the training loader.
 """
@@ -280,12 +281,6 @@ def extract(
     """Execute one resumable ticker coarse pass or one ticker-year fine pass."""
     job = item["job"]
     slot = item["slot"]
-    bounds = bars.ticker_bounds(args.output, job)
-    actions = [
-        r
-        for r in authority["corporate_actions"]["rows"]
-        if r["provider_ticker"] == job["ticker"]
-    ]
     checkpoint_path = args.output / "checkpoints" / (digest(slot)[:20] + ".json")
     checkpoint = (
         json.loads(checkpoint_path.read_text())
@@ -294,6 +289,14 @@ def extract(
     )
     if checkpoint["binding"] != binding or checkpoint["slot"] != slot:
         raise ValueError("Supplement checkpoint identity changed")
+    if checkpoint.get("exhausted"):
+        return True  # Restore completed work before Parquet reads and parent receipt enumeration.
+    bounds = bars.ticker_bounds(args.output, job)
+    actions = [
+        r
+        for r in authority["corporate_actions"]["rows"]
+        if r["provider_ticker"] == job["ticker"]
+    ]
     parent = ParentWindows(args.base, job, authority["parent_binding"])
     transport = bars.source.client(args.endpoint, args.query_memory_gib)
     pending = []
@@ -491,11 +494,16 @@ def prepare(args):
             seed=args.seed,
             top=args.top,
         ),
-        policy="all originally liquid end-years; parent anti-join; all unique coarse windows; equal fine frames and ticker-year allowances, then redistribution",
+        policy="mixed coarse/fine scheduling with conservative coarse reservation; all originally liquid end-years; parent anti-join; all unique coarse windows; equal fine frames and ticker-year allowances, then redistribution",
         format="Float32[64,18] plus masks, UTC clocks, timeframe and split",
         code={
             name: file_hash(Path(__file__).parent / name)
-            for name in ("supplement_v1.py", "liquid_universe_v1.py", "cohort_v1.py")
+            for name in (
+                "supplement_v1.py",
+                "liquid_universe_v1.py",
+                "cohort_v1.py",
+                "supplement_upgrade_v1.py",
+            )
         },
     )
     wrapper = dict(contract=body, binding=digest(body))
@@ -568,7 +576,7 @@ def run(args):
     phase = (
         json.loads(phase_path.read_text())
         if phase_path.exists()
-        else dict(stage="coarse", pass_number=0, allocated=False)
+        else dict(stage="mixed", pass_number=0, allocated=False)
     )
     state, completed, active, failures = "resuming", 0, {}, []
     began, baseline_bytes = time.time(), budget.used
@@ -629,7 +637,14 @@ def run(args):
     def dispatch(items, current_phase):
         nonlocal completed, jobs_total, state
         completed, jobs_total, state = 0, len(items), "running"
-        iterator = iter(items)
+        # Dedicated preferred lanes prevent seven years of coarse history from
+        # starving ordinal work. Idle lanes can consume the other queue.
+        queues = {
+            name: iter(
+                [item for item in items if item.get("phase", current_phase) == name]
+            )
+            for name in ("coarse", "fine")
+        }
         with ThreadPoolExecutor(
             args.io_workers, thread_name_prefix="supplement-io"
         ) as disk:
@@ -638,14 +653,18 @@ def run(args):
             ) as pool:
 
                 def admit(lane):
-                    item = next(iterator, None)
+                    preferred = "coarse" if lane < max(1, args.workers // 4) else "fine"
+                    other = "fine" if preferred == "coarse" else "coarse"
+                    item = next(queues[preferred], None)
+                    if item is None:
+                        item = next(queues[other], None)
                     if item is not None and not stop.is_set():
                         active[
                             pool.submit(
                                 extract,
                                 lane,
                                 item,
-                                current_phase,
+                                item.get("phase", current_phase),
                                 args,
                                 binding,
                                 authority,
@@ -679,7 +698,7 @@ def run(args):
                         admit(lane)
                     snapshot()
 
-    if phase["stage"] == "coarse":
+    if phase["stage"] == "mixed":
         for item in coarse:
             days = sum(y["days"] for y in item["job"]["years"])
             quota.limits[item["slot"], FRAMES[-2]] = (
@@ -690,10 +709,65 @@ def run(args):
             quota.targets[frame] = sum(
                 n for (slot, f), n in quota.limits.items() if f == frame
             )
-        dispatch(coarse, "coarse")
+        allocation_path = args.output / "mixed-allocation.json"
+        if allocation_path.exists():
+            saved = json.loads(allocation_path.read_text())
+            quota.targets = {int(f): n for f, n in saved["targets"].items()}
+            quota.limits = {(slot, int(f)): n for slot, f, n in saved["limits"]}
+        else:
+            # One source day can yield at most 24 hourly and one daily origin.
+            # This deliberately over-reserves; unused room is released only
+            # after every coarse source range has been visited.
+            coarse_remaining = sum(
+                max(0, quota.targets[f] - quota.total(f)) for f in FRAMES[4:]
+            )
+            payload = max(
+                0,
+                (int(args.target_bytes * 0.98) - budget.used) // SAMPLE_DTYPE.itemsize
+                - coarse_remaining,
+            )
+            allowance = payload // max(1, 4 * len(fine))
+            if allowance < 1:
+                raise ValueError(
+                    "Insufficient capacity after conservative coarse reservation"
+                )
+            for frame in FRAMES[:4]:
+                quota.targets[frame] = quota.total(frame) + allowance * len(fine)
+                for item in fine:
+                    quota.limits[item["slot"], frame] = (
+                        quota.saved[item["slot"], frame] + allowance
+                    )
+            write_json(
+                allocation_path,
+                dict(
+                    targets=quota.targets,
+                    limits=[[slot, f, n] for (slot, f), n in quota.limits.items()],
+                ),
+            )
+        dispatch(
+            [dict(item, phase="coarse") for item in coarse]
+            + [
+                dict(item, phase="fine")
+                for item in fine
+                if quota.needed(item["slot"], FRAMES[:4])
+            ],
+            "mixed",
+        )
         if not stop.is_set():
+            # Coarse inventory is now exhausted. Distribute its unused reserve
+            # equally without discarding any samples saved by the mixed pass.
+            payload = (
+                max(0, int(args.target_bytes * 0.98) - budget.used)
+                // SAMPLE_DTYPE.itemsize
+            )
+            balanced = (sum(quota.total(f) for f in FRAMES[:4]) + payload) // 4
+            for frame in FRAMES[:4]:
+                quota.targets[frame] = max(quota.total(frame), balanced)
+            for frame in FRAMES[4:]:
+                quota.targets[frame] = quota.total(frame)
             phase = dict(stage="fine", pass_number=0, allocated=False)
             write_json(phase_path, phase)
+            write_json(args.output / "allocation.json", dict(targets=quota.targets))
     allocation_path = args.output / "allocation.json"
     if phase["stage"] == "fine" and allocation_path.exists():
         saved = json.loads(allocation_path.read_text())

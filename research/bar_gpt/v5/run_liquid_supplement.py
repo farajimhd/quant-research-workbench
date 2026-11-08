@@ -46,6 +46,11 @@ def arguments(argv=None):
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--panel", action="store_true")
+    parser.add_argument(
+        "--upgrade-from",
+        type=Path,
+        help="Preserve a cleanly drained coarse-only supplement into a new sibling component",
+    )
     args = parser.parse_args(argv)
     root = Path("D:/TradingML/runtimes").resolve()
     args.base, args.output = args.base.resolve(), args.output.resolve()
@@ -96,9 +101,30 @@ def register_cohort(args):
     path = root / "cohort.json"
     wrapper = dict(cohort=body, hash=digest(body))
     if path.exists() and json.loads(path.read_text()) != wrapper:
-        raise ValueError(
-            "A different cohort family is already registered; do not silently replace it"
+        previous = json.loads(path.read_text())
+        upgrade_path = args.output / "upgrade-audit.json"
+        if not getattr(args, "upgrade_from", None) or not upgrade_path.exists():
+            raise ValueError(
+                "A different cohort is registered; require a verified explicit upgrade"
+            )
+        audit = json.loads(upgrade_path.read_text())
+        expected = dict(
+            body,
+            members=[
+                body["members"][0],
+                dict(name="liquid500", path=f"../{Path(args.upgrade_from).name}"),
+            ],
         )
+        if (
+            previous != dict(cohort=expected, hash=digest(expected))
+            or audit.get("audit_hash")
+            != digest({k: v for k, v in audit.items() if k != "audit_hash"})
+            or audit.get("state") != "passed"
+        ):
+            raise ValueError(
+                "Cohort replacement is not certified by the requested upgrade"
+            )
+        write_json(args.output / "previous-cohort.json", previous)
     write_json(path, wrapper)
     members(
         root
@@ -151,7 +177,10 @@ def main(argv=None):
 
     queue = args.output / "queue.json"
     try:
-        prepare(args)
+        wrapper, _ = prepare(args)
+        from research.bar_gpt.v5.supplement_upgrade_v1 import upgrade
+
+        upgrade(args, wrapper)
         register_cohort(args)
     except Exception as error:
         if args.output.is_dir():
