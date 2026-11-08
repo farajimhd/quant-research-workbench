@@ -199,10 +199,13 @@ class Relocation:
         self.publish(True)
 
     def store(self, rows):
-        self.db.executemany('''INSERT INTO entries VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(root,rel) DO UPDATE SET
-          status=CASE WHEN entries.kind=excluded.kind AND entries.size=excluded.size AND entries.mtime=excluded.mtime AND entries.target=excluded.target THEN entries.status ELSE 'pending' END,
-          digest=CASE WHEN entries.kind=excluded.kind AND entries.size=excluded.size AND entries.mtime=excluded.mtime AND entries.target=excluded.target THEN entries.digest ELSE '' END,
-          kind=excluded.kind,size=excluded.size,mtime=excluded.mtime,target=excluded.target,seen=excluded.seen''', rows)
+        # Only changed inputs touch the status index. Listing status in every
+        # UPSERT update makes SQLite delete/reinsert even unchanged index keys.
+        self.db.executemany('''UPDATE entries SET kind=?,size=?,mtime=?,target=?,status='pending',digest='',seen=?
+          WHERE root=? AND rel=? AND (kind<>? OR size<>? OR mtime<>? OR target<>?)''',
+          [(r[2],r[3],r[4],r[5],r[8],r[0],r[1],r[2],r[3],r[4],r[5]) for r in rows])
+        self.db.executemany('''INSERT INTO entries VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(root,rel)
+          DO UPDATE SET seen=excluded.seen''',rows)
         self.db.commit()
 
     def copy_one(self, row):
@@ -288,7 +291,7 @@ class Relocation:
         if fingerprint(path)!=(kind,size,mtime,target):
             raise RuntimeError('Retained source or archive metadata changed: '+str(path))
         if check_hash and kind=='file' and hash_file(path)!=digest:
-            raise RuntimeError('Archive hash changed: '+str(path))
+            raise RuntimeError('File hash changed: '+str(path))
 
     def finalize(self):
         # The owning operator must stop writers before this stage. Backup performs
@@ -304,7 +307,7 @@ class Relocation:
             self.stage='Validate and retire';self.active=source.name;self.completed=0;self.queue_total=self.db.execute('SELECT count(*) FROM entries WHERE root=?',(index,)).fetchone()[0]
             if state.get('phase')!='cutover':
                 for row in self.db.execute('SELECT rel,kind,size,mtime,target,digest FROM entries WHERE root=?',(index,)):
-                    self.check_entry(index,source,row);self.check_entry(index,destination,row,check_hash=True)
+                    self.check_entry(index,source,row,check_hash=True);self.check_entry(index,destination,row,check_hash=True)
                     self.completed+=1;self.publish()
                 # Persist intent before the rename, so interruption is recoverable.
                 state.update(phase='cutover_intent',source=str(source),destination=str(destination),retiring=str(old));self.save()

@@ -124,3 +124,13 @@ def test_staging_name_collision_preserves_input(tmp_path):
     assert (source/name).read_text()=='authoritative input with a reserved-looking name'
     assert (source/'data.bin').read_bytes()==expected
     j.db.close()
+
+
+def test_source_change_with_preserved_metadata_blocks_retirement(tmp_path):
+    j,source=job(tmp_path);j.backup()
+    p=source/'data.bin';s=p.stat()
+    with p.open('r+b') as stream:stream.write(b'CHANGED')
+    os.utime(p,ns=(s.st_atime_ns,s.st_mtime_ns))
+    with pytest.raises(RuntimeError,match='hash changed'):j.finalize()
+    assert source.resolve()==source and not j.retiring(0).exists()
+    j.db.close()
