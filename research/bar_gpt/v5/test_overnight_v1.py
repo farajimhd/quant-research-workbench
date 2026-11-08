@@ -38,6 +38,74 @@ def test_metadata_sharing_race_retries_without_hiding_persistent_failures(monkey
         module.metadata_io(corrupt)
 
 
+def test_explicit_resume_retains_arguments_and_skips_qualification(
+    tmp_path, monkeypatch
+):
+    parent = tmp_path / "train-03"
+    parent.mkdir()
+    checkpoint = parent / "checkpoint_last.pt"
+    checkpoint.touch()
+    config = dict(
+        mode="train",
+        scheduler="cosine",
+        dataset="sealed",
+        split_manifest="split.json",
+        calibration="calibration.json",
+        model="large",
+        precision="bf16",
+        attention="sdpa",
+        attention_dropout=0.0,
+        batch_size=4096,
+        workers=32,
+        prefetch=2,
+        epochs=50,
+        train_steps=0,
+        validation_steps=0,
+        learning_rate=0.001,
+        min_learning_rate=0.00005,
+        warmup_updates=1000,
+        metrics_every=1000,
+        loss_every=10,
+        checkpoint_every=0,
+        seed=17,
+        wandb_mode="online",
+        wandb_project="original",
+        guard_probe_steps=32,
+        learning_guard=True,
+        panel=True,
+    )
+    write_json(parent / "manifest.json", config)
+    (parent / "STOP").write_text("Learning guard: persistent overfit")
+    controller = Controller(
+        SimpleNamespace(
+            output=tmp_path,
+            source_revision="new",
+            resume_training=checkpoint,
+            overfit_patience=5,
+        )
+    )
+    calls = []
+
+    def child(label, arguments):
+        calls.append((label, arguments))
+        output = tmp_path / label
+        output.mkdir()
+        write_json(output / "progress.json", dict(state="complete"))
+        return output
+
+    monkeypatch.setattr(controller, "child", child)
+    controller.resume_training()
+    assert calls[0][0] == "train-04"
+    arguments = calls[0][1]
+    assert arguments[arguments.index("--resume") + 1] == str(checkpoint)
+    assert arguments[arguments.index("--overfit-patience") + 1] == "5"
+    assert arguments[arguments.index("--epochs") + 1] == "50"
+    assert (parent / "STOP").read_text() == "Learning guard: persistent overfit"
+    (tmp_path / "STOP").write_text("Human stop")
+    with pytest.raises(InterruptedError, match="Preserve"):
+        controller.resume_training()
+
+
 def test_successful_handoff_runs_only_short_checks_before_full_guarded_training(
     tmp_path, monkeypatch
 ):

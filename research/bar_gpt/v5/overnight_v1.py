@@ -284,6 +284,98 @@ class Controller:
             raise InterruptedError("Overnight handoff was stopped")
         return output
 
+    def resume_training(self):
+        """Continue an explicitly requested checkpoint without repeating corpus qualification.
+
+        The checkpoint and parent manifest stay immutable under this campaign.
+        Reuse the same split/calibration and scientific arguments, changing only
+        the requested overfit policy. The normal child ledger, PID ownership,
+        stall watchdog, progress panel and keep-awake lifetime remain active.
+        """
+        checkpoint = self.args.resume_training.resolve()
+        parent = checkpoint.parent
+        if self.stopped():
+            raise InterruptedError("Preserve the campaign STOP before resuming")
+        if parent.parent != self.root or not checkpoint.is_file():
+            raise ValueError("Resume an existing checkpoint inside this campaign")
+        import re
+
+        match = re.fullmatch(r"train-(\d{2})", parent.name)
+        if not match:
+            raise ValueError("Expected a retained training-attempt checkpoint")
+        marker = parent / "STOP"
+        if marker.exists() and not marker.read_text().startswith("Learning guard:"):
+            raise InterruptedError("Preserve the parent attempt's human STOP")
+        config = read(parent / "manifest.json")
+        if config.get("mode") != "train" or config.get("scheduler") != "cosine":
+            raise ValueError(
+                "Only the existing full cosine training campaign can resume"
+            )
+        # Reconstruct only runnable trainer arguments, excluding derived metadata.
+        fields = (
+            "dataset",
+            "split_manifest",
+            "calibration",
+            "model",
+            "precision",
+            "attention",
+            "attention_dropout",
+            "batch_size",
+            "workers",
+            "prefetch",
+            "epochs",
+            "train_steps",
+            "validation_steps",
+            "scheduler",
+            "learning_rate",
+            "min_learning_rate",
+            "warmup_updates",
+            "metrics_every",
+            "loss_every",
+            "checkpoint_every",
+            "seed",
+            "wandb_mode",
+            "wandb_project",
+            "guard_probe_steps",
+        )
+        arguments = ["--mode", "train", "--resume", str(checkpoint)]
+        for field in fields:
+            arguments.extend(["--" + field.replace("_", "-"), str(config[field])])
+        if config.get("learning_guard"):
+            arguments.append("--learning-guard")
+        if config.get("panel"):
+            arguments.append("--panel")
+        if self.args.overfit_patience is not None:
+            arguments.extend(["--overfit-patience", str(self.args.overfit_patience)])
+        label = f"train-{int(match.group(1)) + 1:02d}"
+        self.update(
+            state="running",
+            stage="resuming retained checkpoint",
+            error=None,
+            incident=None,
+            resume_checkpoint=str(checkpoint),
+            training_output=str(self.root / label),
+        )
+        output = self.child(label, arguments)
+        status, review = read(output / "progress.json"), read(
+            output / "learning-review.json"
+        )
+        if review.get("action") == "stop":
+            self.investigate(output, review)
+        elif status.get("state") == "complete":
+            self.update(
+                state="complete",
+                stage="50 epochs completed",
+                training_output=str(output),
+            )
+        else:
+            self.update(
+                state=status.get("state", "failed"),
+                stage="resumed training ended",
+                error=status.get("error"),
+                training_output=str(output),
+            )
+
     def run(self):
         """Prepare once, run only short diagnostics, then leave a guarded full campaign running."""
         from research.bar_gpt.v5.cohort_audit_v1 import audit
@@ -596,7 +688,21 @@ def main(argv=None):
     )
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-revision", required=True)
+    parser.add_argument(
+        "--resume-training",
+        type=Path,
+        help="Explicit retained checkpoint; skip already completed qualification",
+    )
+    parser.add_argument(
+        "--overfit-patience",
+        type=int,
+        help="Override only the consecutive-validation overfit stop policy",
+    )
     args = parser.parse_args(argv)
+    if args.overfit_patience is not None and (
+        args.overfit_patience < 1 or not args.resume_training
+    ):
+        parser.error("A positive overfit override requires --resume-training")
     runtime = Path("D:/TradingML/runtimes").resolve()
     args.output, args.dataset = args.output.resolve(), args.dataset.resolve()
     if (
@@ -626,7 +732,10 @@ def main(argv=None):
             raise OSError("Could not hold the workstation awake for the overnight job")
         controller.update(system_awake_request=True)
         try:
-            controller.run()
+            if args.resume_training:
+                controller.resume_training()
+            else:
+                controller.run()
         except BaseException as error:
             controller.update(
                 state="stopped" if isinstance(error, InterruptedError) else "failed",

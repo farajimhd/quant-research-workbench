@@ -6,6 +6,8 @@ columns over 64 bars. This module owns scheduling, validation and durable state.
 """
 
 from dataclasses import asdict, replace
+from copy import deepcopy
+import json
 import math
 import shutil
 
@@ -46,6 +48,61 @@ class EpochCosine:
 
     def load_state_dict(self, state):
         self.__dict__.update(state)
+
+
+def compatible_resume_contract(saved, current):
+    """Allow only the explicit overfit stop-policy change; keep training state exact.
+
+    Inputs are checkpoint contract dictionaries, without tensors. Legacy guards
+    used ``patience`` for both checks. The no-learning patience, probe population,
+    data/model/optimization contract and schedule must still match exactly.
+    """
+    left, right = deepcopy(saved), deepcopy(current)
+    for contract in (left, right):
+        if "learning_guard" in contract:
+            contract["learning_guard"].pop("overfit_patience", None)
+    return left == right
+
+
+def preserve_prior_best(checkpoint, output, best, contract, best_epoch):
+    """Copy the unchanged best checkpoint from the resume ancestry, never overwrite it.
+
+    An attempt may have no improvement, so its best file can live in an earlier
+    attempt. Check its scalar score and full contract on CPU before publication.
+    Parent manifests supply the explicit resume chain; cycles fail closed.
+    """
+    seen = set()
+    while checkpoint:
+        root = checkpoint.parent
+        if root in seen:
+            raise ValueError("Cyclic best-checkpoint ancestry")
+        seen.add(root)
+        for candidate in (
+            root / f"checkpoint_epoch_{best_epoch:03d}.pt",
+            root / "checkpoint_best.pt",
+        ):
+            if not candidate.is_file():
+                continue
+            state = torch.load(candidate, map_location="cpu", weights_only=False)
+            if state["best_validation"] == best and compatible_resume_contract(
+                state["contract"], contract
+            ):
+                temporary = output / "checkpoint_best.pt.partial"
+                shutil.copyfile(candidate, temporary)
+                temporary.replace(output / "checkpoint_best.pt")
+                write_json(
+                    output / "best-checkpoint-origin.json",
+                    dict(source=str(candidate), best_validation=best),
+                )
+                return
+        manifest = root / "manifest.json"
+        previous = (
+            json.loads(manifest.read_text()).get("resume")
+            if manifest.exists()
+            else None
+        )
+        checkpoint = type(checkpoint)(previous) if previous else None
+    raise ValueError("Cannot locate the saved best checkpoint in the resume ancestry")
 
 
 def train_campaign(args, manifest, stats, reporter):
@@ -94,6 +151,8 @@ def train_campaign(args, manifest, stats, reporter):
     )
     epoch = step = 0
     guarded = getattr(args, "learning_guard", False)
+    requested_patience = getattr(args, "overfit_patience", None)
+    overfit_patience = requested_patience or 3
     probe_baseline = None
     if guarded:
         contract["learning_guard"] = dict(
@@ -102,10 +161,19 @@ def train_campaign(args, manifest, stats, reporter):
             probe_workers=min(4, args.workers),
             patience=3,
         )
+        if overfit_patience != 3:
+            contract["learning_guard"]["overfit_patience"] = overfit_patience
     phase, history, best, training_metrics = "train", [], None, None
     if args.resume:
         saved = torch.load(args.resume, map_location="cpu", weights_only=False)
-        if saved["contract"] != contract:
+        old_guard = saved["contract"].get("learning_guard", {})
+        old_patience = old_guard.get("overfit_patience", old_guard.get("patience", 3))
+        overfit_patience = (
+            requested_patience if requested_patience is not None else old_patience
+        )
+        if guarded and overfit_patience != 3:
+            contract["learning_guard"]["overfit_patience"] = overfit_patience
+        if not compatible_resume_contract(saved["contract"], contract):
             raise ValueError(
                 "Resume requires identical data, model, optimizer and schedule contracts."
             )
@@ -119,6 +187,21 @@ def train_campaign(args, manifest, stats, reporter):
             saved["training_metrics"],
         )
         probe_baseline = saved.get("probe_baseline")
+        if old_patience != overfit_patience:
+            write_json(
+                args.output / "guard-policy-change.json",
+                dict(
+                    checkpoint=str(args.resume),
+                    old_overfit_patience=old_patience,
+                    overfit_patience=overfit_patience,
+                    no_learning_patience=3,
+                ),
+            )
+        if best is not None:
+            best_epoch = min(history, key=lambda row: row["validation"]["loss"])[
+                "epoch"
+            ]
+            preserve_prior_best(args.resume, args.output, best, contract, best_epoch)
         torch.set_rng_state(saved["rng"])
         torch.cuda.set_rng_state_all(saved["cuda_rng"])
 
@@ -272,7 +355,9 @@ def train_campaign(args, manifest, stats, reporter):
             from .learning_guard_v1 import assess
 
             history[-1]["probe"] = evaluate_or_train("validation", probe=True)
-            decision = assess(history, probe_baseline)
+            decision = assess(
+                history, probe_baseline, overfit_patience=overfit_patience
+            )
             history[-1]["learning_guard"] = decision
             write_json(
                 args.output / "learning-review.json",

@@ -134,7 +134,14 @@ def arguments(argv=None):
         help="Compare fixed untrained probes and full-epoch validation before continuing",
     )
     parser.add_argument("--guard-probe-steps", type=int, default=32)
+    parser.add_argument(
+        "--overfit-patience",
+        type=int,
+        help="Consecutive worsening validations before stopping; inherit on resume, otherwise 3",
+    )
     args = parser.parse_args(argv)
+    if args.overfit_patience is not None and args.overfit_patience < 1:
+        parser.error("Overfit patience must be positive.")
     if args.guard_probe_steps < 1:
         parser.error("The fixed learning probe needs at least one batch.")
     if (

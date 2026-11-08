@@ -32,3 +32,19 @@ def test_persistent_overfit_preserves_an_earlier_best():
 def test_nonfinite_and_gross_divergence_stop():
     assert assess([row(1.0, float("nan"), 1.0)], 1.0)["action"] == "stop"
     assert assess([row(1.0, 2.0, 2.0)], 1.0)["reason"] == "gross divergence"
+
+
+def test_five_consecutive_overfit_validations_and_independent_no_learning_guard():
+    history = [row(0.8, 0.7, 0.7)]
+    for _ in range(4):
+        history.append(row(0.6, 0.75, 0.72))
+        assert assess(history, 1.0, overfit_patience=5)["action"] == "continue"
+    history.append(row(0.5, 0.76, 0.73))
+    assert assess(history, 1.0, overfit_patience=5)["reason"] == "persistent overfit"
+    assert (
+        assess([row(1.0, 1.0, 1.0)] * 3, 1.0, overfit_patience=5)["reason"]
+        == "no measurable learning"
+    )
+    # A non-worsening validation interrupts the five-consecutive requirement.
+    history[-1] = row(0.5, 0.705, 0.7)
+    assert assess(history, 1.0, overfit_patience=5)["action"] == "continue"

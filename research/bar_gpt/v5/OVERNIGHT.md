@@ -59,6 +59,13 @@ each epoch, with identical masks and membership. It stops for nonfinite evidence
 a probe regression over 50%, three epochs without 0.5% improvement, or three
 validations over 2% worse than an earlier best while training loss improves over
 1%. One noisy validation result or a train/validation gap alone never stops it.
+An explicit `--resume-training <checkpoint> --overfit-patience 5` continues a
+retained epoch through the same controller without repeating shard audits or
+profiles. Only the overfit patience changes: the three-epoch no-learning rule,
+probe population, data/model/optimizer/scheduler contracts stay unchanged.
+The trainer records this stop-policy amendment and inherits it on later resumes.
+The original W&B experiment ID/name is retained. The saved best checkpoint is
+copied from its verified resume ancestry into the new attempt.
 
 For divergence/no learning, at most one bounded optimizer investigation runs:
 two 128-update trials at 3e-4 and 1e-4 with identical initialization/data/masks.

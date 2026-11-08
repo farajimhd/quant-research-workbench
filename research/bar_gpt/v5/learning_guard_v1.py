@@ -9,14 +9,17 @@ their absolute gap alone never triggers a stop.
 import math
 
 
-def assess(history, baseline, patience=3):
+def assess(history, baseline, patience=3, *, overfit_patience=None):
     """Return an auditable decision from completed epoch metrics, never partial passes.
 
     history items contain training.loss, validation.loss and probe.loss scalars.
     Stop for nonfinite evidence, three epochs without 0.5% probe improvement,
-    or three consecutive validations >2% above an earlier best while training
+    or ``overfit_patience`` consecutive validations >2% above an earlier best while training
     loss improves >1%. A first-epoch probe regression >50% is gross divergence.
     """
+    overfit_patience = patience if overfit_patience is None else overfit_patience
+    if overfit_patience < 1:
+        raise ValueError("Overfit patience must be positive")
     if not history:
         return dict(action="continue", reason="awaiting first completed epoch")
     scores = [float(row["validation"]["loss"]) for row in history]
@@ -35,9 +38,9 @@ def assess(history, baseline, patience=3):
             probe_improvement=improvement,
         )
     best_index = min(range(len(scores)), key=scores.__getitem__)
-    if len(scores) - best_index - 1 >= patience:
+    if len(scores) - best_index - 1 >= overfit_patience:
         deteriorating = all(
-            value > scores[best_index] * 1.02 for value in scores[-patience:]
+            value > scores[best_index] * 1.02 for value in scores[-overfit_patience:]
         )
         train_improved = (
             history[-1]["training"]["loss"]
