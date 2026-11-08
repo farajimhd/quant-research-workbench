@@ -42,7 +42,7 @@ def main():
     for sessions, workers in ((1, 1), (3, 1), (3, 4), (3, 8), (3, 16)):
         started = time.monotonic()
         gate = Gate(args.output)
-        with ThreadPoolExecutor(1) as io, ThreadPoolExecutor(workers) as queries:
+        with gate, ThreadPoolExecutor(1) as io, ThreadPoolExecutor(workers) as queries:
             futures = []
             for stream, rows in cases:
                 worker = Worker(args.output, plan, stream, gate, None, io, 2_000_000)

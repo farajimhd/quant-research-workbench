@@ -70,7 +70,8 @@ class Context:
     ``counts`` are absolute indices in the stream, including bootstrap history.
     """
 
-    def __init__(self, counts=None, tails=None, pending=None):
+    def __init__(self, counts=None, tails=None, pending=None, initialized=False):
+        self.initialized = initialized  # Older receipts restore this as True.
         self.counts = list(counts or [0] * 5)
         self.tails = tails or [np.empty(0, dtype=np.int64) for _ in SPECS]
         self.pending = np.empty(0, dtype=DECISION) if pending is None else pending

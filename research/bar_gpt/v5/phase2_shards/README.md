@@ -20,7 +20,8 @@ checkpoint with an explicit deferred count. Training may shuffle whole blocks.
 
 The plan freezes the entire 2019–2025 ordinal inventory, source authority,
 condition dictionary, corporate actions, liquidity membership, four-TB capacity,
-and fourteen-calendar-day ticker-range rule. Execution starts at two TB. Raise
+and fourteen-calendar-day ticker-range rule. Execution was initially two TB;
+the user increased the current cap to four TB. Raise
 `--target-bytes` against the same output to extend within four TB. Completed core
 ranges and decision IDs are not regenerated. Four TB is an allocation, not a
 claim about unique source capacity; exhaustion is explicit.
@@ -75,3 +76,20 @@ only the viewer. A source or publication failure is surfaced and fails closed.
 the complete plan. `audit --output ... --max-receipts 4` checks a bounded receipt
 sample and ledger; `audit --output ... --ticker ... --day YYYY-MM-DD` compares
 exact source bars. Neither audits every payload in the corpus.
+
+Sparse-history performance uses bounded multi-session warmup queries, larger
+streaming hourly/daily warmup spans, and thread-private persistent transports.
+An all-empty current range defers bootstrap until its first actual observation.
+Legacy checkpoints are treated as already initialized, so existing indices and
+publications are never rewritten. Core chunk layout stays unchanged.
+
+A frozen-core-year count of **all** raw trade messages can prove that fewer than
+256 decisions are possible. Only those impossible full-block streams are
+marked skipped, with sealed counts in the ledger. Total source rows must first
+reconcile with the ordinal plan. This is not a trade validity, delayed-reporting
+or missing-timestamp filter. Existing publications remain immutable.
+
+W&B is online by default in `bargpt-phase2-shards-v1`; progress is coalesced and
+uploaded by a separate thread every 30 seconds. Its persistent local journal is
+uploaded live. Failures remain visible in progress metadata and local evidence.
+Use `--wandb-mode disabled` only for isolated offline fixtures or local tests.

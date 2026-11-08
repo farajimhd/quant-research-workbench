@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import time
 
 import numpy as np
 
@@ -31,6 +32,11 @@ def publish(root, stream, unit, arrays, starts, blocks, splits, context, timing)
     indices into the stream; split=2 rows are explicitly purged, never selected.
     Atomic directory rename exposes the complete receipt and checkpoint at once.
     """
+    began = time.monotonic()
+    timing = dict(timing)
+    timing["publication_queue_seconds"] = max(
+        0, began - timing.pop("_enqueued_clock", began)
+    )
     parent = Path(root) / "streams" / stream["key"]
     parent.mkdir(parents=True, exist_ok=True)
     final = parent / f"{unit:04d}"
@@ -62,6 +68,7 @@ def publish(root, stream, unit, arrays, starts, blocks, splits, context, timing)
             handle,
             counts=np.asarray(context.counts),
             pending=context.pending,
+            initialized=np.asarray(context.initialized),
             **{f"tail{i}": tail for i, tail in enumerate(context.tails)},
         )
         handle.flush()
@@ -74,6 +81,7 @@ def publish(root, stream, unit, arrays, starts, blocks, splits, context, timing)
             rows=0,
         )
     )
+    timing["publication_seconds"] = time.monotonic() - began
     receipt = dict(
         stream=stream["key"],
         ticker=stream["ticker"],
@@ -105,6 +113,9 @@ def restore(root, stream, unit):
             saved["counts"].tolist(),
             [saved[f"tail{i}"].copy() for i in range(5)],
             saved["pending"].copy(),
+            # Legacy producers always warmed on unit zero, including empty
+            # ranges. Never prepend history again to their existing indices.
+            initialized=bool(saved["initialized"]) if "initialized" in saved else True,
         )
 
 
@@ -128,6 +139,8 @@ class Catalog:
               liquid INTEGER,split INTEGER,selection INTEGER UNIQUE,
               PRIMARY KEY(stream,unit,ordinal));
             CREATE INDEX IF NOT EXISTS pending ON blocks(split,liquid,selection);
+            CREATE TABLE IF NOT EXISTS stream_checks(stream TEXT PRIMARY KEY,
+              trades INTEGER, proof TEXT, skipped INTEGER);
         """)
         # Reconcile once on open, then update counters from committed deltas.
         # Repeated GROUP BY scans would otherwise grow with a multi-TB corpus.
@@ -140,9 +153,56 @@ class Catalog:
                 "SELECT split,liquid,count(*),count(selection) FROM blocks GROUP BY split,liquid"
             )
         }
+        self.skipped_count = self.db.execute(
+            "SELECT count(*) FROM stream_checks WHERE skipped=1"
+        ).fetchone()[0]
+
+    def check(self, key):
+        """Return a frozen raw-event upper bound, never an economic label."""
+        row = self.db.execute(
+            "SELECT proof,skipped FROM stream_checks WHERE stream=?", (key,)
+        ).fetchone()
+        return (json.loads(row[0]), bool(row[1])) if row else (None, False)
+
+    def remember_check(self, proof, skipped=False):
+        """A trade-count bound can only skip streams with zero possible blocks.
+
+        Each 1s bar requires a trade. Fewer than 256 raw trades in the entire
+        core year cannot yield one full block. No reporting-status/condition
+        exclusion is used in this count, and previous publications are kept.
+        """
+        key = proof["stream"]
+        if proof["hash"] != digest({k: v for k, v in proof.items() if k != "hash"}):
+            raise ValueError("Raw-trade proof seal changed")
+        old, was_skipped = self.check(key)
+        if old and old != proof:
+            raise ValueError("Canonical raw-trade bound changed")
+        if skipped and (
+            proof["raw_trade_events"] >= BLOCK
+            or self.db.execute(
+                "SELECT count(*) FROM blocks WHERE stream=?", (key,)
+            ).fetchone()[0]
+        ):
+            raise ValueError("Cannot skip a stream that may contain a complete block")
+        with self.db:
+            self.db.execute(
+                "INSERT OR REPLACE INTO stream_checks VALUES(?,?,?,?)",
+                (
+                    key,
+                    proof["raw_trade_events"],
+                    json.dumps(proof, sort_keys=True),
+                    int(skipped or was_skipped),
+                ),
+            )
+        if skipped and not was_skipped:
+            self.skipped_count += 1
 
     def register(self, receipt):
         """Idempotent receipt registration; detect conflicting immutable units."""
+        if receipt["hash"] != digest({k: v for k, v in receipt.items() if k != "hash"}):
+            raise ValueError("Receipt seal mismatch")
+        if receipt["timing"].get("raw_trade_proof"):
+            self.remember_check(receipt["timing"]["raw_trade_proof"])
         row = self.db.execute(
             "SELECT hash FROM units WHERE stream=? AND unit=?",
             (receipt["stream"], receipt["unit"]),
@@ -151,8 +211,6 @@ class Catalog:
             if row[0] != receipt["hash"]:
                 raise ValueError("Conflicting publication identity")
             return
-        if receipt["hash"] != digest({k: v for k, v in receipt.items() if k != "hash"}):
-            raise ValueError("Receipt seal mismatch")
         with self.db:
             self.db.execute(
                 "INSERT INTO units VALUES(?,?,?,?)",
@@ -200,11 +258,20 @@ class Catalog:
                 self.totals[(split, liquid)][1] += count
 
     def recover(self):
-        """Discover only receipt directories; payload hashes are checked on read."""
-        for path in sorted((self.root / "streams").glob("*/*/receipt.json")):
-            if path.parent.name.endswith(".partial"):
-                continue  # A receipt inside staging has not crossed rename.
-            self.register(json.loads(path.read_text()))
+        """Recover the next orphan publication, not reopen every historical unit.
+
+        A lane advances only after ledger registration, so at most its next unit
+        can be published but unregistered. With an empty ledger this same loop
+        rebuilds all consecutive receipts. Payload hashes remain checked on read.
+        """
+        directory = self.root / "streams"
+        for stream in sorted(directory.iterdir()) if directory.exists() else ():
+            if not stream.is_dir():
+                continue
+            unit = self.cursor(stream.name) + 1
+            while (path := stream / f"{unit:04d}" / "receipt.json").exists():
+                self.register(json.loads(path.read_text()))
+                unit += 1
         # Repair a crash between registration and balanced-group selection.
         self.select()
 
@@ -213,6 +280,7 @@ class Catalog:
         return dict(
             bytes=self.used,
             units=self.unit_count,
+            skipped_streams=self.skipped_count,
             blocks=[
                 dict(split=s, liquid=l, total=n, selected=k)
                 for (s, l), (n, k) in sorted(self.totals.items())

@@ -1,0 +1,118 @@
+"""Lossless sparse-history batching, deferred warmup and auditable pruning."""
+
+from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
+import json
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+from research.bar_gpt.v5.phase2_shards.contract import BAR, SPECS, Context, digest
+from research.bar_gpt.v5.phase2_shards.producer import Worker
+from research.bar_gpt.v5.phase2_shards.storage import Catalog, restore
+from research.bar_gpt.v5.shards.sql import clock
+
+
+def observed(rows):
+    result = np.zeros(len(rows), dtype=BAR)
+    result["values"], result["valid"] = 1, 1
+    result["end_us"] = [clock(row["source_date"], 16) for row in rows]
+    return result
+
+
+def test_sparse_history_coalesces_without_changing_any_bar():
+    rows = [
+        dict(source_date=str(date(2020, 1, 1) + timedelta(days=i)), event_count=10)
+        for i in range(601)
+    ]
+    worker = Worker.__new__(Worker)
+    worker.units, worker.rows = [[rows[-1]]], rows
+    worker.gate = SimpleNamespace(
+        fine_warmup_events=250000, coarse_warmup_events=32000000
+    )
+    calls = []
+
+    def fetch(part, coarse):
+        calls.append((len(part), coarse))
+        return [observed(part) for _ in SPECS]
+
+    worker.fetch = fetch
+    actual = worker.warmup()
+    for array, (_, width, _) in zip(actual, SPECS):
+        np.testing.assert_array_equal(array, observed(rows[:-1])[-width:])
+    assert sum(not coarse for _, coarse in calls) == 39  # Formerly 544 requests.
+    assert all(count <= 14 for count, coarse in calls if not coarse)
+
+
+def test_empty_ranges_defer_warmup_until_first_observation(tmp_path):
+    worker = Worker.__new__(Worker)
+    worker.root = tmp_path
+    worker.stream = dict(key="stream", ticker="EXAMPLE", year=2023, liquid=0)
+    worker.plan, worker.revision = dict(hash="plan"), "source"
+    worker.units = [
+        [dict(source_date=f"2023-01-0{d}", event_count=100)] for d in (3, 4)
+    ]
+    worker.raw_trade_bound = lambda: dict(raw_trade_events=1000)
+    empty = lambda: [np.empty(0, dtype=BAR) for _ in SPECS]
+    calls = []
+    worker.warmup = lambda: (calls.append(True) or empty())
+
+    def fetch(rows, coarse):
+        result = empty()
+        if rows[0]["source_date"].endswith("04") and not coarse:
+            result[0] = observed(rows)
+        return result
+
+    worker.fetch = fetch
+    with ThreadPoolExecutor(1) as io:
+        worker.io = io
+        worker.step(0).result()
+        assert calls == [] and not restore(tmp_path, worker.stream, 0).initialized
+        worker.step(1).result()
+        assert calls == [True] and restore(tmp_path, worker.stream, 1).initialized
+    # Legacy checkpoints always performed initial warmup, even if it was empty.
+    path = tmp_path / "streams/stream/0001/context.npz"
+    with np.load(path) as saved:
+        old = {key: saved[key].copy() for key in saved.files if key != "initialized"}
+    np.savez(path, **old)
+    assert restore(tmp_path, worker.stream, 1).initialized
+
+
+def test_raw_event_pruning_cannot_remove_a_possible_full_block(tmp_path):
+    catalog = Catalog(tmp_path)
+    proof = dict(stream="tiny", raw_trade_events=255)
+    proof["hash"] = digest(proof)
+    catalog.remember_check(proof, skipped=True)
+    assert catalog.stats()["skipped_streams"] == 1
+    catalog.remember_check(proof, skipped=True)
+    assert catalog.stats()["skipped_streams"] == 1
+    proof = dict(stream="possible", raw_trade_events=256)
+    proof["hash"] = digest(proof)
+    with pytest.raises(ValueError, match="may contain"):
+        catalog.remember_check(proof, skipped=True)
+    catalog.db.close()
+
+
+def test_generation_logs_are_coalesced_and_flushed(tmp_path, monkeypatch):
+    from research.bar_gpt.v5.phase2_shards import telemetry
+
+    sent = []
+    fake = SimpleNamespace(
+        url="https://example.test/run",
+        log=sent.append,
+        save=lambda *args, **kwargs: None,
+        finish=lambda: None,
+    )
+    monkeypatch.setattr(telemetry, "init_wandb", lambda **kwargs: fake)
+    monkeypatch.setattr(telemetry, "discover_env_files", lambda *_: [])
+    logger = telemetry.Telemetry(tmp_path, {})
+    logger.update(dict(state="running", units=12, blocks=[]))
+    logger.finish()
+    assert sent[-1]["generation/units"] == 12
+    assert (
+        json.loads(
+            (tmp_path / "generation-metrics.jsonl").read_text().splitlines()[-1]
+        )["generation/units"]
+        == 12
+    )

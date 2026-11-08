@@ -147,7 +147,7 @@ def parity(root, ticker, day, endpoint=None, memory_gib=3):
     )
     gate = Gate(root, memory_gib)
     result = []
-    with ThreadPoolExecutor(1) as io:
+    with gate, ThreadPoolExecutor(1) as io:
         worker = Worker(root, plan, stream, gate, endpoint, io, 2_000_000)
         for coarse in (False, True):
             candidate = worker.fetch(chosen, coarse)
