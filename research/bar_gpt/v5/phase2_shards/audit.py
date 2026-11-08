@@ -94,8 +94,8 @@ def content(root, max_receipts=6, latest=False):
                 block = load_array(path, block_files[0])[0]
                 if len(block) != BLOCK or (np.diff(block["end_us"]) <= 0).any():
                     raise ValueError("Unordered decision block")
-                # Read all 38 views for one final decision, including original
-                # phase-one backward split adjustment at each window endpoint.
+                # Rebase all 38 views to this decision's common share basis.
+                # Each other decision in the block must use its own origin.
                 actions = [
                     a
                     for a in plan["actions"]["rows"]

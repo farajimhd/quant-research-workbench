@@ -47,6 +47,9 @@ masks and Int64 bar-end clocks. Model-ready view contract
 origin for every 64-bar view. The reader uses phase one's adjustment math to
 rebase all historical prices and sizes to that common origin, including a split
 effective after an older daily/hourly window ended. Future executions are excluded.
+Every decision in a block supplies its own origin; the block's final timestamp
+must not set the basis for earlier decisions. Raw storage keeps its existing
+version because only the model-ready view contract changes.
 Raw caches retain their original share basis. The existing input transform adds nine UTC
 features, for 27 encoder channels; transformed tensors are not duplicated here.
 
