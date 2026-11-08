@@ -83,4 +83,16 @@ upgrade can use `run_epoch_upgrade.py` to wait for an immutable complete-epoch
 checkpoint and successful learning review, drain the owned controller, then use
 its ordinary checkpoint-retry path under the new committed snapshot. Existing
 STOP files cancel the handoff. This changes no model/data/optimizer contract and
-discards no completed epoch; the new W&B run continues the saved global steps.
+discards no completed epoch. A checkpoint resume keeps the original W&B ID and
+display name using `wandb-identity.json`, including legacy checkpoint ancestry.
+Changing scientific model/data/optimization settings starts a separate W&B run;
+changing worker counts, source snapshots or output folders does not. The saved
+training contract still independently controls whether a checkpoint is compatible.
+
+`wandb_relay_v1` can consolidate accidentally separated attempt journals into the
+original remote run while following the active attempt without restarting it.
+Original journals and attempt runs remain intact; exact metric payload hashes
+deduplicate overlap and remote migration acknowledgments make retries idempotent.
+A writer lease prevents the relay and a future resumed reporter from uploading
+concurrently. A resumed reporter requests relay handoff and waits for its uploads
+to drain; this marker never stops or controls a trainer.

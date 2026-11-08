@@ -10,6 +10,7 @@ import time
 
 from research.mlops.wandb_utils import init_wandb
 from .shards.contract import write_json
+from .wandb_identity_v1 import WriterLease, persist, resume_identity, signature
 
 
 class Reporter:
@@ -23,16 +24,51 @@ class Reporter:
             state="running", stage="initializing", done=0, total=0, results=[]
         )
         self.gpu_samples = []
-        self.run = init_wandb(
-            entity=os.environ.get("WANDB_ENTITY", ""),
-            project=project,
-            run_name=root.name,
-            config=config,
-            run_dir=root,
-            mode=mode,
-            timeout_seconds=30,
-            capture_console=False,
-        )
+        # Output folders identify processes; the persisted ID identifies the experiment.
+        identity = resume_identity(config, project) if mode != "disabled" else None
+        self.writer_lease = None
+        if identity:
+            self.writer_lease = WriterLease(identity["root"]).acquire(takeover=True)
+        try:
+            self.run = init_wandb(
+                entity=(
+                    identity["entity"]
+                    if identity
+                    else os.environ.get("WANDB_ENTITY", "")
+                ),
+                project=project,
+                run_name=identity["name"] if identity else root.name,
+                # Resumed operational paths/revisions legitimately differ; update them
+                # after init rather than asking W&B to overwrite immutable init config.
+                config={} if identity else config,
+                run_dir=root,
+                mode=mode,
+                timeout_seconds=30,
+                capture_console=False,
+                run_id=identity["id"] if identity else None,
+                resume_mode="must" if identity else None,
+            )
+        except BaseException:
+            if self.writer_lease:
+                self.writer_lease.close()
+            raise
+        if self.run:
+            if not identity:
+                identity = dict(
+                    id=self.run.id,
+                    entity=self.run.entity,
+                    project=project,
+                    name=self.run.name,
+                    root=str(root),
+                    signature=signature(config),
+                    url=self.run.url,
+                )
+                self.writer_lease = WriterLease(root).acquire()
+            persist(root, identity)
+            config["wandb_identity"] = (
+                identity  # Persist the remote ID in the run manifest too.
+            )
+            self.run.config.update(config, allow_val_change=True)
         self.state["wandb_url"] = getattr(self.run, "url", None)
         if self.run:
             self.run.define_metric("global_step")
@@ -138,6 +174,8 @@ class Reporter:
                     artifact.add_file(str(self.root / name))
             self.run.log_artifact(artifact)
             self.run.finish(exit_code=0 if state == "complete" else 1)
+        if self.writer_lease:
+            self.writer_lease.close()
 
 
 def open_panel(root: Path):
