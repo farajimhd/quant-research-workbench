@@ -2,7 +2,7 @@
 
 Run with ``python -B -m research.bar_gpt.v5.phase2_shards.run --help``.
 All generated files must be under the selected machine's TradingML runtimes.
-The first execution cap is two decimal TB; the immutable inventory plans four.
+The execution cap and immutable inventory both default to four decimal TB.
 """
 
 import argparse
@@ -139,6 +139,7 @@ def run(args):
     started, last_status = time.monotonic(), 0.0
     initial_bytes = catalog.stats()["bytes"]
     state = "running"
+    coordinator_seconds = dict(dispatch=0.0, registration=0.0)
 
     def snapshot():
         stats = catalog.stats()
@@ -166,6 +167,7 @@ def run(args):
             free_disk_gib=shutil.disk_usage(root).free / 1024**3,
             reserved_query_gib=gate.reserved / 1024**3,
             resource_waits=list(gate.waiting.values()),
+            coordinator_seconds=dict(coordinator_seconds),
             lanes=[
                 dict(ticker=w.stream["ticker"], year=w.stream["year"], stage=w.label)
                 for w in lanes.values()
@@ -247,7 +249,11 @@ def run(args):
                             > args.target_bytes
                         ):
                             break
+                        dispatch_started = time.monotonic()
                         task = new_lane(io)
+                        coordinator_seconds["dispatch"] += (
+                            time.monotonic() - dispatch_started
+                        )
                         if task is None:
                             break
                         worker, unit = task
@@ -265,7 +271,11 @@ def run(args):
                     worker, unit = publications.pop(future)
                     try:
                         receipt = future.result()
+                        registration_started = time.monotonic()
                         catalog.register(receipt)
+                        coordinator_seconds["registration"] += (
+                            time.monotonic() - registration_started
+                        )
                     except Exception as error:
                         errors.append(
                             dict(

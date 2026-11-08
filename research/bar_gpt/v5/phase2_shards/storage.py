@@ -1,5 +1,7 @@
 """Receipt-first publication, indexed recovery and exact block-ratio selection."""
 
+import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -14,14 +16,29 @@ MAX_ROWS = 16 * 1024**2 // BAR.itemsize
 
 
 def save_array(directory, name, array):
-    """Write and fsync one immutable NPY payload before recording its hash."""
+    """Serialize one <=16 MiB array, then write/fsync its exact hashed bytes.
+
+    Hashing the serialized source avoids reopening every new file under parallel
+    publication. Readers/audits still verify the on-disk payload against this
+    source hash. Serialization memory is bounded by one segment per I/O worker.
+    """
+    buffer = io.BytesIO()
+    np.save(buffer, array, allow_pickle=False)
+    return save_payload(directory, name, buffer.getbuffer(), len(array))
+
+
+def save_payload(directory, name, payload, rows):
+    """Publish a bounded byte buffer durably, preserving the existing file format."""
     path = directory / name
     with path.open("wb") as handle:
-        np.save(handle, array, allow_pickle=False)
+        handle.write(payload)
         handle.flush()
         os.fsync(handle.fileno())
     return dict(
-        name=name, bytes=path.stat().st_size, sha256=file_hash(path), rows=len(array)
+        name=name,
+        bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        rows=rows,
     )
 
 
@@ -62,25 +79,17 @@ def publish(root, stream, unit, arrays, starts, blocks, splits, context, timing)
                 temporary, f"blocks-{offset:09d}.npy", blocks[offset : offset + 128]
             )
         )
-    checkpoint = temporary / "context.npz"
-    with checkpoint.open("wb") as handle:
-        np.savez(
-            handle,
-            counts=np.asarray(context.counts),
-            pending=context.pending,
-            initialized=np.asarray(context.initialized),
-            **{f"tail{i}": tail for i, tail in enumerate(context.tails)},
-        )
-        handle.flush()
-        os.fsync(handle.fileno())
-    files.append(
-        dict(
-            name=checkpoint.name,
-            bytes=checkpoint.stat().st_size,
-            sha256=file_hash(checkpoint),
-            rows=0,
-        )
+    # Build the small ZIP/NPZ checkpoint in RAM instead of many seeks/writes on
+    # the training SSD. Its schema and crash-safe fsync boundary are unchanged.
+    checkpoint = io.BytesIO()
+    np.savez(
+        checkpoint,
+        counts=np.asarray(context.counts),
+        pending=context.pending,
+        initialized=np.asarray(context.initialized),
+        **{f"tail{i}": tail for i, tail in enumerate(context.tails)},
     )
+    files.append(save_payload(temporary, "context.npz", checkpoint.getbuffer(), 0))
     timing["publication_seconds"] = time.monotonic() - began
     receipt = dict(
         stream=stream["key"],
@@ -177,6 +186,11 @@ class Catalog:
         old, was_skipped = self.check(key)
         if old and old != proof:
             raise ValueError("Canonical raw-trade bound changed")
+        if old and (was_skipped or not skipped):
+            # Every later range repeats the same sealed yearly bound. Avoid an
+            # identical INSERT/commit/fsync for each receipt; promotion to skipped
+            # remains validated below, and a changed proof still fails above.
+            return
         if skipped and (
             proof["raw_trade_events"] >= BLOCK
             or self.db.execute(

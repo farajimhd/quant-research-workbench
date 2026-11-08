@@ -119,3 +119,36 @@ def test_generation_logs_are_coalesced_and_flushed(tmp_path, monkeypatch):
         )["generation/units"]
         == 12
     )
+
+
+def test_buffered_publication_keeps_exact_npy_bytes_and_source_hash(tmp_path):
+    """Structured payloads remain readable and bit-identical to the legacy format."""
+    import hashlib
+    from research.bar_gpt.v5.phase2_shards.storage import save_array
+
+    rows = observed([dict(source_date="2024-01-02")])
+    expected = tmp_path / "legacy.npy"
+    with expected.open("wb") as handle:
+        np.save(handle, rows, allow_pickle=False)
+    receipt = save_array(tmp_path, "buffered.npy", rows)
+    payload = (tmp_path / receipt["name"]).read_bytes()
+    assert payload == expected.read_bytes()
+    assert receipt["sha256"] == hashlib.sha256(payload).hexdigest()
+    np.testing.assert_array_equal(np.load(tmp_path / receipt["name"]), rows)
+
+
+def test_unchanged_raw_trade_proof_does_not_repeat_a_write_transaction(tmp_path):
+    """Repeated range receipts must not fsync the same yearly proof again."""
+    catalog = Catalog(tmp_path)
+    proof = dict(stream="existing", raw_trade_events=500)
+    proof["hash"] = digest(proof)
+    catalog.remember_check(proof)
+    statements = []
+    catalog.db.set_trace_callback(statements.append)
+    catalog.remember_check(proof)
+    assert not any(s.startswith(("INSERT", "BEGIN", "COMMIT")) for s in statements)
+    changed = dict(stream="existing", raw_trade_events=501)
+    changed["hash"] = digest(changed)
+    with pytest.raises(ValueError, match="changed"):
+        catalog.remember_check(changed)
+    catalog.db.close()
