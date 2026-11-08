@@ -25,6 +25,13 @@ class NoFullBlock:
     proof: dict
 
 
+@dataclass(frozen=True)
+class EndOfStream:
+    """A resumed lane's last immutable unit is already registered."""
+
+    pass
+
+
 class Gate:
     """Reserve query memory before admission, preserving training/OS headroom.
 
@@ -125,22 +132,50 @@ class Worker:
     subdivision/range boundary. Next-range reads overlap the previous I/O task.
     """
 
-    def __init__(self, root, plan, stream, gate, endpoint, io_pool, chunk_events):
+    def __init__(
+        self,
+        root,
+        plan,
+        stream,
+        gate,
+        endpoint,
+        io_pool,
+        chunk_events,
+        *,
+        defer_metadata=False,
+    ):
         self.root, self.plan, self.stream = root, plan, stream
-        execution = Path(root) / "execution.json"
+        self.gate, self.endpoint, self.io = gate, endpoint, io_pool
+        self.chunk_events = chunk_events
+        self.units = None
+        self.label = "loading ordinal summary"
+        self.query_seconds = 0.0
+        self.query_count = 0
+        self.trade_proof = None
+        if not defer_metadata:
+            self.prepare()
+
+    def prepare(self):
+        """Load/partition frozen metadata on a query worker, never the coordinator.
+
+        Only one task owns a lane at a time. Publication must be committed before
+        the lane is resubmitted, so no per-lane initialization lock is necessary.
+        """
+        if self.units is not None:
+            return
+        execution = Path(self.root) / "execution.json"
         self.revision = (
             json.loads(execution.read_text())["source_revision"]
             if execution.exists()
-            else plan["revision"]
+            else self.plan["revision"]
         )
-        self.gate, self.endpoint, self.io = gate, endpoint, io_pool
-        self.rows = bounds(root, plan, stream)
+        self.rows = bounds(self.root, self.plan, self.stream)
         self.units = []
         # Partitioning is deterministic and part of the execution contract.
-        for group in ranges(self.rows, stream["year"]):
+        for group in ranges(self.rows, self.stream["year"]):
             chunk, count = [], 0
             for row in group:
-                if chunk and count + int(row["event_count"]) > chunk_events:
+                if chunk and count + int(row["event_count"]) > self.chunk_events:
                     self.units.append(chunk)
                     chunk, count = [], 0
                 chunk.append(row)
@@ -148,9 +183,6 @@ class Worker:
             if chunk:
                 self.units.append(chunk)
         self.label = "queued"
-        self.query_seconds = 0.0
-        self.query_count = 0
-        self.trade_proof = None
 
     def raw_trade_bound(self):
         """Count ALL raw trade messages in the frozen core year, conditions aside.
@@ -276,6 +308,9 @@ class Worker:
         """Build one durable unit; publication runs on the bounded I/O pool."""
         from .contract import Context
 
+        self.prepare()
+        if unit >= len(self.units):
+            return EndOfStream()
         context = storage.restore(self.root, self.stream, unit - 1)
         started = time.monotonic()
         self.query_seconds = 0

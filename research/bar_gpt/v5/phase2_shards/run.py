@@ -21,8 +21,8 @@ os.environ.setdefault("POLARS_MAX_THREADS", "4")
 import psutil
 
 from .contract import CAPACITY, write_json
-from .plan import freeze
-from .producer import Gate, Worker, NoFullBlock
+from .plan import freeze, inventory_jobs
+from .producer import Gate, Worker, NoFullBlock, EndOfStream
 from .storage import Catalog
 from .telemetry import Telemetry
 
@@ -90,6 +90,9 @@ def run(args):
     lock.seek(0)
     msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
     plan = freeze(root, args.parent, args.source_revision, args.endpoint)
+    # Prime the shared immutable index once; concurrent cache misses would each
+    # parse the same large JSON before the first worker populated the LRU cache.
+    inventory_jobs(str(root))
     layout = root / "layout.json"
     if layout.exists():
         if json.loads(layout.read_text())["chunk_events"] != args.chunk_events:
@@ -200,14 +203,21 @@ def run(args):
                 worker = reusable.pop(stream["key"], None)
                 if worker is None:
                     worker = Worker(
-                        root, plan, stream, gate, args.endpoint, io, args.chunk_events
+                        root,
+                        plan,
+                        stream,
+                        gate,
+                        args.endpoint,
+                        io,
+                        args.chunk_events,
+                        defer_metadata=True,
                     )
                 worker.trade_proof = proof
                 reusable[stream["key"]] = worker
                 while len(reusable) > 2 * args.workers:
                     reusable.popitem(last=False)
                 cursor = catalog.cursor(stream["key"]) + 1
-                if cursor < len(worker.units):
+                if worker.units is None or cursor < len(worker.units):
                     return worker, cursor
                 reusable.pop(stream["key"], None)
         return None
@@ -265,17 +275,13 @@ def run(args):
                             >= args.max_units
                         ):
                             break
+                ready = []
                 for future in list(publications):
                     if not future.done():
                         continue
                     worker, unit = publications.pop(future)
                     try:
                         receipt = future.result()
-                        registration_started = time.monotonic()
-                        catalog.register(receipt)
-                        coordinator_seconds["registration"] += (
-                            time.monotonic() - registration_started
-                        )
                     except Exception as error:
                         errors.append(
                             dict(
@@ -287,6 +293,20 @@ def run(args):
                         gate.cancel.set()
                         lanes.pop(worker.stream["key"], None)
                         continue
+                    ready.append((worker, unit, receipt))
+                registration_started = time.monotonic()
+                try:
+                    catalog.register_many([receipt for _, _, receipt in ready])
+                except Exception as error:
+                    errors.append(dict(reason=f"Receipt batch failed: {error}"[:2000]))
+                    gate.cancel.set()
+                    for worker, _, _ in ready:
+                        lanes.pop(worker.stream["key"], None)
+                    ready = []
+                coordinator_seconds["registration"] += (
+                    time.monotonic() - registration_started
+                )
+                for worker, unit, _ in ready:
                     completed += 1
                     lanes.pop(worker.stream["key"], None)
                     # Put this stream at the next class queue position, so its
@@ -300,7 +320,10 @@ def run(args):
                         worker, unit = active.pop(future)
                         try:
                             result = future.result()
-                            if isinstance(result, NoFullBlock):
+                            if isinstance(result, EndOfStream):
+                                lanes.pop(worker.stream["key"], None)
+                                reusable.pop(worker.stream["key"], None)
+                            elif isinstance(result, NoFullBlock):
                                 catalog.remember_check(result.proof, skipped=True)
                                 lanes.pop(worker.stream["key"], None)
                                 reusable.pop(worker.stream["key"], None)
@@ -319,7 +342,9 @@ def run(args):
                             )
                             gate.cancel.set()
                 elif publications:
-                    time.sleep(0.1)
+                    # Wake on completion instead of imposing a 100ms dispatch
+                    # delay whenever only publication work remains in flight.
+                    wait(publications, timeout=0.05, return_when=FIRST_COMPLETED)
                 if time.monotonic() - last_status >= 3:
                     state = (
                         "failed_draining"

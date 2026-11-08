@@ -152,3 +152,52 @@ def test_unchanged_raw_trade_proof_does_not_repeat_a_write_transaction(tmp_path)
     with pytest.raises(ValueError, match="changed"):
         catalog.remember_check(changed)
     catalog.db.close()
+
+
+def test_receipt_batch_is_one_commit_and_rolls_back_counters(tmp_path, monkeypatch):
+    """A failed batch preserves ledger/counter parity and existing selection IDs."""
+
+    def receipt(key, liquid, count):
+        row = dict(
+            stream=key, unit=0, bytes=100, timing={}, liquid=liquid, splits=[0] * count
+        )
+        return dict(row, hash=digest(row))
+
+    catalog = Catalog(tmp_path)
+    statements = []
+    catalog.db.set_trace_callback(statements.append)
+    catalog.register_many([receipt("liquid", 1, 3), receipt("sparse", 0, 1)])
+    assert statements.count("COMMIT") == 1
+    baseline = catalog.stats()
+    assert sum(row["selected"] for row in baseline["blocks"]) == 4
+
+    def fail():
+        raise RuntimeError("Simulated selection failure")
+
+    monkeypatch.setattr(catalog, "select", fail)
+    with pytest.raises(RuntimeError, match="Simulated"):
+        catalog.register_many([receipt("new", 1, 3)])
+    assert catalog.stats() == baseline
+    assert catalog.db.execute("SELECT count(*) FROM units").fetchone()[0] == 2
+    catalog.db.close()
+
+
+def test_deferred_metadata_is_loaded_only_in_the_lane_task(tmp_path, monkeypatch):
+    """Coordinator admission must not run Polars inventory loading synchronously."""
+    from research.bar_gpt.v5.phase2_shards import producer
+
+    calls = []
+    monkeypatch.setattr(producer, "bounds", lambda *args: calls.append(True) or [])
+    worker = Worker(
+        tmp_path,
+        {"revision": "test"},
+        {"key": "done", "year": 2025},
+        None,
+        None,
+        None,
+        2_000_000,
+        defer_metadata=True,
+    )
+    assert not calls and worker.units is None
+    assert isinstance(worker.step(0), producer.EndOfStream)
+    assert calls == [True]

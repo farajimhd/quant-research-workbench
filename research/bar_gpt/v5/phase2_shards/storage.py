@@ -1,6 +1,8 @@
 """Receipt-first publication, indexed recovery and exact block-ratio selection."""
 
 import hashlib
+from contextlib import nullcontext
+from copy import deepcopy
 import io
 import json
 import os
@@ -165,6 +167,35 @@ class Catalog:
         self.skipped_count = self.db.execute(
             "SELECT count(*) FROM stream_checks WHERE skipped=1"
         ).fetchone()[0]
+        self.batching = False
+
+    def transaction(self):
+        """Use the caller's bounded batch transaction, or own a single commit."""
+        return nullcontext() if self.batching else self.db
+
+    def register_many(self, receipts):
+        """Commit ready receipts and exact-ratio selection in one FULL-sync batch.
+
+        Lanes cannot advance until this returns. A rollback leaves immutable
+        directories recoverable as each lane's next orphan; counters roll back
+        with SQLite, so progress cannot report uncommitted work.
+        """
+        if not receipts:
+            return
+        if self.batching:
+            raise RuntimeError("Nested receipt batches are not allowed")
+        before = self.used, self.unit_count, self.skipped_count, deepcopy(self.totals)
+        self.batching = True
+        try:
+            with self.db:
+                for receipt in receipts:
+                    self.register(receipt)
+                self.select()
+        except BaseException:
+            self.used, self.unit_count, self.skipped_count, self.totals = before
+            raise
+        finally:
+            self.batching = False
 
     def check(self, key):
         """Return a frozen raw-event upper bound, never an economic label."""
@@ -198,7 +229,7 @@ class Catalog:
             ).fetchone()[0]
         ):
             raise ValueError("Cannot skip a stream that may contain a complete block")
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT OR REPLACE INTO stream_checks VALUES(?,?,?,?)",
                 (
@@ -225,7 +256,7 @@ class Catalog:
             if row[0] != receipt["hash"]:
                 raise ValueError("Conflicting publication identity")
             return
-        with self.db:
+        with self.transaction():
             self.db.execute(
                 "INSERT INTO units VALUES(?,?,?,?)",
                 (receipt["stream"], receipt["unit"], receipt["bytes"], receipt["hash"]),
@@ -244,7 +275,8 @@ class Catalog:
                 self.totals.setdefault((split, receipt["liquid"]), [0, 0])[0] += int(
                     count
                 )
-        self.select()
+        if not self.batching:
+            self.select()
 
     def select(self):
         """Commit balanced groups deterministically in publication order."""
@@ -257,7 +289,7 @@ class Catalog:
             groups = min(counts[0] // 3, counts[1])
             if not groups:
                 continue
-            with self.db:
+            with self.transaction():
                 for liquid, count in ((1, groups * 3), (0, groups)):
                     rows = self.db.execute(
                         "SELECT rowid FROM blocks WHERE split=? AND liquid=? AND selection IS NULL ORDER BY rowid LIMIT ?",
