@@ -14,6 +14,7 @@ from multiprocessing.util import Finalize
 from pathlib import Path
 
 from .producer import Gate, Worker, NoFullBlock, EndOfStream
+from .resource_priority import background
 
 _state = None
 
@@ -44,6 +45,7 @@ class DirectPublisher:
 def initialize(configuration, cancel, slots):
     """Load one frozen plan and resource gate per spawned extraction process."""
     global _state
+    background(configuration["background_workers"])
     root = Path(configuration["output"])
     plan = json.loads((root / "plan.json").read_text())
     gate = Gate(

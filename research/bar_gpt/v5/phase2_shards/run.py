@@ -47,6 +47,7 @@ def arguments():
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--io-workers", type=int, default=2)
     parser.add_argument("--process-workers", type=int, default=0)
+    parser.add_argument("--background-workers", action="store_true")
     parser.add_argument("--training-campaign")
     parser.add_argument("--validation-lanes", type=int, default=4)
     parser.add_argument("--receipt-batch-size", type=int, default=32)
@@ -139,7 +140,7 @@ def run(args):
         history / f"{int(execution['started'] * 1000)}-{os.getpid()}.json", execution
     )
     write_json(root / "execution.json", execution)
-    catalog = LedgerProcess(root)
+    catalog = LedgerProcess(root, args.background_workers)
     catalog.recover()
     telemetry = Telemetry(root, execution, args.wandb_mode, args.wandb_project)
     gate = Gate(
@@ -204,6 +205,7 @@ def run(args):
             workers=args.workers,
             io_workers=args.io_workers,
             process_workers=args.process_workers,
+            background_workers=args.background_workers,
             admission_lanes=training_guard.limit,
             training_guard=training_guard.reason,
             query_allowance_gib=(
