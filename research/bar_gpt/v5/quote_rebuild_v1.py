@@ -182,6 +182,45 @@ def statement(ticker, bounds, rules, frame, ends):
       [{','.join(masks)}] valid FROM joined ORDER BY end_us FORMAT ArrowStream"""
 
 
+def frozen_jobs(root, phase, parent):
+    """Read the dataset's own sealed inventory, including supplement layouts.
+
+    Liquid supplements intentionally link ordinal partitions without copying the
+    base manifest: their selected ticker/years live in supplement-plan.json.
+    Its full digest is bound by the supplement contract, so a missing base-style
+    manifest must never trigger rediscovery or a different universe.
+    """
+    import json
+
+    root = Path(root)
+    if phase == 1:
+        contract = parent["contract"]
+        if parent["binding"] != digest(contract):
+            raise ValueError("Frozen inventory parent contract seal changed")
+        supplement = contract.get("component") == "liquid-supplement"
+        if supplement:
+            plan = json.loads((root / "supplement-plan.json").read_text())
+            if digest(plan) != contract["plan_hash"]:
+                raise ValueError("Frozen supplement plan seal changed")
+        else:
+            plan = json.loads((root / "plan/manifest.json").read_text())
+    else:
+        supplement = False
+        plan = json.loads((root / "inventory/plan/manifest.json").read_text())
+    if not supplement:
+        expected = (
+            parent["contract"]["plan_hash"] if phase == 1 else parent["ordinal_hash"]
+        )
+        if plan["hash"] != expected or plan["hash"] != digest(
+            {k: v for k, v in plan.items() if k != "hash"}
+        ):
+            raise ValueError("Frozen ordinal manifest seal changed")
+    jobs = {j["ticker"]: j for j in plan["jobs"]}
+    if len(jobs) != len(plan["jobs"]) or not jobs:
+        raise ValueError("Frozen inventory has duplicate or missing tickers")
+    return jobs
+
+
 class Rebuilder:
     """Worker-owned transport and disk cache, bounded to <=4096 final rows/query.
 
@@ -203,10 +242,7 @@ class Rebuilder:
         self.actions = (
             self.authority["corporate_actions"] if phase == 1 else parent["actions"]
         )["rows"]
-        manifest = self.root / (
-            "plan/manifest.json" if phase == 1 else "inventory/plan/manifest.json"
-        )
-        self.jobs = {j["ticker"]: j for j in json.loads(manifest.read_text())["jobs"]}
+        self.jobs = frozen_jobs(self.root, phase, parent)
         self.bounds = OrderedDict()
         self.client = source.client(memory_gib=1)
         self.client.default_query_params["max_threads"] = 1
