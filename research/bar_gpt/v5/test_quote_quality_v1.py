@@ -118,6 +118,16 @@ def test_phase_one_rebuild_restores_high_instead_of_copying_close(tmp_path):
         np.testing.assert_array_equal(data[field], revised[field])
     np.testing.assert_array_equal(data["values"][..., :6], revised["values"][..., :6])
     assert np.load(path)["values"][0, 30, 13] == 170000
+    coverage = np.zeros(18, dtype=np.uint64)
+    buffered, buffered_counts = phase_one_payload(
+        tmp_path / "not-opened.npy",
+        "AAPX",
+        FakeRebuilder(),
+        serialized=path.read_bytes(),
+        coverage=coverage,
+    )
+    assert buffered == payload and buffered_counts == counts
+    np.testing.assert_array_equal(coverage, revised["valid"].sum(axis=(0, 1)))
 
 
 def test_packed_repair_preserves_all_non_quote_bytes(tmp_path):
@@ -266,3 +276,28 @@ def test_payload_io_restores_native_thread_priority_on_failure():
             assert kernel.GetThreadPriority(ctypes.c_void_p(-2)) != 0x7FFFFFFF
             raise RuntimeError("simulated payload read failure")
     assert kernel.GetThreadPriority(ctypes.c_void_p(-2)) == before
+
+
+def test_buffered_publication_still_verifies_source_and_target(tmp_path):
+    import hashlib
+
+    source, target = tmp_path / "source.bin", tmp_path / "target.bin"
+    original = b"original source"
+    source.write_bytes(original)
+    item = dict(
+        name=source.name,
+        bytes=len(original),
+        sha256=hashlib.sha256(original).hexdigest(),
+    )
+    with pytest.raises(ValueError, match="Source payload changed"):
+        publish_file(source, target, item, b"corrected", verified_source=b"wrong")
+    assert not target.exists()
+    saved, changed = publish_file(
+        source, target, item, b"corrected", verified_source=original
+    )
+    assert (
+        changed
+        and target.read_bytes() == b"corrected"
+        and source.read_bytes() == original
+    )
+    assert saved["sha256"] == hashlib.sha256(target.read_bytes()).hexdigest()

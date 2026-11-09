@@ -61,14 +61,14 @@ def safe_file(directory, name):
 
 
 @payload_io()
-def publish_file(source, target, original, payload=None):
+def publish_file(source, target, original, payload=None, *, verified_source=None):
     """Verify source, then hardlink unchanged bytes or fsync a distinct replacement.
 
     Existing hardlinks are never opened for writing. Atomic rename permits safe
     recovery of a task-owned .partial file after interruption. Returned metadata
     retains the source's array bounds and row counts with the new byte hash.
     """
-    data = source.read_bytes()
+    data = source.read_bytes() if verified_source is None else verified_source
     if (
         len(data) != original["bytes"]
         or hashlib.sha256(data).hexdigest() != original["sha256"]
@@ -97,18 +97,22 @@ def publish_file(source, target, original, payload=None):
     return item, changed
 
 
-def load_payload(path):
+def load_payload(path, serialized=None):
     """Fully read an NPY payload at background I/O priority; return its CPU array."""
+    if serialized is not None:
+        import io
+
+        return np.load(io.BytesIO(serialized), allow_pickle=False)
     with payload_io():
         return np.load(path, allow_pickle=False)
 
 
-def phase_one_payload(path, ticker, rebuilder):
+def phase_one_payload(path, ticker, rebuilder, *, serialized=None, coverage=None):
     """Audit SAMPLE[N,64,18]; return replacement bytes only when a bar is rejected."""
     import io
     from .shards.phase1_contract import SAMPLE_DTYPE
 
-    data = load_payload(path)
+    data = load_payload(path, serialized)
     if data.dtype != SAMPLE_DTYPE:
         raise ValueError("Unexpected phase-one record schema")
     from .shards.storage import adjust_splits
@@ -140,6 +144,8 @@ def phase_one_payload(path, ticker, rebuilder):
     revised["values"][..., 6:][~rebuild] = data["values"][..., 6:][~rebuild]
     revised["valid"][..., 6:][~rebuild] = data["valid"][..., 6:][~rebuild]
     values, masks, counts = sanitize(revised["values"], revised["valid"])
+    if coverage is not None:
+        coverage += masks.sum(axis=(0, 1), dtype=np.uint64)
     changed = np.any(values[..., 6:] != data["values"][..., 6:], axis=-1) | np.any(
         masks[..., 6:] != data["valid"][..., 6:], axis=-1
     )
@@ -167,7 +173,7 @@ def phase_one_payload(path, ticker, rebuilder):
     return buffer.getvalue(), counts
 
 
-def phase_two_payload(path, descriptors, ticker, rebuilder):
+def phase_two_payload(path, descriptors, ticker, rebuilder, *, serialized=None):
     """Audit every BAR segment in one <=16 MiB packed payload, preserving offsets.
 
     Decision indices, context clocks, padding bytes and unrelated descriptors
@@ -176,7 +182,7 @@ def phase_two_payload(path, descriptors, ticker, rebuilder):
     if path.suffix == ".npy":
         import io
 
-        data = load_payload(path)
+        data = load_payload(path, serialized)
         if data.dtype != BAR:
             return None, Counter()  # Decision arrays have no quote inputs.
         if len(descriptors) != 1:
@@ -210,8 +216,10 @@ def phase_two_payload(path, descriptors, ticker, rebuilder):
         return buffer.getvalue(), counts
     if not descriptors:
         return None, Counter()
-    with payload_io():
-        data = bytearray(path.read_bytes())
+    if serialized is None:
+        with payload_io():
+            serialized = path.read_bytes()
+    data = bytearray(serialized)
     totals = Counter()
     intervals = []
     for descriptor in descriptors:
@@ -289,17 +297,35 @@ def migrate_receipt(source, output, relative, binding, phase):
     rebuilder = LOCAL.rebuilder
     prior_metrics = rebuilder.metrics.copy()
     receipt, totals, changed_files = deepcopy(original), Counter(), 0
+    coverage = np.zeros(18, dtype=np.uint64)
     for item in receipt["files"]:
         src = safe_file((source / relative).parent, item["name"])
         dst = safe_file(target.parent, item["name"])
+        # Read/verify the original bytes ONCE, then decode and publish from that
+        # same buffer. Every target still receives independent SHA readback.
+        with payload_io():
+            serialized = src.read_bytes()
+            if (
+                len(serialized) != item["bytes"]
+                or hashlib.sha256(serialized).hexdigest() != item["sha256"]
+            ):
+                raise ValueError(f"Source payload changed: {src}")
         if phase == 1:
-            payload, counts = phase_one_payload(src, original["ticker"], rebuilder)
+            payload, counts = phase_one_payload(
+                src,
+                original["ticker"],
+                rebuilder,
+                serialized=serialized,
+                coverage=coverage,
+            )
         else:
             descriptors = [s for s in receipt["segments"] if s["name"] == item["name"]]
             payload, counts = phase_two_payload(
-                src, descriptors, original["ticker"], rebuilder
+                src, descriptors, original["ticker"], rebuilder, serialized=serialized
             )
-        revised, changed = publish_file(src, dst, item, payload)
+        revised, changed = publish_file(
+            src, dst, item, payload, verified_source=serialized
+        )
         item.update(revised)
         changed_files += int(changed)
         totals.update(counts)
@@ -311,14 +337,8 @@ def migrate_receipt(source, output, relative, binding, phase):
     else:
         receipt["binding"] = binding
         receipt["identity"] = digest([binding, original["identity"]])
-        # Recompute the small channel-coverage summary from final arrays.
-        receipt["valid_bars_by_channel"] = sum(
-            (
-                load_payload(target.parent / f["name"])["valid"].sum(axis=(0, 1))
-                for f in receipt["files"]
-            ),
-            start=np.zeros(18, dtype=np.uint64),
-        ).tolist()
+        # Sum the exact serialized masks in RAM instead of rereading every file.
+        receipt["valid_bars_by_channel"] = coverage.tolist()
     receipt["bytes"] = sum(f["bytes"] for f in receipt["files"])
     totals.update(rebuilder.metrics - prior_metrics)
     totals["payload_io_microseconds"] = getattr(TIMES, "microseconds", 0) - io_before
