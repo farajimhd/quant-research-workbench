@@ -38,8 +38,9 @@ def test_metadata_sharing_race_retries_without_hiding_persistent_failures(monkey
         module.metadata_io(corrupt)
 
 
+@pytest.mark.parametrize("transition", [False, True])
 def test_explicit_resume_retains_arguments_and_skips_qualification(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, transition
 ):
     parent = tmp_path / "train-03"
     parent.mkdir()
@@ -75,6 +76,16 @@ def test_explicit_resume_retains_arguments_and_skips_qualification(
         panel=True,
     )
     write_json(parent / "manifest.json", config)
+    if transition:
+        from research.bar_gpt.v5 import checkpoint_transition_v1
+
+        checkpoint = tmp_path / "prepared" / "checkpoint_prepared.pt"
+        checkpoint.parent.mkdir()
+        checkpoint.touch()
+        config["dataset"] = "repaired"
+        monkeypatch.setattr(
+            checkpoint_transition_v1, "resume_inputs", lambda *args: (parent, config)
+        )
     (parent / "STOP").write_text("Learning guard: persistent overfit")
     controller = Controller(
         SimpleNamespace(
@@ -82,6 +93,11 @@ def test_explicit_resume_retains_arguments_and_skips_qualification(
             source_revision="new",
             resume_training=checkpoint,
             overfit_patience=5,
+            data_transition_proof=(
+                checkpoint.parent / "checkpoint-preparation.json"
+                if transition
+                else None
+            ),
         )
     )
     calls = []
@@ -100,6 +116,9 @@ def test_explicit_resume_retains_arguments_and_skips_qualification(
     assert arguments[arguments.index("--resume") + 1] == str(checkpoint)
     assert arguments[arguments.index("--overfit-patience") + 1] == "5"
     assert arguments[arguments.index("--epochs") + 1] == "50"
+    assert arguments[arguments.index("--dataset") + 1] == (
+        "repaired" if transition else "sealed"
+    )
     assert (parent / "STOP").read_text() == "Learning guard: persistent overfit"
     (tmp_path / "STOP").write_text("Human stop")
     with pytest.raises(InterruptedError, match="Preserve"):

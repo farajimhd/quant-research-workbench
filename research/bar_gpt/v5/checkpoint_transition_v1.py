@@ -239,4 +239,88 @@ def prepare_reporting_identity(output, config, project):
         identity, signature=signature(config), quote_data_bridge=bridge["hash"]
     )
     persist(output, revised)
+    write_json(
+        output / "manifest.json",
+        dict(config, artifact_role="quote-data-transition-preparation"),
+    )
     return revised
+
+
+def resume_inputs(checkpoint, proof_path, campaign):
+    """Resolve a certified prepared copy to its original owned training attempt.
+
+    This explicit controller entry does not relax ordinary checkpoint ancestry.
+    It verifies file/state/bridge seals and actual loader inputs before returning
+    the original parent directory and future run arguments. No process starts.
+    """
+    from .data_transition_v1 import validate_contract
+    from .quote_repair_v1 import verify_seal
+    from .wandb_identity_v1 import read_identity, signature
+
+    checkpoint, proof_path = Path(checkpoint).resolve(strict=True), Path(
+        proof_path
+    ).resolve(strict=True)
+    campaign = Path(campaign).resolve(strict=True)
+    if proof_path != checkpoint.parent / "checkpoint-preparation.json":
+        raise ValueError("Explicit transition proof must accompany its checkpoint")
+    proof = json.loads(proof_path.read_text())
+    verify_seal(proof, "hash")
+    if (
+        proof.get("version") != "bargpt-quote-checkpoint-copy-v1"
+        or proof.get("state") != "prepared-not-activated"
+        or Path(proof["target"]).resolve() != checkpoint
+        or file_hash(checkpoint) != proof["target_sha256"]
+    ):
+        raise ValueError("Prepared checkpoint does not match its explicit proof")
+    parent = Path(proof["source"]).resolve(strict=True).parent
+    if (
+        parent.parent != campaign
+        or file_hash(proof["source"]) != proof["source_sha256"]
+    ):
+        raise ValueError("Transition parent must be intact in the owned campaign")
+    # The controller's lock excludes a second controller, but an orphaned old
+    # child may outlive its controller. Do not start a new data domain over it.
+    ledger = campaign / (parent.name + "-child.json")
+    if ledger.is_file():
+        import psutil
+
+        owner = json.loads(ledger.read_text())
+        try:
+            process = psutil.Process(owner["pid"])
+            if (
+                abs(process.create_time() - owner["created"]) < 1
+                and process.is_running()
+            ):
+                raise RuntimeError(
+                    "Previous owned trainer is still alive; drain it before transition"
+                )
+        except psutil.NoSuchProcess:
+            pass
+    config = json.loads((checkpoint.parent / "manifest.json").read_text())
+    bridge = json.loads((checkpoint.parent / "reporting-bridge.json").read_text())
+    verify_seal(bridge, "hash")
+    identity = read_identity(checkpoint.parent)
+    if (
+        config.get("artifact_role") != "quote-data-transition-preparation"
+        or Path(config["resume"]).resolve() != checkpoint
+        or bridge["preparation"] != proof["hash"]
+        or bridge["certificate"] != proof["certificate"]
+        or identity["quote_data_bridge"] != bridge["hash"]
+        or identity["signature"] != signature(config)
+        or bridge["target_signature"] != signature(config)
+        or any(
+            identity[key] != bridge["parent_identity"][key]
+            for key in ("id", "name", "project", "entity", "root")
+        )
+    ):
+        raise ValueError("Transition reporting ancestry differs from prepared metadata")
+    saved = torch.load(checkpoint, map_location="cpu", weights_only=False)
+    if state_hash(saved) != proof["prepared_state"]:
+        raise ValueError("Prepared checkpoint state differs from its sealed proof")
+    manifest = json.loads(Path(config["split_manifest"]).read_text())
+    calibration = json.loads(Path(config["calibration"]).read_text())
+    if Path(config["dataset"]).resolve() != Path(manifest["dataset"]).resolve():
+        raise ValueError("Transition loader root differs from its preparation")
+    current = {k: v for k, v in saved["contract"].items() if k != "data_transition"}
+    validate_contract(saved, current, manifest, calibration)
+    return parent, config

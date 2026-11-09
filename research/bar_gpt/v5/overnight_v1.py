@@ -296,6 +296,14 @@ class Controller:
         parent = checkpoint.parent
         if self.stopped():
             raise InterruptedError("Preserve the campaign STOP before resuming")
+        transition_proof = getattr(self.args, "data_transition_proof", None)
+        transition_config = None
+        if transition_proof:
+            from .checkpoint_transition_v1 import resume_inputs
+
+            parent, transition_config = resume_inputs(
+                checkpoint, transition_proof, self.root
+            )
         if parent.parent != self.root or not checkpoint.is_file():
             raise ValueError("Resume an existing checkpoint inside this campaign")
         import re
@@ -306,7 +314,7 @@ class Controller:
         marker = parent / "STOP"
         if marker.exists() and not marker.read_text().startswith("Learning guard:"):
             raise InterruptedError("Preserve the parent attempt's human STOP")
-        config = read(parent / "manifest.json")
+        config = transition_config or read(parent / "manifest.json")
         if config.get("mode") != "train" or config.get("scheduler") != "cosine":
             raise ValueError(
                 "Only the existing full cosine training campaign can resume"
@@ -694,11 +702,18 @@ def main(argv=None):
         help="Explicit retained checkpoint; skip already completed qualification",
     )
     parser.add_argument(
+        "--data-transition-proof",
+        type=Path,
+        help="Explicit sealed quote-data preparation proof; requires --resume-training",
+    )
+    parser.add_argument(
         "--overfit-patience",
         type=int,
         help="Override only the consecutive-validation overfit stop policy",
     )
     args = parser.parse_args(argv)
+    if args.data_transition_proof and not args.resume_training:
+        parser.error("A data-transition proof requires --resume-training")
     if args.overfit_patience is not None and (
         args.overfit_patience < 1 or not args.resume_training
     ):

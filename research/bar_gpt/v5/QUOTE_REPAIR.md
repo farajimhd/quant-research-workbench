@@ -191,3 +191,13 @@ checks remain intact; this helper neither contacts W&B nor starts a writer.
 Operational boundary activation and an actual-state native preparation proof
 remain required before any data switch. The live trainer stays pinned until the
 complete repaired cohort and bounded release audits are ready.
+
+The overnight controller accepts the explicit combination `--resume-training
+<prepared checkpoint> --data-transition-proof <checkpoint-preparation.json>`.
+The proof must accompany the copy; file/state hashes, original owned campaign
+parent, actual loader inputs and reporting bridge must verify before launch.
+The prepared manifest is marked as a preparation artifact, not a prior training
+attempt. Attempt numbering follows the retained original parent; ordinary resume
+ancestry and STOP checks remain unchanged. This entry does not drain a trainer:
+only use it after the previous owned controller/child have exited at a complete
+checkpoint boundary and after the repaired release audit has passed.

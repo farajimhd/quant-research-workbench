@@ -153,6 +153,14 @@ def test_explicit_reporting_bridge_preserves_original_remote_id_and_lease_root(
     assert resume_identity(config, "project") == revised
     assert json.loads((tmp_path / "wandb-identity.json").read_text()) == original
     assert (output / "reporting-bridge.json").is_file()
+    parent, resumed_config = migration.resume_inputs(
+        config["resume"], output / "checkpoint-preparation.json", tmp_path.parent
+    )
+    assert parent == tmp_path and resumed_config["dataset"] == config["dataset"]
+    with pytest.raises(ValueError, match="owned campaign"):
+        migration.resume_inputs(
+            config["resume"], output / "checkpoint-preparation.json", tmp_path
+        )
     with pytest.raises(FileExistsError):
         migration.prepare_reporting_identity(output, config, "project")
 
@@ -170,3 +178,22 @@ def test_reporting_bridge_rejects_hyperparameter_or_loader_drift(tmp_path):
     with pytest.raises(ValueError, match="actual loader split"):
         migration.prepare_reporting_identity(output, config, "project")
     assert not (output / "wandb-identity.json").exists()
+
+
+def test_transition_refuses_a_still_live_parent_child(tmp_path):
+    """A dead controller's orphan child must not compete with migrated training."""
+    import psutil
+
+    campaign = tmp_path / "campaign"
+    parent = campaign / "train-05"
+    parent.mkdir(parents=True)
+    output, config, _ = reporting_fixture(parent)
+    migration.prepare_reporting_identity(output, config, "project")
+    process = psutil.Process()
+    (campaign / "train-05-child.json").write_text(
+        json.dumps(dict(pid=process.pid, created=process.create_time()))
+    )
+    with pytest.raises(RuntimeError, match="still alive"):
+        migration.resume_inputs(
+            config["resume"], output / "checkpoint-preparation.json", campaign
+        )
