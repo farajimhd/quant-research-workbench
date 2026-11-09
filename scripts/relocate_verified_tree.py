@@ -163,6 +163,7 @@ class Relocation:
         self.last = now
         value = dict(stage=self.stage, active=self.active, completed_this_stage=self.completed,
                      queued_at_stage_start=self.queue_total, verified_bytes_this_stage=self.verified_bytes,
+                     workers=self.workers,
                      failures=self.failures[-12:], failed=len(self.failures), elapsed_seconds=round(now-self.started,1),
                      updated=now, roots=self.state['roots'])
         write_json(self.output/'progress.json', value)
@@ -294,6 +295,11 @@ class Relocation:
         if check_hash and kind=='file' and hash_file(path)!=digest:
             raise RuntimeError('File hash changed: '+str(path))
 
+    def check_pair(self, index, source, destination, row):
+        # Read-only workers finish both checks before the controller can cut over.
+        self.check_entry(index,source,row,check_hash=True)
+        self.check_entry(index,destination,row,check_hash=True)
+
     def finalize(self):
         # The owning operator must stop writers before this stage. Backup performs
         # a fresh full inventory and re-verifies every new or changed source entry.
@@ -305,11 +311,15 @@ class Relocation:
             state=self.state['roots'].setdefault(str(index),{})
             if state.get('phase')=='complete':continue
             destination,old=self.destination(index),self.retiring(index)
-            self.stage='Validate and retire';self.active=source.name;self.completed=0;self.queue_total=self.db.execute('SELECT count(*) FROM entries WHERE root=?',(index,)).fetchone()[0]
+            self.stage='Validate and retire';self.active=source.name;self.completed=0;self.verified_bytes=0;self.queue_total=self.db.execute('SELECT count(*) FROM entries WHERE root=?',(index,)).fetchone()[0]
             if state.get('phase')!='cutover':
-                for row in self.db.execute('SELECT rel,kind,size,mtime,target,digest FROM entries WHERE root=?',(index,)):
-                    self.check_entry(index,source,row,check_hash=True);self.check_entry(index,destination,row,check_hash=True)
-                    self.completed+=1;self.publish()
+                cursor=self.db.execute('SELECT rel,kind,size,mtime,target,digest FROM entries WHERE root=?',(index,))
+                with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                    while rows:=cursor.fetchmany(128):
+                        checks=[pool.submit(self.check_pair,index,source,destination,row) for row in rows]
+                        for row,check in zip(rows,checks):
+                            check.result()
+                            self.completed+=1;self.verified_bytes+=row[2];self.publish()
                 # Persist intent before the rename, so interruption is recoverable.
                 state.update(phase='cutover_intent',source=str(source),destination=str(destination),retiring=str(old));self.save()
                 os.rename(native(source),native(old))
@@ -323,7 +333,7 @@ class Relocation:
                 state['phase']='cutover';self.save()
             if not self.aliases_valid(index) or not old.is_dir() or old.resolve()!=old:
                 raise RuntimeError('Cutover paths do not match the sealed plan')
-            self.stage='Remove verified D copy';self.completed=0;self.publish(True)
+            self.stage='Remove verified D copy';self.completed=0;self.verified_bytes=0;self.publish(True)
             for row in self.db.execute("SELECT rel,kind,size,mtime,target,digest FROM entries WHERE root=? AND kind<>'dir'",(index,)):
                 rel,kind,*_=row;path=old/rel
                 if not os.path.lexists(native(path)):continue
@@ -335,7 +345,7 @@ class Relocation:
                     if os.name=='nt' and not os.stat(native(path),follow_symlinks=False).st_mode&stat.S_IWRITE:
                         os.chmod(native(path),stat.S_IWRITE)
                     os.unlink(native(path))
-                self.completed+=1;self.publish()
+                self.completed+=1;self.verified_bytes+=row[2];self.publish()
             # Remove only empty real directories, never traverse a reparse point.
             stack=[(old,False)]
             while stack:
@@ -359,7 +369,7 @@ def main():
     parser.add_argument('--writers-quiesced',action='store_true')
     parser.add_argument('--exclude-backtests',action='store_true',help='Use a separate journal/archive for only level books, fundamentals and market data')
     parser.add_argument('--exclude-level-book',action='store_true',help='Exclude level-book data from this separately journaled archive')
-    parser.add_argument('--workers',type=int,default=4)
+    parser.add_argument('--workers',type=int,default=4,help='Concurrent copy and final hash checks (1..8)')
     args=parser.parse_args()
     if os.name!='nt':parser.error('Workstation Windows only')
     if os.environ.get('COMPUTERNAME','').upper()!='DESKTOP-SAAI85T':parser.error('Run on DESKTOP-SAAI85T workstation only')

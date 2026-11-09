@@ -148,3 +148,26 @@ def test_pending_batch_does_not_scan_completed_prefix(tmp_path):
     assert [r[1] for r in rows]==['zz-pending']
     assert len(calls)<10  # Less than 1,000 VM instructions regardless of 10k completed rows.
     j.db.close()
+
+
+def test_parallel_hash_checks_finish_before_any_cutover(tmp_path,monkeypatch):
+    import threading
+    j,source=job(tmp_path);j.backup()
+    original=j.check_entry;install=j.install_aliases
+    gate=threading.Barrier(2);lock=threading.Lock();checked=set()
+    expected={(str(root),rel) for root in (source,j.destination(0))
+              for rel, in j.db.execute("SELECT rel FROM entries WHERE root=0")}
+    def observe(index,root,row,check_hash=False):
+        if root==source and row[1]=='file':gate.wait(timeout=5)
+        original(index,root,row,check_hash)
+        if check_hash:
+            with lock:checked.add((str(root),row[0]))
+    def cutover(index):
+        assert checked==expected
+        install(index)
+    monkeypatch.setattr(j,'check_entry',observe)
+    monkeypatch.setattr(j,'install_aliases',cutover)
+    j.finalize()
+    assert source.resolve()==j.destination(0).resolve()
+    assert not j.retiring(0).exists()
+    j.db.close()
