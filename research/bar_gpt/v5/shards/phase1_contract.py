@@ -7,6 +7,7 @@ and split. Nine UTC features are appended later by the Torch input transform.
 """
 
 import numpy as np
+from research.bar_gpt.v5.quote_quality_v1 import sanitize
 from .contract import FRAMES, WIDTH, digest, file_hash, seed_for, write_json
 
 VERSION = "bargpt-ordinal-balanced-64-v6-no-halts"
@@ -33,6 +34,7 @@ SAMPLE_DTYPE = np.dtype(
 
 def pack(values, valid, ends, frame, split):
     """Copy complete final arrays [N,64,18] into the mmap-ready v6 record dtype."""
+    values, valid, _ = sanitize(values, valid)
     if (
         values.shape[1:] != (WIDTH, MARKET_CHANNELS)
         or valid.shape != values.shape

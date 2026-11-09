@@ -11,7 +11,13 @@ from ..shards import source
 
 # A changed aggregate expression requires an explicit new contract, not an
 # unrecorded fallback to another bar implementation.
-PRODUCERS = ("bar_semantics_v1.py", "shards/range_sql.py", "shards/phase1_contract.py")
+PRODUCERS = (
+    "bar_semantics_v1.py",
+    "shards/range_sql.py",
+    "shards/phase1_contract.py",
+    "shards/origin_samples.py",
+    "quote_quality_v1.py",
+)
 
 
 def freeze(root, parent, revision, endpoint=None):
@@ -22,6 +28,9 @@ def freeze(root, parent, revision, endpoint=None):
     Raising the mutable two-TB execution limit never changes these identities.
     """
     root, parent = Path(root), Path(parent)
+    from ..quote_repair_v1 import require_complete
+
+    require_complete(root)
     root.mkdir(parents=True, exist_ok=True)
     final = root / "plan.json"
     if final.exists():
@@ -79,6 +88,8 @@ def freeze(root, parent, revision, endpoint=None):
         "bar_semantics_v1.py": "research.bar_gpt.v5.bar_semantics_v1",
         "shards/range_sql.py": "range_sql.py",
         "shards/phase1_contract.py": "phase1_contract.py",
+        "shards/origin_samples.py": "origin_samples.py",
+        "quote_quality_v1.py": "research.bar_gpt.v5.quote_quality_v1",
     }
     for name, actual in code.items():
         if parent_code.get(parent_keys[name]) != actual:

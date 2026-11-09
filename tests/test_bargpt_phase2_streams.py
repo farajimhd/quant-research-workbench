@@ -155,7 +155,8 @@ def test_selection_adapter_changes_only_explicit_boundaries():
     from research.bar_gpt.v5.shards.sql import clock
 
     rows = [dict(source_date="2023-06-01", first_ordinal=0, next_ordinal=100)]
-    original = range_query("AAPL", rows, [], 0, 100)
+    rules = [dict(source_family="quote_conditions", token_id=3, modifier_int=1)]
+    original = range_query("AAPL", rows, rules, 0, 100)
     expected = original.replace(
         "[100000,1000000,10000000,60000000]", "[1000000,10000000,60000000]"
     )
@@ -167,4 +168,4 @@ def test_selection_adapter_changes_only_explicit_boundaries():
         "(SELECT maxIf(sip_timestamp_us,core=1) FROM decoded)",
         str(clock("2023-06-01", 20)),
     )
-    assert query("AAPL", rows, []) == expected
+    assert query("AAPL", rows, rules) == expected

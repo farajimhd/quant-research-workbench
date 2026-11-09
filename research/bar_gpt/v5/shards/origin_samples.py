@@ -5,6 +5,7 @@ import numpy as np
 
 from .phase1_contract import FRAMES, SAMPLE_DTYPE, pack, seed_for
 from .storage import adjust_splits
+from research.bar_gpt.v5.quote_quality_v1 import sanitize
 
 CUTOFF = int(datetime(2025, 10, 1, 4, tzinfo=timezone.utc).timestamp() * 1_000_000)
 
@@ -13,6 +14,9 @@ def arrays(frame):
     """Convert final Arrow list columns to contiguous [bars,18] CPU arrays."""
     values = frame["values"].list.to_array(18).to_numpy().astype(np.float32, copy=False)
     valid = frame["valid"].list.to_array(18).to_numpy().astype(np.uint8, copy=False)
+    # One shared final-bar policy serves phase one and phase two. Quarantine
+    # happens before packing/caching, so no rejected quote enters a saved tail.
+    values, valid, _ = sanitize(values, valid)
     ends = frame["end_us"].to_numpy().astype(np.int64, copy=False)
     if (
         not np.isfinite(values).all()

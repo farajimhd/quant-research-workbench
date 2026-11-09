@@ -53,6 +53,9 @@ def members(root: Path, require_all=False):
                 f"Cohort member {name} is not published yet; wait for the queued supplement"
             )
         if require_all:
+            from .quote_repair_v1 import require_complete
+
+            require_complete(target)
             result_path = target / "result.json"
             completion = (
                 json.loads(result_path.read_text()) if result_path.exists() else {}

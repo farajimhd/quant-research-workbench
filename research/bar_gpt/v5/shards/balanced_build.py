@@ -36,6 +36,7 @@ from .range_sql import range_query
 from .sql import clock
 from .storage import BAR_DTYPE, Budget, publish, verify_receipt
 from research.bar_gpt.v5 import bar_semantics_v1
+from research.bar_gpt.v5 import quote_quality_v1
 from pipelines.market_sip.events import market_day_sql
 
 NY = ZoneInfo("America/New_York")
@@ -534,7 +535,7 @@ def main(argv=None):
     contract["code"].update(
         {
             module.__name__: file_hash(Path(module.__file__))
-            for module in (bar_semantics_v1, market_day_sql)
+            for module in (bar_semantics_v1, market_day_sql, quote_quality_v1)
         }
     )
     binding = digest(contract)
