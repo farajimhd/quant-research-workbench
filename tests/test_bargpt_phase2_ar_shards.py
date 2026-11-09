@@ -448,3 +448,28 @@ def test_selection_tamper_cannot_be_resealed(tmp_path):
     with pytest.raises(ValueError, match="selection changed"):
         cat.export("binding")
     cat.db.close()
+
+
+def test_origin_coverage_cannot_silently_drop_records(tmp_path):
+    cat = Catalog(tmp_path)
+    cat.register(
+        tmp_path / "A",
+        dict(
+            ticker="A",
+            month="2023-01",
+            hash="a",
+            bytes=0,
+            liquid=1,
+            splits=[],
+            blocks=0,
+            stats=dict(
+                source_origins=10,
+                warmup_deferred=4,
+                boundary_tail_deferred=0,
+                pending_origins=5,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="coverage does not reconcile"):
+        cat.stats()
+    cat.db.close()

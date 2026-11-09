@@ -393,9 +393,19 @@ class Catalog:
         self.totals["selected_blocks"] = order
 
     def stats(self):
+        tails = sum(p[1] for p in self.tails.values())
+        accounted = (
+            self.totals["candidate_blocks"] * BLOCK
+            + tails
+            + self.totals["warmup_deferred"]
+            + self.totals["boundary_tail_deferred"]
+        )
+        if accounted != self.totals["source_origins"]:
+            raise ValueError("Source origin coverage does not reconcile")
         return dict(
             self.totals,
-            pending_tail_origins=sum(p[1] for p in self.tails.values()),
+            pending_tail_origins=tails,
+            reconciled_source_origins=accounted,
             selected_origins=self.order * BLOCK,
             unselected_complete_blocks=self.totals["candidate_blocks"] - self.order,
         )
