@@ -5,7 +5,7 @@ with a quote-only projection, avoiding full fine-trade bar materialization.
 Only final aggregates cross ClickHouse. No historical flatfile is consulted.
 """
 
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
@@ -15,7 +15,7 @@ import numpy as np
 
 from .quote_quality_v1 import condition_sql
 from .shards import source
-from .shards.contract import digest
+from .shards.contract import digest, file_hash
 from .shards.range_sql import event_source
 from .shards.sql import clock
 
@@ -178,8 +178,15 @@ class Rebuilder:
         from .quote_quality_v1 import POLICY
 
         self.binding = digest(
-            [POLICY, bar_semantics_v1.CONTRACT, self.authority["dictionary_hash"]]
+            [
+                POLICY,
+                bar_semantics_v1.CONTRACT,
+                self.authority["dictionary_hash"],
+                file_hash(Path(__file__)),
+                file_hash(Path(bar_semantics_v1.__file__)),
+            ]
         )
+        self.metrics = Counter()
 
     def close(self):
         """Release both private transports and the cache handle after drain."""
@@ -225,10 +232,20 @@ class Rebuilder:
                 )
                 intervals = table.to_dicts()
                 with self.db:
-                    self.db.execute(
+                    inserted = self.db.execute(
                         "INSERT OR IGNORE INTO intervals VALUES(?,?,?,?)",
                         (self.binding, ticker, str(day), json.dumps(intervals)),
                     )
+                    if inserted.rowcount:
+                        self.metrics["canonical_sessions_catalogued"] += 1
+                        for name in (
+                            "changed_messages",
+                            "zero_size_messages",
+                            "condition_messages",
+                        ):
+                            self.metrics["canonical_" + name] += sum(
+                                int(row[name]) for row in intervals
+                            )
             positions = np.flatnonzero(dates == day)
             clocks = unique[positions]
             starts = (

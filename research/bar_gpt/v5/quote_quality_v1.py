@@ -45,6 +45,7 @@ REJECTED_QUOTE_MODIFIERS = (
     84,
     89,
 )
+POLICY["rejected_quote_modifiers"] = list(REJECTED_QUOTE_MODIFIERS)
 
 
 def condition_sql(rules):

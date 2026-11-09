@@ -268,6 +268,7 @@ def migrate_receipt(source, output, relative, binding, phase):
         with BUILDERS_LOCK:
             BUILDERS.append(LOCAL.rebuilder)
     rebuilder = LOCAL.rebuilder
+    prior_metrics = rebuilder.metrics.copy()
     receipt, totals, changed_files = deepcopy(original), Counter(), 0
     for item in receipt["files"]:
         src = safe_file((source / relative).parent, item["name"])
@@ -302,6 +303,7 @@ def migrate_receipt(source, output, relative, binding, phase):
             start=np.zeros(18, dtype=np.uint64),
         ).tolist()
     receipt["bytes"] = sum(f["bytes"] for f in receipt["files"])
+    totals.update(rebuilder.metrics - prior_metrics)
     receipt["quote_repair"] = dict(
         policy=POLICY,
         parent_receipt=original[key],
@@ -317,6 +319,11 @@ def prepare(source, output, phase, revision):
     """Bind an immutable parent and explicit quality policy; never mutate it in place."""
     base = Path(__file__).resolve().parent
     parent = read_json(source / ("contract.json" if phase == 1 else "plan.json"))
+    if phase == 1:
+        if parent["binding"] != digest(parent["contract"]):
+            raise ValueError("Parent dataset contract seal mismatch")
+    else:
+        verify_seal(parent, "hash")
     identity = dict(
         source=str(source.resolve()), parent=digest(parent), phase=phase, policy=POLICY
     )
