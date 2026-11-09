@@ -72,11 +72,22 @@ def test_condition_namespace_keeps_valid_corrections():
 
 def test_neighbor_spike_is_diagnostic_and_not_a_future_filter():
     values, valid = good()
-    # An isolated 11x quote is suspicious temporally but inside the deliberately
-    # conservative 100x causal gate. Neighbor evidence alone must not alter it.
+    # A legitimate market jump is large temporally; contemporaneous trade prices
+    # confirm it. Future neighbor evidence alone must not quarantine the bar.
+    values[30, 0:4] = 110
+    values[30, 6:10] = 110
     values[30, 12:16] = 110
-    assert neighbor_spikes(values, valid).sum() == 1
+    assert neighbor_spikes(values, valid).sum() == 0
     assert sanitize(values, valid)[2]["quarantined"] == 0
+
+
+def test_cpac_eleven_fold_ask_is_rejected_without_future_input():
+    values, valid = good()
+    values[30, 12:16] = [110, 117.7, 10, 10]
+    clean, masks, counts = sanitize(values, valid)
+    assert counts["extreme_trade_distance"] == 1 and counts["quarantined"] == 1
+    assert not masks[30, 6:].any()
+    np.testing.assert_array_equal(clean[:, :6], values[:, :6])
 
 
 class FakeRebuilder:

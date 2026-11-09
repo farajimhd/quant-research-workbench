@@ -6,7 +6,7 @@ unknown evidence: all twelve quote values AND masks become zero. Trade values,
 sample clocks, origin selection and corporate-action factors are unchanged.
 There is deliberately no clock-age cutoff and no forward/future reference.
 
-The 100-fold guard is a conservative quarantine threshold, not a claim that a
+The ten-fold guard is a conservative quarantine threshold, not a claim that a
 wide positive-size market is necessarily erroneous. Its false positives remain
 reviewable in the original payload. This policy cannot certify that every
 plausible-looking source error has been detected.
@@ -15,8 +15,8 @@ plausible-looking source error has been detected.
 import numpy as np
 
 POLICY = dict(
-    version="bargpt-paired-quote-quarantine-v1",
-    maximum_price_multiple=100.0,
+    version="bargpt-paired-quote-quarantine-v2",
+    maximum_price_multiple=10.0,
     action="zero and mask both quote families; retain original immutable payload",
     reference="same completed bar trade low/high; invariant to common split adjustment",
     carry="unchanged session carry; no added age cutoff",
@@ -47,6 +47,13 @@ REJECTED_QUOTE_MODIFIERS = (
 POLICY["rejected_quote_modifiers"] = list(REJECTED_QUOTE_MODIFIERS)
 POLICY["condition_slots"] = (
     "quote conditions in slots 1..4; slot 5 is a separate indicator namespace"
+)
+SOURCE_POLICY = dict(
+    version="bargpt-quote-event-evidence-v1",
+    rejected_quote_modifiers=list(REJECTED_QUOTE_MODIFIERS),
+    condition_slots=POLICY["condition_slots"],
+    sizes="both finite and strictly positive",
+    pair="positive and noncrossed; invalid update clears carry",
 )
 
 
@@ -156,7 +163,7 @@ def sanitize(values, valid):
 def neighbor_spikes(values, valid, multiple=10.0):
     """Return offline-only isolated-spike flags [...,bars] on a common share basis.
 
-    Compare each interior quote price against BOTH adjacent observed bars of the
+    Compare quote/trade price ratios against BOTH adjacent observed bars of the
     same ticker/timeframe. Never use this future-dependent result as an input
     filter: condition/source reconstruction and causal gates make that decision.
     Cross-split raw arrays must first be adjusted to one basis by the caller.
@@ -168,7 +175,11 @@ def neighbor_spikes(values, valid, multiple=10.0):
     if values.shape[-2] < 3:
         return result
     for column in (6, 7, 8, 9, 12, 13, 14, 15):
-        prices, masks = values[..., column], valid[..., column].astype(bool)
+        trade_column = (column - 6) % 6
+        quote = values[..., column]
+        trade = values[..., trade_column]
+        prices = np.divide(quote, trade, out=np.zeros_like(quote), where=trade > 0)
+        masks = valid[..., column].astype(bool) & valid[..., trade_column].astype(bool)
         previous, current, following = (
             prices[..., :-2],
             prices[..., 1:-1],

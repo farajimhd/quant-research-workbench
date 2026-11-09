@@ -213,14 +213,14 @@ class Rebuilder:
         self.db = sqlite3.connect(cache, timeout=60, check_same_thread=False)
         with CACHE_WRITER:
             self.db.executescript(
-                "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS quotes(binding TEXT,ticker TEXT,frame INTEGER,end INTEGER,payload BLOB,PRIMARY KEY(binding,ticker,frame,end)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS intervals(binding TEXT,ticker TEXT,day TEXT,payload TEXT,PRIMARY KEY(binding,ticker,day)) WITHOUT ROWID;"
+                "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS quotes(binding TEXT,ticker TEXT,frame INTEGER,end INTEGER,payload BLOB,PRIMARY KEY(binding,ticker,frame,end)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS intervals(binding TEXT,ticker TEXT,day TEXT,payload TEXT,PRIMARY KEY(binding,ticker,day)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS cache_aliases(parent TEXT,child TEXT,PRIMARY KEY(parent,child)) WITHOUT ROWID;"
             )
         from . import bar_semantics_v1
-        from .quote_quality_v1 import POLICY
+        from .quote_quality_v1 import SOURCE_POLICY
 
         self.binding = digest(
             [
-                POLICY,
+                SOURCE_POLICY,
                 bar_semantics_v1.CONTRACT,
                 self.authority["dictionary_hash"],
                 digest(
@@ -233,6 +233,46 @@ class Rebuilder:
             ]
         )
         self.metrics = Counter()
+        # The old cache also hashed the final bar guard. Raw source aggregates
+        # do not depend on that guard. Alias only the EXACT previous source SQL,
+        # dictionary and condition policy, avoiding a repeat of canonical reads.
+        from .quote_quality_v1 import POLICY
+
+        legacy = dict(
+            POLICY,
+            version="bargpt-paired-quote-quarantine-v1",
+            maximum_price_multiple=100.0,
+        )
+        parent = digest(
+            [
+                legacy,
+                bar_semantics_v1.CONTRACT,
+                self.authority["dictionary_hash"],
+                digest(
+                    [
+                        inspect.getsource(statement),
+                        inspect.getsource(interval_statement),
+                    ]
+                ),
+                file_hash(Path(bar_semantics_v1.__file__)),
+            ]
+        )
+        with CACHE_WRITER, self.db:
+            if not self.db.execute(
+                "SELECT 1 FROM cache_aliases WHERE parent=? AND child=?",
+                (parent, self.binding),
+            ).fetchone():
+                self.db.execute(
+                    "INSERT OR IGNORE INTO intervals SELECT ?,ticker,day,payload FROM intervals WHERE binding=?",
+                    (self.binding, parent),
+                )
+                self.db.execute(
+                    "INSERT OR IGNORE INTO quotes SELECT ?,ticker,frame,end,payload FROM quotes WHERE binding=?",
+                    (self.binding, parent),
+                )
+                self.db.execute(
+                    "INSERT INTO cache_aliases VALUES(?,?)", (parent, self.binding)
+                )
 
     def close(self):
         """Release both private transports and the cache handle after drain."""

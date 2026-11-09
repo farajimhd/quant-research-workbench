@@ -25,6 +25,7 @@ DATASETS = (
     ("phase1-liquid500", "shards-2019-2025-v6-liquid500-v2"),
     ("phase2", "phase2-streams-v1"),
 )
+SUFFIX = "-quote-v2"
 
 
 class RepairTelemetry(Telemetry):
@@ -59,21 +60,21 @@ def status(path):
 def cohort(root):
     """Seal sibling repaired members without changing the old cohort manifest."""
     for _, name in DATASETS[:2]:
-        require_complete(root / (name + "-quote-v1"))
+        require_complete(root / (name + SUFFIX))
     old = status(root / "phase1-v6-cohort/cohort.json")
     body = dict(old["cohort"])
-    body["cohort_id"] += "-quote-v1"
+    body["cohort_id"] += SUFFIX
     body["members"] = [
-        dict(name=item["name"], path="../" + DATASETS[i][1] + "-quote-v1")
+        dict(name=item["name"], path="../" + DATASETS[i][1] + SUFFIX)
         for i, item in enumerate(body["members"])
     ]
     wrapper = dict(cohort=body, hash=digest(body))
-    path = root / "phase1-v6-cohort-quote-v1/cohort.json"
+    path = root / "phase1-v6-cohort-quote-v2/cohort.json"
     path.parent.mkdir(exist_ok=True)
     write_json(path, wrapper)
     # An explicit manifest in the new base lets existing readers discover the
     # new family; relative member paths resolve identically from either parent.
-    write_json(root / (DATASETS[0][1] + "-quote-v1") / "cohort.json", wrapper)
+    write_json(root / (DATASETS[0][1] + SUFFIX) / "cohort.json", wrapper)
     return path
 
 
@@ -107,6 +108,7 @@ def main():
         pid=os.getpid(),
         started=time.time(),
         revision=args.source_revision,
+        policy_suffix=SUFFIX,
         datasets=[],
     )
     telemetry = RepairTelemetry(
@@ -116,13 +118,14 @@ def main():
             root=str(args.root),
             workers=args.workers,
             source_revision=args.source_revision,
+            data_quality=SUFFIX,
         ),
         project="bargpt-quote-repair-v1",
     )
     snapshot["wandb_url"] = telemetry.url
     for label, name in DATASETS:
         snapshot["datasets"].append(
-            dict(name=label, root=name + "-quote-v1", state="queued")
+            dict(name=label, root=name + SUFFIX, state="queued")
         )
     write_json(setup / "execution.json", snapshot)
     for index, (label, name) in enumerate(DATASETS):
@@ -141,7 +144,7 @@ def main():
                         preserve_optimizer_scheduler=True,
                     ),
                 )
-        target = args.root / (name + "-quote-v1")
+        target = args.root / (name + SUFFIX)
         result = target / "repair-result.json"
         if result.exists():
             require_complete(target)

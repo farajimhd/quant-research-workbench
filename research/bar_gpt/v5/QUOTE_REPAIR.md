@@ -18,7 +18,7 @@ The failed unreleased attempt is retained separately and must not enter training
 Documentation: https://massive.com/glossary/conditions-indicators
 
 The final-bar policy additionally quarantines nonfinite/nonpositive fields,
-inconsistent OHLC/counts, crossed closes and 100-fold trade-distance/spread
+inconsistent OHLC/counts, crossed closes and ten-fold trade-distance/spread
 violations. Quarantine masks both quote families and never fabricates a price.
 The threshold is a conservative model-quality policy, not a proof that every
 wide market is wrong. Neighbor comparisons are offline diagnostics only; no
@@ -35,9 +35,15 @@ complete. A pilot never publishes a complete release.
 
 Example (native workstation, committed immutable source snapshot):
 
+The current targets have the suffix `-quote-v2`; the stopped partial `-quote-v1`
+attempt remains evidence only. CPAC 2019-04-09 had an ask high near $117.70 against
+trades near $10: this demonstrated that the initial 100-fold guard was too loose.
+The v2 ten-fold guard catches it causally. Neighbor diagnostics use quote/trade
+ratios so genuine market price jumps are distinguished from dislocated quotes.
+
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
-python -B -m research.bar_gpt.v5.quote_repair_v1 --source D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v6 --output D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v6-quote-v1 --source-revision <commit> --workers 2
+python -B -m research.bar_gpt.v5.quote_repair_v1 --source D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v6 --output D:/TradingML/runtimes/bar_gpt/shards-2019-2025-v6-quote-v2 --source-revision <commit> --workers 8
 ```
 
 The supplement and phase-two roots need separate sibling outputs. Preserve the

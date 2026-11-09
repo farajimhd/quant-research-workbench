@@ -38,7 +38,9 @@ def render(state, width=100):
         or "Original shards retained. Source rejects and bar occurrences are counted separately."
     )
     return Panel(
-        Group(summary, table, details), title="BarGPT quote repair", width=width
+        Group(summary, table, details),
+        title=("BarGPT quote repair " + state.get("policy_suffix", "")).strip(),
+        width=width,
     )
 
 
