@@ -1,6 +1,7 @@
 """Read-only repair campaign panel; no dataset scans or mutation on refresh."""
 
 import argparse
+from collections import deque
 import json
 from pathlib import Path
 import time
@@ -10,6 +11,34 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+
+
+class RecentRate:
+    """Rates use durable receipt deltas, reset across admission/domain changes."""
+
+    def __init__(self):
+        self.key = None
+        self.samples = deque(maxlen=64)
+
+    def update(self, item):
+        key = (item.get("root"), item.get("admission_lanes"), item.get("state"))
+        sample = (item.get("updated", 0), item.get("completed", 0))
+        if key != self.key or (
+            self.samples
+            and (sample[0] < self.samples[-1][0] or sample[1] < self.samples[-1][1])
+        ):
+            self.samples.clear()
+        self.key = key
+        if not self.samples or sample[0] > self.samples[-1][0]:
+            self.samples.append(sample)
+        while len(self.samples) > 2 and sample[0] - self.samples[1][0] >= 60:
+            self.samples.popleft()
+        elapsed = sample[0] - self.samples[0][0]
+        return (
+            ((sample[1] - self.samples[0][1]) / elapsed, elapsed)
+            if elapsed >= 10
+            else None
+        )
 
 
 def render(state, width=100):
@@ -41,6 +70,18 @@ def render(state, width=100):
     )
     if freshness > 30:
         summary.append(" | STALE", style="bold red")
+    active = next(
+        (item for item in state.get("datasets", []) if "admission_lanes" in item), None
+    )
+    if active:
+        summary.append(
+            f"\nWorkers {active.get('active', 0)}/{active['admission_lanes']} active/admitted"
+        )
+        rate = state.get("recent_rate")
+        if rate:
+            summary.append(f" | {rate[0]:.1f} receipts/s over {rate[1]:.0f}s")
+        else:
+            summary.append(" | measuring recent rate")
     details = Text(
         state.get("failure")
         or "Original shards retained. Source rejects and bar occurrences are counted separately."
@@ -63,6 +104,7 @@ def main():
     args = parser.parse_args()
     console = Console()
     previous = None
+    rate = RecentRate()
     with Live(
         console=console, auto_refresh=False, screen=False, vertical_overflow="crop"
     ) as live:
@@ -74,6 +116,16 @@ def main():
                 state = dict(state="waiting for campaign evidence", updated=0)
             signature = json.dumps(state, sort_keys=True)
             if signature != previous:
+                active = next(
+                    (
+                        item
+                        for item in state.get("datasets", [])
+                        if "admission_lanes" in item
+                    ),
+                    None,
+                )
+                if active:
+                    state["recent_rate"] = rate.update(active)
                 live.update(render(state, min(console.width, 120)), refresh=True)
                 previous = signature
             if not console.is_terminal or state.get("state") in (
