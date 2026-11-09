@@ -176,5 +176,18 @@ before new-domain history exists; subsequent resumes retain it. Old-domain
 history remains separate. CPU orchestration tests exercise the normal path,
 transition, baseline completion interruption and another resume with empty
 new-domain history. This is NOT activated in the live pinned trainer.
-Audited checkpoint serialization/state-hash evidence, W&B identity bridging and
-native boundary activation remain required before any operational data switch.
+`checkpoint_transition_v1.prepare_copy` writes an independent checkpoint in a
+new runtime directory, fsyncs it, reloads it on CPU and verifies exact nested
+model/optimizer/scheduler/RNG/epoch/step state plus all prepared metadata. It
+rehashes the parent to reject concurrent replacement and seals source/target
+file hashes. Existing preparation directories are never overwritten. Rejected
+partials remain incident evidence. This is a preparation API, not a live switch.
+
+`prepare_reporting_identity` validates that copy and the actual target split and
+calibration, permits only the three certified data-path signature changes, and
+prepares the original remote ID/name/writer-lease root beside the copy. It keeps
+the parent's identity unchanged. Normal Reporter signature and exclusive lease
+checks remain intact; this helper neither contacts W&B nor starts a writer.
+Operational boundary activation and an actual-state native preparation proof
+remain required before any data switch. The live trainer stays pinned until the
+complete repaired cohort and bounded release audits are ready.
