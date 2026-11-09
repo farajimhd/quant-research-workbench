@@ -38,7 +38,13 @@ class RepairTelemetry(Telemetry):
             return
         metrics = {"repair/state": snapshot["state"]}
         for item in snapshot.get("datasets", []):
-            prefix = "repair/" + item["name"] + "/"
+            prefix = (
+                "repair/"
+                + snapshot.get("policy_suffix", "-quote-v1").lstrip("-")
+                + "/"
+                + item["name"]
+                + "/"
+            )
             for name in ("completed", "total", "active"):
                 metrics[prefix + name] = item.get(name, 0)
             for name, value in item.get("counts", {}).items():
