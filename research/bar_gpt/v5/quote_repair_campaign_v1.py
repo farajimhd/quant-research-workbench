@@ -63,24 +63,24 @@ def status(path):
         return dict(state="starting", updated=0)
 
 
-def cohort(root):
+def cohort(root, suffix=SUFFIX):
     """Seal sibling repaired members without changing the old cohort manifest."""
     for _, name in DATASETS[:2]:
-        require_complete(root / (name + SUFFIX))
+        require_complete(root / (name + suffix))
     old = status(root / "phase1-v6-cohort/cohort.json")
     body = dict(old["cohort"])
-    body["cohort_id"] += SUFFIX
+    body["cohort_id"] += suffix
     body["members"] = [
-        dict(name=item["name"], path="../" + DATASETS[i][1] + SUFFIX)
+        dict(name=item["name"], path="../" + DATASETS[i][1] + suffix)
         for i, item in enumerate(body["members"])
     ]
     wrapper = dict(cohort=body, hash=digest(body))
-    path = root / "phase1-v6-cohort-quote-v2/cohort.json"
+    path = root / ("phase1-v6-cohort" + suffix) / "cohort.json"
     path.parent.mkdir(exist_ok=True)
     write_json(path, wrapper)
     # An explicit manifest in the new base lets existing readers discover the
     # new family; relative member paths resolve identically from either parent.
-    write_json(root / (DATASETS[0][1] + SUFFIX) / "cohort.json", wrapper)
+    write_json(root / (DATASETS[0][1] + suffix) / "cohort.json", wrapper)
     return path
 
 
@@ -92,8 +92,12 @@ def main():
     )
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--workers", type=int, default=4)
+    parser.add_argument("--source-first", action="store_true")
     args = parser.parse_args()
-    setup = args.root / "quote-repair-setup"
+    suffix = "-quote-v4" if args.source_first else SUFFIX
+    setup = args.root / (
+        "quote-source-first-setup" if args.source_first else "quote-repair-setup"
+    )
     setup.mkdir(exist_ok=True)
     import msvcrt
 
@@ -102,6 +106,14 @@ def main():
     owner.flush()
     owner.seek(0)
     msvcrt.locking(owner.fileno(), msvcrt.LK_NBLCK, 1)
+    if args.source_first:
+        import ctypes
+
+        awake = ctypes.windll.kernel32.SetThreadExecutionState
+        awake.argtypes = [ctypes.c_uint]
+        awake.restype = ctypes.c_uint
+        if not awake(0x80000001):
+            raise OSError("Cannot hold workstation awake for source-first repair")
     environment = dict(
         os.environ,
         PYTHONDONTWRITEBYTECODE="1",
@@ -114,7 +126,7 @@ def main():
         pid=os.getpid(),
         started=time.time(),
         revision=args.source_revision,
-        policy_suffix=SUFFIX,
+        policy_suffix=suffix,
         datasets=[],
     )
     telemetry = RepairTelemetry(
@@ -124,7 +136,7 @@ def main():
             root=str(args.root),
             workers=args.workers,
             source_revision=args.source_revision,
-            data_quality=SUFFIX,
+            data_quality=suffix,
             payload_io_priority="thread-background; queries and shared locks remain foreground",
         ),
         project="bargpt-quote-repair-v1",
@@ -132,12 +144,12 @@ def main():
     snapshot["wandb_url"] = telemetry.url
     for label, name in DATASETS:
         snapshot["datasets"].append(
-            dict(name=label, root=name + SUFFIX, state="queued")
+            dict(name=label, root=name + suffix, state="queued")
         )
     write_json(setup / "execution.json", snapshot)
     for index, (label, name) in enumerate(DATASETS):
         if index == 2:
-            sealed = cohort(args.root)
+            sealed = cohort(args.root, suffix)
             handoff = setup / "training-handoff-needed.json"
             if not handoff.exists():
                 write_json(
@@ -151,7 +163,7 @@ def main():
                         preserve_optimizer_scheduler=True,
                     ),
                 )
-        target = args.root / (name + SUFFIX)
+        target = args.root / (name + suffix)
         result = target / "repair-result.json"
         if result.exists():
             require_complete(target)
@@ -178,6 +190,15 @@ def main():
             "--workers",
             str(args.workers),
         ]
+        if args.source_first:
+            command += [
+                "--source-first",
+                "--repaired-base",
+                str(args.root / (DATASETS[0][1] + suffix)),
+            ]
+            reuse = args.root / (name + "-quote-v2")
+            if (reuse / "repair-contract.json").exists():
+                command += ["--reuse-root", str(reuse)]
         with (setup / (label + ".stdout.log")).open("a") as out, (
             setup / (label + ".stderr.log")
         ).open("a") as err:

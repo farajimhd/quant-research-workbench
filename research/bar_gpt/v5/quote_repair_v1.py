@@ -131,7 +131,9 @@ def load_payload(path, serialized=None):
         return np.load(path, allow_pickle=False)
 
 
-def phase_one_payload(path, ticker, rebuilder, *, serialized=None, coverage=None):
+def phase_one_payload(
+    path, ticker, rebuilder, *, serialized=None, coverage=None, coverage_delta=False
+):
     """Audit SAMPLE[N,64,18]; return replacement bytes only when a bar is rejected."""
     import io
     from .shards.phase1_contract import SAMPLE_DTYPE
@@ -142,7 +144,9 @@ def phase_one_payload(path, ticker, rebuilder, *, serialized=None, coverage=None
     if getattr(rebuilder, "bar_guard_only", False):
         values, masks, counts = sanitize(data["values"], data["valid"])
         if coverage is not None:
-            coverage += masks.sum(axis=(0, 1), dtype=np.uint64)
+            coverage += masks.sum(axis=(0, 1), dtype=coverage.dtype)
+            if coverage_delta:
+                coverage -= data["valid"].sum(axis=(0, 1), dtype=coverage.dtype)
         counts.update(
             changed_bars=counts["quarantined"],
             rebuilt_bars=0,
@@ -192,7 +196,9 @@ def phase_one_payload(path, ticker, rebuilder, *, serialized=None, coverage=None
     revised["valid"][..., 6:][~rebuild] = data["valid"][..., 6:][~rebuild]
     values, masks, counts = sanitize(revised["values"], revised["valid"])
     if coverage is not None:
-        coverage += masks.sum(axis=(0, 1), dtype=np.uint64)
+        coverage += masks.sum(axis=(0, 1), dtype=coverage.dtype)
+        if coverage_delta:
+            coverage -= data["valid"].sum(axis=(0, 1), dtype=coverage.dtype)
     changed = np.any(values[..., 6:] != data["values"][..., 6:], axis=-1) | np.any(
         masks[..., 6:] != data["valid"][..., 6:], axis=-1
     )
@@ -308,12 +314,34 @@ def phase_two_payload(path, descriptors, ticker, rebuilder, *, serialized=None):
     return (bytes(data) if totals["changed_bars"] else None), totals
 
 
-def migrate_receipt(source, output, relative, binding, phase, guard_only=False):
+def migrate_receipt(
+    source,
+    output,
+    relative,
+    binding,
+    phase,
+    guard_only=False,
+    source_first=False,
+    reuse_root=None,
+):
     """Migrate one publication; return bounded evidence to the coordinator.
 
     Crash recovery trusts only a sealed matching child receipt AND its verified
     payloads. Rejected-bar reason counts are stored per unit, not sampled away.
     """
+    if source_first:
+        from .quote_selective_v1 import Selector, migrate
+
+        if not hasattr(LOCAL, "selector"):
+            builder = Rebuilder(
+                output.parent / "quote-repair-cache-v1.sqlite", source, phase, binding
+            )
+            with BUILDERS_LOCK:
+                BUILDERS.append(builder)
+            LOCAL.selector = Selector(builder)
+        return migrate(
+            source, output, relative, binding, phase, LOCAL.selector, reuse_root
+        )
     began = time.monotonic()
     io_before = getattr(TIMES, "microseconds", 0)
     original = read_json(source / relative)
@@ -414,7 +442,15 @@ def migrate_receipt(source, output, relative, binding, phase, guard_only=False):
     return receipt
 
 
-def prepare(source, output, phase, revision, guard_only=False, repaired_base=None):
+def prepare(
+    source,
+    output,
+    phase,
+    revision,
+    guard_only=False,
+    repaired_base=None,
+    source_first=False,
+):
     """Bind an immutable parent and explicit quality policy; never mutate it in place."""
     base = Path(__file__).resolve().parent
     parent = read_json(source / ("contract.json" if phase == 1 else "plan.json"))
@@ -428,6 +464,14 @@ def prepare(source, output, phase, revision, guard_only=False, repaired_base=Non
     )
     if guard_only:
         identity["mode"] = "released-v2-bar-guard-only"
+    if source_first:
+        identity["mode"] = "source-first-selective-v1"
+        from . import quote_candidates_v1, quote_selective_v1
+
+        identity["selector_code"] = {
+            module.__name__: file_hash(Path(module.__file__))
+            for module in (quote_candidates_v1, quote_selective_v1)
+        }
     seal = dict(identity=identity, hash=digest(identity), source_revision=revision)
     path = output / "repair-contract.json"
     if path.exists():
@@ -454,7 +498,7 @@ def prepare(source, output, phase, revision, guard_only=False, repaired_base=Non
                 "repair_root_parent_binding",
                 parent["contract"]["repair_parent_binding"],
             )
-        if guard_only and "parent_binding" in contract:
+        if (guard_only or source_first) and "parent_binding" in contract:
             if repaired_base is None:
                 raise ValueError(
                     "Supplement guard upgrade requires its explicit repaired base"
@@ -603,6 +647,8 @@ def main(argv=None):
         help="Tighten final guards on a complete v2 repair, without canonical queries",
     )
     parser.add_argument("--repaired-base", type=Path)
+    parser.add_argument("--source-first", action="store_true")
+    parser.add_argument("--reuse-root", type=Path)
     parser.add_argument(
         "--limit",
         type=int,
@@ -611,6 +657,24 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
     source, output = args.source.resolve(), args.output.resolve()
+    if args.source_first and args.bar_guard_only:
+        raise ValueError("Select one repair algorithm")
+    if args.reuse_root and not args.source_first:
+        raise ValueError("Receipt reuse requires source-first mode")
+    if args.reuse_root:
+        reuse = read_json(args.reuse_root / "repair-contract.json")
+        parent = read_json(
+            source
+            / ("contract.json" if (source / "contract.json").exists() else "plan.json")
+        )
+        if (
+            reuse["hash"] != digest(reuse["identity"])
+            or reuse["identity"]["parent"] != digest(parent)
+            or Path(reuse["identity"]["source"]).resolve() != source
+            or reuse["identity"]["policy"]["version"]
+            != "bargpt-paired-quote-quarantine-v2"
+        ):
+            raise ValueError("Reusable repair root has a foreign source/policy")
     if source == output or source in output.parents or output in source.parents:
         raise ValueError("Repair requires disjoint sibling dataset roots")
     if not source.is_dir() or not 1 <= args.workers <= 16 or args.limit < 0:
@@ -659,6 +723,7 @@ def main(argv=None):
         args.source_revision,
         args.bar_guard_only,
         args.repaired_base,
+        args.source_first,
     )
     ledger = sqlite3.connect(output / "repair.sqlite")
     ledger.executescript(
@@ -759,6 +824,8 @@ def main(argv=None):
                         binding,
                         phase,
                         args.bar_guard_only,
+                        args.source_first,
+                        args.reuse_root,
                     )
                 ] = relative
             if not active:

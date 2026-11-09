@@ -123,5 +123,7 @@ def file_candidate(first_start_us, last_end_us, intervals):
     ends = np.maximum.accumulate(
         np.array([row["end_us"] for row in intervals], dtype=np.int64)
     )
+    if np.any(np.diff(begins) < 0):
+        raise ValueError("Candidate intervals must be ordered")
     previous = np.searchsorted(begins, int(last_end_us), side="left") - 1
     return bool(previous >= 0 and ends[max(previous, 0)] >= int(first_start_us))

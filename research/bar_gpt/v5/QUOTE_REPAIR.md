@@ -1,5 +1,36 @@
 # Quote evidence repair
 
+## Source-first replacement
+
+The user authorized replacing the payload-first repair after a bounded recall
+comparison against previously detected changed bars. The replacement uses
+`quote_repair_campaign_v1 --source-first` and separate `-quote-v4` roots. The v4
+suffix identifies the repair algorithm; the final quote policy remains v3.
+
+`quote_candidates_v1` queries the frozen ordinal plan for source issue intervals.
+It nominates condition/size changes, wide paired books, quote prices dislocated
+from the previous/next eligible extreme trade, and trades dislocated from their
+carried quote book. Reverse-prefix windows avoid quadratic suffix aggregation.
+Quote hints include their possible carry interval until the next actual quote.
+These are conservative OFFLINE nominations only: completed-bar repair/quarantine
+still determines output evidence. No future adjacent trade is an encoder input
+or a replacement price. Session state resets and trade rules remain shared.
+
+`quote_selective_v1` caches those source intervals once per frozen ticker/session,
+tests sealed full-context file envelopes, and decodes only candidate payloads.
+Packed files need two timestamp reads per bar segment because their descriptors
+lack clock bounds. Unchanged payloads STILL receive complete source SHA256 and
+independent target-hash verification. Coverage is reconciled from sealed source
+coverage plus exact deltas for decoded files. Missing bounds take the full repair
+path. Completed immutable v2 receipts may be reused after ancestry/hash checks;
+they are not deleted or recomputed merely because the selector changed.
+
+Native source probes: AAPX 40,828 events ~0.10s; AAPL 912,687 events ~0.69s;
+WTID 263,350 events ~0.24s; AIRTW/LARK ~0.05s. These are individual bounded
+session measurements, not whole-corpus throughput guarantees. The old jobs must
+only be drained after real changed-bar recall and output parity checks pass.
+Training is not stopped by this replacement.
+
 ## Opening-spread refinement (v3)
 
 Bounded canonical probes confirmed additional positive-size, regular-condition
