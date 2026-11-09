@@ -125,6 +125,7 @@ def main():
             workers=args.workers,
             source_revision=args.source_revision,
             data_quality=SUFFIX,
+            payload_io_priority="thread-background; queries and shared locks remain foreground",
         ),
         project="bargpt-quote-repair-v1",
     )

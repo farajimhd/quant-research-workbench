@@ -33,6 +33,7 @@ from .quote_quality_v1 import POLICY, sanitize, neighbor_spikes
 from .shards.contract import digest, file_hash, write_json
 from .phase2_shards.contract import BAR
 from .quote_rebuild_v1 import Rebuilder
+from .quote_repair_io_v1 import payload_io
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 LOCAL = threading.local()
@@ -58,6 +59,7 @@ def safe_file(directory, name):
     return directory / name
 
 
+@payload_io()
 def publish_file(source, target, original, payload=None):
     """Verify source, then hardlink unchanged bytes or fsync a distinct replacement.
 
@@ -94,12 +96,18 @@ def publish_file(source, target, original, payload=None):
     return item, changed
 
 
+def load_payload(path):
+    """Fully read an NPY payload at background I/O priority; return its CPU array."""
+    with payload_io():
+        return np.load(path, allow_pickle=False)
+
+
 def phase_one_payload(path, ticker, rebuilder):
     """Audit SAMPLE[N,64,18]; return replacement bytes only when a bar is rejected."""
     import io
     from .shards.phase1_contract import SAMPLE_DTYPE
 
-    data = np.load(path, allow_pickle=False)
+    data = load_payload(path)
     if data.dtype != SAMPLE_DTYPE:
         raise ValueError("Unexpected phase-one record schema")
     from .shards.storage import adjust_splits
@@ -167,7 +175,7 @@ def phase_two_payload(path, descriptors, ticker, rebuilder):
     if path.suffix == ".npy":
         import io
 
-        data = np.load(path, allow_pickle=False)
+        data = load_payload(path)
         if data.dtype != BAR:
             return None, Counter()  # Decision arrays have no quote inputs.
         if len(descriptors) != 1:
@@ -201,7 +209,9 @@ def phase_two_payload(path, descriptors, ticker, rebuilder):
         return buffer.getvalue(), counts
     if not descriptors:
         return None, Counter()
-    data, totals = bytearray(path.read_bytes()), Counter()
+    with payload_io():
+        data = bytearray(path.read_bytes())
+    totals = Counter()
     intervals = []
     for descriptor in descriptors:
         if descriptor["kind"] != "bar":
@@ -262,8 +272,9 @@ def migrate_receipt(source, output, relative, binding, phase):
         if receipt.get("quote_repair", {}).get("parent_receipt") != original[key]:
             raise ValueError("Resume parent receipt differs")
         for item in receipt["files"]:
-            if file_hash(safe_file(target.parent, item["name"])) != item["sha256"]:
-                raise ValueError("Resumed repaired payload changed")
+            with payload_io():
+                if file_hash(safe_file(target.parent, item["name"])) != item["sha256"]:
+                    raise ValueError("Resumed repaired payload changed")
         return receipt
     target.parent.mkdir(parents=True, exist_ok=True)
     if not hasattr(LOCAL, "rebuilder"):
@@ -300,9 +311,7 @@ def migrate_receipt(source, output, relative, binding, phase):
         # Recompute the small channel-coverage summary from final arrays.
         receipt["valid_bars_by_channel"] = sum(
             (
-                np.load(target.parent / f["name"], allow_pickle=False)["valid"].sum(
-                    axis=(0, 1)
-                )
+                load_payload(target.parent / f["name"])["valid"].sum(axis=(0, 1))
                 for f in receipt["files"]
             ),
             start=np.zeros(18, dtype=np.uint64),

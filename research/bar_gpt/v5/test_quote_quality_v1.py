@@ -248,3 +248,21 @@ def test_session_batching_never_truncates_dense_sessions_or_crosses_budget():
         )
         == 2
     )
+
+
+def test_payload_io_restores_native_thread_priority_on_failure():
+    import os
+    import ctypes
+    from .quote_repair_io_v1 import payload_io
+
+    if os.name != "nt":
+        pytest.skip("Native Windows priority contract")
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetThreadPriority.argtypes = (ctypes.c_void_p,)
+    kernel.GetThreadPriority.restype = ctypes.c_int
+    before = kernel.GetThreadPriority(ctypes.c_void_p(-2))
+    with pytest.raises(RuntimeError):
+        with payload_io():
+            assert kernel.GetThreadPriority(ctypes.c_void_p(-2)) != 0x7FFFFFFF
+            raise RuntimeError("simulated payload read failure")
+    assert kernel.GetThreadPriority(ctypes.c_void_p(-2)) == before
