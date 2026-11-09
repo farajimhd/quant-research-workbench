@@ -639,7 +639,12 @@ def main(argv=None):
     parser.add_argument("--source", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-revision", required=True)
-    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=2,
+        help="Unified query/payload thread pool (1..32); validation admission stays at 4",
+    )
     parser.add_argument("--training-campaign", type=Path)
     parser.add_argument(
         "--bar-guard-only",
@@ -677,7 +682,7 @@ def main(argv=None):
             raise ValueError("Reusable repair root has a foreign source/policy")
     if source == output or source in output.parents or output in source.parents:
         raise ValueError("Repair requires disjoint sibling dataset roots")
-    if not source.is_dir() or not 1 <= args.workers <= 16 or args.limit < 0:
+    if not source.is_dir() or not 1 <= args.workers <= 32 or args.limit < 0:
         raise ValueError("Invalid source, worker count or pilot bound")
     phase = 1 if (source / "contract.json").exists() else 2
     if args.bar_guard_only:

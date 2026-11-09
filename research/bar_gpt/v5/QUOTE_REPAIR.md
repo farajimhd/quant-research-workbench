@@ -48,6 +48,14 @@ selector code, logical query/cache bindings or completed repaired receipts.
 Deployment requires native parity/profile evidence and graceful owned drain;
 never relax the existing output-contract checks merely to resume a revision.
 
+The repair uses one bounded query/payload worker pool, not separate I/O workers.
+It accepts up to 32 threads. Each admitted thread can query, read/hash a payload
+and publish its receipt; only payload I/O lowers its thread's Windows priority.
+Training validation/startup/stale-status admission remains four lanes, dense
+memory retries remain limited to two, and RAM/disk reserves are unchanged.
+Increasing the pool requires a short live throughput/headroom check; completed
+receipts and data/model contracts remain unchanged.
+
 A native worker dump found 14 of 16 repair threads waiting on the same ticker's
 candidate-cache lock because receipt discovery order clustered one source job.
 `quote_work_queue_v1.GroupedWork` now admits at most one receipt per job at once
