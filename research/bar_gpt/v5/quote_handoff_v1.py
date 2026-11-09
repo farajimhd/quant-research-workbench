@@ -124,6 +124,91 @@ def rebind_calibration(original, certificate, source_split, target_split):
     return result
 
 
+def prepare_checkpoint_state(
+    saved, certificate, old_calibration, new_calibration, source_sha256
+):
+    """Prepare a separate checkpoint state without modifying any trained tensors.
+
+    ``saved`` is a CPU checkpoint loaded with torch.load. The certificate binds
+    the exact old/new split; normalization vectors must remain identical. Only a
+    completed epoch is accepted. Model, AdamW, scheduler, epoch, step and CPU/CUDA
+    RNG objects are retained unchanged. Old validation/guard evidence is retained
+    separately rather than compared against a different data distribution.
+
+    The extra strict contract field makes this state INCOMPATIBLE with the old
+    trainer. A reviewed trainer must explicitly validate this transition and run
+    corrected-data baselines before using it. This function does not save a file,
+    signal a process, reset optimizer state or authorize immediate activation.
+    """
+    import re
+
+    verify_seal(certificate, "hash")
+    if not re.fullmatch(r"[0-9a-f]{64}", source_sha256):
+        raise ValueError("Require the independently verified parent checkpoint SHA256")
+    if (
+        certificate.get("version") != "bargpt-quote-split-handoff-v1"
+        or certificate.get("state") != "prepared-not-activated"
+    ):
+        raise ValueError("Require an explicit prepared split transition")
+    contract = saved["contract"]
+    if (
+        contract["split_hash"] != certificate["source_split"]
+        or saved.get("data_transition")
+        or "data_transition" in contract
+        or certificate["source_split"] == certificate["target_split"]
+    ):
+        raise ValueError("Checkpoint does not belong to this single data transition")
+    if (
+        saved["phase"] != "train"
+        or not saved["history"]
+        or saved["history"][-1]["epoch"] != saved["epoch"]
+        or saved["epoch"] < 1
+    ):
+        raise ValueError("Data handoff requires a fully completed epoch checkpoint")
+    expected_calibration = rebind_calibration(
+        old_calibration,
+        certificate,
+        certificate["source_split"],
+        certificate["target_split"],
+    )
+    if new_calibration != expected_calibration or any(
+        contract[field] != old_calibration[field] for field in ("median", "scale")
+    ):
+        raise ValueError("Data transition must retain the exact original input units")
+    prepared = dict(
+        saved
+    )  # Tensor-bearing objects remain identical; no CPU/GPU duplicate.
+    prepared["contract"] = dict(
+        contract,
+        split_hash=certificate["target_split"],
+        data_transition=certificate["hash"],
+    )
+    prepared["data_transition"] = dict(
+        version="bargpt-quote-checkpoint-transition-v1",
+        state="requires-corrected-data-baselines",
+        certificate=deepcopy(certificate),
+        source_checkpoint_sha256=source_sha256,
+        source_contract=deepcopy(contract),
+        source_calibration=digest(old_calibration),
+        target_calibration=digest(new_calibration),
+        historical_evidence=deepcopy(
+            {
+                key: saved.get(key)
+                for key in (
+                    "history",
+                    "best_validation",
+                    "training_metrics",
+                    "probe_baseline",
+                )
+            }
+        ),
+    )
+    prepared.update(
+        history=[], best_validation=None, training_metrics=None, probe_baseline=None
+    )
+    return prepared
+
+
 def prepare_split(old_path, repaired_dataset, output):
     """Publish a prepared split and certificate after both repair releases exist.
 

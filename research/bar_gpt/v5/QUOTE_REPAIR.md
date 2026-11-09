@@ -110,3 +110,11 @@ records the original calibration/split/selection hashes and explicitly states
 that these are historical frozen units, not refitted corrected-data statistics.
 It requires the sealed exact-membership certificate. Repaired validity masks
 still apply. This preparation does not migrate a checkpoint or activate a loader.
+
+`prepare_checkpoint_state` is a pure preparation operation on a loaded completed
+epoch state. It retains model/AdamW/scheduler/RNG objects, epoch and global step;
+stores old best/history/probe evidence separately; and requests new-data
+baselines. Its extra strict contract field deliberately makes it incompatible
+with the existing trainer. It must not be activated until explicit trainer
+transition validation and corrected-data baseline integration are implemented
+and tested. No live checkpoint has been changed by adding this helper.
