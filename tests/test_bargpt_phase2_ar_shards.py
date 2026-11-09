@@ -42,7 +42,7 @@ def bars(ends):
     return a
 
 
-def seeded(geometry=Geometry()):
+def seeded(geometry=Geometry((1024, 512, 512, 256, 128))):
     c = Compiler(geometry)
     c.bootstrap(
         [
@@ -153,12 +153,12 @@ def test_liquidity_boundary_defers_pending_without_mixing():
     assert out["pending_key"] == (0, 0)
 
 
-def test_split_purge_uses_oldest_context_not_only_origin():
+def test_origin_split_permits_completed_earlier_year_context():
     geometry = Geometry((64,) * 5, cutoff=BASE + 2048 * FRAMES[0])
     c = seeded(geometry)
     out = c.compile(new_rows(0, 7000), 1)
     assert out["stats"]["boundary_tail_deferred"] == 2047
-    assert out["splits"] == [2]  # Crossing daily context is never validation.
+    assert out["splits"] == [1]  # Prior-year context is valid for a later origin.
 
 
 def test_overlap_stride_and_common_origin_split_basis(tmp_path):
@@ -365,76 +365,6 @@ def test_canonical_reader_fetches_both_fine_and_coarse_with_five_outputs():
         arrays, timing = reader.fetch("TEST", page, nullcontext, 100)
     assert [len(a) for a in arrays] == [1] * 5 and timing["queries"] == 2
     assert [call.args[3] for call in query.call_args_list] == [False, True]
-
-
-def test_full_coordinator_cpu_fixture_two_months(tmp_path, monkeypatch):
-    """Exercise real CLI/coordinator/lease/catalog/publication; replace SQL only."""
-    from concurrent.futures import ThreadPoolExecutor
-    from research.bar_gpt.v5.phase2_ar_shards import run
-    from research.bar_gpt.v5 import quote_repair_v1
-
-    parent = tmp_path / "parent"
-    parent.mkdir()
-    (parent / "repair-contract.json").write_text("{}")
-    output = tmp_path / "fresh-output"
-    plan = dict(
-        hash="binding",
-        geometry=Geometry().manifest(),
-        sampling="3:1",
-        jobs=[dict(ticker="TEST", years=[dict(year=2023, liquid=1)])],
-    )
-
-    class Reader:
-        def __init__(self, *args):
-            pass
-
-        def months(self, job):
-            return [("2023-01", [dict(month=1)]), ("2023-02", [dict(month=2)])]
-
-        def fetch(self, ticker, rows, gate, chunk_events):
-            return (
-                new_rows(0, 2000) if rows[0]["month"] == 1 else new_rows(2000, 2500)
-            ), dict(queries=0)
-
-    def pool(workers, **kwargs):
-        return ThreadPoolExecutor(
-            workers, initializer=kwargs["initializer"], initargs=kwargs["initargs"]
-        )
-
-    monkeypatch.setattr(run, "describe", lambda *_: (plan, {}))
-    monkeypatch.setattr(run, "freeze", lambda *_: plan)
-    monkeypatch.setattr(run, "CanonicalReader", Reader)
-    monkeypatch.setattr(run, "Compiler", seeded)
-    monkeypatch.setattr(run, "ProcessPoolExecutor", pool)
-    monkeypatch.setattr(quote_repair_v1, "require_complete", lambda *_: None)
-    command = [
-        "--parent",
-        str(parent),
-        "--output",
-        str(output),
-        "--source-revision",
-        "test",
-        "--execute",
-        "--workers",
-        "1",
-        "--io-workers",
-        "1",
-        "--validation-lanes",
-        "1",
-        "--only-ticker",
-        "TEST",
-    ]
-    assert main(command) == 0
-    result = json.loads((output / "result.json").read_text())
-    assert result["state"] == "pilot_complete" and result["candidate_blocks"] == 1
-    assert result["source_origins"] == 4500 and result["pending_tail_origins"] == 404
-    assert json.loads((output / "progress.json").read_text())["active"] == 0
-    # Re-enter the exact CLI: discovery restores both months without fetching.
-    monkeypatch.setattr(
-        Reader, "fetch", lambda *_: pytest.fail("Requeried sealed month")
-    )
-    assert main(command) == 0
-    assert json.loads((output / "result.json").read_text())["candidate_blocks"] == 1
 
 
 def test_selection_tamper_cannot_be_resealed(tmp_path):

@@ -1,126 +1,144 @@
-# Monthly autoregressive context shards
+# Session-scoped autoregressive shards, sampled v2
 
-This replaces the cancelled phase-two stream generator. It adopts v3's
-ticker-owned chronological extraction and shared monthly arrays, using the
-current phase-one market/quote semantics. The old roots remain retired.
+The revised contract is **4,096 consecutive observed 1s origins per block,
+all from one New York trading session**. This replaces the unlaunched monthly-v1
+configuration. Retired phase-two roots remain untouched.
 
-## What one block means
+## Sampling and context
 
-Every published logical block contains **exactly 4,096 observed 1s origins**.
-An origin is the close of an actual trade-bearing 1s bar, not a fabricated
-one-second clock tick. Each origin stores its UTC close and five as-of indices.
-The 1s reference equals that close; every other reference is the latest completed
-observed bar whose close is at or before it. A block is a loader/storage unit,
-not an attention sequence length or one tokenizer sample.
+Freeze a seeded random order of ticker/session-month units from the retained
+21,556-ticker universe. A sampled month chooses its first session using a seeded
+UTC clock. Each eligible session then chooses a seeded feasible starting origin
+among its observed 1s bars. The remaining origins are consecutive. One CPU owner
+keeps its history in RAM across the selected consecutive sessions of that month.
 
-Default cached history per origin:
+Default warmup is **64 real completed bars in each of five views**: 1s, 10s, 1m,
+1h and regular-session daily. A larger cache is configurable. Earlier sessions
+provide context only; none of their origins can enter the current block.
+A session with fewer than 4,096 observed 1s bars produces no training block, but
+all its observed bars still advance the worker's history for later sessions.
+Partial tails never combine with the next session.
 
-| Frame | Real historical bars | Nonoverlapping 64-bar windows |
-| --- | ---: | ---: |
-|1s|1,024|16|
-|10s|512|8|
-|1m|512|8|
-|1h|256|4|
-|Daily, regular session|128|2|
+Each view is saved once per session as a warmup prefix followed by unique new
+bars. All blocks in that session share those pools. For example, given 64 warmup
+10s bars and a new 10s close at 09:00:10 UTC:
 
-These are cache budgets supporting 38 historical tokenizer windows with stride 64.
-Token width, token overlap, forecast advance and decision sampling are separate
-concepts. The reader can choose another overlap within the cached budget. For
-example, 1,024 bars support 16 windows with stride 64 or 31 with stride 32. Changing
-origin by one observed 1s bar advances that frame's endpoint by one; coarser
-endpoints advance only after another real coarse bar completes. This extractor
-does not finalize latent targets or train the model.
+| Origin UTC close | Last completed 10s row |
+| --- | --- |
+| 09:00:01 through 09:00:09 | 63, the last warmup bar |
+| 09:00:10 through 09:00:19 | 64, newly completed at 09:00:10 |
+| 09:00:20 | 65 |
 
-For 4,096 consecutive origins, 1s context is typically 4,096+1,023 shared rows,
-rather than 4,096 copies of 1,024 rows. Coarse history is also shared; repeated
-as-of references point at the same bars. `MonthReader.block(i)` loads the
-necessary slice of each view once. `CachedBlock.context(origin,frame)` then
-does no disk or source queries. Reuse a `MonthReader` across its blocks: it
-hash-checks each touched mmap part once.
+A dense 4,096-origin block therefore needs roughly 64 + 4,096 1s rows and
+64 + 409 new/completed 10s rows, rather than 4,096 copies of the 10s context.
+Actual counts depend on observed bars and clock alignment. No synthetic empty
+clock bars are created. There is **no saved tokenizer stride or nonoverlapping
+64-bar window layout**. Token sampling remains a training-reader decision.
 
-## Extraction and files
+## Split and reverse-split handling
 
-One owner processes a ticker's months across years. Canonical ClickHouse reads
-use the frozen phase-one ordinal inventory and explicit UTC-month partition
-predicates covering complete 04:00–20:00 New York source sessions. Query pages
-target 2 million events; an indivisible dense session may exceed that soft size
-and will fail closed if bounded query resources are insufficient. Fine and
-coarse bars use the shared phase-one aggregation, including quote-only source
-updates, quote invalidation/carry, eligibility and final paired quote masking.
-There is no rollup from only saved trade-bearing 1s bars.
+All origins in a session share one executed-action basis, using phase one's
+04:00 New York execution-date rule. The worker retains an unadjusted rolling
+cache, creates a session-basis copy with the shared phase-one adjustment math,
+and freezes an independent snapshot before advancing to the next session.
+This avoids accumulated Float32 rounding and mutation of an earlier snapshot.
 
-Each ticker-month directory has:
+Prices, including bid/ask OHLC, multiply by the split factor; volume and quote
+sizes multiply by its inverse. Counts, masks and clocks remain unchanged. New
+current-session bars are already on that session's source share basis.
 
-- Shared per-frame raw BAR arrays in NPY parts of at most 128 MiB of array data.
-  A row contains 18 Float32 market values, 18 masks and its actual UTC close.
-- `origins.npy`: `[blocks,4096]` records with close and five cached indices.
-- `pending.npy` and cache-slice metadata: exact rolling context/restart state.
-- A sealed `receipt.json` binding authority, geometry and file sizes/SHA256.
+The receipt binds the session date, basis UTC clock and frozen ticker action
+hash. `ShardReader` recognizes this basis and **does not apply the split again**.
+Its optional `CachedBlock.windows` helper rejects a different action catalog.
+A session-basis snapshot cannot be restored as an unadjusted generation cache.
 
-Monthly publication flushes/fsyncs payloads and atomically renames its owned
-partial directory. Restart discovers sealed months, restores the last cache and
-pending origins, and queries only missing months. Complete blocks may span
-months. The current month contains their shared prefix, so no neighboring file
-lookup is needed to read their input context.
+The raw canonical SIP tables remain unchanged. Saved session history is in the
+current session's original market units, ready for phase one's numerical input
+transform. No embeddings, decoder outputs, future targets or derived UTC
+features are stored.
 
-Bars stay on their original share basis. `CachedBlock.windows(...)` gathers
-64-bar phase-one records in a vectorized batch, applies corporate actions using
-each decision's common origin (including quote prices/inverse sizes), and leaves
-normalization and nine UTC features to the existing phase-one transform.
-The caller supplies the frozen ticker actions named by the authority. No
-embeddings, decoder outputs, future targets or transformed UTC features are
-stored. The full query inventory is retained independently of selected blocks.
+## Files and GPU reader
 
-## Coverage, splits and selection
+A session directory contains shared per-frame NPY pools, `[blocks,4096]` origin
+records with five causal indices, pending-tail evidence and a sealed receipt.
+Each pool row contains 18 Float32 market values, 18 validity masks and its actual
+UTC close. Every origin references the latest completed bar with close `<=` its
+own close. Publication and reads reject blocks mixing sessions.
 
-Keep the current 21,556-ticker inventory and its frozen liquidity classes.
-Selection admits three liquid blocks per one less-liquid block independently
-for training and validation: exact 75/25 selected-origin exposure because all
-blocks have 4,096 origins. Unselected complete blocks remain stored and counted.
+`ShardReader(directory).block(i)` caches the required pool slices and rebases the
+indices. A training reader can transfer contiguous values/masks/clocks and the
+index matrix to GPU, then gather its contexts there. Structured NPY field views
+should be made contiguous before conversion to Torch tensors. `MonthReader`
+remains a name alias for this same strictly validated reader.
 
-The chronological cutoff is 2024-04-16 04:00UTC, matching the actual phase-one
-train-05 split. Input context crossing it receives split 2 and is not selected.
-Validation context must lie wholly after it. A future-target reader must still
-purge targets crossing the boundary; these raw-context shards are explicitly
-marked `training_ready=false` until that learning contract is finalized.
+## Years, selection and missing history
 
-No padding is promoted into a full block. Origins with insufficient history are
-counted as warmup-deferred; their source bars remain available in shared arrays.
-Partial blocks carry across months. A liquidity/split boundary defers and counts
-the prior partial tail. A ticker's final tail remains saved and counted in its
-checkpoint. Sparse tickers may therefore have no eligible full block; this is
-reported, not silently hidden.
+Training uses **2019–2025 New York session dates**; validation uses **2026
+session dates**. Timestamps are always UTC. All of the December 31 after-hours
+session stays in training even when its UTC timestamps reach January 1.
+Validation context may contain completed prior-year bars.
 
-## Running
+Selection admits three liquid full blocks per one less-liquid full block in
+each split, preserving 75/25 selected-origin exposure. The validation shard-data
+budget is **250,000,000 bytes**, including context, NPY headers and publication
+receipts. It is an upper bound: whole sessions/full blocks are admitted, so the
+final size can be smaller. The train cap defaults to 4 decimal TB. Shared plan
+and catalog metadata is outside these shard-data budgets.
 
-From the immutable synchronized code snapshot, preview without creating output
-or querying ClickHouse:
+A genuine 64-bar daily context needs 64 observed daily bars, not 64 calendar days.
+The workstation currently has no canonical 2018 events or ordinal inventory, so
+early-2019 origins are deferred until enough real history exists, often about
+three calendar months and longer for sparse tickers. This is measured per sampled
+session. No missing history is padded into a valid block. Short/history-deficient
+sessions receive sealed SQLite deferrals with counts and reasons.
+
+## Workers, source pages and safety
+
+Defaults are 32 CPU processes plus a **separate eight-thread I/O pool**. CPU
+owners fetch and compile session snapshots; I/O workers hash, fsync and atomically
+publish them. Queues and staged monthly results are bounded. Frozen snapshots
+let CPU work advance without changing arrays owned by an I/O worker.
+
+V3's actual extractor used calendar-month source pages despite its unused
+`query_days=7` setting, 65,536-row Arrow batches and up to four prefetched pages.
+This extractor uses the same month alignment and Arrow batch size, with global
+bounded query concurrency rather than four extra lanes per CPU worker.
+`--chunk-events 0` selects that default; a positive value enables an optional
+session-bound event budget for measured dense cases. Query size is independent
+of the 4,096-origin storage block size.
+
+Only canonical `market_sip_compact.events_YYYY` is read. The unchanged current
+phase-one aggregation supplies all five frames, including quote-only updates,
+condition rules, quote carry/invalidation and final paired quote masking.
+There is no rollup from only saved trade-bearing 1s bars or old v3 feature code.
+
+Queries have one ClickHouse thread, 60 seconds and at most 8 GiB. RAM/disk reserves
+remain 64/150 GiB; query admission is reduced during trainer validation or stale
+status. The 2026 extension verifies policy, actual part placement, schema,
+ordinal counts and corporate-action coverage. Coverage gaps fail closed.
+No acquisition, flatfile fallback or global server changes are introduced.
+
+## Running and restart
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 & C:/Users/Mehdi/miniconda3/envs/ml4t/python.exe -B research/bar_gpt/v5/run_phase2_ar_shards.py --source-revision <committed-revision>
 ```
 
-Execution adds `--execute`. Default output is the fresh
-`D:/TradingML/runtimes/bar_gpt/phase2-ar-monthly-v1`; it never reuses retired roots.
-Both preview and execution fail explicitly while the corrected parent's final
-ordinal manifest is unavailable. Execution additionally requires its sealed
-complete repair release, unchanged phase-one producer code, canonical authority
-and corporate-action catalog. There is no compatibility bypass.
+Preview is the default. Execution requires `--execute`, a released corrected
+phase-one parent and a certified 2026 authority extension. Default output is
+`D:/TradingML/runtimes/bar_gpt/phase2-ar-sampled-v2`. Retired roots and the old
+monthly-v1 root cannot be reused. `--only-ticker` / `--max-months` bound a pilot
+through the same path; a pilot cannot declare a full release.
 
-Defaults: 32 bounded process workers, 8 simultaneous background publications,
-4 query lanes during validation/startup/stale trainer status, one ClickHouse
-thread/query, 60 seconds/query, 3 GiB/query, 64 GiB RAM and 150 GiB disk reserves.
-`--history-bars` freezes alternative cache budgets; it never changes 64-bar token
-width. `--only-ticker TICKER --max-months N` runs a bounded pilot through the same
-path and cannot report a full build. `--target-bytes` defaults to 4 decimal TB and
-stops new admissions at that soft, month-aligned cap; already active months
-drain and can exceed it. Writes separately check disk reserve before publication.
+Completed monthly batches are sealed after all session publications/deferrals
+are acknowledged. Resume skips them without source queries. An interrupted
+partial month is recomputed from the frozen start; existing session receipts
+are preserved and reused. A `STOP` gracefully drains work, a lease prevents
+duplicate ownership, and the coordinator holds its own keep-awake request.
 
-`progress.json` and 15-second console reports expose active queries/months, queued
-tickers, source origins, candidate/selected blocks, deferred tails and failures.
-`timing.jsonl` separates query, compile and publication time. SQLite WAL is owned
-by one coordinator; monthly acknowledgments update cached progress counters.
-Create `STOP` for graceful drain. Existing STOPs are never cleared, a controller
-lease prevents duplicate ownership, and keep-awake is held only while running.
-This extractor never signals the phase-one trainer or repair.
+`progress.json` exposes CPU/I/O/query activity, staged sessions, counts, bytes
+and failures. Receipts reconcile selected candidate origins into full blocks,
+pending tails and history deferrals. Shards remain `training_ready=false` until
+the phase-two future-target/purge contract is finalized. This extractor never
+signals the trainer or repair, and does not resume scheduled monitoring.

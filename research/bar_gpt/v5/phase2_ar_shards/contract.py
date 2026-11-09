@@ -1,19 +1,19 @@
 """CPU-only shared context compilation; every published block has 4,096 origins."""
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 
 import numpy as np
 
 from ..shards.phase1_contract import CHANNELS
 from ..shards.contract import digest
+from ..shards.sql import clock
 
-VERSION = "bargpt-phase2-ar-monthly-v1"
+VERSION = "bargpt-phase2-ar-sampled-v2"
 BLOCK = 4096
 FRAMES = (1_000_000, 10_000_000, 60_000_000, 3_600_000_000, 86_400_000_000)
-# Actual train-05 split, not the historical phase-one code's default cutoff.
-CUTOFF = int(datetime(2024, 4, 16, 4, tzinfo=timezone.utc).timestamp() * 1_000_000)
+# Trading-session years are independent of the phase-one cutoff.
+CUTOFF = clock("2026-01-01", 4)
 BAR = np.dtype(
     [
         ("values", "<f4", (len(CHANNELS),)),
@@ -28,7 +28,7 @@ ORIGIN = np.dtype([("end_us", "<i8"), ("latest", "<i8", (5,))])
 class Geometry:
     """Cached history budget, not a commitment to a tokenizer overlap/target."""
 
-    history: tuple = (1024, 512, 512, 256, 128)
+    history: tuple = (64, 64, 64, 64, 64)
     cutoff: int = CUTOFF
 
     def __post_init__(self):
@@ -48,7 +48,12 @@ class Geometry:
             bar_dtype=BAR.descr,
             origin_dtype=ORIGIN.descr,
             unavailable_history="deferred, never invented/padded",
-            token_width=64,
+            minimum_completed_bars=64,
+            origin_stride="one observed 1s bar; no saved tokenizer stride",
+            validation_context="completed earlier-year bars permitted",
+            origin_split="New York trading-session year; timestamps are UTC",
+            block_scope="one NY04:00-20:00 session only",
+            price_basis="one session basis, applied once before publication",
             future_targets="not stored; reader must additionally purge target support",
         )
 
@@ -107,7 +112,6 @@ class Compiler:
         origins = np.zeros(len(arrays[0]), dtype=ORIGIN)
         origins["end_us"] = arrays[0]["end_us"]
         complete = np.ones(len(origins), dtype=bool)
-        context_start = origins["end_us"].copy()
         for i, (pool, history, frame) in enumerate(
             zip(pools, self.geometry.history, FRAMES)
         ):
@@ -115,16 +119,9 @@ class Compiler:
             origins["latest"][:, i] = self.starts[i] + local
             enough = local >= history - 1
             complete &= enough
-            if len(pool):
-                # Daily end-frame is conservative for purging; it can exclude
-                # extra origins but cannot admit pre-cutoff daily history.
-                first = np.maximum(0, local - history + 1)
-                context_start = np.minimum(context_start, pool["end_us"][first] - frame)
-        splits = np.where(
-            origins["end_us"] < self.geometry.cutoff,
-            0,
-            np.where(context_start >= self.geometry.cutoff, 1, 2),
-        ).astype(np.uint8)
+        # A validation origin may use past-year context. Only the origin/target
+        # year determines the split; the target reader must purge future targets.
+        splits = (origins["end_us"] >= self.geometry.cutoff).astype(np.uint8)
         stats = dict(
             source_origins=len(origins),
             warmup_deferred=int((~complete).sum()),

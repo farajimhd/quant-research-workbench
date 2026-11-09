@@ -28,7 +28,24 @@ def read_receipt(directory, binding=None):
 
 
 def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometry):
-    """Publish one month; no per-query or per-origin durable file transactions."""
+    """Publish one session snapshot; no per-query/per-origin file transactions."""
+    basis = compiled.get("price_basis")
+    if basis:
+        from ..shards.sql import clock
+
+        day = basis["session_date"]
+        ends = compiled["blocks"]["end_us"]
+        if (
+            month != day
+            or basis["basis_us"] != clock(day, 4)
+            or np.any(ends <= clock(day, 4))
+            or np.any(ends > clock(day, 20))
+        ):
+            raise ValueError(
+                "Publication must contain one session on its own split basis"
+            )
+        if any(s != int(day[:4] == "2026") for s in compiled["splits"]):
+            raise ValueError("Publication changes trading-session year split")
     key = digest(ticker)[:24]
     final = Path(root) / "shards" / key / month
     identity = digest([binding, ticker, month, source_hash])
@@ -78,6 +95,7 @@ def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometr
         ticker=ticker,
         ticker_key=key,
         month=month,
+        session_date=basis["session_date"] if basis else None,
         liquid=int(liquid),
         source_hash=source_hash,
         geometry=geometry.manifest(),
@@ -89,6 +107,9 @@ def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometr
         cache_slices=compiled["cache_slices"],
         pending_key=compiled["pending_key"],
         stats=compiled["stats"],
+        sampling=compiled.get("sampling"),
+        independent_unit=bool(compiled.get("independent_unit", False)),
+        price_basis=compiled.get("price_basis"),
         files=files,
         bytes=sum(f["bytes"] for f in files),
     )
@@ -99,7 +120,7 @@ def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometr
     return receipt
 
 
-class MonthReader:
+class ShardReader:
     """Verify each used file once; every origin reads a causal slice of cached pools."""
 
     def __init__(self, directory, binding=None):
@@ -116,6 +137,7 @@ class MonthReader:
         self.files = {item["name"]: item for item in self.receipt["files"]}
         self.arrays = {}
         self.views = {}
+        self.price_basis = self.receipt.get("price_basis")
 
     def array(self, name):
         if name not in self.arrays:
@@ -191,15 +213,28 @@ class MonthReader:
                 raise ValueError("Cached context contains a future bar")
         if not np.array_equal(pools[0]["end_us"][latest[:, 0]], origins["end_us"]):
             raise ValueError("Origin must equal its last completed 1s close")
+        if self.price_basis:
+            from ..shards.sql import clock
+
+            day = self.price_basis["session_date"]
+            if np.any(origins["end_us"] <= clock(day, 4)) or np.any(
+                origins["end_us"] > clock(day, 20)
+            ):
+                raise ValueError("Block mixes trading sessions")
         return CachedBlock(
             origins["end_us"],
             latest,
             pools,
             self.geometry,
             self.receipt["splits"][index],
+            self.price_basis,
         )
 
     def restore(self):
+        if self.price_basis:
+            raise ValueError(
+                "Session-basis snapshot cannot be restored as raw generation cache"
+            )
         compiler = Compiler(self.geometry)
         for frame, begin in enumerate(self.receipt["cache_slices"]):
             compiler.views[frame] = self.slice(
@@ -214,10 +249,14 @@ class MonthReader:
         return compiler
 
 
+# Name compatibility only; the same strict version/basis checks still apply.
+MonthReader = ShardReader
+
+
 class CachedBlock:
     """Shared arrays in RAM/mmap; origin access does no filesystem or CH queries."""
 
-    def __init__(self, ends, latest, views, geometry, split=0):
+    def __init__(self, ends, latest, views, geometry, split=0, price_basis=None):
         self.ends, self.latest, self.views, self.geometry = (
             ends,
             latest,
@@ -225,6 +264,7 @@ class CachedBlock:
             geometry,
         )
         self.split = split
+        self.price_basis = price_basis
 
     def context(self, origin, frame):
         if not 0 <= origin < len(self.ends) or not 0 <= frame < 5:
@@ -269,7 +309,14 @@ class CachedBlock:
         result = pack(
             flat["values"], flat["valid"], flat["end_us"], FRAMES[frame], self.split
         )
-        adjust_splits(result, actions, origin_us=np.repeat(self.ends[origins], count))
+        if self.price_basis:
+            if digest(actions) != self.price_basis["actions_hash"]:
+                raise ValueError("Frozen session action catalog differs")
+            # Already adjusted to the one basis shared by this session's origins.
+        else:
+            adjust_splits(
+                result, actions, origin_us=np.repeat(self.ends[origins], count)
+            )
         return result.reshape(shape)
 
 
@@ -281,6 +328,7 @@ class Catalog:
         self.db = sqlite3.connect(self.root / "catalog.sqlite")
         self.db.executescript("""PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
           CREATE TABLE IF NOT EXISTS units(path TEXT PRIMARY KEY,seal TEXT,bytes INTEGER,
+            split INTEGER,
             source_origins INTEGER,warmup INTEGER,boundary INTEGER);
           CREATE TABLE IF NOT EXISTS tails(ticker TEXT PRIMARY KEY,month TEXT,pending INTEGER);
           CREATE TABLE IF NOT EXISTS blocks(path TEXT,ordinal INTEGER,split INTEGER,
@@ -318,6 +366,10 @@ class Catalog:
                 "SELECT ticker,month,pending FROM tails"
             )
         }
+        self.totals["pending_tail_origins"] = sum(p[1] for p in self.tails.values())
+        self.split_bytes = dict(
+            self.db.execute("SELECT split,sum(bytes) FROM units GROUP BY split")
+        )
 
     def register(self, path, receipt):
         relative = str(Path(path).relative_to(self.root))
@@ -329,7 +381,15 @@ class Catalog:
                 raise ValueError("Registered month changed")
             return
         pending, order = self.pending.copy(), self.order
-        prior_tail = self.tails.get(receipt["ticker"])
+        accounted_bytes = receipt["bytes"]
+        if (Path(path) / "receipt.json").exists():
+            accounted_bytes += (Path(path) / "receipt.json").stat().st_size + (
+                Path(path) / "publication.json"
+            ).stat().st_size
+        tail_key = receipt["ticker"] + (
+            "|" + receipt["month"] if receipt.get("independent_unit") else ""
+        )
+        prior_tail = self.tails.get(tail_key)
         if prior_tail and prior_tail[0] >= receipt["month"]:
             raise ValueError("Monthly registration must preserve ticker chronology")
         for split in receipt["splits"]:
@@ -337,11 +397,12 @@ class Catalog:
             pending[key] = pending.get(key, 0) + 1
         with self.db:
             self.db.execute(
-                "INSERT INTO units VALUES(?,?,?,?,?,?)",
+                "INSERT INTO units VALUES(?,?,?,?,?,?,?)",
                 (
                     relative,
                     receipt["hash"],
-                    receipt["bytes"],
+                    accounted_bytes,
+                    receipt["splits"][0] if receipt["splits"] else 0,
                     receipt["stats"]["source_origins"],
                     receipt["stats"]["warmup_deferred"],
                     receipt["stats"]["boundary_tail_deferred"],
@@ -371,19 +432,22 @@ class Catalog:
             self.db.execute(
                 "INSERT OR REPLACE INTO tails VALUES(?,?,?)",
                 (
-                    receipt["ticker"],
+                    tail_key,
                     receipt["month"],
                     receipt["stats"]["pending_origins"],
                 ),
             )
         self.pending, self.order = pending, order
-        self.tails[receipt["ticker"]] = (
+        self.tails[tail_key] = (
             receipt["month"],
             receipt["stats"]["pending_origins"],
         )
+        self.totals["pending_tail_origins"] += receipt["stats"]["pending_origins"] - (
+            prior_tail[1] if prior_tail else 0
+        )
         for key, value in (
             ("units", 1),
-            ("bytes", receipt["bytes"]),
+            ("bytes", accounted_bytes),
             ("source_origins", receipt["stats"]["source_origins"]),
             ("warmup_deferred", receipt["stats"]["warmup_deferred"]),
             ("boundary_tail_deferred", receipt["stats"]["boundary_tail_deferred"]),
@@ -391,9 +455,11 @@ class Catalog:
         ):
             self.totals[key] += value
         self.totals["selected_blocks"] = order
+        split = receipt["splits"][0] if receipt["splits"] else 0
+        self.split_bytes[split] = self.split_bytes.get(split, 0) + accounted_bytes
 
     def stats(self):
-        tails = sum(p[1] for p in self.tails.values())
+        tails = self.totals["pending_tail_origins"]
         accounted = (
             self.totals["candidate_blocks"] * BLOCK
             + tails
@@ -408,6 +474,8 @@ class Catalog:
             reconciled_source_origins=accounted,
             selected_origins=self.order * BLOCK,
             unselected_complete_blocks=self.totals["candidate_blocks"] - self.order,
+            train_bytes=self.split_bytes.get(0, 0),
+            validation_bytes=self.split_bytes.get(1, 0),
         )
 
     def export(self, binding):

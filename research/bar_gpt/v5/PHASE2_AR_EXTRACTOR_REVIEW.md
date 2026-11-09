@@ -1,9 +1,18 @@
 # Phase-two autoregressive extractor: reviewed replacement design
 
-Status: replacement implemented in `phase2_ar_shards`, with a direct launcher
+Status: sampled-v2 replacement implemented in `phase2_ar_shards`, with a direct launcher
 `run_phase2_ar_shards.py`. It has not launched a production build. Corrected
 phase-one parent release remains a required execution gate. See the package
 README for the exact4096-origin format, cached history and validation limits.
+Latest user clarifications supersede the previous budgets and cutoff:
+default warmup is 64 completed bars in each of five frames; sample seeded random
+ticker/session-month units; every 4,096-origin block belongs to one NY04–20
+session. Training uses 2019–2025 trading-session dates and validation 2026,
+with UTC clocks and a 250MB upper validation shard-data budget. CPU owners keep
+their raw rolling caches across sessions; immutable session-basis copies are
+handed to a separate I/O pool. Splits are applied once using phase-one math.
+Short sessions do not combine, but still advance context for later sessions.
+Token stride is not stored. See the package README for the current contract.
 The user cancelled the old phase-two stream dataset and all its repairs, and
 explicitly retained the current universe and 75/25 liquidity mix. Monitoring
 remains paused. Phase-one repair and training continue independently.
@@ -35,28 +44,28 @@ the builder and retained production run use 4,096. Neither value is a token widt
 
 ## Preserve the proven extraction structure
 
-Use one chronological owner per ticker across years. Query canonical source
+Use one chronological CPU owner for consecutive sessions within a sampled
+ticker-month batch. Query canonical source
 pages with explicit monthly partition bounds; dense pages may be subdivided at
 complete-session boundaries under measured memory limits. Query page size and
 physical publication size are independent.
 
-Keep a bounded rolling history, warmed once per ticker, not independently for
-each ticker-year or small range. Pipeline bounded extraction, vectorized array
-compilation and disk publication. A publication is a ticker-month shared-array
-shard, split into bounded physical parts only when necessary. Avoid the retired
+Keep a bounded rolling history, warmed once per sampled CPU month-batch,
+then reused for its consecutive sessions. Pipeline bounded extraction, vectorized array
+compilation and disk publication. A publication is an immutable session-basis shared-array shard. A CPU task
+can produce several consecutive sessions from one month-aligned source fetch. Avoid the retired
 format's publication/fsync/checkpoint for every small event-budget subdivision.
 
 The latest user instruction requires exactly4,096 core1s origins in every
 published training block. This is a storage/loader
 grouping, not an encoder window or an instruction to attend over 4,096 origins.
-Retain partial tails across months and count warmup, boundary and terminal
-deferrals. Incomplete tails are not padded into training blocks. Sparse tickers
+Retain and count partial tails within their session only; never combine two
+sessions to make one block. Count warmup and terminal deferrals. Incomplete tails are not padded into training blocks. Sparse tickers
 may have no eligible full block; this must remain visible in coverage reports.
 
 Keep common frame arrays once per shard, with block slices, actual origin clocks
-and causal as-of references. Cache the index for cross-month context reads.
-Read neighboring source parts for context or future support without duplicating
-the same window for every origin. Keep source coverage explicit.
+and causal as-of references. Attach the shared session-basis warmup prefix so input context needs no
+neighboring shard reads. Future-target support remains a training-reader concern. Keep source coverage explicit.
 
 ## Replace the old market contract
 
@@ -83,9 +92,10 @@ derived indicators, halt channels, old condition-target features or old v3
 forecast targets. No embeddings, decoder outputs, per-origin copied 64-bar
 samples, scaled model tensors or nine derived UTC inputs are stored.
 
-Raw storage remains in original share basis. The reader applies phase one's
-common-origin split adjustment, including quotes and inverse size adjustment,
-then phase one's numerical transform. All source price/reference/time metadata
+Original canonical source remains unchanged. Session shard history is converted
+once to that session's common split basis, including quotes and inverse sizes.
+The reader recognizes it and does not apply the split twice; phase one's
+numerical transform remains downstream. All source price/reference/time metadata
 needed for this operation must remain recoverable. Missing evidence is masked.
 
 ## Preserve the current scope, separate the learning contract
@@ -95,8 +105,9 @@ versus v3's 300-ticker production cohort. The user chose to retain the broader
 universe and 75/25 mix. Reuse its authority, not its retired mutable dataset.
 Freeze a new manifest from the phase-one authority before generation.
 
-Maintain the chronological boundary inherited from phase one, rather than
-copying v3's 2026 validation period. Retain 75/25 liquid/less-liquid exposure
+The latest user instruction explicitly chooses2019â€“2025 training origins and
+2026 validation origins. Earlier completed context is allowed for validation.
+Retain75/25 liquid/less-liquid exposure
 without allowing variable block-tail lengths to distort the origin mix; the
 sampling manifest must state its unit and report actual origin exposure.
 
@@ -104,7 +115,9 @@ Do not bake the retired 256-decision geometry, 544/288/160/80 history lengths,
 or 38 overlapping encoder views into the raw storage format. The model-ready
 manifest separately binds 64-bar token width, historical token stride/count,
 forecast target advance, decision sampling stride and target validity.
-Context eligibility must cover the selected historical geometry; training
+Default context eligibility requires64 real completed observations per frame;
+the missing2018 canonical history currently defers early2019 origins until
+enough observed daily bars exist. This is not64 calendar days. Training
 targets must also end before the validation boundary. Missing future support
 is explicitly deferred/masked, never taken from another split.
 

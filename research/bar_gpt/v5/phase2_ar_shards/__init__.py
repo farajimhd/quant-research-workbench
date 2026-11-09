@@ -1,1 +1,1 @@
-"""V3-style monthly phase-two shards using the current phase-one bar contract."""
+"""Seeded rolling AR blocks with shared causal phase-one bar context."""
