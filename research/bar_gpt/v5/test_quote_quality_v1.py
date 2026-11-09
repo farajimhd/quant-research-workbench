@@ -64,7 +64,8 @@ def test_condition_namespace_keeps_valid_corrections():
     ]
     expression = condition_sql(rules)
     assert "has([22, 48],t)" in expression
-    assert "hasAny(tokens,[22])" in expression
+    assert "hasAny(" in expression and ",[22])" in expression
+    assert "condition_token_5" not in expression
     with pytest.raises(ValueError):
         condition_sql([])
 

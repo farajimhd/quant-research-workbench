@@ -27,7 +27,6 @@ POLICY = dict(
 # otherwise-valid quotes are deliberately not rejected solely by condition.
 REJECTED_QUOTE_MODIFIERS = (
     -1,
-    12,
     15,
     18,
     19,
@@ -46,14 +45,18 @@ REJECTED_QUOTE_MODIFIERS = (
     89,
 )
 POLICY["rejected_quote_modifiers"] = list(REJECTED_QUOTE_MODIFIERS)
+POLICY["condition_slots"] = (
+    "quote conditions in slots 1..4; slot 5 is a separate indicator namespace"
+)
 
 
 def condition_sql(rules):
     """Map frozen quote-condition records to encoded tokens for SQL eligibility.
 
     ``rules`` is the canonical dictionary in the dataset contract. Empty token
-    arrays represent unqualified messages. A nonzero unrecognized token fails
-    closed. Trade-condition IDs never enter this mapping. Reference:
+    arrays represent unqualified messages. A nonzero unrecognized QUOTE token
+    fails closed. Slot five is an encoded indicator, not a quote condition, and
+    must not be tested against the quote-condition dictionary. Reference:
     https://massive.com/glossary/conditions-indicators (Quote Conditions).
     """
     quotes = [r for r in rules if r["source_family"] == "quote_conditions"]
@@ -67,7 +70,8 @@ def condition_sql(rules):
             if int(r["modifier_int"]) in REJECTED_QUOTE_MODIFIERS
         }
     )
-    return f"arrayAll(t->has({known},t),tokens) AND NOT hasAny(tokens,{rejected})"
+    quote_tokens = "arrayFilter(t->t>0,[toUInt16(condition_token_1),toUInt16(condition_token_2),toUInt16(condition_token_3),toUInt16(condition_token_4)])"
+    return f"arrayAll(t->has({known},t),{quote_tokens}) AND NOT hasAny({quote_tokens},{rejected})"
 
 
 def reasons(values, valid):

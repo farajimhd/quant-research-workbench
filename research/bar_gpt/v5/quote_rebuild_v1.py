@@ -9,6 +9,7 @@ from collections import OrderedDict, Counter
 from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
+import threading
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -21,6 +22,7 @@ from .shards.sql import clock
 
 NY = ZoneInfo("America/New_York")
 QUOTE = np.dtype([("values", "<f4", (12,)), ("valid", "u1", (12,)), ("rebuild", "u1")])
+CACHE_WRITER = threading.RLock()
 
 
 def interval_statement(ticker, bounds, rules, day):
@@ -171,9 +173,10 @@ class Rebuilder:
         self.client = source.client(memory_gib=1)
         self.client.default_query_params["max_threads"] = 1
         self.db = sqlite3.connect(cache, timeout=60, check_same_thread=False)
-        self.db.executescript(
-            "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS quotes(binding TEXT,ticker TEXT,frame INTEGER,end INTEGER,payload BLOB,PRIMARY KEY(binding,ticker,frame,end)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS intervals(binding TEXT,ticker TEXT,day TEXT,payload TEXT,PRIMARY KEY(binding,ticker,day)) WITHOUT ROWID;"
-        )
+        with CACHE_WRITER:
+            self.db.executescript(
+                "PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS quotes(binding TEXT,ticker TEXT,frame INTEGER,end INTEGER,payload BLOB,PRIMARY KEY(binding,ticker,frame,end)) WITHOUT ROWID; CREATE TABLE IF NOT EXISTS intervals(binding TEXT,ticker TEXT,day TEXT,payload TEXT,PRIMARY KEY(binding,ticker,day)) WITHOUT ROWID;"
+            )
         from . import bar_semantics_v1
         from .quote_quality_v1 import POLICY
 
@@ -231,7 +234,7 @@ class Rebuilder:
                     allow_empty=True,
                 )
                 intervals = table.to_dicts()
-                with self.db:
+                with CACHE_WRITER, self.db:
                     inserted = self.db.execute(
                         "INSERT OR IGNORE INTO intervals VALUES(?,?,?,?)",
                         (self.binding, ticker, str(day), json.dumps(intervals)),
@@ -317,7 +320,7 @@ class Rebuilder:
                     records["rebuild"] = 1
                     records["values"] = table["values"].list.to_array(12).to_numpy()
                     records["valid"] = table["valid"].list.to_array(12).to_numpy()
-                    with self.db:
+                    with CACHE_WRITER, self.db:
                         for t, record in zip(clocks, records):
                             payload = record.tobytes()
                             self.db.execute(

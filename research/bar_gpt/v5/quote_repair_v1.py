@@ -24,6 +24,7 @@ import shutil
 import sqlite3
 import threading
 import time
+import traceback
 
 import numpy as np
 import psutil
@@ -572,6 +573,7 @@ def main(argv=None):
                     )
                     completed += 1
                 except Exception as error:
+                    (output / "last-error.txt").write_text(traceback.format_exc())
                     failure = f"{relative}: {type(error).__name__}: {error}"
             ledger.commit()
             snapshot = dict(

@@ -11,6 +11,10 @@ quote modifier 81 `Corrected_Price` is retained when its values are usable. It i
 not the same namespace as trade corrections. Explicit non-firm, closed, cancel,
 range/band/pause, unknown and one-sided indication conditions are ineligible.
 Every actual invalidation still clears carry; no stale earlier book is revived.
+Canonical quote slots 1–4 contain quote conditions; slot 5 is an indicator in a
+different family. Token 221 is LULD “NBB NBO Executable”, not an unknown quote
+condition. Manual quotes remain eligible absent another rejection condition.
+The failed unreleased attempt is retained separately and must not enter training.
 Documentation: https://massive.com/glossary/conditions-indicators
 
 The final-bar policy additionally quarantines nonfinite/nonpositive fields,
