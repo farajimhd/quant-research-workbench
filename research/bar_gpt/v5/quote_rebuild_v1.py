@@ -23,6 +23,7 @@ from .shards.sql import clock
 NY = ZoneInfo("America/New_York")
 QUOTE = np.dtype([("values", "<f4", (12,)), ("valid", "u1", (12,)), ("rebuild", "u1")])
 CACHE_WRITER = threading.RLock()
+SESSION_LOCKS = [threading.Lock() for _ in range(256)]
 
 
 def interval_statement(ticker, bounds, rules, day):
@@ -196,6 +197,46 @@ class Rebuilder:
         self.db.close()
         source.close(self.client)
 
+    def intervals(self, ticker, day):
+        """Coalesce duplicate session probes; keep lock memory constant at 256 slots."""
+        import json
+
+        stripe = int(digest([ticker, str(day)])[:8], 16) % len(SESSION_LOCKS)
+        with SESSION_LOCKS[stripe]:
+            cached = self.db.execute(
+                "SELECT payload FROM intervals WHERE binding=? AND ticker=? AND day=?",
+                (self.binding, ticker, str(day)),
+            ).fetchone()
+            if cached:
+                return json.loads(cached[0])
+            table = source.arrow(
+                self.client,
+                interval_statement(
+                    ticker, self.bounds[ticker], self.authority["rules"], str(day)
+                ),
+                "quote-intervals-"
+                + digest([ticker, str(day)])[:24]
+                + f"-{threading.get_ident()}",
+                allow_empty=True,
+            )
+            intervals = table.to_dicts()
+            with CACHE_WRITER, self.db:
+                inserted = self.db.execute(
+                    "INSERT OR IGNORE INTO intervals VALUES(?,?,?,?)",
+                    (self.binding, ticker, str(day), json.dumps(intervals)),
+                )
+                if inserted.rowcount:
+                    self.metrics["canonical_sessions_catalogued"] += 1
+                    for name in (
+                        "changed_messages",
+                        "zero_size_messages",
+                        "condition_messages",
+                    ):
+                        self.metrics["canonical_" + name] += sum(
+                            int(row[name]) for row in intervals
+                        )
+            return intervals
+
     def get(self, ticker, frame, ends):
         """Return raw QUOTE[N] for arbitrary repeated Int64[N] bar-close clocks."""
         from .shards.balanced_plan import ticker_bounds
@@ -218,37 +259,7 @@ class Rebuilder:
         )
         affected = np.zeros(len(unique), dtype=bool)
         for day in np.unique(dates):
-            cached = self.db.execute(
-                "SELECT payload FROM intervals WHERE binding=? AND ticker=? AND day=?",
-                (self.binding, ticker, str(day)),
-            ).fetchone()
-            if cached:
-                intervals = json.loads(cached[0])
-            else:
-                table = source.arrow(
-                    self.client,
-                    interval_statement(
-                        ticker, self.bounds[ticker], self.authority["rules"], str(day)
-                    ),
-                    "quote-intervals-" + digest([ticker, str(day)])[:24],
-                    allow_empty=True,
-                )
-                intervals = table.to_dicts()
-                with CACHE_WRITER, self.db:
-                    inserted = self.db.execute(
-                        "INSERT OR IGNORE INTO intervals VALUES(?,?,?,?)",
-                        (self.binding, ticker, str(day), json.dumps(intervals)),
-                    )
-                    if inserted.rowcount:
-                        self.metrics["canonical_sessions_catalogued"] += 1
-                        for name in (
-                            "changed_messages",
-                            "zero_size_messages",
-                            "condition_messages",
-                        ):
-                            self.metrics["canonical_" + name] += sum(
-                                int(row[name]) for row in intervals
-                            )
+            intervals = self.intervals(ticker, str(day))
             positions = np.flatnonzero(dates == day)
             clocks = unique[positions]
             starts = (
@@ -309,7 +320,8 @@ class Rebuilder:
                             clocks,
                         ),
                         "quote-repair-"
-                        + digest([ticker, int(frame), clocks.tolist()])[:24],
+                        + digest([ticker, int(frame), clocks.tolist()])[:24]
+                        + f"-{threading.get_ident()}",
                         allow_empty=False,
                     )
                     if table["end_us"].to_list() != clocks.tolist():
