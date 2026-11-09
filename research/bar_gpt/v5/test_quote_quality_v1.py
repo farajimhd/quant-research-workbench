@@ -7,7 +7,12 @@ import numpy as np
 import pytest
 
 from .quote_quality_v1 import condition_sql, neighbor_spikes, sanitize
-from .quote_repair_v1 import phase_one_payload, phase_two_payload, publish_file
+from .quote_repair_v1 import (
+    GuardOnly,
+    phase_one_payload,
+    phase_two_payload,
+    publish_file,
+)
 from .quote_rebuild_v1 import QUOTE
 from .shards.phase1_contract import SAMPLE_DTYPE
 from .phase2_shards.contract import BAR
@@ -88,6 +93,106 @@ def test_cpac_eleven_fold_ask_is_rejected_without_future_input():
     assert counts["extreme_trade_distance"] == 1 and counts["quarantined"] == 1
     assert not masks[30, 6:].any()
     np.testing.assert_array_equal(clean[:, :6], values[:, :6])
+
+
+@pytest.mark.parametrize(
+    "trade,bid,ask",
+    [
+        (
+            [22.1719, 25.675, 22.02, 25.16],
+            [15, 25.4, 15, 22.8],
+            [246.96, 246.96, 22.4, 25.2],
+        ),
+        (
+            [0.08, 0.1889, 0.08, 0.1889],
+            [0.05, 0.0731, 0.05, 0.07],
+            [1.21, 1.21, 0.19, 0.1985],
+        ),
+    ],
+)
+def test_lark_and_airtw_opening_spreads_are_quarantined(trade, bid, ask):
+    """Real residual examples recover by close but have dislocated paired opens."""
+    values, valid = good()
+    values[30, :4], values[30, 6:10], values[30, 12:16] = trade, bid, ask
+    clean, masks, counts = sanitize(values, valid)
+    assert (
+        counts["extreme_trade_distance"] == 0
+    )  # Original envelope alone missed these.
+    assert counts["extreme_open_spread"] == 1
+    assert counts["quarantined"] == 1 and not masks[30, 6:].any()
+    np.testing.assert_array_equal(clean[:, :6], values[:, :6])
+
+
+def test_guard_only_uses_existing_bars_without_queries(tmp_path):
+    """A completed source reconstruction needs only the stricter causal bar gate."""
+    original = np.zeros(1, dtype=SAMPLE_DTYPE)
+    original["values"], original["valid"] = good((1, 64))
+    original["end_us"] = np.arange(1, 65)[None, :] * 1000000
+    original["timeframe_us"] = 1000000
+    original["values"][0, 30, 12:16] = [150, 150, 10, 10]
+    # Wider trade highs make the old envelope pass, but the paired open is 15x.
+    original["values"][0, 30, 1] = 20
+    path = tmp_path / "samples-0.npy"
+    np.save(path, original)
+    coverage = np.zeros(18, dtype=np.uint64)
+    payload, counts = phase_one_payload(path, "LARK", GuardOnly(), coverage=coverage)
+    revised = np.load(io.BytesIO(payload), allow_pickle=False)
+    assert counts["extreme_open_spread"] == 1 and counts["rebuilt_bars"] == 0
+    np.testing.assert_array_equal(
+        revised["values"][..., :6], original["values"][..., :6]
+    )
+    np.testing.assert_array_equal(revised["end_us"], original["end_us"])
+    np.testing.assert_array_equal(coverage, revised["valid"].sum(axis=(0, 1)))
+
+
+def test_guard_receipt_preserves_transitive_ancestry_and_resumes(tmp_path, monkeypatch):
+    """A second guard pass retains the original source seal without new queries."""
+    import hashlib
+    from . import quote_repair_v1 as module
+    from .shards.contract import digest, write_json
+
+    source, output = tmp_path / "v2", tmp_path / "v3"
+    relative = __import__("pathlib").Path("jobs/job/coarse/receipt.json")
+    directory = source / relative.parent
+    directory.mkdir(parents=True)
+    data = np.zeros(1, dtype=SAMPLE_DTYPE)
+    data["values"], data["valid"] = good((1, 64))
+    data["end_us"] = np.arange(1, 65)[None, :] * 1000000
+    data["timeframe_us"] = 1000000
+    data["values"][0, 30, 1] = 20
+    data["values"][0, 30, 12:16] = [150, 150, 10, 10]
+    path = directory / "samples-0.npy"
+    np.save(path, data)
+    content = path.read_bytes()
+    receipt = dict(
+        ticker="LARK",
+        identity="prior-id",
+        binding="v2",
+        files=[
+            dict(
+                name=path.name,
+                bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+            )
+        ],
+        quote_repair=dict(
+            parent_receipt="original-seal",
+            policy=dict(version="bargpt-paired-quote-quarantine-v2"),
+        ),
+    )
+    receipt["receipt_hash"] = digest(receipt)
+    write_json(source / relative, receipt)
+    monkeypatch.setattr(module, "LOCAL", SimpleNamespace())
+    revised = module.migrate_receipt(source, output, relative, "v3-binding", 1, True)
+    assert revised["quote_repair"]["parent_receipt"] == receipt["receipt_hash"]
+    assert revised["quote_repair"]["root_parent_receipt"] == "original-seal"
+    assert revised["quote_repair"]["counts"]["rebuilt_bars"] == 0
+    assert (
+        module.migrate_receipt(source, output, relative, "v3-binding", 1, True)
+        == revised
+    )
+    module.verify_seal(revised, "receipt_hash")
+    assert path.read_bytes() == content
 
 
 class FakeRebuilder:

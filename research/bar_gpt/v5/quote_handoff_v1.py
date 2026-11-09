@@ -147,7 +147,10 @@ def prepare_split(old_path, repaired_dataset, output):
         require_complete(target)
         release = json.loads((target / "repair-result.json").read_text())
         wrapper = json.loads((target / "contract.json").read_text())
-        if wrapper["contract"]["repair_parent_binding"] != old_members[name]["binding"]:
+        ancestry = wrapper["contract"].get(
+            "repair_root_parent_binding", wrapper["contract"]["repair_parent_binding"]
+        )
+        if ancestry != old_members[name]["binding"]:
             raise ValueError("Repaired cohort is not descended from this training data")
         releases[name] = release["hash"]
 
@@ -159,7 +162,8 @@ def prepare_split(old_path, repaired_dataset, output):
         entries = {
             Path(item["path"]).name: item for item in index_receipt(path, binding)
         }
-        return body["quote_repair"]["parent_receipt"], entries
+        repair = body["quote_repair"]
+        return repair.get("root_parent_receipt", repair["parent_receipt"]), entries
 
     def resolve(old):
         matches = [

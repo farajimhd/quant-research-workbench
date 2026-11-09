@@ -15,10 +15,10 @@ plausible-looking source error has been detected.
 import numpy as np
 
 POLICY = dict(
-    version="bargpt-paired-quote-quarantine-v2",
+    version="bargpt-paired-quote-quarantine-v3",
     maximum_price_multiple=10.0,
     action="zero and mask both quote families; retain original immutable payload",
-    reference="same completed bar trade low/high; invariant to common split adjustment",
+    reference="same completed bar trade low/high and paired opening/closing spread; invariant to common split adjustment",
     carry="unchanged session carry; no added age cutoff",
 )
 
@@ -130,6 +130,7 @@ def reasons(values, valid):
             ((p > values[..., 1, None] * limit) | (p * limit < values[..., 2, None]))
             & m
         ).any(axis=-1)
+    opens = valid[..., 6].astype(bool) & valid[..., 12].astype(bool)
     closes = valid[..., 9].astype(bool) & valid[..., 15].astype(bool)
     result.update(
         nonpositive_price=price,
@@ -138,6 +139,9 @@ def reasons(values, valid):
         ohlc_geometry=geometry,
         crossed_close=closes & (values[..., 9] > values[..., 15]),
         extreme_spread=closes & (values[..., 15] > values[..., 9] * limit),
+        # Opening sides come from the same qualifying paired book. A short-lived
+        # wide opening quote can contaminate OHLC even when the close recovers.
+        extreme_open_spread=opens & (values[..., 12] > values[..., 6] * limit),
         extreme_trade_distance=distant,
     )
     return result

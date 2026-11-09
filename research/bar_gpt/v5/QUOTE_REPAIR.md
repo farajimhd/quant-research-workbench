@@ -1,5 +1,32 @@
 # Quote evidence repair
 
+## Opening-spread refinement (v3)
+
+Bounded canonical probes confirmed additional positive-size, regular-condition
+opening spikes: LARK 2020-05-08 ask 246.96 against bid 15 and AIRTW 2019-06-20
+ask 1.21 against bid 0.05. Their closes recovered, and their trade envelopes were
+wide enough to pass the v2 distance gate. V3 also applies the existing tenfold
+spread limit to the paired OPEN. It uses no future neighbor to make that decision.
+Canonical probes and per-message conditions are in the runtime residual-source
+probe, not in source control.
+
+The running v2 canonical reconstruction retains its original immutable snapshot.
+`quote_guard_campaign_v1` waits for each complete v2 member, then applies only the
+stricter bar guard into separate `-quote-v3` roots. This pass verifies payloads
+and every bar, makes NO ClickHouse queries, retains all trades/clocks/decisions,
+and hardlinks unchanged bytes. It preserves transitive receipt/contract ancestry.
+The repaired supplement binds to the repaired v3 base, rather than its old base.
+Only the v3 cohort is intended for the training handoff. This avoids discarding
+or repeating the expensive canonical reconstruction already in progress.
+
+The v3 pass is a full migration, not an expanded pretraining qualification.
+Release audits remain bounded. Both v2 and v3 counts are retained separately;
+do not sum their stored-bar counts as unique market observations. V3 masks
+additional bad evidence; it does not certify that every possible source error
+has been detected. Check remaining candidates before activating new readers.
+
+## Earlier reconstruction and handoff contract
+
 The user authorized repairing both immutable phase-one v6 members and the stopped
 phase-two stream, fixing future producers, retaining active training until a
 checkpoint-boundary handoff to the audited repaired cohort, and continuing this

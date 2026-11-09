@@ -32,7 +32,7 @@ import psutil
 from .quote_quality_v1 import POLICY, sanitize, neighbor_spikes
 from .shards.contract import digest, file_hash, write_json
 from .phase2_shards.contract import BAR
-from .quote_rebuild_v1 import Rebuilder
+from .quote_rebuild_v1 import Rebuilder, QUOTE
 from .quote_repair_io_v1 import payload_io, TIMES
 from .phase2_shards.training_guard import TrainingGuard
 
@@ -40,6 +40,30 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 LOCAL = threading.local()
 BUILDERS = []
 BUILDERS_LOCK = threading.Lock()
+
+
+class GuardOnly:
+    """No canonical reads: tighten the bar guard on released repaired payloads.
+
+    Existing v2 quote fields already have canonical condition reconstruction.
+    A stricter v3 quarantine can only remove evidence, so rebuilding those fields
+    again would add queries without improving source evidence. The CLI requires
+    a complete v2 repair release before this explicit mode can be used.
+    """
+
+    bar_guard_only = True
+    actions = ()
+
+    def __init__(self):
+        self.metrics = Counter()
+
+    def get(self, ticker, frame, ends):
+        """Return QUOTE[N] with rebuild=0; all existing quote bytes are retained."""
+        return np.zeros(len(ends), dtype=QUOTE)
+
+    def close(self):
+        """No transport or cache is created by this explicit no-query mode."""
+        return None
 
 
 def read_json(path):
@@ -115,6 +139,29 @@ def phase_one_payload(path, ticker, rebuilder, *, serialized=None, coverage=None
     data = load_payload(path, serialized)
     if data.dtype != SAMPLE_DTYPE:
         raise ValueError("Unexpected phase-one record schema")
+    if getattr(rebuilder, "bar_guard_only", False):
+        values, masks, counts = sanitize(data["values"], data["valid"])
+        if coverage is not None:
+            coverage += masks.sum(axis=(0, 1), dtype=np.uint64)
+        counts.update(
+            changed_bars=counts["quarantined"],
+            rebuilt_bars=0,
+            neighbor_candidates_before=int(
+                neighbor_spikes(data["values"], data["valid"]).sum()
+            ),
+            neighbor_candidates_after=int(neighbor_spikes(values, masks).sum()),
+        )
+        if not np.isfinite(data["values"][..., :6]).all():
+            raise ValueError("Nonfinite trade evidence; guard cannot modify trades")
+        if not counts["changed_bars"]:
+            return None, counts
+        data["values"][..., 6:], data["valid"][..., 6:] = (
+            values[..., 6:],
+            masks[..., 6:],
+        )
+        buffer = io.BytesIO()
+        np.save(buffer, data, allow_pickle=False)
+        return buffer.getvalue(), counts
     from .shards.storage import adjust_splits
 
     # Rebuild ALL quotes, not just spectacular ratios: a rejected condition may
@@ -261,7 +308,7 @@ def phase_two_payload(path, descriptors, ticker, rebuilder, *, serialized=None):
     return (bytes(data) if totals["changed_bars"] else None), totals
 
 
-def migrate_receipt(source, output, relative, binding, phase):
+def migrate_receipt(source, output, relative, binding, phase, guard_only=False):
     """Migrate one publication; return bounded evidence to the coordinator.
 
     Crash recovery trusts only a sealed matching child receipt AND its verified
@@ -289,8 +336,12 @@ def migrate_receipt(source, output, relative, binding, phase):
         return receipt
     target.parent.mkdir(parents=True, exist_ok=True)
     if not hasattr(LOCAL, "rebuilder"):
-        LOCAL.rebuilder = Rebuilder(
-            output.parent / "quote-repair-cache-v1.sqlite", source, phase, binding
+        LOCAL.rebuilder = (
+            GuardOnly()
+            if guard_only
+            else Rebuilder(
+                output.parent / "quote-repair-cache-v1.sqlite", source, phase, binding
+            )
         )
         with BUILDERS_LOCK:
             BUILDERS.append(LOCAL.rebuilder)
@@ -349,12 +400,21 @@ def migrate_receipt(source, output, relative, binding, phase):
         counts=dict(totals),
         changed_files=changed_files,
     )
+    if guard_only:
+        prior = original["quote_repair"]
+        receipt["quote_repair"].update(
+            root_parent_receipt=prior.get(
+                "root_parent_receipt", prior["parent_receipt"]
+            ),
+            prior_policy=prior["policy"],
+            mode="released-v2-bar-guard-only; no canonical queries",
+        )
     receipt[key] = digest({k: v for k, v in receipt.items() if k != key})
     write_json(target, receipt)  # Receipt is the last publication/commit marker.
     return receipt
 
 
-def prepare(source, output, phase, revision):
+def prepare(source, output, phase, revision, guard_only=False, repaired_base=None):
     """Bind an immutable parent and explicit quality policy; never mutate it in place."""
     base = Path(__file__).resolve().parent
     parent = read_json(source / ("contract.json" if phase == 1 else "plan.json"))
@@ -366,6 +426,8 @@ def prepare(source, output, phase, revision):
     identity = dict(
         source=str(source.resolve()), parent=digest(parent), phase=phase, policy=POLICY
     )
+    if guard_only:
+        identity["mode"] = "released-v2-bar-guard-only"
     seal = dict(identity=identity, hash=digest(identity), source_revision=revision)
     path = output / "repair-contract.json"
     if path.exists():
@@ -387,6 +449,21 @@ def prepare(source, output, phase, revision):
         contract = deepcopy(parent["contract"])
         contract["quote_quality"] = POLICY
         contract["repair_parent_binding"] = parent["binding"]
+        if guard_only:
+            contract["repair_root_parent_binding"] = parent["contract"].get(
+                "repair_root_parent_binding",
+                parent["contract"]["repair_parent_binding"],
+            )
+        if guard_only and "parent_binding" in contract:
+            if repaired_base is None:
+                raise ValueError(
+                    "Supplement guard upgrade requires its explicit repaired base"
+                )
+            require_complete(repaired_base)
+            contract["repair_prior_cohort_parent"] = contract["parent_binding"]
+            contract["parent_binding"] = read_json(repaired_base / "contract.json")[
+                "binding"
+            ]
         from . import bar_semantics_v1
 
         contract["code"]["research.bar_gpt.v5.bar_semantics_v1"] = file_hash(
@@ -417,7 +494,7 @@ def prepare(source, output, phase, revision):
         revision=revision,
         code={name: file_hash(base / name) for name in PRODUCERS},
     )
-    repaired_parent = source.parent / "shards-2019-2025-v6-quote-v2"
+    repaired_parent = repaired_base or source.parent / "shards-2019-2025-v6-quote-v2"
     require_complete(repaired_parent)
     plan["parent_binding_before_repair"] = plan["parent_binding"]
     plan["parent_binding"] = read_json(repaired_parent / "contract.json")["binding"]
@@ -521,6 +598,12 @@ def main(argv=None):
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--training-campaign", type=Path)
     parser.add_argument(
+        "--bar-guard-only",
+        action="store_true",
+        help="Tighten final guards on a complete v2 repair, without canonical queries",
+    )
+    parser.add_argument("--repaired-base", type=Path)
+    parser.add_argument(
         "--limit",
         type=int,
         default=0,
@@ -533,7 +616,18 @@ def main(argv=None):
     if not source.is_dir() or not 1 <= args.workers <= 16 or args.limit < 0:
         raise ValueError("Invalid source, worker count or pilot bound")
     phase = 1 if (source / "contract.json").exists() else 2
-    if phase == 2:
+    if args.bar_guard_only:
+        require_complete(source)
+        prior_contract = read_json(source / "repair-contract.json")
+        if (
+            prior_contract["hash"] != digest(prior_contract["identity"])
+            or prior_contract["identity"]["policy"]["version"]
+            != "bargpt-paired-quote-quarantine-v2"
+        ):
+            raise ValueError(
+                "Guard-only mode requires the released v2 source reconstruction"
+            )
+    if phase == 2 and not args.bar_guard_only:
         progress = read_json(source / "progress.json")
         if (
             progress["state"] not in ("stopped", "completed", "budget_reached")
@@ -558,7 +652,14 @@ def main(argv=None):
     owner.seek(0)
     msvcrt.locking(owner.fileno(), msvcrt.LK_NBLCK, 1)
     psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
-    binding = prepare(source, output, phase, args.source_revision)
+    binding = prepare(
+        source,
+        output,
+        phase,
+        args.source_revision,
+        args.bar_guard_only,
+        args.repaired_base,
+    )
     ledger = sqlite3.connect(output / "repair.sqlite")
     ledger.executescript(
         "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=4096;"
@@ -651,7 +752,13 @@ def main(argv=None):
                     break
                 active[
                     pool.submit(
-                        migrate_receipt, source, output, Path(relative), binding, phase
+                        migrate_receipt,
+                        source,
+                        output,
+                        Path(relative),
+                        binding,
+                        phase,
+                        args.bar_guard_only,
                     )
                 ] = relative
             if not active:
