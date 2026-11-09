@@ -37,8 +37,11 @@ def statement(ticker, bounds, rules):
     limit = POLICY["maximum_price_multiple"] * (1 - 1e-5)
     order = "PARTITION BY session_open ORDER BY sip_timestamp_us,ordinal"
     previous = order + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-    following = order + " ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING"
-    after = order + " ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING"
+    # Reverse-prefix windows are linear accumulations. A forward window ending
+    # at UNBOUNDED FOLLOWING can repeatedly recompute argMin over its suffix.
+    reverse = "PARTITION BY session_open ORDER BY sip_timestamp_us DESC,ordinal DESC"
+    following = reverse + " ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+    after = reverse + " ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING"
 
     def dislocated(bid, ask, reference):
         return f"({reference}.2 AND ({ask}>{reference}.1*{limit} OR {bid}*{limit}<{reference}.1))"
@@ -58,11 +61,12 @@ def statement(ticker, bounds, rules):
       FROM ({raw}) WHERE sip_timestamp_us>={clock(days[0],4)} AND sip_timestamp_us<{clock(days[-1],20)}),
     projected AS (SELECT source_date,session_open,sip_timestamp_us,ordinal,kind,price_int,secondary_int,e_ok,q_ok,old_ok
       FROM decoded WHERE local_second>=14400 AND local_second<72000),
-    context AS (SELECT *,
+    history AS (SELECT *,
       argMaxIf(tuple(price_int,toUInt8(1)),tuple(sip_timestamp_us,ordinal),e_ok) OVER ({previous}) previous_trade,
+      argMaxIf(tuple(toUInt8(old_ok),secondary_int,price_int),tuple(sip_timestamp_us,ordinal),kind=0) OVER ({previous}) old_book FROM projected),
+    context AS (SELECT *,
       argMinIf(tuple(price_int,toUInt8(1)),tuple(sip_timestamp_us,ordinal),e_ok) OVER ({following}) next_trade,
-      argMaxIf(tuple(toUInt8(old_ok),secondary_int,price_int),tuple(sip_timestamp_us,ordinal),kind=0) OVER ({previous}) old_book,
-      minIf(toInt64(sip_timestamp_us),kind=0) OVER ({after}) next_quote_us FROM projected),
+      minIf(toInt64(sip_timestamp_us),kind=0) OVER ({after}) next_quote_us FROM history),
     nominated AS (SELECT *,({quote_hint}) quote_hint,({trade_hint}) trade_hint,
       toInt64(intDiv(sip_timestamp_us,100000)*100000) begin_us FROM context)
     SELECT source_date,begin_us,
