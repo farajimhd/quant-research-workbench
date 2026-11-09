@@ -360,6 +360,10 @@ def prepare(source, output, phase, revision):
         revision=revision,
         code={name: file_hash(base / name) for name in PRODUCERS},
     )
+    repaired_parent = source.parent / "shards-2019-2025-v6-quote-v1"
+    require_complete(repaired_parent)
+    plan["parent_binding_before_repair"] = plan["parent_binding"]
+    plan["parent_binding"] = read_json(repaired_parent / "contract.json")["binding"]
     plan["hash"] = digest({k: v for k, v in plan.items() if k != "hash"})
     write_json(output / "plan.json", plan)
     return plan["hash"]
