@@ -275,6 +275,39 @@ def test_transient_quote_transport_retries_identical_read(monkeypatch):
     assert worker.metrics["transport_retries"] == 2
 
 
+def test_dense_query_retries_same_sql_and_restores_memory_cap(monkeypatch):
+    """Resource repair changes neither criteria nor result and retains base caps."""
+    from collections import Counter
+    from . import quote_rebuild_v1 as module
+    import psutil
+
+    calls = []
+    worker = object.__new__(module.Rebuilder)
+    worker.client = SimpleNamespace(default_query_params={"max_memory_usage": 1024**3})
+    worker.metrics = Counter()
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: SimpleNamespace(available=128 * 1024**3)
+    )
+
+    def bounded(client, sql, identity, **kwargs):
+        calls.append((sql, client.default_query_params["max_memory_usage"]))
+        if calls[-1][1] < 2 * 1024**3:
+            raise RuntimeError("MEMORY_LIMIT_EXCEEDED")
+        return "same final aggregates"
+
+    monkeypatch.setattr(module.source, "arrow", bounded)
+    assert (
+        worker.query("SELECT complete session", "selective-dense")
+        == "same final aggregates"
+    )
+    assert calls == [
+        ("SELECT complete session", 1024**3),
+        ("SELECT complete session", 2 * 1024**3),
+    ]
+    assert worker.client.default_query_params["max_memory_usage"] == 1024**3
+    assert worker.metrics["memory_recoveries"] == 1
+
+
 def test_concurrent_session_audit_is_coalesced_and_committed(tmp_path):
     from collections import Counter
     from concurrent.futures import ThreadPoolExecutor

@@ -895,6 +895,13 @@ def main(argv=None):
         )
     )
     if state == "payloads_complete":
+        remaining = ledger.execute("SELECT count(*) FROM work WHERE done=0").fetchone()[
+            0
+        ]
+        if remaining or completed != total:
+            failure = f"Repair queue exhausted with {remaining} unpublished units"
+            state = "failed"
+    if state == "payloads_complete":
         # Sum durable reports across ALL attempts, not just this process's delta.
         counts = {
             name: int(total)

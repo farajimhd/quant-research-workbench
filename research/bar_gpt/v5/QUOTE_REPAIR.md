@@ -38,6 +38,13 @@ and retains a bounded set of independent job cursors. This preserves all unit
 identities, payload content and resume receipts; only repair publication order
 changes. It avoids bypassing the cache coalescing/integrity lock to gain speed.
 
+Independent lanes exposed a dense QQQ session: the query log measured 3.46M rows
+and a 1-GiB per-query memory failure. The resource-only recovery retries the
+IDENTICAL SELECT at 2/4/8 GiB, with at most two dense requests and a 64-GiB free
+RAM reserve. Settings are worker-local and restored afterward; server-wide
+limits, event coverage, predicates and selector hashes are unchanged. Failure
+at the bounded maximum remains visible/resumable rather than dropping events.
+
 ## Opening-spread refinement (v3)
 
 Bounded canonical probes confirmed additional positive-size, regular-condition

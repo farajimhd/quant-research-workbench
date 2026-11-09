@@ -27,6 +27,7 @@ NY = ZoneInfo("America/New_York")
 QUOTE = np.dtype([("values", "<f4", (12,)), ("valid", "u1", (12,)), ("rebuild", "u1")])
 CACHE_WRITER = threading.RLock()
 SESSION_LOCKS = [threading.Lock() for _ in range(256)]
+DENSE_QUERIES = threading.BoundedSemaphore(2)
 
 
 def session_batches(bounds, max_events=2_000_000, max_days=14):
@@ -283,17 +284,68 @@ class Rebuilder:
         """Retry identical SELECTs after idle-socket disconnects; never retry bad SQL."""
         for attempt in range(3):
             began = time.monotonic()
+            accounted = False
             try:
                 return source.arrow(self.client, sql, identity, allow_empty=allow_empty)
+            except RuntimeError as error:
+                if not identity.startswith(
+                    "selective-"
+                ) or "MEMORY_LIMIT_EXCEEDED" not in str(error):
+                    raise
+                self.metrics["canonical_query_microseconds"] += int(
+                    (time.monotonic() - began) * 1e6
+                )
+                accounted = True
+                return self.dense_query(sql, identity, allow_empty=allow_empty)
             except (ConnectionError, TimeoutError, OSError):
                 if attempt == 2:
                     raise
                 self.metrics["transport_retries"] += 1
                 time.sleep(0.25 * 2**attempt)
             finally:
-                self.metrics["canonical_query_microseconds"] += int(
-                    (time.monotonic() - began) * 1e6
-                )
+                if not accounted:
+                    self.metrics["canonical_query_microseconds"] += int(
+                        (time.monotonic() - began) * 1e6
+                    )
+
+    def dense_query(self, sql, identity, *, allow_empty=False):
+        """Retry the IDENTICAL source SELECT with a bounded per-query memory cap.
+
+        QQQ's measured 3.46M-row session exceeded 1 GiB. No event is truncated,
+        predicate changed or global server limit raised. At most two dense
+        requests run concurrently; retry caps are 2/4/8 GiB, checked against the
+        64-GiB workstation reserve. Other worker requests retain their 1-GiB cap.
+        Every setting is restored even if the final attempt fails.
+        """
+        import psutil
+
+        old = self.client.default_query_params.get("max_memory_usage")
+        with DENSE_QUERIES:
+            try:
+                for gib in (2, 4, 8):
+                    budget = gib * 1024**3
+                    if psutil.virtual_memory().available < (64 * 1024**3 + budget):
+                        raise MemoryError(
+                            "Dense source query would violate the workstation reserve"
+                        )
+                    self.client.default_query_params["max_memory_usage"] = budget
+                    self.metrics["memory_retries"] += 1
+                    try:
+                        result = self.query(
+                            sql,
+                            "resource-" + identity + "-" + str(gib),
+                            allow_empty=allow_empty,
+                        )
+                        self.metrics["memory_recoveries"] += 1
+                        return result
+                    except RuntimeError as error:
+                        if "MEMORY_LIMIT_EXCEEDED" not in str(error) or gib == 8:
+                            raise
+            finally:
+                if old is None:
+                    self.client.default_query_params.pop("max_memory_usage", None)
+                else:
+                    self.client.default_query_params["max_memory_usage"] = old
 
     def intervals(self, ticker, day):
         """Coalesce duplicate session probes; keep lock memory constant at 256 slots."""
