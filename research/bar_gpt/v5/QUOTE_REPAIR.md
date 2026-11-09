@@ -163,3 +163,11 @@ baselines. Its extra strict contract field deliberately makes it incompatible
 with the existing trainer. It must not be activated until explicit trainer
 transition validation and corrected-data baseline integration are implemented
 and tested. No live checkpoint has been changed by adding this helper.
+
+`data_transition_v1` now supplies strict certificate/actual split/calibration and
+scientific-contract validation, plus baseline collection that restores CPU/CUDA,
+Python and NumPy RNGs. It checks untrained model state geometry, rejects partial
+or nonfinite baseline results, and detects changes to trained tensor bytes.
+These are independently tested helpers, NOT an activated trainer path. Wiring
+the helpers into the trainer, serialization/state-hash evidence, best/history
+handling, W&B identity bridging and native boundary activation remain required.
