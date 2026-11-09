@@ -76,3 +76,10 @@ seals an independent membership hash. Old derived loader indices are discarded.
 Its certificate explicitly says `prepared-not-activated`: calibration review,
 checkpoint-state migration, corrected-data validation and the safe operational
 handoff are still required. The helper does not signal or modify the trainer.
+
+`rebind_calibration` preserves the original training-only activity median/scale
+vectors so that the trained encoder continues seeing the same input units. It
+records the original calibration/split/selection hashes and explicitly states
+that these are historical frozen units, not refitted corrected-data statistics.
+It requires the sealed exact-membership certificate. Repaired validity masks
+still apply. This preparation does not migrate a checkpoint or activate a loader.

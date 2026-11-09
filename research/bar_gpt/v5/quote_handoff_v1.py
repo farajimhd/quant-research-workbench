@@ -78,6 +78,52 @@ def rebind_split(original, identity, dataset, resolve_entry):
     return result
 
 
+def rebind_calibration(original, certificate, source_split, target_split):
+    """Retain the encoder's existing activity units during quote-data migration.
+
+    Inputs are JSON dictionaries. ``original`` contains the historical
+    training-only median/scale vectors. This does NOT refit or describe them as
+    corrected-data statistics: changing these units would also change the inputs
+    seen by the already-trained weights. Provenance records the old split and
+    selection hash explicitly. The corrected-data loader still applies repaired
+    validity masks. Checkpoint compatibility must continue to require exactly
+    these same vectors, as well as the new split identity.
+    """
+    import math
+
+    verify_seal(certificate, "hash")
+    if (
+        certificate.get("state") != "prepared-not-activated"
+        or original.get("split_hash") != source_split
+        or certificate["source_split"] != source_split
+        or certificate["target_split"] != target_split
+        or source_split == target_split
+    ):
+        raise ValueError(
+            "Calibration migration requires the exact sealed split transition"
+        )
+    median, scale = original["median"], original["scale"]
+    if (
+        len(median) != 6
+        or len(scale) != 6
+        or not all(math.isfinite(value) for value in [*median, *scale])
+        or not all(value > 0 for value in scale)
+    ):
+        raise ValueError("Invalid frozen activity normalization vectors")
+    if "quote_migration" in original:
+        raise ValueError("Do not silently chain different calibration migrations")
+    result = deepcopy(original)
+    result["split_hash"] = target_split
+    result["quote_migration"] = dict(
+        certificate=certificate["hash"],
+        source_calibration=digest(original),
+        source_split=source_split,
+        source_selection_hash=original["selection_hash"],
+        policy="frozen-original-training-only-units; no corrected-data refit",
+    )
+    return result
+
+
 def prepare_split(old_path, repaired_dataset, output):
     """Publish a prepared split and certificate after both repair releases exist.
 

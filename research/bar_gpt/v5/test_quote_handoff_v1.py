@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from .quote_handoff_v1 import membership_hash, rebind_split
+from .quote_handoff_v1 import membership_hash, rebind_calibration, rebind_split
 from .shards.phase1_contract import digest
 
 
@@ -102,3 +102,54 @@ def test_discards_old_derived_loader_index():
     original["loader_index"] = dict(train="old-index")
     prepared = rebind_split(original, {}, Path("new/base"), lambda _: replacement)
     assert "loader_index" not in prepared
+
+
+def calibration_fixture():
+    """Small frozen vectors stand for the existing training-only activity units."""
+    old = dict(
+        split_hash="old",
+        median=[1.0, 2.0, 1.0, 2.0, 1.0, 2.0],
+        scale=[0.5, 1.5, 0.5, 1.5, 0.5, 1.5],
+        selection_hash="selected-training-rows",
+    )
+    certificate = dict(
+        state="prepared-not-activated", source_split="old", target_split="new"
+    )
+    certificate["hash"] = digest(certificate)
+    return old, certificate
+
+
+def test_calibration_retains_units_and_records_historical_provenance():
+    """A new split binding must not silently refit units for trained weights."""
+    original, certificate = calibration_fixture()
+    snapshot = deepcopy(original)
+    new = rebind_calibration(original, certificate, "old", "new")
+    assert original == snapshot
+    assert new["median"] == original["median"] and new["scale"] == original["scale"]
+    assert new["split_hash"] == "new"
+    assert new["quote_migration"]["source_calibration"] == digest(original)
+    assert new["quote_migration"]["source_selection_hash"] == original["selection_hash"]
+
+
+def test_calibration_rejects_tampered_certificate():
+    """An unsealed membership claim cannot authorize a calibration rebind."""
+    original, certificate = calibration_fixture()
+    certificate["target_split"] = "another"
+    with pytest.raises(ValueError):
+        rebind_calibration(original, certificate, "old", "new")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("scale", [0.0, 1.5, 0.5, 1.5, 0.5, 1.5]),
+        ("median", [float("nan"), 2.0, 1.0, 2.0, 1.0, 2.0]),
+        ("split_hash", "unrelated"),
+    ],
+)
+def test_calibration_rejects_invalid_or_foreign_units(field, value):
+    """Zero/nonfinite scales or foreign training provenance fail closed."""
+    original, certificate = calibration_fixture()
+    original[field] = value
+    with pytest.raises(ValueError):
+        rebind_calibration(original, certificate, "old", "new")
