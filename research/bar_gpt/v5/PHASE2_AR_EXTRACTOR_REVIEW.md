@@ -61,6 +61,11 @@ catalog. Reuse current phase-one market semantics and final-bar quarantine.
 Do not reuse v3's old trade/quote eligibility SQL or feature projector: its
 spread filter, condition treatment and 50-feature schema are different.
 
+Do not reproduce coarser quotes by rolling up only saved trade-bearing 1s bars:
+quote updates in seconds without a 1s trade origin can still affect a coarser
+bar's quote open, count or carry. The current shared phase-one source aggregation
+must remain authoritative for all five output frames.
+
 Store five views: 1s, 10s, 1m, 1h and regular-session daily. Each real bar has:
 
 - 18 Float32 fields in `shards.phase1_contract.CHANNELS` order: trade, bid, ask
