@@ -56,6 +56,37 @@ def test_transition_rejects_tampered_split_and_calibration():
         validate_contract(saved, current, manifest, calibration)
 
 
+def test_completed_baseline_resume_requires_sealed_domain_and_best_state():
+    """A resumed domain cannot silently lose or substitute its validation baseline."""
+    saved, current, manifest, calibration = transition_fixture()
+    baseline = dict(loss=0.5, complete_pass=True)
+    evidence = dict(
+        epoch=saved["epoch"],
+        step=saved["step"],
+        split_hash=manifest["manifest_hash"],
+        certificate=saved["data_transition"]["certificate"]["hash"],
+        baselines=dict(
+            untrained_probe=baseline,
+            trained_probe=baseline,
+            trained_validation=baseline,
+        ),
+    )
+    evidence["hash"] = digest(evidence)
+    saved["data_transition"].update(
+        state="baselines-complete", baseline_evidence=evidence
+    )
+    saved.update(probe_baseline=0.5, best_validation=0.5, best_epoch=saved["epoch"])
+    validate_contract(saved, current, manifest, calibration)
+    saved["best_epoch"] = None
+    with pytest.raises(ValueError, match="best/probe"):
+        validate_contract(saved, current, manifest, calibration)
+    saved["best_epoch"] = saved["epoch"]
+    evidence["split_hash"] = "foreign"
+    evidence["hash"] = digest({k: v for k, v in evidence.items() if k != "hash"})
+    with pytest.raises(ValueError, match="another data state"):
+        validate_contract(saved, current, manifest, calibration)
+
+
 def test_baselines_preserve_weights_mode_and_all_rngs():
     model = torch.nn.Linear(2, 2)
     before, rng = model_hash(model), torch.get_rng_state().clone()

@@ -197,6 +197,7 @@ def prepare_checkpoint_state(
                 for key in (
                     "history",
                     "best_validation",
+                    "best_epoch",
                     "training_metrics",
                     "probe_baseline",
                 )
@@ -204,7 +205,11 @@ def prepare_checkpoint_state(
         ),
     )
     prepared.update(
-        history=[], best_validation=None, training_metrics=None, probe_baseline=None
+        history=[],
+        best_validation=None,
+        best_epoch=None,
+        training_metrics=None,
+        probe_baseline=None,
     )
     return prepared
 

@@ -82,6 +82,31 @@ def validate_contract(saved, current, manifest, calibration):
         raise ValueError("Transition normalization provenance differs from the loader")
     if any(calibration[key] != source[key] for key in ("median", "scale")):
         raise ValueError("Transition must retain the original input units")
+    if transition["state"] == "baselines-complete":
+        evidence = transition["baseline_evidence"]
+        verify_seal(evidence, "hash")
+        baselines = evidence["baselines"]
+        if (
+            evidence["split_hash"] != manifest["manifest_hash"]
+            or evidence["certificate"] != certificate["hash"]
+            or evidence["epoch"] > saved["epoch"]
+            or evidence["step"] > saved["step"]
+        ):
+            raise ValueError("Baseline evidence belongs to another data state")
+        for role in ("untrained_probe", "trained_probe", "trained_validation"):
+            if not baselines[role].get("complete_pass") or not math.isfinite(
+                float(baselines[role]["loss"])
+            ):
+                raise ValueError("Invalid corrected-data baseline evidence")
+        if (
+            saved["probe_baseline"] != baselines["untrained_probe"]["loss"]
+            or saved["best_validation"] is None
+            or saved["best_validation"] > baselines["trained_validation"]["loss"]
+            or saved.get("best_epoch") is None
+        ):
+            raise ValueError(
+                "Corrected-data best/probe state differs from sealed baselines"
+            )
     return expected
 
 

@@ -50,7 +50,7 @@ def assess(history, baseline, patience=3, *, overfit_patience=None):
             return dict(
                 action="stop",
                 reason="persistent overfit",
-                best_epoch=best_index + 1,
+                best_epoch=history[best_index].get("epoch", best_index + 1),
                 probe_improvement=improvement,
             )
     return dict(

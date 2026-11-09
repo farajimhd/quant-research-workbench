@@ -164,6 +164,7 @@ def train_campaign(args, manifest, stats, reporter):
         if overfit_patience != 3:
             contract["learning_guard"]["overfit_patience"] = overfit_patience
     phase, history, best, training_metrics = "train", [], None, None
+    transition, best_epoch = None, None
     if args.resume:
         saved = torch.load(args.resume, map_location="cpu", weights_only=False)
         old_guard = saved["contract"].get("learning_guard", {})
@@ -173,6 +174,12 @@ def train_campaign(args, manifest, stats, reporter):
         )
         if guarded and overfit_patience != 3:
             contract["learning_guard"]["overfit_patience"] = overfit_patience
+        if saved.get("data_transition"):
+            from .data_transition_v1 import validate_contract
+
+            calibration = json.loads((args.output / "calibration.json").read_text())
+            contract = validate_contract(saved, contract, manifest, calibration)
+            transition = deepcopy(saved["data_transition"])
         if not compatible_resume_contract(saved["contract"], contract):
             raise ValueError(
                 "Resume requires identical data, model, optimizer and schedule contracts."
@@ -187,6 +194,7 @@ def train_campaign(args, manifest, stats, reporter):
             saved["training_metrics"],
         )
         probe_baseline = saved.get("probe_baseline")
+        best_epoch = saved.get("best_epoch")
         if old_patience != overfit_patience:
             write_json(
                 args.output / "guard-policy-change.json",
@@ -198,9 +206,10 @@ def train_campaign(args, manifest, stats, reporter):
                 ),
             )
         if best is not None:
-            best_epoch = min(history, key=lambda row: row["validation"]["loss"])[
-                "epoch"
-            ]
+            if best_epoch is None:
+                best_epoch = min(history, key=lambda row: row["validation"]["loss"])[
+                    "epoch"
+                ]
             preserve_prior_best(args.resume, args.output, best, contract, best_epoch)
         torch.set_rng_state(saved["rng"])
         torch.cuda.set_rng_state_all(saved["cuda_rng"])
@@ -219,18 +228,25 @@ def train_campaign(args, manifest, stats, reporter):
             phase=phase,
             history=history,
             best_validation=best,
+            best_epoch=best_epoch,
             training_metrics=training_metrics,
             probe_baseline=probe_baseline,
             rng=torch.get_rng_state(),
             cuda_rng=torch.cuda.get_rng_state_all(),
         )
+        if transition is not None:
+            state["data_transition"] = deepcopy(transition)
         temporary = args.output / (name + ".partial")
         torch.save(state, temporary)
         temporary.replace(args.output / name)
 
-    def evaluate_or_train(split, probe=False):
+    def evaluate_or_train(
+        split, probe=False, *, evaluated_model=None, metric_role=None
+    ):
         """One iterator per full split; worker prefetch persists throughout that pass."""
         training = split == "train"
+        if training and evaluated_model is not None:
+            raise ValueError("Alternate models are evaluation-only")
         loader = loader_for(
             args,
             manifest,
@@ -275,7 +291,7 @@ def train_campaign(args, manifest, stats, reporter):
 
         try:
             result = run_steps(
-                model,
+                model if evaluated_model is None else evaluated_model,
                 optimizer,
                 loader,
                 steps=limit,
@@ -289,8 +305,12 @@ def train_campaign(args, manifest, stats, reporter):
                 loss_every=args.loss_every,
                 before_step=set_rate if training else None,
                 on_step=advance_schedule if training else None,
-                metric_prefix="probe" if probe else None,
-                status_stage="learning probe" if probe else None,
+                metric_prefix=metric_role or ("probe" if probe else None),
+                status_stage=(
+                    metric_role.replace("_", " ")
+                    if metric_role
+                    else ("learning probe" if probe else None)
+                ),
             )
             result["complete_pass"] = (
                 result["exhausted"] or result["consumed_batches"] >= limit
@@ -309,6 +329,59 @@ def train_campaign(args, manifest, stats, reporter):
                     excluded_no_price=excluded,
                     prepared_batches=prepared,
                 )
+
+    if (
+        transition is not None
+        and transition["state"] == "requires-corrected-data-baselines"
+    ):
+        from .data_transition_v1 import collect_baselines
+        from .shards.contract import digest
+
+        # Baselines include a full validation pass. Preserve the pending state
+        # first so interruption retries evaluation without replaying an epoch.
+        save("checkpoint_last.pt")
+
+        def baseline_evaluate(selected, probe):
+            role = (
+                "untrained_probe"
+                if selected is not model
+                else ("trained_probe" if probe else "trained_validation")
+            )
+            return evaluate_or_train(
+                "validation",
+                probe=probe,
+                evaluated_model=selected,
+                metric_role="data_revision_" + role,
+            )
+
+        baselines = collect_baselines(
+            model,
+            lambda: MaskedAutoencoderV1(model.config).cuda(),
+            baseline_evaluate,
+            args.seed,
+        )
+        evidence = dict(
+            epoch=epoch,
+            step=step,
+            split_hash=manifest["manifest_hash"],
+            certificate=transition["certificate"]["hash"],
+            baselines=baselines,
+        )
+        evidence["hash"] = digest(evidence)
+        transition.update(state="baselines-complete", baseline_evidence=evidence)
+        probe_baseline = baselines["untrained_probe"]["loss"]
+        best, best_epoch = baselines["trained_validation"]["loss"], epoch
+        write_json(args.output / "data-transition-baseline.json", evidence)
+        reporter.log(
+            {
+                "data_revision/untrained_probe_loss": probe_baseline,
+                "data_revision/trained_probe_loss": baselines["trained_probe"]["loss"],
+                "data_revision/baseline_validation_loss": best,
+                "data_revision/certificate": transition["certificate"]["hash"],
+            },
+            step,
+        )
+        save("checkpoint_best.pt")
 
     # Initial state allows a failed/interrupted first epoch to restart without losing initialization.
     if guarded and probe_baseline is None:
@@ -339,6 +412,8 @@ def train_campaign(args, manifest, stats, reporter):
             break
         score = validation["loss"]
         improved = best is None or score < best
+        if improved:
+            best_epoch = epoch + 1
         best = score if improved else best
         epoch += 1
         phase = "train"

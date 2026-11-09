@@ -168,6 +168,13 @@ and tested. No live checkpoint has been changed by adding this helper.
 scientific-contract validation, plus baseline collection that restores CPU/CUDA,
 Python and NumPy RNGs. It checks untrained model state geometry, rejects partial
 or nonfinite baseline results, and detects changes to trained tensor bytes.
-These are independently tested helpers, NOT an activated trainer path. Wiring
-the helpers into the trainer, serialization/state-hash evidence, best/history
-handling, W&B identity bridging and native boundary activation remain required.
+The campaign now validates this explicit transition before loading state and
+collects corrected-data untrained/trained probes plus full validation before
+the next optimizer update. It first saves a pending checkpoint so interrupted
+baselines can be retried. A sealed baseline best has an explicit epoch even
+before new-domain history exists; subsequent resumes retain it. Old-domain
+history remains separate. CPU orchestration tests exercise the normal path,
+transition, baseline completion interruption and another resume with empty
+new-domain history. This is NOT activated in the live pinned trainer.
+Audited checkpoint serialization/state-hash evidence, W&B identity bridging and
+native boundary activation remain required before any operational data switch.
