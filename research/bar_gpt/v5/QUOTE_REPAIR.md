@@ -67,3 +67,12 @@ optimizer/scheduler/model state and original W&B train-01 identity, record the
 data change, retain historical best evidence and establish validation evidence
 on the repaired data before comparing future learning-guard results. Model and
 hyperparameters remain unchanged. This handoff needs validation before activation.
+
+`quote_handoff_v1.prepare_split(old_split, repaired_cohort, new_split)` prepares
+only the metadata portion after both repaired members are released. It checks
+each repaired receipt's original ancestry and unchanged sample geometry, retains
+the exact ordered train/validation row ranges and original overlap purge, and
+seals an independent membership hash. Old derived loader indices are discarded.
+Its certificate explicitly says `prepared-not-activated`: calibration review,
+checkpoint-state migration, corrected-data validation and the safe operational
+handoff are still required. The helper does not signal or modify the trainer.
