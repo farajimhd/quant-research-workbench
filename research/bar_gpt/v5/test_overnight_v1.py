@@ -39,8 +39,9 @@ def test_metadata_sharing_race_retries_without_hiding_persistent_failures(monkey
 
 
 @pytest.mark.parametrize("transition", [False, True])
+@pytest.mark.parametrize("direct_script", [False, True])
 def test_explicit_resume_retains_arguments_and_skips_qualification(
-    tmp_path, monkeypatch, transition
+    tmp_path, monkeypatch, transition, direct_script
 ):
     parent = tmp_path / "train-03"
     parent.mkdir()
@@ -87,7 +88,16 @@ def test_explicit_resume_retains_arguments_and_skips_qualification(
             checkpoint_transition_v1, "resume_inputs", lambda *args: (parent, config)
         )
     (parent / "STOP").write_text("Learning guard: persistent overfit")
-    controller = Controller(
+    controller_class = Controller
+    if direct_script:
+        import runpy
+        from pathlib import Path
+        from research.bar_gpt.v5 import overnight_v1
+
+        controller_class = runpy.run_path(
+            str(Path(overnight_v1.__file__)), run_name="script_fixture"
+        )["Controller"]
+    controller = controller_class(
         SimpleNamespace(
             output=tmp_path,
             source_revision="new",

@@ -299,7 +299,7 @@ class Controller:
         transition_proof = getattr(self.args, "data_transition_proof", None)
         transition_config = None
         if transition_proof:
-            from .checkpoint_transition_v1 import resume_inputs
+            from research.bar_gpt.v5.checkpoint_transition_v1 import resume_inputs
 
             parent, transition_config = resume_inputs(
                 checkpoint, transition_proof, self.root
