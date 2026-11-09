@@ -56,6 +56,20 @@ memory retries remain limited to two, and RAM/disk reserves are unchanged.
 Increasing the pool requires a short live throughput/headroom check; completed
 receipts and data/model contracts remain unchanged.
 
+Repair transport also recognizes the exact ordered candidate prefix windows.
+Their unique `(sip_timestamp_us, ordinal)` ordering lets `anyLastIf` return the
+same eligible value as ascending `argMaxIf` / descending `argMinIf`, without
+retaining and comparing another tuple per aggregate. The logical selector SQL
+and its sealed hash remain intact; unknown window shapes are left unchanged.
+
+A complete source-bound candidate-cache session with zero `source_changes`
+proves that raw reconstruction has no changed condition/size messages that day.
+The rebuilder can skip its redundant source-interval lookup for that session;
+the final paired bar guard still runs. Cache binding, dictionary and exact frozen
+source-row hash must match. Missing metadata/counts or any nonzero change takes
+the original interval path. Candidate anomaly hints are never reinterpreted as
+source rejection, and this shortcut never masks or invents a price.
+
 A native worker dump found 14 of 16 repair threads waiting on the same ticker's
 candidate-cache lock because receipt discovery order clustered one source job.
 `quote_work_queue_v1.GroupedWork` now admits at most one receipt per job at once

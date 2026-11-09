@@ -359,6 +359,7 @@ def test_concurrent_session_audit_is_coalesced_and_committed(tmp_path):
             },
             metrics=Counter(),
             query=query,
+            candidate_clean=lambda *_: False,
         )
         try:
             return Rebuilder.intervals(worker, "TEST", "2024-01-02")

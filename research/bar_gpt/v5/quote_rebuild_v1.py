@@ -285,11 +285,12 @@ class Rebuilder:
     def query(self, sql, identity, *, allow_empty=False):
         """Retry identical SELECTs after idle-socket disconnects; never retry bad SQL."""
         if getattr(self, "optimize_reads", True):
-            from .quote_query_v1 import prune_months
+            from .quote_query_v1 import ordered_candidates, prune_months
 
             optimized = prune_months(sql)
             self.metrics["partition_pruned_queries"] += int(optimized != sql)
-            sql = optimized
+            sql = ordered_candidates(optimized)
+            self.metrics["ordered_candidate_queries"] += int(sql != optimized)
         for attempt in range(3):
             began = time.monotonic()
             accounted = False
@@ -355,10 +356,66 @@ class Rebuilder:
                 else:
                     self.client.default_query_params["max_memory_usage"] = old
 
+    def candidate_clean(self, ticker, day):
+        """A complete matching candidate session with zero source changes is proof.
+
+        Candidate source_changes counts old_ok AND NOT q_ok, exactly the raw
+        reconstruction's changed predicate. An absent/foreign entry proves
+        nothing and takes the ordinary interval-query path. This never treats
+        anomaly hints as source rejection or changes final bar quarantine.
+        """
+        if not getattr(self, "optimize_reads", True):
+            return False
+        import json
+
+        if not hasattr(self, "candidate_binding"):
+            from .quote_candidates_v1 import statement as candidates
+            from .quote_quality_v1 import POLICY
+
+            self.candidate_binding = digest(
+                [
+                    POLICY,
+                    inspect.getsource(candidates),
+                    self.authority["dictionary_hash"],
+                ]
+            )
+            self.clean_sessions = OrderedDict()
+        bound = next(
+            (row for row in self.bounds[ticker] if row["source_date"] == str(day)), None
+        )
+        if bound is None:
+            return False
+        key = (ticker, str(day), digest(bound))
+        if key in self.clean_sessions:
+            return self.clean_sessions[key]
+        # Plain rebuilders need no selective cache; its absence is not evidence.
+        if not self.db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='selective_intervals'"
+        ).fetchone():
+            return False
+        cached = self.db.execute(
+            "SELECT payload FROM selective_intervals WHERE binding=? AND ticker=? AND day=? AND source_hash=?",
+            (self.candidate_binding, *key),
+        ).fetchone()
+        if cached is None:
+            return False
+        rows = json.loads(cached[0])
+        # Unknown old metadata must fall back, never infer missing counts as zero.
+        clean = all(
+            "source_changes" in row and int(row["source_changes"]) == 0 for row in rows
+        )
+        self.clean_sessions[key] = clean
+        if len(self.clean_sessions) > 2048:
+            self.clean_sessions.popitem(last=False)
+        return clean
+
     def intervals(self, ticker, day):
         """Coalesce duplicate session probes; keep lock memory constant at 256 slots."""
         import json
 
+        if self.candidate_clean(ticker, day):
+            self.metrics["source_interval_lookups_avoided"] += 1
+            return []
         if not hasattr(self, "groups"):
             self.groups = {}
         if ticker not in self.groups:

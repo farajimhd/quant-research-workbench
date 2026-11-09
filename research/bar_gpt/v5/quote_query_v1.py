@@ -18,6 +18,42 @@ ORDINAL_RANGE = re.compile(r"ordinal>=(\d+) AND ordinal<(\d+)")
 MAX_PRUNE_ORDINALS = 250000  # Large-range date filtering regressed in the live pilot.
 
 
+def ordered_candidates(sql):
+    """Use prefix order instead of retaining/comparing a second ordering tuple.
+
+    Only the exact generated candidate query is recognized. Its windows order
+    every message by unique (timestamp, ordinal): the latest eligible prefix
+    value is consequently identical to argMax ascending / argMin descending.
+    Empty prefixes retain the same zero tuple. No WHERE or source span changes.
+    """
+    replacements = (
+        (
+            "argMaxIf(tuple(price_int,toUInt8(1)),tuple(sip_timestamp_us,ordinal),e_ok) OVER",
+            "anyLastIf(tuple(price_int,toUInt8(1)),e_ok) OVER",
+        ),
+        (
+            "argMaxIf(tuple(toUInt8(old_ok),secondary_int,price_int),tuple(sip_timestamp_us,ordinal),kind=0) OVER",
+            "anyLastIf(tuple(toUInt8(old_ok),secondary_int,price_int),kind=0) OVER",
+        ),
+        (
+            "argMinIf(tuple(price_int,toUInt8(1)),tuple(sip_timestamp_us,ordinal),e_ok) OVER",
+            "anyLastIf(tuple(price_int,toUInt8(1)),e_ok) OVER",
+        ),
+    )
+    if (
+        "nominated AS (SELECT" not in sql
+        or "ORDER BY sip_timestamp_us,ordinal ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+        not in sql
+        or "ORDER BY sip_timestamp_us DESC,ordinal DESC ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
+        not in sql
+        or any(sql.count(before) != 1 for before, _ in replacements)
+    ):
+        return sql
+    for before, after in replacements:
+        sql = sql.replace(before, after)
+    return sql
+
+
 def prune_months(sql):
     """Add a redundant UTC-month PREWHERE to known generated repair SELECTs.
 

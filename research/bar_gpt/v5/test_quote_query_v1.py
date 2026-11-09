@@ -131,3 +131,77 @@ def test_large_quote_batches_preserve_inverse_order_and_cache_hits():
     before, old_queries = exercise(512)
     after, new_queries = exercise(4096)
     assert before == after and old_queries == 10 and new_queries == 2
+
+
+def test_ordered_candidate_rewrite_requires_all_exact_prefixes():
+    from .quote_candidates_v1 import statement
+    from .quote_query_v1 import ordered_candidates
+
+    rules = [dict(source_family="quote_conditions", token_id=2, modifier_int=0)]
+    original = statement(
+        "AAPL",
+        [dict(source_date="2024-01-02", first_ordinal=0, next_ordinal=100)],
+        rules,
+    )
+    revised = ordered_candidates(original)
+    assert revised.count("anyLastIf(") == 3
+    assert ordered_candidates(revised) == revised
+    # An altered ordering must never be silently optimized under this proof.
+    foreign = original.replace("ORDER BY sip_timestamp_us,ordinal", "ORDER BY ordinal")
+    assert ordered_candidates(foreign) == foreign
+    assert (
+        revised[revised.index("nominated AS") :]
+        == original[original.index("nominated AS") :]
+    )
+
+
+def test_clean_candidate_cache_requires_exact_source_and_complete_counts():
+    from collections import Counter
+    import inspect
+    from .quote_candidates_v1 import statement
+    from .quote_quality_v1 import POLICY
+    from .shards.contract import digest
+
+    b = Rebuilder.__new__(Rebuilder)
+    b.authority = dict(dictionary_hash="dictionary")
+    bound = dict(source_date="2024-01-02", first_ordinal=0, next_ordinal=100)
+    b.bounds = {"AAPL": [bound]}
+    b.metrics = Counter()
+    b.db = sqlite3.connect(":memory:")
+    binding = digest([POLICY, inspect.getsource(statement), "dictionary"])
+    try:
+        assert not b.candidate_clean("AAPL", "2024-01-02")
+        b.db.execute(
+            "CREATE TABLE selective_intervals(binding,ticker,day,source_hash,payload)"
+        )
+
+        def put(rows, source_hash=None, candidate_binding=None):
+            b.clean_sessions.clear()
+            b.db.execute("DELETE FROM selective_intervals")
+            b.db.execute(
+                "INSERT INTO selective_intervals VALUES(?,?,?,?,?)",
+                (
+                    candidate_binding or binding,
+                    "AAPL",
+                    "2024-01-02",
+                    source_hash or digest(bound),
+                    json.dumps(rows),
+                ),
+            )
+
+        for rows in ([], [dict(source_changes=0, quote_hints=2)]):
+            put(rows)
+            assert b.candidate_clean("AAPL", "2024-01-02")
+            assert b.intervals("AAPL", "2024-01-02") == []
+        for rows in ([dict(source_changes=1)], [dict(quote_hints=2)]):
+            put(rows)
+            assert not b.candidate_clean("AAPL", "2024-01-02")
+        put([], source_hash="foreign")
+        assert not b.candidate_clean("AAPL", "2024-01-02")
+        put([], candidate_binding="foreign")
+        assert not b.candidate_clean("AAPL", "2024-01-02")
+        put([])
+        b.optimize_reads = False
+        assert not b.candidate_clean("AAPL", "2024-01-02")
+    finally:
+        b.db.close()
