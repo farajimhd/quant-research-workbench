@@ -7,6 +7,7 @@ Only final aggregates cross ClickHouse. No historical flatfile is consulted.
 
 from collections import OrderedDict, Counter
 from datetime import datetime, timezone
+from datetime import date
 from pathlib import Path
 import sqlite3
 import threading
@@ -28,6 +29,33 @@ CACHE_WRITER = threading.RLock()
 SESSION_LOCKS = [threading.Lock() for _ in range(256)]
 
 
+def session_batches(bounds, max_events=2_000_000, max_days=14):
+    """Group complete frozen sessions; one dense session is never truncated.
+
+    The limits bound query overhead/memory, not eligibility or retained data.
+    Every input session appears exactly once. Gaps count in calendar days.
+    """
+    result, current, total = [], [], 0
+    for row in bounds:
+        count = int(row["event_count"])
+        if current and (
+            (
+                date.fromisoformat(row["source_date"])
+                - date.fromisoformat(current[0]["source_date"])
+            ).days
+            >= max_days
+            or total + count > max_events
+        ):
+            result.append(current)
+            current = []
+            total = 0
+        current.append(row)
+        total += count
+    if current:
+        result.append(current)
+    return result
+
+
 def interval_statement(ticker, bounds, rules, day):
     """Locate conservative source-change intervals, using only 100ms statistics.
 
@@ -36,7 +64,8 @@ def interval_statement(ticker, bounds, rules, day):
     to 100ms can only select extra rebuilds; it cannot miss a changed output.
     Filtering in ClickHouse returns only affected intervals, not raw events.
     """
-    selected = [r for r in bounds if r["source_date"] == day]
+    days = [day] if isinstance(day, str) else list(day)
+    selected = [r for r in bounds if r["source_date"] in days]
     if not selected:
         raise ValueError("Quote audit day is outside frozen source bounds")
     raw = event_source(
@@ -50,20 +79,25 @@ def interval_statement(ticker, bounds, rules, day):
       toUInt64(price_primary_int)*if(bitAnd(event_meta,2)!=0,1,100) price_int,
       toUInt64(price_secondary_int)*if(bitAnd(event_meta,4)!=0,1,100) secondary_int,
       {tokens} tokens,
+      toDateTime(intDiv(sip_timestamp_us,1000000),'America/New_York') local_time,
+      toHour(local_time)*3600+toMinute(local_time)*60+toSecond(local_time) local_second,
+      toString(toDate(local_time)) source_date,
+      toInt64(toUnixTimestamp(toDateTime(concat(source_date,' 04:00:00'),'America/New_York')))*1000000 session_open,
       secondary_int>0 AND price_int>=secondary_int AND isFinite(size_primary) AND isFinite(size_secondary)
         AND size_primary>=0 AND size_secondary>=0 old_ok,
       old_ok AND size_primary>0 AND size_secondary>0 AND ({condition_sql(rules)}) new_ok,
       old_ok AND NOT new_ok changed
-      FROM ({raw}) WHERE bitAnd(event_meta,1)=0 AND sip_timestamp_us>={clock(day,4)} AND sip_timestamp_us<{clock(day,20)}),
+      FROM ({raw}) WHERE bitAnd(event_meta,1)=0 AND sip_timestamp_us>={clock(days[0],4)} AND sip_timestamp_us<{clock(days[-1],20)}),
     buckets AS (SELECT toInt64(intDiv(sip_timestamp_us,100000)*100000) b,
       countIf(changed) changed_messages,
       countIf(old_ok AND (size_primary=0 OR size_secondary=0)) zero_size_messages,
       countIf(old_ok AND NOT ({condition_sql(rules)})) condition_messages,
       argMax(toUInt8(changed),tuple(sip_timestamp_us,ordinal)) carry_changed
-      FROM decoded GROUP BY b),
-    intervals AS (SELECT *,leadInFrame(b,1,toInt64({clock(day,20)})) OVER
-      (ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) next_b FROM buckets)
-    SELECT b begin_us,if(carry_changed,next_b+100000,b+100000) end_us,
+      ,any(source_date) source_date,session_open
+      FROM decoded WHERE local_second>=14400 AND local_second<72000 GROUP BY b,session_open),
+    intervals AS (SELECT *,leadInFrame(b,1,toInt64(0)) OVER
+      (PARTITION BY session_open ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) next_b FROM buckets)
+    SELECT source_date,b begin_us,if(carry_changed,if(next_b=0,session_open+57600000000,next_b)+100000,b+100000) end_us,
       changed_messages,zero_size_messages,condition_messages FROM intervals WHERE changed_messages>0 ORDER BY b FORMAT ArrowStream"""
 
 
@@ -220,7 +254,17 @@ class Rebuilder:
         """Coalesce duplicate session probes; keep lock memory constant at 256 slots."""
         import json
 
-        stripe = int(digest([ticker, str(day)])[:8], 16) % len(SESSION_LOCKS)
+        if not hasattr(self, "groups"):
+            self.groups = {}
+        if ticker not in self.groups:
+            groups = session_batches(self.bounds[ticker])
+            self.groups[ticker] = {
+                r["source_date"]: [x["source_date"] for x in group]
+                for group in groups
+                for r in group
+            }
+        days = self.groups[ticker][str(day)]
+        stripe = int(digest([ticker, days])[:8], 16) % len(SESSION_LOCKS)
         with SESSION_LOCKS[stripe]:
             cached = self.db.execute(
                 "SELECT payload FROM intervals WHERE binding=? AND ticker=? AND day=?",
@@ -230,30 +274,33 @@ class Rebuilder:
                 return json.loads(cached[0])
             table = self.query(
                 interval_statement(
-                    ticker, self.bounds[ticker], self.authority["rules"], str(day)
+                    ticker, self.bounds[ticker], self.authority["rules"], days
                 ),
                 "quote-intervals-"
-                + digest([ticker, str(day)])[:24]
+                + digest([ticker, days])[:24]
                 + f"-{threading.get_ident()}",
                 allow_empty=True,
             )
-            intervals = table.to_dicts()
+            grouped = {d: [] for d in days}
+            for row in table.to_dicts():
+                grouped[str(row.get("source_date", day))].append(row)
             with CACHE_WRITER, self.db:
-                inserted = self.db.execute(
-                    "INSERT OR IGNORE INTO intervals VALUES(?,?,?,?)",
-                    (self.binding, ticker, str(day), json.dumps(intervals)),
-                )
-                if inserted.rowcount:
-                    self.metrics["canonical_sessions_catalogued"] += 1
-                    for name in (
-                        "changed_messages",
-                        "zero_size_messages",
-                        "condition_messages",
-                    ):
-                        self.metrics["canonical_" + name] += sum(
-                            int(row[name]) for row in intervals
-                        )
-            return intervals
+                for target, intervals in grouped.items():
+                    inserted = self.db.execute(
+                        "INSERT OR IGNORE INTO intervals VALUES(?,?,?,?)",
+                        (self.binding, ticker, target, json.dumps(intervals)),
+                    )
+                    if inserted.rowcount:
+                        self.metrics["canonical_sessions_catalogued"] += 1
+                        for name in (
+                            "changed_messages",
+                            "zero_size_messages",
+                            "condition_messages",
+                        ):
+                            self.metrics["canonical_" + name] += sum(
+                                int(row[name]) for row in intervals
+                            )
+            return grouped[str(day)]
 
     def get(self, ticker, frame, ends):
         """Return raw QUOTE[N] for arbitrary repeated Int64[N] bar-close clocks."""
@@ -268,7 +315,9 @@ class Rebuilder:
             inventory = self.root if self.phase == 1 else self.root / "inventory"
             self.bounds[ticker] = ticker_bounds(inventory, self.jobs[ticker])
             if len(self.bounds) > 4:
-                self.bounds.popitem(last=False)
+                evicted, _ = self.bounds.popitem(last=False)
+                if hasattr(self, "groups"):
+                    self.groups.pop(evicted, None)
         dates = np.array(
             [
                 datetime.fromtimestamp(int(t - 1) / 1e6, NY).date().isoformat()

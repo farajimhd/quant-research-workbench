@@ -185,7 +185,12 @@ def test_concurrent_session_audit_is_coalesced_and_committed(tmp_path):
             binding="frozen",
             bounds={
                 "TEST": [
-                    dict(source_date="2024-01-02", first_ordinal=0, next_ordinal=100)
+                    dict(
+                        source_date="2024-01-02",
+                        first_ordinal=0,
+                        next_ordinal=100,
+                        event_count=100,
+                    )
                 ]
             },
             authority={
@@ -204,3 +209,31 @@ def test_concurrent_session_audit_is_coalesced_and_committed(tmp_path):
     with ThreadPoolExecutor(8) as pool:
         assert list(pool.map(run, range(8))) == [intervals] * 8
     assert len(requests) == 1
+
+
+def test_session_batching_never_truncates_dense_sessions_or_crosses_budget():
+    from .quote_rebuild_v1 import session_batches
+
+    rows = [
+        dict(source_date=day, event_count=count)
+        for day, count in [
+            ("2024-01-01", 100),
+            ("2024-01-02", 200),
+            ("2024-01-11", 2_500_000),
+            ("2024-01-20", 100),
+        ]
+    ]
+    batches = session_batches(rows)
+    assert [len(b) for b in batches] == [2, 1, 1]
+    assert [r for batch in batches for r in batch] == rows
+    assert (
+        len(
+            session_batches(
+                [
+                    dict(source_date="2024-01-01", event_count=1),
+                    dict(source_date="2024-01-15", event_count=1),
+                ]
+            )
+        )
+        == 2
+    )
