@@ -31,6 +31,13 @@ session measurements, not whole-corpus throughput guarantees. The old jobs must
 only be drained after real changed-bar recall and output parity checks pass.
 Training is not stopped by this replacement.
 
+A native worker dump found 14 of 16 repair threads waiting on the same ticker's
+candidate-cache lock because receipt discovery order clustered one source job.
+`quote_work_queue_v1.GroupedWork` now admits at most one receipt per job at once
+and retains a bounded set of independent job cursors. This preserves all unit
+identities, payload content and resume receipts; only repair publication order
+changes. It avoids bypassing the cache coalescing/integrity lock to gain speed.
+
 ## Opening-spread refinement (v3)
 
 Bounded canonical probes confirmed additional positive-size, regular-condition

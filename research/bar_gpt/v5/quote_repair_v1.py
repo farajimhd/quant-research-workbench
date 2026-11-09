@@ -791,10 +791,17 @@ def main(argv=None):
         ).fetchone()[0]
     )
     active = {}
-    pending = iter(
-        row[0]
-        for row in ledger.execute("SELECT path FROM work WHERE done=0 ORDER BY rowid")
-    )
+    if args.source_first:
+        from .quote_work_queue_v1 import GroupedWork
+
+        pending = GroupedWork(ledger, args.workers)
+    else:
+        pending = iter(
+            row[0]
+            for row in ledger.execute(
+                "SELECT path FROM work WHERE done=0 ORDER BY rowid"
+            )
+        )
     failure = None
     campaign = args.training_campaign or source.parent / "overnight-v6-20261108"
     guard = TrainingGuard(campaign if campaign.exists() else None, args.workers, 4)
@@ -833,6 +840,8 @@ def main(argv=None):
             ready, _ = wait(active, timeout=3, return_when=FIRST_COMPLETED)
             for future in ready:
                 relative = active.pop(future)
+                if args.source_first:
+                    pending.complete(relative)
                 try:
                     receipt = future.result()
                     report = receipt["quote_repair"]
@@ -874,6 +883,8 @@ def main(argv=None):
             if failure or time.monotonic() - last_progress >= 3:
                 write_json(output / "repair-progress.json", snapshot)
                 last_progress = time.monotonic()
+    if args.source_first:
+        pending.close()
     state = (
         "failed"
         if failure
