@@ -234,6 +234,8 @@ class Rebuilder:
             ]
         )
         self.metrics = Counter()
+        self.optimize_reads = True  # May be disabled only for bounded parity/profiling.
+        self.quote_batch_size = 4096  # statement() enforces the same hard output bound.
         # The old cache also hashed the final bar guard. Raw source aggregates
         # do not depend on that guard. Alias only the EXACT previous source SQL,
         # dictionary and condition policy, avoiding a repeat of canonical reads.
@@ -282,6 +284,12 @@ class Rebuilder:
 
     def query(self, sql, identity, *, allow_empty=False):
         """Retry identical SELECTs after idle-socket disconnects; never retry bad SQL."""
+        if getattr(self, "optimize_reads", True):
+            from .quote_query_v1 import prune_months
+
+            optimized = prune_months(sql)
+            self.metrics["partition_pruned_queries"] += int(optimized != sql)
+            sql = optimized
         for attempt in range(3):
             began = time.monotonic()
             accounted = False
@@ -444,8 +452,13 @@ class Rebuilder:
                 )
         targets = np.flatnonzero(affected)
         active = unique[targets]
-        for begin in range(0, len(active), 512):
-            batch = active[begin : begin + 512]
+        batch_size = getattr(self, "quote_batch_size", 4096)
+        if not 1 <= batch_size <= 4096:
+            raise ValueError(
+                "Quote cache batches must contain 1..4096 requested closes"
+            )
+        for begin in range(0, len(active), batch_size):
+            batch = active[begin : begin + batch_size]
             found = {
                 int(t): payload
                 for t, payload in self.db.execute(
@@ -495,16 +508,31 @@ class Rebuilder:
                     records["rebuild"] = 1
                     records["values"] = table["values"].list.to_array(12).to_numpy()
                     records["valid"] = table["valid"].list.to_array(12).to_numpy()
+                    # One prepared SQLite operation per batch, one contiguous
+                    # serialization; avoid scalar NumPy-record conversions.
+                    serialized = records.tobytes()
+                    additions = [
+                        (
+                            int(t),
+                            serialized[i * QUOTE.itemsize : (i + 1) * QUOTE.itemsize],
+                        )
+                        for i, t in enumerate(clocks)
+                    ]
                     with CACHE_WRITER, self.db:
-                        for t, record in zip(clocks, records):
-                            payload = record.tobytes()
-                            self.db.execute(
-                                "INSERT OR IGNORE INTO quotes VALUES(?,?,?,?,?)",
-                                (self.binding, ticker, int(frame), int(t), payload),
-                            )
-                            found[int(t)] = payload
-            for i, t in enumerate(batch):
-                result[targets[begin + i]] = np.frombuffer(
-                    found[int(t)], dtype=QUOTE, count=1
-                )[0]
+                        self.db.executemany(
+                            "INSERT OR IGNORE INTO quotes VALUES(?,?,?,?,?)",
+                            (
+                                (self.binding, ticker, int(frame), t, payload)
+                                for t, payload in additions
+                            ),
+                        )
+                    found.update(additions)
+            # Every cached record has a fixed byte layout, so one vectorized
+            # decode replaces the previous per-bar structured-array assignment.
+            payloads = [found[int(t)] for t in batch]
+            if any(len(payload) != QUOTE.itemsize for payload in payloads):
+                raise ValueError("Quote cache record has an invalid byte layout")
+            result[targets[begin : begin + len(batch)]] = np.frombuffer(
+                b"".join(payloads), dtype=QUOTE, count=len(batch)
+            )
         return result[inverse]

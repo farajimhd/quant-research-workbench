@@ -31,6 +31,23 @@ session measurements, not whole-corpus throughput guarantees. The old jobs must
 only be drained after real changed-bar recall and output parity checks pass.
 Training is not stopped by this replacement.
 
+Repair query engineering now batches up to 4,096 requested quote closes per
+cache lookup/source pass (previously 512), within the existing statement bound.
+This amortizes repeated full-session prefixes while retaining exactly the same
+clocks, causal book and cache keys. Cache writes use executemany; fixed-size
+records are decoded as a vector after checking every cached record's byte size.
+
+`quote_query_v1` adds redundant UTC-month partition predicates only to recognized
+generated repair SELECTs with an existing literal half-open SIP time predicate
+and source ordinal spans no larger than 250,000 events. Whole-session limits and
+all original conditions remain intact. Large scans keep their prior physical
+path because a live pilot found date filtering could regress that case. UTC
+month/year boundaries, NY DST and exclusive ends are covered by focused checks.
+This transport optimization does not change shared bar-generator source, sealed
+selector code, logical query/cache bindings or completed repaired receipts.
+Deployment requires native parity/profile evidence and graceful owned drain;
+never relax the existing output-contract checks merely to resume a revision.
+
 A native worker dump found 14 of 16 repair threads waiting on the same ticker's
 candidate-cache lock because receipt discovery order clustered one source job.
 `quote_work_queue_v1.GroupedWork` now admits at most one receipt per job at once
