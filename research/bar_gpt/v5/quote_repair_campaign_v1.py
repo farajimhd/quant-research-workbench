@@ -84,6 +84,24 @@ def cohort(root, suffix=SUFFIX):
     return path
 
 
+def request_handoff(root, setup, suffix):
+    """Publish the phase-one handoff independently of any phase-two repair."""
+    sealed = cohort(root, suffix)
+    handoff = setup / "training-handoff-needed.json"
+    if not handoff.exists():
+        write_json(
+            handoff,
+            dict(
+                state="audited_handoff_required",
+                cohort=str(sealed),
+                campaign="overnight-v6-20261108",
+                checkpoint_boundary_only=True,
+                wandb_id="1rpdtas2",
+                preserve_optimizer_scheduler=True,
+            ),
+        )
+
+
 def main():
     """Sequence resumable jobs; refresh health evidence every five seconds."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -93,6 +111,11 @@ def main():
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--source-first", action="store_true")
+    parser.add_argument(
+        "--phase-one-only",
+        action="store_true",
+        help="Repair only the two phase-one members; never inspect or queue phase-two data",
+    )
     args = parser.parse_args()
     suffix = "-quote-v4" if args.source_first else SUFFIX
     setup = args.root / (
@@ -142,27 +165,15 @@ def main():
         project="bargpt-quote-repair-v1",
     )
     snapshot["wandb_url"] = telemetry.url
-    for label, name in DATASETS:
+    datasets = DATASETS[:2] if args.phase_one_only else DATASETS
+    for label, name in datasets:
         snapshot["datasets"].append(
             dict(name=label, root=name + suffix, state="queued")
         )
     write_json(setup / "execution.json", snapshot)
-    for index, (label, name) in enumerate(DATASETS):
+    for index, (label, name) in enumerate(datasets):
         if index == 2:
-            sealed = cohort(args.root, suffix)
-            handoff = setup / "training-handoff-needed.json"
-            if not handoff.exists():
-                write_json(
-                    handoff,
-                    dict(
-                        state="audited_handoff_required",
-                        cohort=str(sealed),
-                        campaign="overnight-v6-20261108",
-                        checkpoint_boundary_only=True,
-                        wandb_id="1rpdtas2",
-                        preserve_optimizer_scheduler=True,
-                    ),
-                )
+            request_handoff(args.root, setup, suffix)
         target = args.root / (name + suffix)
         result = target / "repair-result.json"
         if result.exists():
@@ -240,6 +251,8 @@ def main():
             telemetry.finish()
             return 0 if stopped else 1
         require_complete(target)
+    if args.phase_one_only:
+        request_handoff(args.root, setup, suffix)
     snapshot.update(state="complete", updated=time.time(), active=None)
     write_json(setup / "campaign.json", snapshot)
     telemetry.update(snapshot)

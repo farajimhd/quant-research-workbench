@@ -1,5 +1,12 @@
 # Quote evidence repair
 
+The user retired the phase-two stream dataset and cancelled its queued repairs.
+The active repair controller must use `--phase-one-only`: only base and liquid
+supplement are queued, and their completed cohort still publishes the explicit
+training handoff request. Do not resume old phase-two generation or repair roots.
+Their generated data is removed under the user's explicit cleanup instruction;
+the replacement extractor requires a separately reviewed contract.
+
 ## Source-first replacement
 
 The user authorized replacing the payload-first repair after a bounded recall
