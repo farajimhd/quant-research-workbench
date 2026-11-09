@@ -1,5 +1,11 @@
 # Phase-two causal input streams
 
+**Retired by user instruction.** The old generated stream and pilot data are
+deleted, its generator is disabled, and phase-two repairs are excluded from the
+live repair queue. Do not resume this extractor against the old root. The
+replacement review is [PHASE2_AR_EXTRACTOR_REVIEW.md](../PHASE2_AR_EXTRACTOR_REVIEW.md).
+The material below documents the retired format for historical inspection.
+
 The generator stores raw bars and causal block references. It does no GPU work,
 does not control or restart the phase-one trainer, and does not cache embeddings
 from a checkpoint that is still learning. Each future encoder view produces 512
