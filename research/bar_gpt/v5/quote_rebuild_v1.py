@@ -70,7 +70,7 @@ def statement(ticker, bounds, rules, frame, ends):
     book. An ASOF join uses STRICTLY earlier quotes; a quote at the close belongs
     to the next bar. Same-time message order uses the canonical ordinal.
     """
-    if not 0 < len(ends) <= 4096 or np.any(np.diff(ends) <= 0):
+    if not 0 < len(ends) <= 4096 or np.any(np.diff(ends) <= 0) or np.any(ends % 100000):
         raise ValueError("Rebuild targets must be 1..4096 unique ordered clocks")
     first_day = datetime.fromtimestamp(int(ends[0] - 1) / 1e6, NY).date().isoformat()
     last_day = datetime.fromtimestamp(int(ends[-1] - 1) / 1e6, NY).date().isoformat()
@@ -132,10 +132,11 @@ def statement(ticker, bounds, rules, frame, ends):
       toInt64(toUnixTimestamp(toDateTime(concat(toString(toDate(toDateTime(intDiv(end_us-1,1000000),'America/New_York'))),' 04:00:00'),'America/New_York')))*1000000 session_open,
       {target_bucket} bucket FROM (SELECT arrayJoin({ends.tolist()}) end_us)),
     aggregates AS (SELECT bucket,session_open,{','.join(aggregates)} FROM quotes GROUP BY bucket,session_open),
-    books AS (SELECT session_open,sip_timestamp_us,argMax(tuple(toUInt8(ok),bid,ask,bs,az),ordinal) book
-      FROM quotes GROUP BY session_open,sip_timestamp_us ORDER BY session_open,sip_timestamp_us),
+    books AS (SELECT session_open,toUInt64(intDiv(sip_timestamp_us,100000)*100000) book_bucket,
+      argMax(tuple(toUInt8(ok),bid,ask,bs,az),tuple(sip_timestamp_us,ordinal)) book
+      FROM quotes GROUP BY session_open,book_bucket ORDER BY session_open,book_bucket),
     carried AS (SELECT t.*,q.book book FROM (SELECT * FROM targets ORDER BY session_open,end_us) t
-      ASOF LEFT JOIN books q ON t.session_open=q.session_open AND t.end_us>q.sip_timestamp_us),
+      ASOF LEFT JOIN books q ON t.session_open=q.session_open AND t.end_us>q.book_bucket),
     joined AS (SELECT t.*,a.* EXCEPT(bucket,session_open) FROM carried t LEFT JOIN aggregates a USING(bucket,session_open))
     SELECT end_us,[{','.join(f'toFloat32({v})' for v in values)}] values,
       [{','.join(masks)}] valid FROM joined ORDER BY end_us FORMAT ArrowStream"""
