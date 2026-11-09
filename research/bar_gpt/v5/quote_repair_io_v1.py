@@ -8,6 +8,10 @@ https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthread
 from contextlib import contextmanager
 import ctypes
 import os
+import threading
+import time
+
+TIMES = threading.local()
 
 
 def set_mode(flag):
@@ -26,12 +30,13 @@ def set_mode(flag):
 @contextmanager
 def payload_io():
     """Lower the current payload reader/writer; restore even on exceptions."""
-    if os.name != "nt":
-        yield
-        return
-    entered = set_mode(0x00010000)
+    began = time.monotonic()
+    entered = set_mode(0x00010000) if os.name == "nt" else False
     try:
         yield
     finally:
         if entered:
             set_mode(0x00020000)
+        TIMES.microseconds = getattr(TIMES, "microseconds", 0) + int(
+            (time.monotonic() - began) * 1e6
+        )

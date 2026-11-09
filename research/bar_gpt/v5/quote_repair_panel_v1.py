@@ -27,8 +27,16 @@ def render(state, width=100):
             f"{counts.get('quarantined',0):,}",
         )
     freshness = max(0, time.time() - state.get("updated", 0))
+    guard = next(
+        (
+            item["training_guard"]
+            for item in state.get("datasets", [])
+            if item.get("training_guard")
+        ),
+        "trainer untouched by repair",
+    )
     summary = Text(
-        f"{state.get('state','waiting')} | updated {freshness:.0f}s ago | training continues",
+        f"{state.get('state','waiting')} | updated {freshness:.0f}s ago | {guard}",
         style="bold",
     )
     if freshness > 30:

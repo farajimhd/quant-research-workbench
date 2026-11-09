@@ -282,6 +282,7 @@ class Rebuilder:
     def query(self, sql, identity, *, allow_empty=False):
         """Retry identical SELECTs after idle-socket disconnects; never retry bad SQL."""
         for attempt in range(3):
+            began = time.monotonic()
             try:
                 return source.arrow(self.client, sql, identity, allow_empty=allow_empty)
             except (ConnectionError, TimeoutError, OSError):
@@ -289,6 +290,10 @@ class Rebuilder:
                     raise
                 self.metrics["transport_retries"] += 1
                 time.sleep(0.25 * 2**attempt)
+            finally:
+                self.metrics["canonical_query_microseconds"] += int(
+                    (time.monotonic() - began) * 1e6
+                )
 
     def intervals(self, ticker, day):
         """Coalesce duplicate session probes; keep lock memory constant at 256 slots."""

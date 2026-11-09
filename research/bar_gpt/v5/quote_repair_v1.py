@@ -33,7 +33,8 @@ from .quote_quality_v1 import POLICY, sanitize, neighbor_spikes
 from .shards.contract import digest, file_hash, write_json
 from .phase2_shards.contract import BAR
 from .quote_rebuild_v1 import Rebuilder
-from .quote_repair_io_v1 import payload_io
+from .quote_repair_io_v1 import payload_io, TIMES
+from .phase2_shards.training_guard import TrainingGuard
 
 os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 LOCAL = threading.local()
@@ -258,6 +259,8 @@ def migrate_receipt(source, output, relative, binding, phase):
     Crash recovery trusts only a sealed matching child receipt AND its verified
     payloads. Rejected-bar reason counts are stored per unit, not sampled away.
     """
+    began = time.monotonic()
+    io_before = getattr(TIMES, "microseconds", 0)
     original = read_json(source / relative)
     key = "receipt_hash" if phase == 1 else "hash"
     verify_seal(original, key)
@@ -318,6 +321,8 @@ def migrate_receipt(source, output, relative, binding, phase):
         ).tolist()
     receipt["bytes"] = sum(f["bytes"] for f in receipt["files"])
     totals.update(rebuilder.metrics - prior_metrics)
+    totals["payload_io_microseconds"] = getattr(TIMES, "microseconds", 0) - io_before
+    totals["processing_microseconds"] = int((time.monotonic() - began) * 1e6)
     receipt["quote_repair"] = dict(
         policy=POLICY,
         parent_receipt=original[key],
@@ -494,6 +499,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument("--training-campaign", type=Path)
     parser.add_argument(
         "--limit",
         type=int,
@@ -534,6 +540,9 @@ def main(argv=None):
     psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
     binding = prepare(source, output, phase, args.source_revision)
     ledger = sqlite3.connect(output / "repair.sqlite")
+    ledger.executescript(
+        "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA wal_autocheckpoint=4096;"
+    )
     ledger.execute(
         "CREATE TABLE IF NOT EXISTS work(path TEXT PRIMARY KEY,done INTEGER DEFAULT 0,report TEXT,mappedkey TEXT,seal TEXT,bytes INTEGER)"
     )
@@ -601,10 +610,14 @@ def main(argv=None):
         for row in ledger.execute("SELECT path FROM work WHERE done=0 ORDER BY rowid")
     )
     failure = None
+    campaign = args.training_campaign or source.parent / "overnight-v6-20261108"
+    guard = TrainingGuard(campaign if campaign.exists() else None, args.workers, 4)
+    last_progress = 0
     with ThreadPoolExecutor(args.workers, thread_name_prefix="quote-repair") as pool:
         while True:
             stopped = (output / "STOP").exists()
-            while not stopped and not failure and len(active) < args.workers:
+            admission = guard.refresh()
+            while not stopped and not failure and len(active) < admission:
                 relative = next(pending, None)
                 if relative is None:
                     break
@@ -651,7 +664,7 @@ def main(argv=None):
                     failure = f"{relative}: {type(error).__name__}: {error}"
             ledger.commit()
             snapshot = dict(
-                state="failed" if failure else "repairing",
+                state="failed" if failure else ("draining" if stopped else "repairing"),
                 updated=time.time(),
                 phase=phase,
                 completed=completed,
@@ -661,8 +674,12 @@ def main(argv=None):
                 elapsed_seconds=time.time() - began,
                 failure=failure,
                 pilot=bool(args.limit),
+                admission_lanes=admission,
+                training_guard=guard.reason,
             )
-            write_json(output / "repair-progress.json", snapshot)
+            if failure or time.monotonic() - last_progress >= 3:
+                write_json(output / "repair-progress.json", snapshot)
+                last_progress = time.monotonic()
     state = (
         "failed"
         if failure

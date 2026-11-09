@@ -200,15 +200,24 @@ def main():
                 time.sleep(5)
         snapshot["datasets"][index].update(status(target / "repair-progress.json"))
         if child.returncode or not result.exists():
+            stopped = (
+                (target / "STOP").exists()
+                or (setup / "STOP").exists()
+                or status(target / "repair-progress.json").get("state") == "stopped"
+            )
             snapshot.update(
-                state="failed",
+                state="stopped" if stopped else "failed",
                 updated=time.time(),
-                failure=f"{label}: repair child exited {child.returncode}; inspect its stderr and receipt ledger",
+                failure=(
+                    None
+                    if stopped
+                    else f"{label}: repair child exited {child.returncode}; inspect its stderr and receipt ledger"
+                ),
             )
             write_json(setup / "campaign.json", snapshot)
             telemetry.update(snapshot)
             telemetry.finish()
-            return 1
+            return 0 if stopped else 1
         require_complete(target)
     snapshot.update(state="complete", updated=time.time(), active=None)
     write_json(setup / "campaign.json", snapshot)
