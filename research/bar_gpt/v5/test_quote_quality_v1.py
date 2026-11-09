@@ -124,3 +124,83 @@ def test_packed_repair_preserves_all_non_quote_bytes(tmp_path):
     np.testing.assert_array_equal(actual["values"][:, :6], data["values"][:, :6])
     np.testing.assert_array_equal(actual["end_us"], data["end_us"])
     assert counts["changed_bars"] == 1 and path.read_bytes() == original
+
+
+def test_transient_quote_transport_retries_identical_read(monkeypatch):
+    from collections import Counter
+    from . import quote_rebuild_v1 as module
+
+    calls = []
+
+    def flaky(client, sql, identity, **kwargs):
+        calls.append((sql, identity, kwargs))
+        if len(calls) < 3:
+            raise ConnectionResetError("idle socket")
+        return "final aggregates"
+
+    monkeypatch.setattr(module.source, "arrow", flaky)
+    monkeypatch.setattr(module.time, "sleep", lambda _: None)
+    worker = SimpleNamespace(client=object(), metrics=Counter())
+    assert (
+        module.Rebuilder.query(worker, "SELECT final", "same-query")
+        == "final aggregates"
+    )
+    assert calls[0] == calls[1] == calls[2]
+    assert worker.metrics["transport_retries"] == 2
+
+
+def test_concurrent_session_audit_is_coalesced_and_committed(tmp_path):
+    from collections import Counter
+    from concurrent.futures import ThreadPoolExecutor
+    import sqlite3
+    import time
+    from .quote_rebuild_v1 import Rebuilder
+
+    path = tmp_path / "cache.sqlite"
+    with sqlite3.connect(path) as db:
+        db.execute(
+            "CREATE TABLE intervals(binding TEXT,ticker TEXT,day TEXT,payload TEXT,PRIMARY KEY(binding,ticker,day))"
+        )
+    requests = []
+    intervals = [
+        dict(
+            begin_us=1,
+            end_us=100001,
+            changed_messages=1,
+            zero_size_messages=1,
+            condition_messages=0,
+        )
+    ]
+
+    def run(_):
+        db = sqlite3.connect(path)
+
+        def query(*args, **kwargs):
+            requests.append(1)
+            time.sleep(0.02)
+            return SimpleNamespace(to_dicts=lambda: intervals)
+
+        worker = SimpleNamespace(
+            db=db,
+            binding="frozen",
+            bounds={
+                "TEST": [
+                    dict(source_date="2024-01-02", first_ordinal=0, next_ordinal=100)
+                ]
+            },
+            authority={
+                "rules": [
+                    dict(source_family="quote_conditions", token_id=3, modifier_int=1)
+                ]
+            },
+            metrics=Counter(),
+            query=query,
+        )
+        try:
+            return Rebuilder.intervals(worker, "TEST", "2024-01-02")
+        finally:
+            db.close()
+
+    with ThreadPoolExecutor(8) as pool:
+        assert list(pool.map(run, range(8))) == [intervals] * 8
+    assert len(requests) == 1

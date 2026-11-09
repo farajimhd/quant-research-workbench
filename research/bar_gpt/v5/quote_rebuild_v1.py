@@ -10,6 +10,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import threading
+import inspect
+import time
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -173,6 +175,7 @@ class Rebuilder:
         self.bounds = OrderedDict()
         self.client = source.client(memory_gib=1)
         self.client.default_query_params["max_threads"] = 1
+        self.client.default_query_params["max_execution_time"] = 60
         self.db = sqlite3.connect(cache, timeout=60, check_same_thread=False)
         with CACHE_WRITER:
             self.db.executescript(
@@ -186,7 +189,12 @@ class Rebuilder:
                 POLICY,
                 bar_semantics_v1.CONTRACT,
                 self.authority["dictionary_hash"],
-                file_hash(Path(__file__)),
+                digest(
+                    [
+                        inspect.getsource(statement),
+                        inspect.getsource(interval_statement),
+                    ]
+                ),
                 file_hash(Path(bar_semantics_v1.__file__)),
             ]
         )
@@ -196,6 +204,17 @@ class Rebuilder:
         """Release both private transports and the cache handle after drain."""
         self.db.close()
         source.close(self.client)
+
+    def query(self, sql, identity, *, allow_empty=False):
+        """Retry identical SELECTs after idle-socket disconnects; never retry bad SQL."""
+        for attempt in range(3):
+            try:
+                return source.arrow(self.client, sql, identity, allow_empty=allow_empty)
+            except (ConnectionError, TimeoutError, OSError):
+                if attempt == 2:
+                    raise
+                self.metrics["transport_retries"] += 1
+                time.sleep(0.25 * 2**attempt)
 
     def intervals(self, ticker, day):
         """Coalesce duplicate session probes; keep lock memory constant at 256 slots."""
@@ -209,8 +228,7 @@ class Rebuilder:
             ).fetchone()
             if cached:
                 return json.loads(cached[0])
-            table = source.arrow(
-                self.client,
+            table = self.query(
                 interval_statement(
                     ticker, self.bounds[ticker], self.authority["rules"], str(day)
                 ),
@@ -310,8 +328,7 @@ class Rebuilder:
                 )
                 for day in np.unique(dates):
                     clocks = missing[dates == day]
-                    table = source.arrow(
-                        self.client,
+                    table = self.query(
                         statement(
                             ticker,
                             self.bounds[ticker],

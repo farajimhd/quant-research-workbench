@@ -501,11 +501,28 @@ def main(argv=None):
     )
     ledger.execute("CREATE UNIQUE INDEX IF NOT EXISTS mapped ON work(mappedkey)")
     began = time.time()
-    for index, path in enumerate(
-        source.glob(
+    inventory_path = output / "repair-inventory.json"
+    inventory = (
+        read_json(inventory_path)
+        if inventory_path.exists() and not args.limit
+        else None
+    )
+    if inventory:
+        verify_seal(inventory, "hash")
+        if (
+            inventory["contract"] != read_json(output / "repair-contract.json")["hash"]
+            or inventory["receipts"]
+            != ledger.execute("SELECT count(*) FROM work").fetchone()[0]
+        ):
+            raise ValueError("Repair inventory no longer matches its frozen ledger")
+    discovery = (
+        ()
+        if inventory
+        else source.glob(
             "jobs/*/*/receipt.json" if phase == 1 else "streams/*/*/receipt.json"
         )
-    ):
+    )
+    for index, path in enumerate(discovery):
         ledger.execute(
             "INSERT OR IGNORE INTO work(path) VALUES(?)",
             (str(path.relative_to(source)),),
@@ -520,8 +537,27 @@ def main(argv=None):
             break
     ledger.commit()
     total = ledger.execute("SELECT count(*) FROM work").fetchone()[0]
+    if not args.limit and not inventory:
+        inventory = dict(
+            contract=read_json(output / "repair-contract.json")["hash"], receipts=total
+        )
+        inventory["hash"] = digest(inventory)
+        write_json(inventory_path, inventory)
     completed = ledger.execute("SELECT count(*) FROM work WHERE done=1").fetchone()[0]
-    counts, active = Counter(), {}
+    counts = Counter(
+        {
+            name: int(total)
+            for name, total in ledger.execute(
+                "SELECT item.key,sum(item.value) FROM work,json_each(work.report,'$.counts') item WHERE done=1 GROUP BY item.key"
+            )
+        }
+    )
+    counts["changed_files"] = int(
+        ledger.execute(
+            "SELECT coalesce(sum(json_extract(report,'$.changed_files')),0) FROM work WHERE done=1"
+        ).fetchone()[0]
+    )
+    active = {}
     pending = iter(
         row[0]
         for row in ledger.execute("SELECT path FROM work WHERE done=0 ORDER BY rowid")
@@ -606,6 +642,11 @@ def main(argv=None):
                 "SELECT item.key,sum(item.value) FROM work,json_each(work.report,'$.counts') item WHERE done=1 GROUP BY item.key"
             )
         }
+        counts["changed_files"] = int(
+            ledger.execute(
+                "SELECT coalesce(sum(json_extract(report,'$.changed_files')),0) FROM work WHERE done=1"
+            ).fetchone()[0]
+        )
         finalize(source, output, phase, binding, ledger, counts)
         state = "complete"
     write_json(
