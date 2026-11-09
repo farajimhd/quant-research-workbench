@@ -30,6 +30,30 @@ class TrainingGuard:
             if controller.get("state") == "complete":
                 self.limit, self.reason = self.full, "training campaign complete"
                 return self.limit
+            if controller.get("state") in {"early_stopped", "stopped", "failed"}:
+                import psutil
+
+                child = controller.get("child", {})
+                pid, created = child.get("pid"), child.get("created")
+                if pid and created:
+                    try:
+                        inactive = (
+                            not psutil.pid_exists(pid)
+                            or abs(psutil.Process(pid).create_time() - created) > 1
+                        )
+                    except psutil.NoSuchProcess:
+                        inactive = True
+                    except psutil.Error:
+                        inactive = False
+                    if inactive:
+                        # A terminal trainer intentionally stops refreshing its
+                        # status. Verify process identity before treating that
+                        # age as inactivity rather than an unknown live stall.
+                        self.limit, self.reason = (
+                            self.full,
+                            "verified inactive trainer (" + controller["state"] + ")",
+                        )
+                        return self.limit
             output = Path(controller["child"]["output"])
             if not output.resolve().is_relative_to(self.campaign.resolve()):
                 raise ValueError("Trainer output is outside its campaign")
