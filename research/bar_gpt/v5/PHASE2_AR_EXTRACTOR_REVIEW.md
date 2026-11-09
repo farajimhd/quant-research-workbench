@@ -1,6 +1,9 @@
 # Phase-two autoregressive extractor: reviewed replacement design
 
-Status: reviewed specification, not an implemented or launched replacement.
+Status: replacement implemented in `phase2_ar_shards`, with a direct launcher
+`run_phase2_ar_shards.py`. It has not launched a production build. Corrected
+phase-one parent release remains a required execution gate. See the package
+README for the exact4096-origin format, cached history and validation limits.
 The user cancelled the old phase-two stream dataset and all its repairs, and
 explicitly retained the current universe and 75/25 liquidity mix. Monitoring
 remains paused. Phase-one repair and training continue independently.
@@ -43,10 +46,12 @@ compilation and disk publication. A publication is a ticker-month shared-array
 shard, split into bounded physical parts only when necessary. Avoid the retired
 format's publication/fsync/checkpoint for every small event-budget subdivision.
 
-Pack up to 4,096 core 1s origins into a logical block. This is a storage/loader
+The latest user instruction requires exactly4,096 core1s origins in every
+published training block. This is a storage/loader
 grouping, not an encoder window or an instruction to attend over 4,096 origins.
-Retain and count partial tails; do not impose a new 4,096-origin eligibility
-threshold that silently eliminates sparse ticker-months.
+Retain partial tails across months and count warmup, boundary and terminal
+deferrals. Incomplete tails are not padded into training blocks. Sparse tickers
+may have no eligible full block; this must remain visible in coverage reports.
 
 Keep common frame arrays once per shard, with block slices, actual origin clocks
 and causal as-of references. Cache the index for cross-month context reads.
