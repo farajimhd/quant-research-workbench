@@ -127,7 +127,7 @@ def statement(ticker, bounds, rules, frame, ends):
       {tokens} tokens,
       (bid>0 AND ask>=bid AND isFinite(az) AND isFinite(bs) AND az>0 AND bs>0 AND {condition_sql(rules)}) ok
       FROM ({raw}) WHERE bitAnd(event_meta,1)=0 AND sip_timestamp_us>={clock(first_day,4)} AND sip_timestamp_us<{int(ends[-1])}),
-    quotes AS (SELECT *,{bucket} bucket FROM decoded WHERE local_second>=14400 AND local_second<72000),
+    quotes AS (SELECT *,toInt64({bucket}) bucket FROM decoded WHERE local_second>=14400 AND local_second<72000),
     targets AS (SELECT end_us,
       toInt64(toUnixTimestamp(toDateTime(concat(toString(toDate(toDateTime(intDiv(end_us-1,1000000),'America/New_York'))),' 04:00:00'),'America/New_York')))*1000000 session_open,
       {target_bucket} bucket FROM (SELECT arrayJoin({ends.tolist()}) end_us)),
