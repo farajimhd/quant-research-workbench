@@ -255,6 +255,10 @@ def migrate_receipt(source, output, relative, binding, phase):
     if target.exists():
         receipt = read_json(target)
         verify_seal(receipt, key)
+        if phase == 1 and receipt["binding"] != binding:
+            raise ValueError(
+                "Repaired receipt belongs to a different producer contract"
+            )
         if receipt.get("quote_repair", {}).get("parent_receipt") != original[key]:
             raise ValueError("Resume parent receipt differs")
         for item in receipt["files"]:
@@ -330,8 +334,20 @@ def prepare(source, output, phase, revision):
     )
     seal = dict(identity=identity, hash=digest(identity), source_revision=revision)
     path = output / "repair-contract.json"
-    if path.exists() and read_json(path)["identity"] != identity:
-        raise ValueError("Repair source or policy changed")
+    if path.exists():
+        previous = read_json(path)
+        if previous["identity"] != identity:
+            raise ValueError("Repair source or policy changed")
+        seal["source_revisions"] = list(
+            dict.fromkeys(
+                [
+                    *previous.get("source_revisions", [previous["source_revision"]]),
+                    revision,
+                ]
+            )
+        )
+    else:
+        seal["source_revisions"] = [revision]
     write_json(path, seal)
     if phase == 1:
         contract = deepcopy(parent["contract"])
@@ -350,6 +366,12 @@ def prepare(source, output, phase, revision):
             base / "quote_quality_v1.py"
         )
         wrapper = dict(contract=contract, binding=digest(contract))
+        if (output / "contract.json").exists() and read_json(output / "contract.json")[
+            "binding"
+        ] != wrapper["binding"]:
+            raise ValueError(
+                "Shared producer drift: do not mix contracts in a repaired dataset"
+            )
         write_json(output / "contract.json", wrapper)
         return wrapper["binding"]
     from .phase2_shards.plan import PRODUCERS
@@ -366,6 +388,13 @@ def prepare(source, output, phase, revision):
     plan["parent_binding_before_repair"] = plan["parent_binding"]
     plan["parent_binding"] = read_json(repaired_parent / "contract.json")["binding"]
     plan["hash"] = digest({k: v for k, v in plan.items() if k != "hash"})
+    if (output / "plan.json").exists():
+        existing = read_json(output / "plan.json")
+        verify_seal(existing, "hash")
+        for field in ("code", "parent_binding", "repair_parent_plan", "quote_quality"):
+            if existing[field] != plan[field]:
+                raise ValueError("Phase-two repair producer/parent drift")
+        return existing["hash"]
     write_json(output / "plan.json", plan)
     return plan["hash"]
 
