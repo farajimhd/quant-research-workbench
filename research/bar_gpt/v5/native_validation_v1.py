@@ -1,6 +1,10 @@
 """All-visible reconstruction MAE in original sample units; no training objective."""
 
 import math
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+import time
 import torch
 
 from .shards.contract import FRAMES
@@ -21,6 +25,7 @@ CONTRACT = dict(
     negative_predictions="retained without clipping",
     overflow="MAE unavailable for affected head/frame, overflow count reported",
     purpose="unmasked reconstruction diagnostic, not forecasting or masked-validation score",
+    backend="bounded asynchronous CPU Float64 reduction; one GPU forward",
 )
 
 
@@ -103,6 +108,88 @@ class NativeMAE:
                 if not math.isfinite(total):
                     result[f"{prefix}_sum_overflow/{frame}/{channel}"] = 1
         return result
+
+
+class AsyncNativeMAE:
+    """Overlap pinned prediction readback/CPU reduction with the next inference.
+
+    Raw truth/reference/units remain in their existing pinned CPU batch. Only
+    decoder outputs are copied back; no second source read or model forward.
+    FIFO merges and bounded backpressure retain every observation and exact
+    per-publication counts. Worker exceptions propagate instead of losing data.
+    """
+
+    def __init__(self, device="cuda", workers=2, max_pending=4):
+        self.stream = torch.cuda.Stream(device=device)
+        self.pool = ThreadPoolExecutor(
+            max_workers=workers, thread_name_prefix="native-mae"
+        )
+        self.pending = deque()
+        self.total = NativeMAE("cpu")
+        self.max_pending = max_pending
+        self.backpressure_seconds = 0.0
+
+    def copy_prediction(self, prediction):
+        ready = torch.cuda.Event()
+        ready.record(torch.cuda.current_stream())
+        output = torch.empty_like(prediction, device="cpu", pin_memory=True)
+        with torch.cuda.stream(self.stream):
+            self.stream.wait_event(ready)
+            output.copy_(prediction, non_blocking=True)
+            done = torch.cuda.Event()
+            done.record(self.stream)
+            prediction.record_stream(self.stream)
+        return output, done
+
+    @staticmethod
+    def reduce(prediction, done, metadata):
+        done.synchronize()  # Only this CPU worker waits for its own D2H copy.
+        with torch.inference_mode():
+            partial = NativeMAE("cpu")
+            partial.add(prediction, metadata)
+        return partial.sums, partial.counts, partial.overflows
+
+    def merge_one(self):
+        values = self.pending.popleft().result()
+        for target, value in zip(
+            (self.total.sums, self.total.counts, self.total.overflows), values
+        ):
+            target.add_(value)
+
+    def add(self, prediction, batch):
+        if len(self.pending) >= self.max_pending:
+            began = time.perf_counter()
+            self.merge_one()
+            self.backpressure_seconds += time.perf_counter() - began
+        names = (
+            "native_targets",
+            "native_valid",
+            "native_reference",
+            "native_stats",
+            "native_frames",
+        )
+        metadata = SimpleNamespace(**{name: getattr(batch, name) for name in names})
+        if any(getattr(metadata, name).device.type != "cpu" for name in names):
+            raise ValueError("Async MAE metadata must remain on CPU")
+        output, done = self.copy_prediction(prediction)
+        self.pending.append(self.pool.submit(self.reduce, output, done, metadata))
+
+    def metrics(self, prefix="validation_full_raw_mae"):
+        self.flush()
+        result = self.total.metrics(prefix)
+        result[prefix + "_backend/backpressure_seconds"] = self.backpressure_seconds
+        return result
+
+    def flush(self):
+        while self.pending:
+            self.merge_one()
+
+    def close(self):
+        try:
+            while self.pending:
+                self.merge_one()
+        finally:
+            self.pool.shutdown(wait=True)
 
 
 def evaluate_full(model, batch, accumulator, precision="bf16"):

@@ -324,3 +324,40 @@ def test_full_input_target_aliases_are_pinned_only_once(monkeypatch):
     assert len(calls) == len({id(getattr(batch, f.name)) for f in fields(batch)})
     assert pinned.visible is pinned.targets is pinned.native_values
     assert pinned.valid is pinned.target_valid is pinned.native_valid
+
+
+def test_async_cpu_reduction_is_exact_bounded_and_joins_workers(monkeypatch):
+    from .native_validation_v1 import AsyncNativeMAE
+    import threading
+
+    monkeypatch.setattr(torch.cuda, "Stream", lambda **_: object())
+
+    class Done:
+        def synchronize(self):
+            pass
+
+    monkeypatch.setattr(
+        AsyncNativeMAE, "copy_prediction", lambda _, p: (p.clone(), Done())
+    )
+    _, _, _, batch = sample()
+    expected = NativeMAE("cpu")
+    actual = AsyncNativeMAE(max_pending=2)
+    try:
+        for i in range(7):
+            p = batch.native_values + i * 0.001
+            expected.add(p, batch)
+            actual.add(p, batch)
+            assert len(actual.pending) <= 2
+        result = actual.metrics()
+        reference = expected.metrics()
+        for key, value in reference.items():
+            assert (
+                result[key] == pytest.approx(value, abs=1e-9)
+                if value is not None
+                else result[key] is None
+            )
+    finally:
+        actual.close()
+    assert not any(
+        t.is_alive() and t.name.startswith("native-mae") for t in threading.enumerate()
+    )

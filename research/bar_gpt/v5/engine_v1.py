@@ -40,6 +40,9 @@ class CudaBatches:
             cache, transferred = {}, {}
             for field in fields(cpu):
                 tensor = getattr(cpu, field.name)
+                if field.name.startswith("native_") and field.name != "native_values":
+                    transferred[field.name] = tensor  # Truth/units stay CPU; only predictions return asynchronously.
+                    continue
                 if id(tensor) not in cache:
                     cache[id(tensor)] = (
                         tensor if field.name.startswith("native_") and not tensor.numel()
@@ -59,7 +62,7 @@ class CudaBatches:
         result, self.next_batch = self.next_batch, None
         for field in fields(result):
             item = getattr(result, field.name)
-            if not field.name.startswith("native_") or item.numel():
+            if item.device.type == "cuda":
                 item.record_stream(stream)
         return result
 
@@ -248,10 +251,10 @@ def run_steps(
                     error.square().sum(-1).double().flatten(),
                 )
                 if not training and batch.native_values.numel():
-                    from .native_validation_v1 import NativeMAE
+                    from .native_validation_v1 import NativeMAE, AsyncNativeMAE
 
                     if native is None:
-                        native = NativeMAE("cuda")
+                        native = AsyncNativeMAE(device=prediction.device) if prediction.is_cuda else NativeMAE("cpu")
                     native.add(prediction, batch)  # SAME full-input forward, never a second inference.
                     end.record()  # Validation timing includes the additional full-input forward.
                 measured += 1
@@ -297,6 +300,9 @@ def run_steps(
         elapsed = time.perf_counter() - begin_measure
         if not finite:
             raise FloatingPointError("Nonfinite loss in profiling window.")
+        if native is not None and hasattr(native,"flush"):
+            native.flush()  # Include the bounded CPU tail in actual validation wall time.
+        elapsed = time.perf_counter() - begin_measure
         if reporter:
             publish_metrics()  # Include the final partial interval at an epoch/window boundary.
         milliseconds = np.array([start.elapsed_time(end) for start, end in events])
@@ -350,4 +356,8 @@ def run_steps(
             )
         return result
     finally:
-        mode.__exit__(None, None, None)
+        try:
+            if native is not None and hasattr(native,"close"):
+                native.close()
+        finally:
+            mode.__exit__(None, None, None)
