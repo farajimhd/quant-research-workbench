@@ -60,6 +60,11 @@ def action_chain(proofs, begin, end):
 
 
 def extend_actions(client, original, end):
+    # Phase one has no 2026 origins. A separately acquired full validation-year
+    # catalog may supersede its incidental 2026 rows, but never its training years.
+    revised = validation_actions(client, original, end)
+    if revised is not None:
+        return revised
     begin = original["coverage"]["coverage_end_date"]
     if end <= begin:
         return original
@@ -126,6 +131,57 @@ def extend_actions(client, original, end):
         catalog_hash=digest(rows),
         policy="Frozen parent plus proved executed-action intervals; common origin basis",
     )
+
+
+def validation_actions(client, original, end):
+    """Versioned 2026 authority rebind, preserving exact pre-2026 parent rows."""
+    if end <= "2026-01-01":
+        return None
+    proofs = sip.rows(client,
+        "SELECT source_run_id,status,coverage_start_date,coverage_end_date,rows_read,rows_written,rows_failed,details_json "
+        "FROM q_live.market_reference_publication_coverage_v1 FINAL WHERE coverage_kind='massive_splits' "
+        "AND source_system='massive' AND source_object='splits' AND status='completed' "
+        f"AND coverage_start_date<='2026-01-01' AND coverage_end_date>={literal(end)} "
+        "ORDER BY finished_at_utc DESC LIMIT 1")
+    if not proofs:
+        return None
+    proof = dict(proofs[0])
+    # Also check bounds independently of the source query (and for test clients).
+    if proof["coverage_start_date"] > "2026-01-01" or proof["coverage_end_date"] < end:
+        return None
+    details = json.loads(proof.pop("details_json"))
+    if (proof["rows_failed"] or proof["rows_read"] != proof["rows_written"]
+        or details.get("saturated") is not False or details.get("pages", 0) < 1):
+        raise ValueError("Incomplete full-2026 corporate-action acquisition")
+    proof["provider_response_sha256"] = details["sha256"]
+    rows = sip.rows(client,
+        "SELECT stock_split_id,provider_ticker,execution_date,split_from,split_to,source_content_sha256 "
+        "FROM q_live.market_stock_split_v1 FINAL "
+        f"WHERE source_run_id={literal(proof['source_run_id'])} "
+        f"AND execution_date>={literal(proof['coverage_start_date'])} "
+        f"AND execution_date<{literal(proof['coverage_end_date'])} ORDER BY stock_split_id")
+    if len(rows) != proof["rows_written"] or len({r["stock_split_id"] for r in rows}) != len(rows):
+        raise ValueError("Full-2026 catalog differs from its acquisition receipt")
+    prefix = [r for r in original["rows"] if r["execution_date"] < "2026-01-01"]
+    old = {r["stock_split_id"]: r for r in original["rows"] if r["execution_date"] >= "2026-01-01"}
+    prefix_ids = {r["stock_split_id"] for r in prefix}
+    for row in rows:
+        if (not "2026-01-01" <= row["execution_date"] < proof["coverage_end_date"]
+            or row["stock_split_id"] in prefix_ids
+            or any(not np.isfinite(float(row[k])) or float(row[k]) <= 0 for k in ("split_from", "split_to"))):
+            raise ValueError("Validation catalog conflicts with frozen training action history")
+    current = {r["stock_split_id"]: r for r in rows if r["execution_date"] < end}
+    combined = sorted(prefix + list(current.values()), key=lambda r: r["stock_split_id"])
+    changes = dict(
+        added=sorted(current.keys() - old.keys()),
+        removed=sorted(old.keys() - current.keys()),
+        revised=[dict(before=old[k], after=current[k]) for k in sorted(old.keys() & current.keys()) if old[k] != current[k]],
+    )
+    return dict(parent_catalog_hash=original["catalog_hash"], coverage=original["coverage"],
+                extension_coverage=[proof], coverage_end=end, rows=combined,
+                catalog_hash=digest(combined), frozen_training_rows_hash=digest(prefix),
+                validation_revision=changes,
+                policy="v2: exact frozen pre2026 training actions plus separately acquired complete 2026 validation catalog")
 
 
 def units_from_index(paths, classes, seed):

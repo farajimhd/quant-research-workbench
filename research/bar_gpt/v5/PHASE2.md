@@ -10,6 +10,17 @@ empty `[]`, and an independent zero-row publication readback. Missing intervals
 or incomplete/contradictory proofs still fail closed. This is verified empty
 coverage, not an assumption that absent reference records imply no split.
 
+A later native preflight detected a revised 2026 action ID across acquisitions.
+The replacement path therefore prefers a separately acquired, complete 2026
+publication, verifies all declared rows and ratios, retains pre-2026 parent rows
+exactly, and seals added/removed/revised 2026 rows with both acquisition identities.
+Any ID conflicting with pre-2026 history still fails. This is an explicit
+validation-year reference revision; it never overwrites phase-one data or changes
+the frozen 2019–2025 training-action history. The 2026-11-10 publication
+`reference_publications_20261110_031539` contains 1,322 normalized rows covering
+2026-01-01 through exclusive 2026-10-03. Actual pilot/build evidence must establish
+which sealed publication the dataset uses.
+
 Recorded: 2026-11-10 UTC. Current implementation baseline: **`1cb1bffe8`**,
 committed/pushed and hash-synchronized as 709 Python files to native
 `D:/TradingML/codes/bargpt-shards-1cb1bffe8`.

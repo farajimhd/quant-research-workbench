@@ -44,6 +44,8 @@ def test_empty_action_receipts_require_complete_provider_evidence(monkeypatch, i
     if invalid == "pages": details["pages"] = 0
     def rows(client, sql):
         if "publication_coverage" in sql:
+            if "ORDER BY finished_at_utc" in sql:
+                return []
             assert "'covered_empty'" in sql
             return [dict(proof, details_json=json.dumps(details))]
         return []
@@ -55,6 +57,24 @@ def test_empty_action_receipts_require_complete_provider_evidence(monkeypatch, i
     else:
         result = inventory.extend_actions(None, original, "2026-07-26")
         assert result["rows"] == [] and len(result["extension_coverage"]) == 1
+
+
+def test_validation_reference_rebind_keeps_training_actions_and_records_revision(monkeypatch):
+    from research.bar_gpt.v5.phase2_ar_shards import inventory
+
+    past = dict(stock_split_id="old", execution_date="2025-02-03", provider_ticker="AAA", split_from=10, split_to=1)
+    before = dict(past, stock_split_id="revised", execution_date="2026-03-26")
+    after = dict(before, execution_date="2026-07-24")
+    proof = dict(source_run_id="new2026", status="completed", coverage_start_date="2026-01-01", coverage_end_date="2026-10-03", rows_read=1, rows_written=1, rows_failed=0, details_json=json.dumps(dict(pages=1,saturated=False,sha256="a"*64)))
+    monkeypatch.setattr(inventory.sip, "rows", lambda c, sql: [proof] if "publication_coverage" in sql else [after])
+    original = dict(coverage=dict(coverage_end_date="2026-06-19"),rows=[past,before],catalog_hash=digest([past,before]))
+    result = inventory.extend_actions(None, original, "2026-10-03")
+    assert past in result["rows"] and before not in result["rows"] and after in result["rows"]
+    assert result["frozen_training_rows_hash"] == digest([past])
+    assert result["validation_revision"]["revised"] == [dict(before=before,after=after)]
+    after["stock_split_id"] = "old"
+    with pytest.raises(ValueError, match="frozen training"):
+        inventory.extend_actions(None, original, "2026-10-03")
 
 
 def bars(ends, price=10):
