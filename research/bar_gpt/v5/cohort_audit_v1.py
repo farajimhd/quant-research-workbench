@@ -139,7 +139,7 @@ def audit(dataset, output, progress=None):
                 files=files,
                 receipts=len(paths),
                 inspected_records=inspected,
-                frames=dict(frames),
+                frames={str(frame): count for frame, count in frames.items()},
                 channel_valid_bars=dict(zip(CHANNELS, features.tolist())),
                 verified_payloads=hashes,
             )

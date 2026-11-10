@@ -184,7 +184,7 @@ def arguments(argv=None):
         "--chunk-events",
         type=int,
         default=0,
-        help="0: v3 calendar-month pages; positive: measured session-bound event cap",
+        help="0: month-aligned 8M-event pages; positive: explicit whole-session event cap",
     )
     p.add_argument("--target-bytes", type=int, default=4_000_000_000_000)
     p.add_argument("--validation-bytes", type=int, default=250_000_000)
@@ -548,6 +548,7 @@ def main(argv=None):
                                     "admission_wait_seconds",
                                     "fetch_seconds",
                                     "compile_seconds",
+                                    "resource_page_splits",
                                 )
                             }
                             out.write(

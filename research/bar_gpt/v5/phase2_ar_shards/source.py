@@ -185,13 +185,13 @@ class CanonicalReader:
         return list(sorted(grouped.items()))
 
     def pages(self, rows, chunk_events=0):
-        """V3 actual path: calendar-month pages; optional measured event bound."""
+        """Month-aligned, whole-session pages; bound dense pages after live profiling."""
         grouped = {}
         for row in rows:
             grouped.setdefault(row["source_date"][:7], []).append(row)
         for month in sorted(grouped):
             yield from session_batches(
-                grouped[month], max_events=chunk_events or 2**63 - 1, max_days=32
+                grouped[month], max_events=chunk_events or 8_000_000, max_days=32
             )
 
     def fetch(self, ticker, rows, gate, chunk_events=0, frames=tuple(range(5))):
@@ -200,34 +200,45 @@ class CanonicalReader:
         pieces = [[] for _ in FRAMES]
         began, queries = time.monotonic(), 0
         query_seconds = admission_seconds = 0.0
+        resource_splits = 0
+
+        def query_page(page, coarse):
+            nonlocal queries, query_seconds, admission_seconds, resource_splits
+            sql = partition_page(bar_query(ticker, page, self.plan["authority"]["rules"], coarse), page)
+            awaiting = time.monotonic()
+            resource_error = None
+            with gate():
+                querying = time.monotonic()
+                admission_seconds += querying - awaiting
+                try:
+                    for attempt in range(3):
+                        queries += 1
+                        try:
+                            return sip.arrow(self.client, sql,
+                                f"ar-month-{digest([ticker, page, coarse])[:24]}-{attempt}", allow_empty=True)
+                        except (ConnectionError, OSError):
+                            if attempt == 2:
+                                raise
+                            time.sleep(0.25 * 2**attempt)
+                except RuntimeError as error:
+                    if len(page) <= 1 or not any(code in str(error) for code in ("TIMEOUT_EXCEEDED", "MEMORY_LIMIT_EXCEEDED")):
+                        raise
+                    resource_error = error
+                finally:
+                    query_seconds += time.monotonic() - querying
+            # Release query admission before recursion. Every session remains
+            # complete, disjoint and ordered; carry resets at session boundaries.
+            if resource_error is not None:
+                resource_splits += 1
+                middle = len(page) // 2
+                return pl.concat([query_page(page[:middle], coarse), query_page(page[middle:], coarse)])
+
         for page in self.pages(rows, chunk_events):
             for coarse, group in ((False, range(3)), (True, range(3, 5))):
                 selected_frames = [f for f in group if f in frames]
                 if not selected_frames:
                     continue
-                sql = bar_query(ticker, page, self.plan["authority"]["rules"], coarse)
-                # Explicit redundant UTC-month pruning only; logical time and
-                # ordinal predicates, including cross-UTC-month NY sessions, stay.
-                sql = partition_page(sql, page)
-                awaiting = time.monotonic()
-                with gate():
-                    querying = time.monotonic()
-                    admission_seconds += querying - awaiting
-                    for attempt in range(3):
-                        try:
-                            table = sip.arrow(
-                                self.client,
-                                sql,
-                                f"ar-month-{digest([ticker, page, coarse])[:24]}-{attempt}",
-                                allow_empty=True,
-                            )
-                            break
-                        except (ConnectionError, OSError):
-                            if attempt == 2:
-                                raise
-                            time.sleep(0.25 * 2**attempt)
-                    query_seconds += time.monotonic() - querying
-                queries += 1
+                table = query_page(page, coarse)
                 table = table.with_columns(pl.col("resolution").cast(pl.Int64))
                 for frame in selected_frames:
                     selected = table.filter(pl.col("resolution") == FRAMES[frame])
@@ -243,6 +254,7 @@ class CanonicalReader:
             admission_wait_seconds=admission_seconds,
             fetch_seconds=time.monotonic() - began,
             queries=queries,
+            resource_page_splits=resource_splits,
         )
 
     def close(self):

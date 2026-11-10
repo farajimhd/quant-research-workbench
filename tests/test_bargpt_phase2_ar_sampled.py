@@ -97,6 +97,39 @@ def test_parent_action_validation_uses_immutable_catalog_and_exact_receipt(monke
         inventory.verify_parent_actions(None,original)
 
 
+def test_dense_pages_preserve_whole_sessions_and_resource_retry_order(monkeypatch):
+    from contextlib import contextmanager
+    from research.bar_gpt.v5.phase2_ar_shards import source
+
+    reader = source.CanonicalReader.__new__(source.CanonicalReader)
+    reader.plan, reader.client = dict(authority=dict(rules=[])), object()
+    days = [dict(source_date=f"2024-01-{i:02d}", event_count=3_000_000) for i in range(1,5)]
+    assert [len(p) for p in reader.pages(days)] == [2,2]
+    assert len(list(reader.pages([dict(days[0], event_count=20_000_000)]))[0]) == 1
+    monkeypatch.setattr(source,"bar_query",lambda ticker,page,rules,coarse:json.dumps(page))
+    monkeypatch.setattr(source,"partition_page",lambda sql,page:sql)
+    def arrow(client,sql,*args,**kwargs):
+        page=json.loads(sql)
+        if len(page)>1: raise RuntimeError("TIMEOUT_EXCEEDED")
+        return pl.DataFrame(dict(resolution=[1_000_000],stamp=[int(page[0]["source_date"][-2:])]))
+    monkeypatch.setattr(source.sip,"arrow",arrow)
+    monkeypatch.setattr(source,"unpack",lambda table:(np.ones((len(table),18),np.float32),np.ones((len(table),18),np.uint8),table["stamp"].to_numpy()))
+    active=[]
+    @contextmanager
+    def gate():
+        assert not active
+        active.append(1)
+        try:yield
+        finally:active.pop()
+    arrays,timing=reader.fetch("X",days,gate,frames=(0,))
+    assert arrays[0]["end_us"].tolist()==[1,2,3,4]
+    assert timing["resource_page_splits"]==2 and timing["queries"]==6
+    def corrupt(*args,**kwargs):raise RuntimeError("bad source schema")
+    monkeypatch.setattr(source.sip,"arrow",corrupt)
+    with pytest.raises(RuntimeError,match="bad source schema"):
+        reader.fetch("X",days,gate,frames=(0,))
+
+
 def bars(ends, price=10):
     a = np.zeros(len(ends), dtype=BAR)
     a["end_us"] = ends

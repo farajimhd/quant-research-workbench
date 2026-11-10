@@ -103,8 +103,10 @@ V3's actual extractor used calendar-month source pages despite its unused
 `query_days=7` setting, 65,536-row Arrow batches and up to four prefetched pages.
 This extractor uses the same month alignment and Arrow batch size, with global
 bounded query concurrency rather than four extra lanes per CPU worker.
-`--chunk-events 0` selects that default; a positive value enables an optional
-session-bound event budget for measured dense cases. Query size is independent
+`--chunk-events 0` now adds an 8M-event target after a real dense-month timeout;
+a positive value selects an explicit whole-session event budget. Recognized
+memory/time failures split multi-session pages without raising limits; a single
+dense session still fails closed if it cannot fit. Query size is independent
 of the 4,096-origin storage block size.
 
 Only canonical `market_sip_compact.events_YYYY` is read. The unchanged current

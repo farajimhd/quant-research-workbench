@@ -375,15 +375,20 @@ authority; resume inside the same root preserves them.
 | `--query-memory-gib` | 8, maximum 8; one ClickHouse execution thread, 60-second query limit |
 | `--reserve-memory-gib` | At least 64, plus requested active query budgets |
 | `--reserve-disk-gib` | At least 150; coordinator also reserves queued publications |
-| `--chunk-events` | 0 = calendar-month pages; positive = optional measured event budget |
+| `--chunk-events` | 0 = month-aligned 8M-event target; positive = explicit whole-session budget |
 | `--target-bytes` | 4,000,000,000,000 training shard-data bytes |
 | `--validation-bytes` | 250,000,000 validation shard-data bytes |
 | `--max-months` / `--only-ticker` | Bounded pilot scope; cannot declare a full release |
 
 Source pages remain complete-session bounded. A single dense session can exceed
 a positive event target; the setting is not permission to drop its events.
-Memory/time exhaustion stays a visible failure, not a global limit increase or
-an input truncation. The new path keeps v3 month alignment and 65,536-row Arrow
+The first real pilot timed out on an unbounded dense AAPL month at 60 seconds.
+Dense pages now target 8M events. Recognized memory/time failures bisect a
+multi-session page after releasing admission; complete disjoint sessions retain
+their causal reset semantics. Single-session resource failures remain visible.
+Other errors are never reclassified. No timeout/memory limit is raised and no
+events are truncated. Timings include failed attempts and page-split counts.
+The new path keeps v3 month alignment and 65,536-row Arrow
 blocks, with global bounded query concurrency rather than four extra queries
 per each of 32 CPU workers.
 
