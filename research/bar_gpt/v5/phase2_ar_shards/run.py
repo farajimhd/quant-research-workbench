@@ -7,7 +7,7 @@ from concurrent.futures import (
     wait,
     FIRST_COMPLETED,
 )
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from collections import deque
 import ctypes
 import json
@@ -23,6 +23,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import psutil
 from .contract import Geometry
+from .assignment import assign
 from .source import CanonicalReader, describe, freeze
 from .sampling import compile_sessions
 from .storage import Catalog, publish, read_receipt
@@ -350,6 +351,28 @@ def main(argv=None):
         queues = ordered_units(root, plan, args.only_ticker, args.pilot_unit)
         planned_units = len(queues)
         catalog = Catalog(root)
+        remaining = [u for u in queues if not catalog.is_complete(u)]
+        initially_complete = planned_units - len(remaining)
+        worker_queues, assignments = assign(remaining, plan["jobs"], args.workers)
+        assignment = dict(version="ticker-affinity-v1", binding=plan["hash"],
+                          attempt=settings["telemetry_run"], initially_complete=initially_complete,
+                          planned_units=planned_units, workers=assignments)
+        assignment["hash"] = digest(assignment)
+        (root / "worker-assignments").mkdir(exist_ok=True)
+        write_json(root / "worker-assignments" / (settings["telemetry_run"] + ".json"), assignment)
+        queues = worker_queues
+        worker_done = [0] * args.workers
+        worker_deferred = [0] * args.workers
+        cpu_slots = {}
+
+        def queued_count():
+            return sum(map(len, queues))
+
+        def worker_progress():
+            return [dict(slot=i, total=a["tasks"], tickers=len(a["tickers"]),
+                         completed=worker_done[i], deferred=worker_deferred[i])
+                    for i, a in enumerate(assignments)]
+
         ctx = mp.get_context("spawn")
         active_query, lock, stop = ctx.Value("i", 0), ctx.Lock(), ctx.Event()
         handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
@@ -396,6 +419,7 @@ def main(argv=None):
                     )
                     catalog.complete_month(group, body)
                     counters["completed_months_this_run"] += 1
+                worker_done[g["slot"]] += 1
                 del groups[group]
 
         def defer(unit, compiled):
@@ -414,45 +438,44 @@ def main(argv=None):
                 counters['deferred_source_origins'] += body['stats']['source_origins']
             return sealed
 
-        with ProcessPoolExecutor(
-            args.workers,
-            mp_context=ctx,
-            initializer=initialize,
-            initargs=(str(root), plan, settings, active_query, lock, stop),
-        ) as cpu, ThreadPoolExecutor(
+        with ExitStack() as pools, ThreadPoolExecutor(
             args.io_workers, thread_name_prefix="ar-shard-io"
         ) as io:
-            while queues or cpus or ios or staged:
+            # A dedicated single-process executor is the ownership guarantee;
+            # a shared ProcessPoolExecutor does not offer worker affinity.
+            owners = [pools.enter_context(ProcessPoolExecutor(
+                1, mp_context=ctx, initializer=initialize,
+                initargs=(str(root), plan, dict(settings, worker_slot=i,
+                          planned_tasks=assignments[i]["tasks"],
+                          planned_tickers=len(assignments[i]["tickers"])),
+                          active_query, lock, stop))) for i in range(args.workers)]
+            while queued_count() or cpus or ios or staged:
                 if (root / "STOP").exists():
                     stop.set()
-                while (
-                    queues
-                    and len(cpus) < args.workers
-                    and len(staged) < args.io_workers * 2
-                    and not stop.is_set()
-                ):
-                    if (
-                        args.max_months
-                        and counters["admitted_months_this_run"] >= args.max_months
-                    ):
-                        break
-                    unit = queues.popleft()
-                    key = month_key(unit)
-                    split = int(unit["split"])
-                    if catalog.is_complete(unit):
+                busy = set(cpu_slots.values())
+                for slot, queue in enumerate(queues):
+                    if slot in busy or len(staged) >= args.io_workers * 2 or stop.is_set():
                         continue
-                    if (root / 'STOP').exists():
-                        stop.set()
+                    while queue:
+                        if args.max_months and counters["admitted_months_this_run"] >= args.max_months:
+                            break
+                        unit = queue.popleft()
+                        split = int(unit["split"])
+                        if (root / "STOP").exists():
+                            stop.set()
+                            queue.appendleft(unit)
+                            break
+                        if (catalog.split_bytes.get(split, 0) + reserved[split]
+                            >= caps[split] - 1_000_000
+                            or rejected[split] >= args.io_workers * 2):
+                            counters["capacity_deferred"] += 1
+                            worker_deferred[slot] += 1
+                            continue
+                        future = owners[slot].submit(produce, unit)
+                        cpus[future] = unit
+                        cpu_slots[future] = slot
+                        counters["admitted_months_this_run"] += 1
                         break
-                    if (
-                        catalog.split_bytes.get(split, 0) + reserved[split]
-                        >= caps[split] - 1_000_000
-                        or rejected[split] >= args.io_workers * 2
-                    ):
-                        counters["capacity_deferred"] += 1
-                        continue
-                    cpus[cpu.submit(produce, unit)] = unit
-                    counters["admitted_months_this_run"] += 1
                 while staged and len(ios) < args.io_workers * 2:
                     key, unit, result = staged.popleft()
                     split = int(unit["split"])
@@ -540,6 +563,7 @@ def main(argv=None):
                     if future not in cpus:
                         continue
                     unit = cpus.pop(future)
+                    slot = cpu_slots.pop(future)
                     key = month_key(unit)
                     try:
                         outputs = future.result()
@@ -566,7 +590,7 @@ def main(argv=None):
                                 + "\n"
                             )
                         groups[key] = dict(
-                            unit=unit,
+                            unit=unit, slot=slot,
                             remaining=len(outputs),
                             sessions=[],
                             complete=True,
@@ -595,10 +619,11 @@ def main(argv=None):
                     cpu_results_waiting=sum(f.done() for f in cpus),
                     staged_sessions=len(staged),
                     active_queries=active_query.value,
-                    queued_units=len(queues),
+                    queued_units=queued_count(),
                     planned_units=planned_units,
                     active_months=len(cpus)+len(groups),
-                    accounted_months=planned_units-len(queues)-len(cpus)-len(groups),
+                    accounted_months=initially_complete+sum(worker_done)+sum(worker_deferred),
+                    worker_assignments=worker_progress(),
                     query_limit=panel_guard.refresh(),
                     elapsed_seconds=time.monotonic() - began,
                     failure=failure,
@@ -643,7 +668,8 @@ def main(argv=None):
             selection=selection,
             validation_budget=args.validation_bytes,
             planned_units=planned_units,
-            accounted_months=planned_units-len(queues),
+            accounted_months=initially_complete+sum(worker_done)+sum(worker_deferred),
+            worker_assignments=worker_progress(),
             active_months=0,
             **counters,
             **catalog.stats(),

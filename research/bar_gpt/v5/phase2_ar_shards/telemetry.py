@@ -50,6 +50,19 @@ class WorkerTelemetry:
                              bytes_done=0, task_started=time.time(), task_seconds=0.,
                              query_started=None, query_seconds=0., error=None)
 
+    def plan(self, tasks, tickers):
+        """Fixed startup denominator; task-local counters remain separate."""
+        self.emit(planned_tasks=tasks, planned_tickers=tickers, planned_done=0,
+                  planned_deferred=0)
+
+    def defer(self):
+        with self.lock:
+            self.data["planned_deferred"] = self.data.get("planned_deferred", 0) + 1
+
+    def end_plan_task(self):
+        with self.lock:
+            self.data["planned_done"] = self.data.get("planned_done", 0) + 1
+
     def session(self):
         with self.lock:
             self.data["progress_done"] += 1
@@ -104,7 +117,7 @@ class ObservedReader:
         self.reader,self.reporter,self.seed=reader,reporter,seed
 
     def __getattr__(self, name):
-        if name=="origin_counts":
+        if name in ("origin_counts", "history_fetch"):
             method=getattr(self.reader,name)  # Missing remains missing for a reader without preflight.
             return lambda *a,**kw:self._read(method,*a,**kw)
         return getattr(self.reader,name)
@@ -134,6 +147,7 @@ class ObservedReader:
             actual=self.reporter.data["queries"]-before
             self.reporter.data["queries"]+=max(0,int(timing.get('queries',0))-actual)
             self.reporter.data["cache_hits"]+=int(timing.get('coarse_cache_hits',0))
+            self.reporter.data["cache_hits"]+=int(timing.get('context_memory_hits',0))+int(timing.get('context_disk_hits',0))
             self.reporter.data["state"]="Prepare"
         return result
 
@@ -159,8 +173,10 @@ class PublicationTelemetry:
 
 def cpu_telemetry(root, settings):
     identity=mp.current_process()._identity
-    slot=((identity[-1]-1) % settings["workers"]) if identity else 0
+    slot=settings.get("worker_slot", ((identity[-1]-1) % settings["workers"]) if identity else 0)
     reporter=WorkerTelemetry(root,settings.get("telemetry_run","test"),"cpu",slot)
+    if "planned_tasks" in settings:
+        reporter.plan(settings["planned_tasks"], settings["planned_tickers"])
     from multiprocessing.util import Finalize
     Finalize(reporter,reporter.close,exitpriority=10)
     return reporter

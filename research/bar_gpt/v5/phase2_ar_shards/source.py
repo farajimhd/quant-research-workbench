@@ -115,12 +115,15 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
                if prior["code"].get(k) != current["code"].get(k)}
     allowed = {"phase2_ar_shards/" + k for k in ("source.py", "sampling.py", "run.py")}
     kind = proof.get("kind")
-    if kind in ("file-ledger-eligibility-v1", "file-ledger-observability-v1"):
+    ledger_kinds = ("file-ledger-eligibility-v1", "file-ledger-observability-v1", "ticker-affinity-context-v1")
+    if kind in ledger_kinds:
         allowed |= {"phase2_ar_shards/"+k for k in ("storage.py","ledger.py","migrate_ledger.py")}
-    if kind == "file-ledger-observability-v1":
+    if kind in ("file-ledger-observability-v1", "ticker-affinity-context-v1"):
         allowed.add("phase2_ar_shards/telemetry.py")
+    if kind == "ticker-affinity-context-v1":
+        allowed |= {"phase2_ar_shards/"+k for k in ("assignment.py", "bar_cache.py")}
     if (not changed or not changed <= allowed
-        or kind not in ("exact-short-session-preflight-v1","file-ledger-eligibility-v1","file-ledger-observability-v1")
+        or kind not in ("exact-short-session-preflight-v1", *ledger_kinds)
         or proof.get("plan_hash") != prior["hash"]
         or proof.get("from_code") != prior["code"]
         or proof.get("to_code") != current["code"]):
@@ -143,7 +146,14 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
         or audit.get("exact_sampling_and_canonical_reader") is not True
     ):
         raise ValueError("Worker observability lacks native payload parity evidence")
-    if kind in ("file-ledger-eligibility-v1", "file-ledger-observability-v1"):
+    if kind == "ticker-affinity-context-v1" and (
+        audit.get("session_cache_parity_cases", 0) < 12
+        or audit.get("fixed_assignment_tests_passed") is not True
+        or audit.get("uncached_aggregation_exact") is not True
+        or audit.get("existing_selection_preserved") is not True
+    ):
+        raise ValueError("Ticker ownership lacks source/cache/assignment parity evidence")
+    if kind in ledger_kinds:
         from .ledger import FileLedger
 
         path = Path(proof["migration_path"])
@@ -241,6 +251,15 @@ class CanonicalReader:
         from .coarse_cache import CoarseCache
 
         self.coarse_cache = CoarseCache(self.root.parent / "phase2-coarse-cache-v1", digest(plan["authority"]))
+        from .bar_cache import BarCache
+        producer = {k:v for k,v in plan["code"].items()
+                    if not k.startswith("phase2_ar_shards/")}
+        self.context_cache = BarCache(
+            self.root.parent / "phase2-session-context-v1",
+            digest(dict(authority=plan["authority"], producer=producer,
+                        source_query=plan["source_query"])),
+            fine_tail_rows=max(plan["geometry"]["history"][:3]),
+        )
 
     def months(self, job):
         if job["ticker"] not in self.bounds:
@@ -299,7 +318,68 @@ class CanonicalReader:
                             fetch_seconds=time.monotonic()-began,
                             eligibility_queries=1)
 
-    def fetch(self, ticker, rows, gate, chunk_events=0, frames=tuple(range(5))):
+    def history_fetch(self, ticker, rows, gate, chunk_events=0, frames=tuple(range(5))):
+        return self.fetch(ticker, rows, gate, chunk_events, frames, history=True)
+
+    def fetch(self, ticker, rows, gate, chunk_events=0, frames=tuple(range(5)), *, history=False):
+        """Reuse source-sealed unadjusted session contexts across pages/workers.
+
+        Cached fine tails serve history ONLY. Normal fine reads still return
+        full sessions. Coarse contexts are complete and serve either purpose.
+        """
+        if not hasattr(self, "context_cache"):
+            return self._fetch_uncached(ticker, rows, gate, chunk_events, frames)
+        pieces = [[] for _ in FRAMES]
+        timing = dict(queries=0, query_seconds=0., admission_wait_seconds=0.,
+                      fetch_seconds=0., resource_page_splits=0, coarse_cache_hits=0,
+                      context_memory_hits=0, context_disk_hits=0, context_source_sessions=0)
+        began = time.monotonic()
+
+        def read(missing, group):
+            arrays, costs = self._fetch_uncached(ticker, missing, gate, chunk_events, tuple(group))
+            for key, value in costs.items():
+                timing[key] = timing.get(key, 0) + value
+            for row in missing:
+                self.context_cache.put(ticker, row, group.start == 3, arrays)
+            timing["context_source_sessions"] += len(missing)
+            return arrays
+
+        for group in (range(3), range(3, 5)):
+            selected = [i for i in group if i in frames]
+            if not selected:
+                continue
+            if group.start == 0 and not history:
+                arrays = read(rows, group)
+                for i in selected:
+                    pieces[i].append(arrays[i])
+                continue
+            for page in self.pages(rows, chunk_events):
+                ready, missing = {}, []
+
+                def flush():
+                    if missing:
+                        read(missing, group)
+                        for row in missing:
+                            ready[row["source_date"]] = self.context_cache.get(ticker, row, group.start == 3)[0]
+                        missing.clear()
+
+                for row in page:
+                    arrays, kind = self.context_cache.get(ticker, row, group.start == 3)
+                    if arrays is None:
+                        missing.append(row)
+                    else:
+                        flush()  # Missing runs stay contiguous; never span a cached session.
+                        ready[row["source_date"]] = arrays
+                        timing["context_" + kind + "_hits"] += 1
+                flush()
+                for row in page:
+                    for i in selected:
+                        pieces[i].append(ready[row["source_date"]][i])
+        timing["fetch_seconds"] = time.monotonic() - began
+        return [np.concatenate(parts) if parts else np.empty(0, dtype=BAR)
+                for parts in pieces], timing
+
+    def _fetch_uncached(self, ticker, rows, gate, chunk_events=0, frames=tuple(range(5))):
         import polars as pl
 
         pieces = [[] for _ in FRAMES]

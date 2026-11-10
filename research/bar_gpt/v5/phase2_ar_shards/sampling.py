@@ -153,7 +153,7 @@ def compile_sessions(
         needed = tuple(i for i, h in enumerate(geometry.history) if len(cache[i]) < h)
         if not needed:
             break
-        older, elapsed = reader.fetch(
+        older, elapsed = getattr(reader, "history_fetch", reader.fetch)(
             unit["ticker"], page, gate, chunk_events, frames=needed
         )
         timing["query_seconds"] += elapsed["query_seconds"]
