@@ -25,7 +25,7 @@ output comparisons, including quote values/masks, clocks, all causal indices,
 tails and split basis. Matched full-month query trials measured 2.64x/3.14x/3.31x
 for LARK/CPAC/FMIVW and 20.53x for quote-heavy AAPX. These are query-level examples,
 not whole-build speedups; the bounded-page eligibility condition still applies.
-Final focused tests: 60 laptop, 59 native plus one app-only test run locally.
+Final focused tests: 64 laptop, 63 native plus one app-only test run locally.
 
 Resume requires an explicit sealed engineering proof binding the exact old plan,
 old/new code maps and immutable native parity evidence. Only the reviewed
@@ -34,7 +34,19 @@ geometry, inventory and seed remain strict. Frozen geometry is normalized to its
 JSON representation before comparison, correcting dtype tuple/list mismatch
 without accepting changed fields or widths. Existing payloads, caches and
 receipts are preserved. Activation evidence and incident records are under native
-`corrected-restart-20261110/eligibility-*`; active generator source is `5eb875d43`.
+`corrected-restart-20261110/eligibility-*`; active generator source is `41f4dc33e`.
+
+The first recovery exposed a separate operational bottleneck: millions of
+individual SQLite deferral-hash lookups while replaying completed months. A
+read-only stack sample confirmed the coordinator in that exact recovery loop.
+The startup sequential pass still verifies every deferral report hash, binding
+and now its identity key; its verified seals are retained in a coordinator-owned
+map and updated only after committed inserts. Completed-month reconciliation
+checks the same exact seals against that map. Payload receipt/file checks remain
+intact. This removes repeated random lookups without dropping integrity checks.
+The blocked earlier coordinator was released only after an owned STOP, verified
+zero source queries, no publication writes and archived process/stack evidence;
+the training process was never signalled.
 
 ## Final-build operating additions (2026-11-10)
 
