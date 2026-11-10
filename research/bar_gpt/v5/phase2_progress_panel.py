@@ -196,7 +196,19 @@ def main(argv=None):
     parser.add_argument('--export-svg',type=Path)
     args=parser.parse_args(argv)
     if args.export_svg and not args.once:parser.error('--export-svg requires --once')
-    console=Console(width=args.width,height=args.height,no_color=args.no_color or None,record=bool(args.export_svg))
+    vt_enabled=None
+    if os.name=='nt':
+        # Scheduled interactive consoles may inherit a legacy mode even inside
+        # Windows Terminal. Enable VT on our own output handle, never globally.
+        import ctypes
+        kernel=ctypes.windll.kernel32
+        kernel.GetStdHandle.restype=ctypes.c_void_p
+        handle=kernel.GetStdHandle(-11)
+        mode=ctypes.c_ulong()
+        if kernel.GetConsoleMode(ctypes.c_void_p(handle),ctypes.byref(mode)):
+            vt_enabled=bool(kernel.SetConsoleMode(ctypes.c_void_p(handle),mode.value|4))
+    console=Console(width=args.width,height=args.height,no_color=args.no_color or None,
+                    legacy_windows=False if vt_enabled else None,record=bool(args.export_svg))
     reader=SnapshotReader(args.root)
     def frame():return render(reader.read(),console.width,console.height)
     if os.name=='nt' and not args.once and console.is_terminal and not str(args.root).startswith('\\\\'):
