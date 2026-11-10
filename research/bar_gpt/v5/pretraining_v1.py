@@ -149,7 +149,7 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
 
         payload = prepare_full(values, valid, timeframe_us, stats)
         full, evidence = payload["native_values"], payload["native_valid"]
-        ids = torch.arange(18).expand(len(values), -1)
+        ids = torch.arange(18).expand(len(values), -1).clone()
         transformed = BarInputTransformV1()(full.transpose(1, 2), valid, end_us, timeframe_us)
         # The validation protocol supplies every column and reconstructs every
         # column. No masking RNG is consumed and no hidden-only pass is run.

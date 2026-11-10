@@ -63,6 +63,7 @@ def test_full_validation_does_not_draw_masking_rng_and_training_stays_masked():
     )
     assert plain.visible.shape[1] < 18 and full.visible.shape == (6, 18, 64)
     assert torch.equal(full.feature_ids, torch.arange(18).expand(6, -1))
+    assert full.feature_ids.is_contiguous() and full.feature_ids.stride(0) > 0
     assert torch.equal(full.feature_ids, full.hidden_ids)
     assert torch.equal(full.targets, full.visible)
     assert torch.equal(full.target_valid, full.valid)
