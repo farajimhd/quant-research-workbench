@@ -29,6 +29,34 @@ def us(text):
     )
 
 
+@pytest.mark.parametrize("invalid", [None, "hash", "rows", "saturated", "pages"])
+def test_empty_action_receipts_require_complete_provider_evidence(monkeypatch, invalid):
+    import hashlib
+    from research.bar_gpt.v5.phase2_ar_shards import inventory
+
+    details = dict(sha256=hashlib.sha256(b"[]").hexdigest(), pages=1, saturated=False)
+    proof = dict(source_run_id="empty-day", status="covered_empty",
+                 coverage_start_date="2026-07-25", coverage_end_date="2026-07-26",
+                 rows_read=0, rows_written=0, rows_failed=0)
+    if invalid == "hash": details["sha256"] = "f" * 64
+    if invalid == "rows": proof.update(rows_read=1, rows_written=1)
+    if invalid == "saturated": details["saturated"] = True
+    if invalid == "pages": details["pages"] = 0
+    def rows(client, sql):
+        if "publication_coverage" in sql:
+            assert "'covered_empty'" in sql
+            return [dict(proof, details_json=json.dumps(details))]
+        return []
+    monkeypatch.setattr(inventory.sip, "rows", rows)
+    original = dict(coverage=dict(coverage_end_date="2026-07-25"), rows=[], catalog_hash=digest([]))
+    if invalid:
+        with pytest.raises(ValueError, match="coverage gap"):
+            inventory.extend_actions(None, original, "2026-07-26")
+    else:
+        result = inventory.extend_actions(None, original, "2026-07-26")
+        assert result["rows"] == [] and len(result["extension_coverage"]) == 1
+
+
 def bars(ends, price=10):
     a = np.zeros(len(ends), dtype=BAR)
     a["end_us"] = ends

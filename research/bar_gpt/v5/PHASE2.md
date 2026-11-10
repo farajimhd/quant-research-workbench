@@ -1,5 +1,15 @@
 # Phase two: session shard generator and data contract
 
+## Corporate-action empty-receipt correction (2026-11-10)
+
+The previously reported July-25 coverage gap was traced to the extractor selecting
+only `completed` publications. Canonical `covered_empty` receipts already exist
+for those dates. The extension now accepts that status only with zero read/write/
+failed counts, at least one provider page, no saturation, the SHA256 of canonical
+empty `[]`, and an independent zero-row publication readback. Missing intervals
+or incomplete/contradictory proofs still fail closed. This is verified empty
+coverage, not an assumption that absent reference records imply no split.
+
 Recorded: 2026-11-10 UTC. Current implementation baseline: **`1cb1bffe8`**,
 committed/pushed and hash-synchronized as 709 Python files to native
 `D:/TradingML/codes/bargpt-shards-1cb1bffe8`.

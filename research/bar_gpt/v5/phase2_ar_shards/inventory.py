@@ -1,6 +1,7 @@
 """Frozen sampled UTC-month inventory and explicit canonical 2026 extension."""
 
 import json
+import hashlib
 from pathlib import Path
 import shutil
 
@@ -64,9 +65,9 @@ def extend_actions(client, original, end):
         return original
     candidates = sip.rows(
         client,
-        "SELECT source_run_id,coverage_start_date,coverage_end_date,rows_read,rows_written,rows_failed,details_json "
+        "SELECT source_run_id,status,coverage_start_date,coverage_end_date,rows_read,rows_written,rows_failed,details_json "
         "FROM q_live.market_reference_publication_coverage_v1 FINAL WHERE coverage_kind='massive_splits' "
-        "AND source_system='massive' AND source_object='splits' AND status='completed' "
+        "AND source_system='massive' AND source_object='splits' AND status IN ('completed','covered_empty') "
         f"AND coverage_end_date>{literal(begin)} AND coverage_start_date<{literal(end)}",
     )
     valid = []
@@ -77,6 +78,10 @@ def extend_actions(client, original, end):
             or p["rows_read"] != p["rows_written"]
             or details.get("saturated") is not False
             or details.get("pages", 0) < 1
+            or (p.get("status") == "covered_empty" and (
+                p["rows_read"] != 0
+                or details.get("sha256") != hashlib.sha256(b"[]").hexdigest()
+            ))
         ):
             continue
         p["provider_response_sha256"] = details["sha256"]
