@@ -307,13 +307,22 @@ class CanonicalReader:
         began = time.monotonic()
         with gate():
             querying = time.monotonic()
-            table = sip.arrow(self.client, sql, "ar-eligibility-" + digest([ticker, rows])[:24], allow_empty=True)
+            for attempt in range(3):
+                try:
+                    table = sip.arrow(self.client, sql,
+                        "ar-eligibility-" + digest([ticker, rows])[:24] + f"-{attempt}",
+                        allow_empty=True)
+                    break
+                except (ConnectionError, OSError):
+                    if attempt == 2:
+                        raise
+                    time.sleep(.25 * 2**attempt)
         counts = {r["source_date"]: 0 for r in rows}
         for row in table.to_dicts():
             if row["session"] not in counts or not 0 <= row["origins"] <= 57600:
                 raise ValueError("Eligibility result outside frozen sessions")
             counts[row["session"]] = int(row["origins"])
-        return counts, dict(queries=1, query_seconds=time.monotonic()-querying,
+        return counts, dict(queries=attempt+1, query_seconds=time.monotonic()-querying,
                             admission_wait_seconds=querying-began,
                             fetch_seconds=time.monotonic()-began,
                             eligibility_queries=1)

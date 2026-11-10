@@ -117,6 +117,32 @@ def test_primary_worker_bar_does_not_reset_between_months():
     assert "120/400" in capture.get() and "fixed assigned month groups" in capture.get()
 
 
+def test_eligibility_reconnect_retries_identical_sql_and_stops_at_bound(monkeypatch):
+    import http.client
+    import polars as pl
+    from research.bar_gpt.v5.phase2_ar_shards import source
+    reader = CanonicalReader.__new__(CanonicalReader)
+    reader.plan,reader.client = dict(authority=dict(rules=[])),object()
+    monkeypatch.setattr(source,"bar_query",lambda *a:"prefix,    base AS (SELECT dummy")
+    monkeypatch.setattr(source,"partition_page",lambda sql,rows:sql)
+    monkeypatch.setattr(source.time,"sleep",lambda *_:None)
+    calls=[]
+    def arrow(client,sql,*args,**kwargs):
+        calls.append(sql)
+        if len(calls)<3:raise http.client.RemoteDisconnected("idle HTTP connection")
+        return pl.DataFrame(dict(session=["2025-01-02"],origins=[4100]))
+    monkeypatch.setattr(source.sip,"arrow",arrow)
+    rows=[dict(source_date="2025-01-02")]
+    counts,timing=reader.origin_counts("TEST",rows,nullcontext)
+    assert counts=={"2025-01-02":4100} and timing["queries"]==3
+    assert calls[0]==calls[1]==calls[2]
+    def failed(*a,**kw):
+        calls.append(a[1]);raise http.client.RemoteDisconnected("persistent")
+    calls.clear();monkeypatch.setattr(source.sip,"arrow",failed)
+    with pytest.raises(http.client.RemoteDisconnected):reader.origin_counts("TEST",rows,nullcontext)
+    assert len(calls)==3
+
+
 def test_cross_month_context_and_split_outputs_match_full_history(tmp_path):
     from datetime import date, timedelta
     from test_bargpt_phase2_ar_sampled import Reader
