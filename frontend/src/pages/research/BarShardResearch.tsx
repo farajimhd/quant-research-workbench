@@ -100,14 +100,17 @@ export function ShardCandles({ bars, family, selected, onSelect, triplets = fals
   const prices = bars.flatMap(b => families.flatMap(f => b.values.slice(f.offset, f.offset + 4).filter((v): v is number => v !== null)));
   const low = Math.min(...prices), high = Math.max(...prices); const range = Math.max(high - low, high * .0001);
   const y = (v: number) => 300 - (v - low) / range * 260;
+  const closes = bars.map(bar => bar.end_us).filter((value): value is number => value !== null);
+  const spansDays = closes.length > 1 && closes[closes.length - 1] - closes[0] > 86400e6;
+  const axisClock = (us: number | null) => us === null ? "Padding" : new Date(us / 1000).toLocaleString("en-GB", { timeZone: "America/New_York", ...(spansDays ? { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit", second: "2-digit" }), hour12: false });
   return <><div className="bar-shard-legend">{families.map(f => <span key={f.name} className={triplets ? "shard-family-label" : `shard-${f.name}`}>{triplets ? "" : "● "}{f.name}</span>)}<span>{bars.some(bar => bar.padding) ? "Shaded slots: padding · " : ""}{triplets ? "Green: close ≥ open · Red: close < open" : "Click a bar for exact values"}</span></div>
     {!prices.length && <p className="research-muted">No valid prices in the selected series. Raw masks remain available below.</p>}
     <svg className="bar-shard-chart" viewBox="0 0 1200 350" role="group" aria-label="64-bar candlestick inspection">
       {prices.length > 0 && [0, 1, 2, 3, 4].map(i => { const value = low + range * i / 4; return <g key={i} className="bar-shard-grid"><line x1={65} x2={1190} y1={y(value)} y2={y(value)} /><text x={60} y={y(value) + 4} textAnchor="end">{value.toLocaleString("en-US", { maximumSignificantDigits: 6 })}</text></g>; })}
       {bars.map(b => { const x = 75 + b.index * 17.4; return <g key={b.index} role="button" tabIndex={0} aria-label={`Inspect bar ${b.index + 1}${b.padding ? ", padding" : ""}`} aria-pressed={selected === b.index} onClick={() => onSelect(b.index)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(b.index); } }}>
-        <title>{`Bar ${b.index + 1} · ${clock(b.end_us)}`}</title><rect x={x - 8} y={20} width={17} height={292} className={`bar-shard-hit${b.padding ? " padded" : ""}${b.index === selected ? " selected" : ""}`} />
+        <title>{`Bar ${b.index + 1} · ${triplets && b.end_us !== null ? new Date(b.end_us / 1000).toLocaleString("en-CA", { timeZone: "America/New_York", hour12: false }) + " NY close" : clock(b.end_us)}`}</title><rect x={x - 8} y={20} width={17} height={292} className={`bar-shard-hit${b.padding ? " padded" : ""}${b.index === selected ? " selected" : ""}`} />
         {prices.length > 0 && families.map((f, j) => { const [o, h, l, c] = b.values.slice(f.offset, f.offset + 4); const center = x + (j - (families.length - 1) / 2) * (triplets ? 4.8 : 4); return <g key={f.name} data-family={f.name} className={triplets ? (o !== null && c !== null && c < o ? "shard-candle-down" : "shard-candle-up") : `shard-${f.name}`} pointerEvents="none">{h !== null && l !== null && <line x1={center} x2={center} y1={y(h)} y2={y(l)} />}{o !== null && c !== null ? <rect x={center - 1.5} width={3} y={Math.min(y(o), y(c))} height={Math.max(1, Math.abs(y(o) - y(c)))} /> : c !== null && <circle cx={center} cy={y(c)} r={1.5} />}</g>; })}
-        {(b.index % 8 === 0 || b.index === 63) && <text x={x} y={335} textAnchor="middle" className="bar-shard-axis">{b.index + 1}</text>}
+        {(b.index % 8 === 0 || b.index === 63) && <text x={x} y={335} textAnchor="middle" className="bar-shard-axis">{triplets ? axisClock(b.end_us) : b.index + 1}</text>}
       </g>; })}
     </svg></>;
 }

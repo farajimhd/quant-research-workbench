@@ -87,6 +87,10 @@ def main():
                 )
                 page.get_by_role("button", name="Inspect bar 2", exact=True).click()
                 page.get_by_role("heading", name="Bar 2 / 64", exact=True).wait_for()
+                page.wait_for_function("close => document.querySelector('.phase2-ground-truth')?.dataset.selectedClose === String(close)",arg=result['bars'][1]['end_us'],timeout=60000)
+                page.locator('.phase2-ground-truth .chart-reference-line').filter(has_text='Bar 2 · close').wait_for()
+                assert 'NY' in page.get_by_label('Decision origin',exact=True).locator('option:checked').inner_text()
+
                 assert (
                     page.locator(
                         ".phase2-shard-research .bar-shard-fields tbody tr"
@@ -156,7 +160,9 @@ def main():
             box = canvas.bounding_box()
             page.mouse.move(box['x']+10,box['y']+box['height']/2)
             with page.expect_response(lambda r: '/phase2/events?' in r.url and 'before_us=' in r.url and r.status not in (429,503),timeout=60000) as zoom:
-                page.mouse.wheel(0,4000)
+                for _ in range(12):
+                    page.mouse.wheel(0,500)
+                    page.wait_for_timeout(80)
             assert zoom.value.ok,zoom.value.text()
             page.get_by_text("Corporate actions and provenance", exact=True).click()
             page.screenshot(path=str(output / "provenance.png"), full_page=True)

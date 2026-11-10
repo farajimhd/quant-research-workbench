@@ -66,7 +66,7 @@ const endpoint = "/api/research/models/bargpt/phase2";
 const frameCodes = ["1s", "10s", "1m", "1h", "1d"];
 const frames = ["1s", "10s", "1min", "1hour", "Daily"];
 const clock = (us: number) =>
-  new Date(us / 1000).toISOString().replace("T", " ").replace("Z", " UTC");
+  new Date(us / 1000).toLocaleString("en-CA", { timeZone: "America/New_York", hour12: false }) + " NY";
 const number = (value: number | null) =>
   value === null
     ? "Missing"
@@ -360,7 +360,7 @@ export function Phase2ShardResearch() {
       ) : (
         <>
           <Phase2GroundTruth stream={sample.stream} unit={sample.unit} ticker={sample.ticker}
-            timeframe={truthFrame} origin={sample.origin_us} start={sample.bars[0]?.end_us}
+            timeframe={truthFrame} origin={sample.origin_us} selectedEnd={chosen?.end_us} selectedIndex={selected} selectionFrame={frameCodes[sample.frame]}
             onTimeframeChange={value => { truthSelection.current++; setTruthFrame(value); const frame = frameCodes.indexOf(value); if (frame >= 0) inspect({ frame, view: -1 }); }} />
           <section
             className="bar-shard-chart-panel"
@@ -481,15 +481,14 @@ export function Phase2ShardResearch() {
               <>
                 <p className="research-muted">
                   {frames[sample.frame]} · {clock(sample.bars[0].end_us)} →{" "}
-                  {clock(sample.bars[63].end_us)} · horizontal axis is observed
-                  bar index; gaps are preserved.
+                  {clock(sample.bars[63].end_us)} · NY close times; gaps are preserved.
                 </p>
                 <ShardCandles
                   triplets
                   bars={chartBars}
                   family={family}
                   selected={selected}
-                  onSelect={setSelected}
+                  onSelect={index => { setSelected(index); truthSelection.current++; setTruthFrame(frameCodes[sample.frame]); }}
                 />
               </>
             ) : (
@@ -599,7 +598,7 @@ export function Phase2ShardResearch() {
                 <thead>
                   <tr>
                     <th>Bar</th>
-                    <th>Close (UTC)</th>
+                    <th>Close (NY)</th>
                     <th>Gap (s)</th>
                     <th>Trade close</th>
                     <th>Bid close</th>
@@ -612,7 +611,7 @@ export function Phase2ShardResearch() {
                       <td>
                         <button
                           className="button secondary compact"
-                          onClick={() => setSelected(bar.index)}
+                          onClick={() => { setSelected(bar.index); truthSelection.current++; setTruthFrame(frameCodes[sample.frame]); }}
                         >
                           {bar.index + 1}
                         </button>

@@ -36,3 +36,6 @@
 .phase2-ground-truth .chart-component-toolbar.compact { flex-wrap: wrap; height: auto; }
 .phase2-ground-truth .chart-timeframe-row { flex-wrap: wrap; }
 .phase2-ground-truth .button { flex-shrink: 0; white-space: nowrap; }
+
+.phase2-ground-truth .chart-reference-line { border-left: 2px solid var(--primary); }
+.phase2-ground-truth .chart-reference-line span { color: var(--foreground); border-color: var(--primary); max-width: 280px; }

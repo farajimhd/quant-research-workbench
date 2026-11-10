@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ChartPanel, type ChartPayload } from "../../app/components/ChartPanel";
+import { ChartPanel, type ChartPanelHandle, type ChartPayload } from "../../app/components/ChartPanel";
 import { HISTORICAL_TIMEFRAMES } from "../../features/canvas/configuration";
 import { query } from "../../api/client";
 import { researchApi } from "./researchApi";
@@ -8,8 +8,9 @@ type Candle = { start_us: number; end_us: number; open: number; high: number; lo
 type Page = { bars: Candle[]; has_more: boolean; next_before_us: number | null; source: string };
 
 /** Fresh canonical events, fixed session split basis, bounded backwards pagination. */
-export function Phase2GroundTruth({ stream, unit, ticker, timeframe, origin, start, onTimeframeChange }: {
-  stream: string; unit: number; ticker: string; timeframe: string; origin: number; start?: number;
+export function Phase2GroundTruth({ stream, unit, ticker, timeframe, origin, selectedEnd, selectedIndex, selectionFrame, onTimeframeChange }: {
+  stream: string; unit: number; ticker: string; timeframe: string; origin: number;
+  selectedEnd?: number; selectedIndex: number; selectionFrame: string;
   onTimeframeChange: (frame: string) => void;
 }) {
   const [data, setData] = useState<Page | null>(null);
@@ -22,6 +23,7 @@ export function Phase2GroundTruth({ stream, unit, ticker, timeframe, origin, sta
   const pending = useRef(false);
   const navigated = useRef(false);
   const generation = useRef(0);
+  const chart = useRef<ChartPanelHandle>(null);
   const loadPage = useRef<(before?: number) => void>(() => {});
 
   useEffect(() => {
@@ -56,11 +58,24 @@ export function Phase2GroundTruth({ stream, unit, ticker, timeframe, origin, sta
   function older() {
     if (data?.has_more && data.next_before_us && !pending.current) { navigated.current = false; loadPage.current(data.next_before_us); }
   }
+  const selectedCandle = timeframe === selectionFrame ? data?.bars.find(bar => bar.end_us === selectedEnd) : undefined;
+  // Fetch complete older pages until the selected saved close is covered. Never
+  // mark a nearby candle as a match when the exact clock is still unavailable.
+  useEffect(() => {
+    if (timeframe !== selectionFrame || !selectedEnd || !data || loading || earlier || error || selectedCandle) return;
+    if ((!data.bars.length || selectedEnd <= data.bars[0].start_us) && data.has_more) older();
+  }, [selectedEnd, data, loading, earlier, error, selectedCandle, timeframe, selectionFrame]);
+  useEffect(() => {
+    if (!selectedCandle) return;
+    const timer = window.setTimeout(() => chart.current?.fitRecent(), 0);
+    return () => window.clearTimeout(timer);
+  }, [selectedEnd, timeframe, selectedCandle?.start_us]);
   return <section className="phase2-ground-truth" aria-label="Canonical event ground truth"
+    data-selected-close={selectedCandle?.end_us ?? ""}
     onWheelCapture={() => { navigated.current = true; }}
     onPointerMoveCapture={event => { if (event.buttons) navigated.current = true; }}>
-    <div className="phase2-chart-heading"><h2>Ground truth · trades</h2><span className="research-muted">ClickHouse events · NY clock · session split basis · {fullSession ? "full day" : "through cutoff"}</span></div>
-    <ChartPanel ticker={ticker} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} payload={payload}
+    <div className="phase2-chart-heading"><h2>Ground truth · trades</h2><span className="research-muted">NY time · axis: candle open · saved bars: candle close</span></div>
+    <ChartPanel ref={chart} ticker={ticker} timeframe={timeframe} timeframes={HISTORICAL_TIMEFRAMES} payload={payload}
       featureOptions={[]} indicatorOptions={[]} visibleColumns={[]} onTickerChange={() => {}}
       onTimeframeChange={onTimeframeChange} onVisibleColumnsChange={() => {}} tickerEditable={false}
       toolbarVariant="compact" showIndicatorControls={false} showSupervisionControls={false} persistedOnly
@@ -69,7 +84,7 @@ export function Phase2GroundTruth({ stream, unit, ticker, timeframe, origin, sta
       loading={loading} loadingEarlier={earlier} errorMessage={error}
       emptyMessage="No eligible trades in this interval. Load earlier history."
       canLoadEarlier={Boolean(data?.has_more)} onLoadEarlier={() => { if (navigated.current) older(); }}
-      reference={{ time: origin / 1e6, startTime: (start ?? origin) / 1e6, endTime: origin / 1e6, highlightRange: true, label: "Saved context / cutoff" }}
+      reference={selectedCandle ? { time: selectedCandle.start_us / 1e6, label: `Bar ${selectedIndex + 1} · close ${new Date(selectedCandle.end_us / 1000).toLocaleTimeString("en-GB", { timeZone: "America/New_York", hour12: false })} NY` } : null}
       toolbarActions={<><label className="phase2-session-toggle"><input type="checkbox" checked={fullSession} onChange={e => setFullSession(e.target.checked)} />Full session</label><button className="button secondary compact" disabled={loading || earlier || !data?.has_more} onClick={older}>{earlier ? "Loading…" : "Earlier history"}</button>{error && <button className="button secondary compact" onClick={() => setRevision(v => v + 1)}>Retry events</button>}</>}
     />
   </section>;
