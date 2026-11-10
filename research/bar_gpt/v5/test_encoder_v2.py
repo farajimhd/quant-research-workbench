@@ -186,3 +186,41 @@ def test_seal_rejects_wrong_split_and_incomplete_statistics(tmp_path):
     p.write_text(json.dumps(result))
     with pytest.raises(ValueError):
         load_calibration(p, manifest)
+
+
+def test_full_statistics_ledger_resume_and_training_only(tmp_path, monkeypatch):
+    """Exercise actual file hashes, reducer, ledger and sealed calibration path."""
+    from types import SimpleNamespace
+    import psutil
+    from . import zscore_calibration_v2 as module
+
+    rows = records()
+    path = tmp_path / "train.npy"
+    np.save(path, rows, allow_pickle=False)
+    import hashlib
+
+    entry = dict(
+        path=str(path),
+        start=0,
+        stop=len(rows),
+        bytes=path.stat().st_size,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+    manifest = dict(
+        manifest_hash="train-only",
+        counts={"train": 12},
+        splits={"train": [entry], "validation": [{"path": "MUST-NOT-READ"}]},
+    )
+    monkeypatch.setattr(module, "load_split", lambda _: manifest)
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: SimpleNamespace(available=128 * 2**30)
+    )
+    directory = tmp_path / "statistics"
+    first = module.fit(tmp_path / "split.json", directory, workers=1)
+    assert first["training_samples"] == 12 and first["completed_files"] == 1
+    assert first["source_bytes_hash_verified"] == path.stat().st_size
+    # A completed ledger must not reread/refit files each time it is opened.
+    monkeypatch.setattr(module, "payload", lambda _: pytest.fail("Unexpected refit"))
+    second = module.fit(tmp_path / "split.json", directory, workers=1)
+    assert first == second
+    load_calibration(directory / "calibration.json", manifest)
