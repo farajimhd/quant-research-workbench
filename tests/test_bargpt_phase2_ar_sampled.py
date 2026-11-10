@@ -130,6 +130,28 @@ def test_dense_pages_preserve_whole_sessions_and_resource_retry_order(monkeypatc
         reader.fetch("X",days,gate,frames=(0,))
 
 
+def test_raw_coarse_cache_binds_source_rows_and_detects_corruption(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from research.bar_gpt.v5.phase2_ar_shards.coarse_cache import CoarseCache
+    from research.bar_gpt.v5.phase2_ar_shards import coarse_cache
+
+    monkeypatch.setattr(coarse_cache.psutil,"disk_usage",lambda _:SimpleNamespace(free=200*1024**3))
+    cache=CoarseCache(tmp_path,"authority")
+    table=pl.DataFrame(dict(resolution=[3_600_000_000],price=[np.float32(1.25)],end_us=[10]))
+    calls=[]
+    def fetch():calls.append(1);return table
+    first,hit=cache.get("SELECT one","source-rows",fetch)
+    second,again=cache.get("SELECT one","source-rows",fetch)
+    assert not hit and again and first.equals(second) and len(calls)==1
+    cache.get("SELECT one","different-ordinal-proof",fetch)
+    assert len(calls)==2
+    marker=next(tmp_path.glob('*/*/receipt.json'));receipt=json.loads(marker.read_text())
+    assert receipt['identity']['price_basis']=='unadjusted'
+    payload=marker.parent/'bars.arrow';payload.write_bytes(payload.read_bytes()+b'bad')
+    with pytest.raises(ValueError,match="cache changed"):
+        cache.get(receipt['identity']['sql'],receipt['identity']['source_rows'],fetch)
+
+
 def bars(ends, price=10):
     a = np.zeros(len(ends), dtype=BAR)
     a["end_us"] = ends
@@ -234,6 +256,58 @@ def save(root, item):
         root, "TEST", session["session"], 1, "binding", digest(session), out, Geometry()
     )
     return root / "shards" / digest("TEST")[:24] / session["session"], receipt
+
+
+def test_research_adapter_uses4096_origins_and_all_five_causal_views(tmp_path,monkeypatch):
+    from research.bar_gpt.v5.phase2_ar_shards import inspection
+    from research.bar_gpt.v5.phase2_ar_shards.contract import VERSION
+    from research.bar_gpt.v5.shards.contract import write_json
+
+    reader=Reader(days=("2026-01-02",),counts=(5000,),prices=(10,))
+    session,compiled,_=next(compile(reader))
+    plan=dict(version=VERSION,jobs=[dict(ticker="TEST",years=[dict(year=2026,liquid=1)])],authority=dict(corporate_actions=dict(rows=[])))
+    plan['hash']=digest(plan);write_json(tmp_path/'plan.json',plan)
+    write_json(tmp_path/'provenance.json',dict(source_revision='test'))
+    write_json(tmp_path/'progress.json',dict(state='running',bytes=1,units=1,updated=1))
+    receipt=publish(tmp_path,'TEST',session['session'],1,plan['hash'],digest(session),compiled,Geometry())
+    directory=tmp_path/'shards'/digest('TEST')[:24]/session['session']
+    cat=Catalog(tmp_path);cat.register(directory,receipt);cat.inspection_catalog(plan);cat.db.close()
+    monkeypatch.setattr(inspection,'ROOT',tmp_path)
+    entry=inspection.catalog()['streams'][0]
+    assert entry['blocks']==len(compiled['blocks'])
+    assert inspection.units(entry['stream'])['units'][0]['unit']==20260102
+    for frame in range(5):
+        sample=inspection.sample(stream=entry['stream'],frame=frame)
+        assert len(sample['decisions'])==4096 and len(sample['bars'])==64
+        assert len(sample['channels'])==18 and len(sample['time_channels'])==9
+        assert all(b['end_us']<=sample['origin_us'] for b in sample['bars'])
+        if frame==0:
+            assert sample['bars'][-1]['end_us']==sample['origin_us']
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from src.backend.research_model_service import router
+    app=FastAPI();app.include_router(router)
+    with TestClient(app) as client:
+        response=client.get('/api/research/models/bargpt/phase2/sample',params=dict(stream=entry['stream'],decision=4095,frame=4))
+        assert response.status_code==200 and response.json()['decision']==4095
+        assert client.get('/api/research/models/bargpt/phase2/sample',params=dict(stream=entry['stream'],decision=4096)).status_code==422
+    with pytest.raises(ValueError):inspection.sample(stream='../bad')
+    with pytest.raises(ValueError):inspection.sample(stream=entry['stream'],decision=4096)
+    payload=directory/receipt['files'][0]['name'];payload.write_bytes(payload.read_bytes()+b'corrupt')
+    with pytest.raises(ValueError,match='mutation'):
+        inspection.sample(stream=entry['stream'])
+
+
+def test_explicit_pilot_units_cannot_silently_change_full_build(tmp_path):
+    from research.bar_gpt.v5.phase2_ar_shards.run import ordered_units
+    pl.DataFrame([dict(ticker='X',month='2025-08',split=0),dict(ticker='X',month='2026-01',split=1)]).write_parquet(tmp_path/'units.parquet')
+    plan=dict(sample_units=dict(name='units.parquet'))
+    assert len(ordered_units(tmp_path,plan))==2
+    assert [r['month'] for r in ordered_units(tmp_path,plan,pilot_units=['X:2025-08'])]==['2025-08']
+    with pytest.raises(ValueError,match='Unknown frozen'):
+        ordered_units(tmp_path,plan,pilot_units=['X:2025-07'])
+    with pytest.raises(ValueError,match='resource configuration'):
+        main(['--source-revision','test','--pilot-unit','X:2025-08'])
 
 
 def test_default_warmup_is64_and_no_saved_token_stride():
@@ -455,7 +529,7 @@ def test_coordinator_separate_io_budget_and_completed_month_resume(
         hash="binding",
         seed=20261109,
         geometry=Geometry().manifest(),
-        jobs=[dict(ticker="TEST")],
+        jobs=[dict(ticker="TEST",years=[dict(year=2026,liquid=1)])],
         sample_units=dict(name="sample-units.parquet"),
         authority=dict(corporate_actions=dict(rows=[])),
     )

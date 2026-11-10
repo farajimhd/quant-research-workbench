@@ -190,11 +190,12 @@ def arguments(argv=None):
     p.add_argument("--validation-bytes", type=int, default=250_000_000)
     p.add_argument("--only-ticker", action="append", default=[])
     p.add_argument("--max-months", type=int, default=0)
+    p.add_argument("--pilot-unit", action="append", default=[], help="Exact TICKER:YYYY-MM units for a bounded pilot only")
     p.add_argument("--endpoint")
     return p.parse_args(argv)
 
 
-def ordered_units(root, plan, only=()):
+def ordered_units(root, plan, only=(), pilot_units=()):
     import polars as pl
 
     units = pl.read_parquet(Path(root) / plan["sample_units"]["name"])
@@ -202,6 +203,11 @@ def ordered_units(root, plan, only=()):
         units = units.filter(pl.col("ticker").is_in(only))
     if only and set(only) - set(units["ticker"].to_list()):
         raise ValueError("Unknown ticker selection")
+    if pilot_units:
+        keys = pl.concat_str("ticker", "month", separator=":")
+        if set(pilot_units) - set(units.select(keys.alias("key"))["key"].to_list()):
+            raise ValueError("Unknown frozen pilot unit")
+        units = units.filter(keys.is_in(pilot_units))
     train = deque(units.filter(pl.col("split") == 0).to_dicts())
     validation = deque(units.filter(pl.col("split") == 1).to_dicts())
     result = deque()
@@ -227,6 +233,7 @@ def main(argv=None):
         or args.chunk_events < 0
         or min(args.target_bytes, args.validation_bytes) <= 0
         or args.max_months < 0
+        or (args.pilot_unit and args.max_months < len(set(args.pilot_unit)))
     ):
         raise ValueError("Invalid bounded resource configuration")
     preview, _ = describe(args.parent, geometry)
@@ -288,7 +295,7 @@ def main(argv=None):
             root / "execution.json",
             dict(settings, pid=os.getpid(), started=time.time(), binding=plan["hash"]),
         )
-        queues = ordered_units(root, plan, args.only_ticker)
+        queues = ordered_units(root, plan, args.only_ticker, args.pilot_unit)
         catalog = Catalog(root)
         catalog.db.executescript(
             "CREATE TABLE IF NOT EXISTS deferrals(key TEXT PRIMARY KEY,report TEXT,hash TEXT); CREATE TABLE IF NOT EXISTS completed_months(key TEXT PRIMARY KEY,report TEXT,hash TEXT);"
@@ -322,6 +329,7 @@ def main(argv=None):
             counters["deferred_sessions"] += 1
             counters["deferred_source_origins"] += prior["stats"]["source_origins"]
         began, last_report = time.monotonic(), float("-inf")
+        last_index, indexed_units = float("-inf"), -1
         failure = None
 
         def month_key(unit):
@@ -549,6 +557,7 @@ def main(argv=None):
                                     "fetch_seconds",
                                     "compile_seconds",
                                     "resource_page_splits",
+                                    "coarse_cache_hits",
                                 )
                             }
                             out.write(
@@ -594,12 +603,16 @@ def main(argv=None):
                     **catalog.stats(),
                 )
                 write_json(root / "progress.json", snapshot)
+                if snapshot["units"] != indexed_units and time.monotonic() - last_index >= 60:
+                    catalog.inspection_catalog(plan)
+                    last_index, indexed_units = time.monotonic(), snapshot["units"]
                 if time.monotonic() - last_report >= 15:
                     print(json.dumps(snapshot), flush=True)
                     last_report = time.monotonic()
                 if stop.is_set() and not cpus and not ios and not staged:
                     break
         selection = catalog.export(plan["hash"])
+        catalog.inspection_catalog(plan)
         state = (
             "failed"
             if failure

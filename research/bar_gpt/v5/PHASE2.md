@@ -1,5 +1,33 @@
 # Phase two: session shard generator and data contract
 
+## Final-build operating additions (2026-11-10)
+
+Matched live-load 1M/2M/8M event-page trials over the same three AAPL sessions
+produced byte-identical five-frame arrays; medians were 7.57/7.57/7.48 seconds.
+The overnight build uses an explicit **2M-event whole-session target**, prioritizing
+bounded latency/memory over an unsupported claim that smaller is always faster.
+The automatic default remains 8M with resource-only page bisection.
+
+`coarse_cache.py` caches unadjusted hourly/daily Arrow results, coalesced by an
+OS-held lock and keyed to exact SQL, complete frozen source-row metadata and
+source authority. Every hit verifies receipt, schema, byte count and full hash;
+publication fsyncs and independently hashes the target. Session-adjusted pools
+are never substituted for this raw generation cache. It is derived runtime data
+outside shard-byte budgets and retains the 150GiB disk reserve. This avoids
+re-querying overlapping 64-daily-bar warmup histories across sampled months.
+
+`--pilot-unit TICKER:YYYY-MM` selects exact representative frozen units only with
+a positive bounded `--max-months`; unknown units fail and a pilot cannot publish
+a full release. Full builds leave these filters empty.
+
+The coordinator publishes a sealed `research-catalog.json` at most once per minute
+as new units appear and at completion. The Research page consumes that derived
+index and immutable receipts/payloads, never the live SQLite database over SMB.
+It uses the final `phase2-ar-sampled-v2` authority, all 4,096 origin indices, all
+five frames and shared UTC transforms. Displayed saved prices are already on
+the session split basis; the reader applies no second split adjustment. The
+artifact remains context-shard data, not a finalized future-target training set.
+
 ## Corporate-action empty-receipt correction (2026-11-10)
 
 The previously reported July-25 coverage gap was traced to the extractor selecting

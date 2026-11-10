@@ -514,3 +514,24 @@ class Catalog:
         body["hash"] = digest(body)
         write_json(self.root / "selection.json", body)
         return body
+
+    def inspection_catalog(self, plan):
+        """Publish a small derived Research index; readers never open live SQLite over SMB."""
+        import time
+
+        jobs = {digest(j["ticker"])[:24]: j for j in plan["jobs"]}
+        rows = self.db.execute(
+            "SELECT substr(replace(path,char(92),'/'),8,24) ticker_key,"
+            "substr(replace(path,char(92),'/'),33,4) year,liquid,count(DISTINCT path),count(*),count(selection) "
+            "FROM blocks GROUP BY ticker_key,year,liquid"
+        )
+        streams = []
+        for key, year, liquid, units, blocks, selected in rows:
+            job = jobs[key]
+            if not any(int(y["year"]) == int(year) and int(y["liquid"]) == liquid for y in job["years"]):
+                raise ValueError("Research catalog differs from frozen ticker/year classification")
+            streams.append(dict(stream=f"{key}-{year}",ticker=job["ticker"],year=int(year),
+                                liquid=bool(liquid),units=units,blocks=blocks,selected_blocks=selected))
+        body = dict(binding=plan["hash"],updated=time.time(),streams=sorted(streams,key=lambda r:(r["ticker"],r["year"])))
+        body["hash"] = digest(body)
+        write_json(self.root / "research-catalog.json",body)

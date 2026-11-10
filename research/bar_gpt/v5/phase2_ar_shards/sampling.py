@@ -129,6 +129,7 @@ def compile_sessions(
         "admission_wait_seconds",
         "fetch_seconds",
         "resource_page_splits",
+        "coarse_cache_hits",
     ):
         timing[field] = timing.get(field, 0) + elapsed.get(field, 0)
     cache = [
@@ -144,7 +145,7 @@ def compile_sessions(
             unit["ticker"], page, gate, chunk_events, frames=needed
         )
         timing["query_seconds"] += elapsed["query_seconds"]
-        for field in ("admission_wait_seconds", "fetch_seconds", "resource_page_splits"):
+        for field in ("admission_wait_seconds", "fetch_seconds", "resource_page_splits", "coarse_cache_hits"):
             timing[field] = timing.get(field, 0.0) + elapsed.get(field, 0.0)
         timing["queries"] += elapsed["queries"]
         for i in needed:

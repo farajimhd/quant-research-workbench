@@ -13,22 +13,22 @@ router = APIRouter(prefix='/api/research/models', tags=['research teacher audit'
 
 @router.get('/bargpt/phase2/catalog')
 def bargpt_phase2_catalog(search: str = '', year: int = 0, offset: int = Query(0, ge=0), liquid: int = Query(-1, ge=-1, le=1)):
-    from research.bar_gpt.v5.phase2_shards import inspection
+    from research.bar_gpt.v5.phase2_ar_shards import inspection
     return read(inspection.catalog, search, year, offset, liquid)
 
 
 @router.get('/bargpt/phase2/units')
 def bargpt_phase2_units(stream: str):
-    from research.bar_gpt.v5.phase2_shards import inspection
+    from research.bar_gpt.v5.phase2_ar_shards import inspection
     return read(inspection.units, stream)
 
 
 @router.get('/bargpt/phase2/sample')
 def bargpt_phase2_sample(stream: str = '', unit: int = Query(-1, ge=-1), block: int = Query(0, ge=0),
-                        decision: int = Query(255, ge=0, le=255), frame: int = Query(0, ge=0, le=4),
+                        decision: int = Query(4095, ge=0, le=4095), frame: int = Query(0, ge=0, le=4),
                         view: int = Query(-1, ge=-1, le=15), randomize: bool = False,
                         search: str = '', year: int = 0, liquid: int = Query(-1, ge=-1, le=1)):
-    from research.bar_gpt.v5.phase2_shards import inspection
+    from research.bar_gpt.v5.phase2_ar_shards import inspection
     return read(inspection.sample, stream, unit, block, decision, frame, view, randomize, search, year, liquid)
 
 

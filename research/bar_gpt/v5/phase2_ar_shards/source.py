@@ -173,6 +173,9 @@ class CanonicalReader:
         self.client = sip.client(endpoint, memory_gib=memory_gib)
         self.client.default_query_params.update(max_threads=1, max_execution_time=60)
         self.bounds = OrderedDict()
+        from .coarse_cache import CoarseCache
+
+        self.coarse_cache = CoarseCache(self.root.parent / "phase2-coarse-cache-v1", digest(plan["authority"]))
 
     def months(self, job):
         if job["ticker"] not in self.bounds:
@@ -201,10 +204,11 @@ class CanonicalReader:
         began, queries = time.monotonic(), 0
         query_seconds = admission_seconds = 0.0
         resource_splits = 0
+        cache_hits = 0
 
-        def query_page(page, coarse):
+        def query_page(page, coarse, sql=None):
             nonlocal queries, query_seconds, admission_seconds, resource_splits
-            sql = partition_page(bar_query(ticker, page, self.plan["authority"]["rules"], coarse), page)
+            sql = sql or partition_page(bar_query(ticker, page, self.plan["authority"]["rules"], coarse), page)
             awaiting = time.monotonic()
             resource_error = None
             with gate():
@@ -238,7 +242,12 @@ class CanonicalReader:
                 selected_frames = [f for f in group if f in frames]
                 if not selected_frames:
                     continue
-                table = query_page(page, coarse)
+                if coarse:
+                    sql = partition_page(bar_query(ticker, page, self.plan["authority"]["rules"], coarse), page)
+                    table, hit = self.coarse_cache.get(sql, digest(page), lambda: query_page(page, coarse, sql))
+                    cache_hits += int(hit)
+                else:
+                    table = query_page(page, coarse)
                 table = table.with_columns(pl.col("resolution").cast(pl.Int64))
                 for frame in selected_frames:
                     selected = table.filter(pl.col("resolution") == FRAMES[frame])
@@ -255,6 +264,7 @@ class CanonicalReader:
             fetch_seconds=time.monotonic() - began,
             queries=queries,
             resource_page_splits=resource_splits,
+            coarse_cache_hits=cache_hits,
         )
 
     def close(self):

@@ -144,7 +144,7 @@ export function Phase2ShardResearch() {
             stream,
             unit,
             block: 0,
-            decision: 255,
+            decision: 4095,
             frame: 0,
             view: -1,
             search,
@@ -206,8 +206,8 @@ export function Phase2ShardResearch() {
         <div>
           <h1>BarGPT phase 2 data</h1>
           <p>
-            Consecutive observed bars · completed-bar causality · one shared
-            split basis per decision
+            4,096 consecutive origins per session · completed-bar causality · one
+            shared session split basis
           </p>
         </div>
         {catalog && (
@@ -485,8 +485,8 @@ export function Phase2ShardResearch() {
                   value={basis}
                   onChange={(e) => setBasis(e.target.value)}
                 >
-                  <option value="adjusted">Split-adjusted to origin</option>
-                  <option value="raw">Raw stored values</option>
+                  <option value="adjusted">Origin / session basis</option>
+                  <option value="raw">Saved session-basis values</option>
                 </select>
               </label>
               <label>
