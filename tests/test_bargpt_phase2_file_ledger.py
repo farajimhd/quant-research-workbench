@@ -140,3 +140,11 @@ def test_journal_preserves_disk_reserve(tmp_path,monkeypatch):
     monkeypatch.setattr(ledger.psutil,'disk_usage',lambda _:SimpleNamespace(free=149*1024**3))
     with pytest.raises(OSError,match='disk reserve'):c.flush(True)
     assert not list((tmp_path/'ledger-file-v1').glob('journal-*.parquet'))
+
+
+def test_missing_head_never_resets_existing_ledger(tmp_path):
+    c=Catalog(tmp_path);c.register(tmp_path/'A',receipt('A',1,3));c.close()
+    head=tmp_path/'ledger-file-v1/HEAD.json';head.unlink()
+    with pytest.raises(ValueError,match='HEAD is missing'):Catalog(tmp_path)
+    assert not head.exists()
+    assert list((tmp_path/'ledger-file-v1').glob('journal-*.parquet'))

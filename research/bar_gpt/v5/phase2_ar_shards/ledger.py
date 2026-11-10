@@ -84,6 +84,8 @@ class FileLedger:
         self.last_flush = time.monotonic()
         head = self.root / "HEAD.json"
         if not head.exists():
+            if any(self.root.iterdir()):
+                raise ValueError("Ledger HEAD is missing; preserve existing checkpoint/journal evidence")
             if (self.root.parent / "catalog.sqlite").exists():
                 raise ValueError("Explicit read-only legacy ledger migration required")
             self.manifest = dict(version="bargpt-file-ledger-v1", checkpoint={},
