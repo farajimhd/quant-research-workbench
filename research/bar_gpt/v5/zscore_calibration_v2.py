@@ -6,7 +6,7 @@ their training weights. Validation/purge ranges never contribute. No data writer
 
 import argparse
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor
 import hashlib
 import io
 import json
@@ -130,9 +130,7 @@ def fit(split, output, workers=8):
     began, reported = time.monotonic(), 0.0
     pending = deque()
     try:
-        with ThreadPoolExecutor(
-            max_workers=workers, thread_name_prefix="zscore-fit"
-        ) as pool:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
 
             def admit():
                 if psutil.virtual_memory().available < 64 * 2**30:

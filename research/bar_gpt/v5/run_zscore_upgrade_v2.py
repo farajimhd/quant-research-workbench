@@ -17,7 +17,7 @@ import time
 
 import psutil
 
-from .shards.contract import write_json
+from .shards.contract import write_json, digest
 
 
 def training_command(parent, output, calibration, revision):
@@ -84,6 +84,35 @@ def owned_process(record, required):
     if required not in command:
         raise ValueError("Process command no longer matches the authorized owner")
     return process
+
+
+def verified_early_drain(path, parent):
+    """Accept only a sealed owned drain with intact checkpoint and absent owners."""
+    record = json.loads(Path(path).read_text())
+    if record.get("hash") != digest({k: v for k, v in record.items() if k != "hash"}):
+        raise ValueError("Early-drain receipt seal changed")
+    if (
+        record.get("state") != "drained"
+        or Path(record["parent"]) != parent
+        or not record["marker"].startswith("OWNED_ENCODER_V2_ZSCORE_FRESH_START:")
+        or (parent / "STOP").read_text().strip() != record["marker"]
+    ):
+        raise ValueError("Human or foreign STOP; early-drain ownership failed")
+    for owner in (record["child"], record["controller"]):
+        try:
+            p = psutil.Process(owner["pid"])
+            if abs(p.create_time() - owner["created"]) < 0.1 and p.is_running():
+                raise ValueError("Early-drain owner is still running")
+        except psutil.NoSuchProcess:
+            pass
+    checkpoint = parent / "train-07/checkpoint_last.pt"
+    if (
+        Path(record["checkpoint"]) != checkpoint
+        or hashlib.sha256(checkpoint.read_bytes()).hexdigest()
+        != record["checkpoint_sha256"]
+    ):
+        raise ValueError("Early-drain checkpoint changed")
+    return record["marker"]
 
 
 def main(argv=None):
@@ -154,25 +183,32 @@ def main(argv=None):
         child = progress["child"]
         if Path(child["output"]) != parent_root / "train-07":
             raise ValueError("Parent training attempt changed; review before draining")
-        trainer = owned_process(child, "research.bar_gpt.v5.run_v1")
-        controller_ledger = json.loads((parent_root / "process.json").read_text())
-        controller = psutil.Process(controller_ledger["pid"])
-        if (
-            "overnight_v1.py" not in " ".join(controller.cmdline())
-            or controller_ledger["source_revision"] != metadata["source_revision"]
-            or abs(
-                controller.create_time()
-                - datetime.fromisoformat(
-                    controller_ledger["started"].replace("Z", "+00:00")
-                ).timestamp()
-            )
-            > 2
-        ):
-            raise ValueError("Parent controller ownership changed")
-        if (parent_root / "STOP").exists() or (parent_root / "train-07/STOP").exists():
-            raise ValueError(
-                "Existing parent STOP; never overwrite human/guard evidence"
-            )
+        early = setup / "parent-drained.json"
+        if early.exists():
+            marker = verified_early_drain(early, parent_root)
+            trainer = controller = None
+        else:
+            trainer = owned_process(child, "research.bar_gpt.v5.run_v1")
+            controller_ledger = json.loads((parent_root / "process.json").read_text())
+            controller = psutil.Process(controller_ledger["pid"])
+            if (
+                "overnight_v1.py" not in " ".join(controller.cmdline())
+                or controller_ledger["source_revision"] != metadata["source_revision"]
+                or abs(
+                    controller.create_time()
+                    - datetime.fromisoformat(
+                        controller_ledger["started"].replace("Z", "+00:00")
+                    ).timestamp()
+                )
+                > 2
+            ):
+                raise ValueError("Parent controller ownership changed")
+            if (parent_root / "STOP").exists() or (
+                parent_root / "train-07/STOP"
+            ).exists():
+                raise ValueError(
+                    "Existing parent STOP; never overwrite human/guard evidence"
+                )
         command = training_command(metadata, output, calibration, revision)
         write_json(
             setup / "handoff-plan.json",
@@ -187,24 +223,30 @@ def main(argv=None):
                 source_revision=revision,
             ),
         )
-        marker = "OWNED_ENCODER_V2_ZSCORE_FRESH_START:" + revision
-        with (parent_root / "STOP").open("x", encoding="utf-8") as handle:
-            handle.write(marker + "\n")
-        write_json(
-            status,
-            dict(
-                state="draining-parent", child=child, marker=marker, updated=time.time()
-            ),
-        )
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            if not controller.is_running() and (
-                trainer is None or not trainer.is_running()
-            ):
-                break
-            time.sleep(1)
-        else:
-            raise TimeoutError("Parent did not drain; no signal or v2 launch attempted")
+        if not early.exists():
+            marker = "OWNED_ENCODER_V2_ZSCORE_FRESH_START:" + revision
+            with (parent_root / "STOP").open("x", encoding="utf-8") as handle:
+                handle.write(marker + "\n")
+            write_json(
+                status,
+                dict(
+                    state="draining-parent",
+                    child=child,
+                    marker=marker,
+                    updated=time.time(),
+                ),
+            )
+            deadline = time.monotonic() + 120
+            while time.monotonic() < deadline:
+                if not controller.is_running() and (
+                    trainer is None or not trainer.is_running()
+                ):
+                    break
+                time.sleep(1)
+            else:
+                raise TimeoutError(
+                    "Parent did not drain; no signal or v2 launch attempted"
+                )
         if (setup / "STOP").exists() or (
             parent_root / "STOP"
         ).read_text().strip() != marker:

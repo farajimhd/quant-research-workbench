@@ -267,3 +267,35 @@ def test_fresh_v2_command_preserves_science_except_transform_and_peak():
         and args.train_steps == 0
     )
     assert args.learning_guard and args.panel
+
+
+def test_verified_early_drain_preserves_stop_and_checkpoint(tmp_path):
+    import hashlib
+    from .run_zscore_upgrade_v2 import verified_early_drain
+
+    parent = tmp_path / "parent"
+    (parent / "train-07").mkdir(parents=True)
+    checkpoint = parent / "train-07/checkpoint_last.pt"
+    checkpoint.write_bytes(b"immutable parent")
+    marker = "OWNED_ENCODER_V2_ZSCORE_FRESH_START:revision"
+    (parent / "STOP").write_text(marker)
+    proof = dict(
+        state="drained",
+        parent=str(parent),
+        marker=marker,
+        child=dict(pid=99999998, created=0),
+        controller=dict(pid=99999999, created=0),
+        checkpoint=str(checkpoint),
+        checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+    )
+    proof["hash"] = digest(proof)
+    path = tmp_path / "drain.json"
+    path.write_text(json.dumps(proof))
+    assert verified_early_drain(path, parent) == marker
+    (parent / "STOP").write_text("HUMAN STOP")
+    with pytest.raises(ValueError):
+        verified_early_drain(path, parent)
+    (parent / "STOP").write_text(marker)
+    checkpoint.write_bytes(b"changed")
+    with pytest.raises(ValueError):
+        verified_early_drain(path, parent)
