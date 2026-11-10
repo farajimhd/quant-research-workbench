@@ -751,3 +751,23 @@ def test_frozen_resume_normalizes_dtype_json_but_rejects_geometry_change(tmp_pat
     body['geometry']['history'][0]=65
     with pytest.raises(ValueError,match='contract changed'):
         source.freeze(tmp_path,parent,Geometry(),'test',seed=17)
+
+
+@pytest.mark.parametrize('corruption', [None, 'key', 'report', 'binding'])
+def test_sequential_deferral_seals_are_exact_and_reject_corruption(corruption):
+    import sqlite3
+    from research.bar_gpt.v5.phase2_ar_shards.run import verified_deferral_rows
+    db=sqlite3.connect(':memory:')
+    db.execute('CREATE TABLE deferrals(key TEXT PRIMARY KEY,report TEXT,hash TEXT)')
+    body=dict(binding='plan',unit=dict(ticker='X',month='2025-01-02'))
+    key=digest(['X','2025-01-02']);sealed=digest(body)
+    if corruption=='key':key='foreign'
+    if corruption=='report':body['unit']['month']='2025-01-03'
+    db.execute('INSERT INTO deferrals VALUES(?,?,?)',(key,json.dumps(body),sealed))
+    try:
+        if corruption:
+            with pytest.raises(ValueError,match='seal/key'):
+                list(verified_deferral_rows(db,'foreign' if corruption=='binding' else 'plan'))
+        else:
+            assert dict((key,sealed) for key,_,sealed in verified_deferral_rows(db,'plan'))=={key:sealed}
+    finally:db.close()

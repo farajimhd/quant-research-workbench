@@ -33,6 +33,16 @@ from ..quote_repair_io_v1 import payload_io
 STATE = None
 
 
+def verified_deferral_rows(db, binding):
+    """One sequential validation pass; reuse exact seals during owner recovery."""
+    for key, report, sealed in db.execute("SELECT key,report,hash FROM deferrals"):
+        prior = json.loads(report)
+        if (digest(prior) != sealed or prior["binding"] != binding
+            or key != digest([prior["unit"]["ticker"], prior["unit"]["month"]])):
+            raise ValueError("Deferred-session seal/key changed")
+        yield key, prior, sealed
+
+
 def initialize(root, plan, settings, active, lock, stop):
     global STATE
     STATE = dict(
@@ -325,10 +335,9 @@ def main(argv=None):
             deferred_source_origins=0,
             capacity_deferred=0,
         )
-        for report, sealed in catalog.db.execute("SELECT report,hash FROM deferrals"):
-            prior = json.loads(report)
-            if digest(prior) != sealed or prior["binding"] != plan["hash"]:
-                raise ValueError("Deferred-session seal changed")
+        verified_deferrals = {}
+        for key, prior, sealed in verified_deferral_rows(catalog.db, plan["hash"]):
+            verified_deferrals[key] = sealed
             counters["deferred_sessions"] += 1
             counters["deferred_source_origins"] += prior["stats"]["source_origins"]
         began, last_report = time.monotonic(), float("-inf")
@@ -369,11 +378,9 @@ def main(argv=None):
                 sampling=compiled["sampling"],
             )
             sealed = digest(body)
-            prior = catalog.db.execute(
-                "SELECT hash FROM deferrals WHERE key=?", (key,)
-            ).fetchone()
+            prior = verified_deferrals.get(key)
             if prior:
-                if prior[0] != sealed:
+                if prior != sealed:
                     raise ValueError("Deferred session changed")
                 return sealed
             with catalog.db:
@@ -381,6 +388,7 @@ def main(argv=None):
                     "INSERT INTO deferrals VALUES(?,?,?)",
                     (key, json.dumps(body), sealed),
                 )
+            verified_deferrals[key] = sealed
             counters["deferred_sessions"] += 1
             counters["deferred_source_origins"] += body["stats"]["source_origins"]
             return sealed
@@ -440,11 +448,10 @@ def main(argv=None):
                                         "Completed session payload changed"
                                     )
                             elif record["kind"] == "deferred":
-                                proof = catalog.db.execute(
-                                    "SELECT hash FROM deferrals WHERE key=?",
-                                    (digest([unit["ticker"], record["session"]]),),
-                                ).fetchone()
-                                if not proof or proof[0] != record["seal"]:
+                                proof = verified_deferrals.get(
+                                    digest([unit["ticker"], record["session"]])
+                                )
+                                if not proof or proof != record["seal"]:
                                     raise ValueError(
                                         "Completed session deferral changed"
                                     )
