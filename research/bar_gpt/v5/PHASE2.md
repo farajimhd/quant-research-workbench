@@ -1,5 +1,90 @@
 # Phase two: session shard generator and data contract
 
+## Fixed ticker owners and persistent contexts (2026-11-10)
+
+Active generator source: **`700a25435`**; the viewer-only percentage revision is
+**`58f9388c0`**. Both are committed/pushed, SHA-verified 724-file immutable snapshots.
+This section supersedes the dynamic
+assignment and resetting worker-bar descriptions below. Training belongs to
+another agent and was neither edited nor signaled by this deployment. Codex
+scheduled monitoring remains disabled.
+
+`assignment.py` removes already-complete ticker-months from the startup work
+scope, groups every remaining month of a ticker together, and sorts that group
+chronologically. Whole tickers are greedily allocated to the least-loaded CPU
+slot, using frozen annual source-event counts to estimate work. Ticker-group
+priority otherwise follows its first appearance in the frozen seeded plan.
+Each slot has a dedicated single-process executor; a shared process pool cannot
+guarantee affinity. A ticker is never split across CPU owners or work-stolen.
+Each owner finishes a ticker before moving to its next assigned ticker.
+
+The sealed `worker-assignments/<attempt>.json` records fixed per-slot task counts,
+ticker lists, estimated event loads and exact ordered unit hashes. This resume
+assigned **738,154 remaining ticker-months / 21,435 tickers** to 32 CPU slots.
+Other tickers have no remaining work; the original universe is not reduced.
+Eight dedicated I/O threads receive the fixed groups of CPU slots modulo eight.
+Their startup month-group totals are also fixed. Main CPU and I/O bars count
+accounted months against these denominators; explicit capacity deferrals count
+as accounted, while failed/unprocessed work does not. Current-session/file
+counters remain separate. Precise percentages make sub-percent progress visible
+even before the eight-cell bar can display a filled segment. Live checks verified nondecreasing plan progress,
+stable ticker ownership and chronological month advances.
+
+`bar_cache.py` persists **unadjusted** contexts under
+`D:/TradingML/runtimes/bar_gpt/phase2-session-context-v2`. It retains complete
+hourly/daily bars and the latest required fine-frame history tail per source
+session (64 per fine frame by default). Fine tails are usable only for history;
+a current-session fetch must still return all fine bars. Full fine outputs stay
+in the shard payloads rather than being duplicated as another complete dataset.
+The source-bound RAM LRU is limited to 64MiB per CPU owner and cleared on ticker
+changes. Evicted contexts can be reloaded from persistent parts without SIP
+reconstruction. Adjacent months share the same owner and normalized session keys.
+
+Identity binds canonical authority/rules, unchanged producer/quote-code hashes,
+the complete frozen session row, frame family and tail length. Parts contain
+batched compressed NumPy arrays with exact per-session slices. Full payload
+hashes, identity, dtype, ordering and bounds are checked on disk reads. Parts
+are fsynced, independently reloaded and sealed before the atomic month index is
+published. Missing entries cause source reads; corrupt evidence fails closed.
+No cache evidence is deleted and no SQLite is used. The disk reserve includes
+concurrent cache-publisher headroom. Split adjustment remains once-only on copied
+session publication context; it never mutates or preadjusts the raw cache.
+
+Initial native profiling rejected the per-session small-file implementation:
+first fill was slower than the previous reader. Persistence was therefore
+batched per fetched month-page. Final two real ticker-month comparisons retained
+exact output fingerprints across 300 session/frame checks. Cached disk reads
+took 0.429s versus 0.580s for AVGR April2020, and 0.231s versus 0.418s for VTIQW
+June2020; both reduced source queries from three to two. RAM reuse took 0.309s
+and 0.228s. Cold fills took 0.738s and 0.510s and still cost more than baseline.
+These are bounded live-load examples, not a corpus-wide speedup or ETA.
+
+Validation includes 87 laptop tests and 86 native tests (the app-only API test excluded), independent
+cached/full-history cross-month and split parity, fixed CPU/I/O ownership tests,
+corruption rejection and monotonic terminal progress. Uncached aggregation SQL
+and payload semantics remain unchanged. The execution order is intentionally
+different: existing receipts and selected-ID prefixes are preserved, while
+future publications arrive in chronological ticker chains. The source universe,
+seeded per-month/session choices, one-session 4096-origin blocks and 75/25 rule
+remain unchanged. Byte caps still account for all published candidate data;
+the earlier liquidity-surplus concern is not resolved by this change.
+
+The old generator had independently failed on
+`IMUX:2023-12 RemoteDisconnected` before activation, preserving 129.26GB. Its
+logs/state/task definitions were archived before recovery. The eligibility
+transport now retries the identical read-only SQL at most three times, reconnecting
+through the existing transport and retaining query/thread/memory limits. Tests
+cover two disconnects followed by success and terminal failure at the bound.
+
+Evidence: native `affinity-context-native-audit-700a25435.json`,
+`affinity-context-engineering-proof-700a25435.json`,
+`affinity-context-live-check.json`, `affinity-context-final-audit.json` and
+`affinity-context-deploy-700a25435/`, all beneath
+`corrected-restart-20261110`. **Hard intra-session small-event chunking remains
+unimplemented**: the existing event budget still groups whole sessions. That
+requires separate carried-quote/partial-bar boundary work and is not claimed
+complete by this cache/assignment release.
+
 ## Separate Rich worker panel (2026-11-10)
 
 The phase-two task now uses source **`d22eae554`**; its separate read-only viewer
