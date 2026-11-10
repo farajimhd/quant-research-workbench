@@ -13,6 +13,39 @@ from ..shards.contract import digest, file_hash, write_json
 from ..shards.sql import literal
 
 
+def verify_parent_actions(client, original):
+    """Verify the sealed frozen catalog and its exact acquisition receipt.
+
+    The live reference table is a latest-state publication, not an immutable
+    per-run archive: later 2026 publications can replace prior IDs. Requiring its
+    old source_run_id row count would mistake legitimate publication for damage
+    to the separately sealed parent catalog. Never re-read it to rebuild history.
+    """
+    rows = original["rows"]
+    proof = original["coverage"]
+    if (digest(rows) != original["catalog_hash"]
+        or proof["rows_failed"] or proof["rows_read"] != proof["rows_written"]
+        or len(rows) != proof["rows_written"]
+        or len({r["stock_split_id"] for r in rows}) != len(rows)
+        or any(any(not np.isfinite(float(r[k])) or float(r[k]) <= 0
+                   for k in ("split_from", "split_to")) for r in rows)):
+        raise ValueError("Frozen parent action catalog changed")
+    receipts = sip.rows(client,
+        "SELECT source_run_id,coverage_start_date,coverage_end_date,rows_read,rows_written,rows_failed,details_json "
+        "FROM q_live.market_reference_publication_coverage_v1 FINAL WHERE coverage_kind='massive_splits' "
+        "AND source_system='massive' AND source_object='splits' AND status='completed' "
+        f"AND source_run_id={literal(proof['source_run_id'])}")
+    valid = False
+    for receipt in receipts:
+        details = json.loads(receipt["details_json"])
+        observed = {k:v for k,v in receipt.items() if k != "details_json"}
+        observed["provider_response_sha256"] = details.get("sha256")
+        valid |= (observed == proof and details.get("saturated") is False
+                  and details.get("pages", 0) >= 1)
+    if not valid:
+        raise ValueError("Frozen parent acquisition receipt changed or disappeared")
+
+
 def check_validation_year(client):
     tables = sip.rows(
         client,

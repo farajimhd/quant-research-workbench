@@ -77,6 +77,26 @@ def test_validation_reference_rebind_keeps_training_actions_and_records_revision
         inventory.extend_actions(None, original, "2026-10-03")
 
 
+def test_parent_action_validation_uses_immutable_catalog_and_exact_receipt(monkeypatch):
+    from research.bar_gpt.v5.phase2_ar_shards import inventory
+
+    rows = [dict(stock_split_id="one", split_from=10, split_to=1)]
+    receipt = dict(source_run_id="parent", coverage_start_date="2019-01-01", coverage_end_date="2026-06-19", rows_read=1, rows_written=1, rows_failed=0)
+    original = dict(rows=rows, catalog_hash=digest(rows), coverage=dict(receipt, provider_response_sha256="a"*64))
+    response = dict(receipt,details_json=json.dumps(dict(sha256="a"*64,saturated=False,pages=1)))
+    def query(c, sql):
+        assert "publication_coverage" in sql and "stock_split_v1" not in sql
+        return [response]
+    monkeypatch.setattr(inventory.sip,"rows",query)
+    inventory.verify_parent_actions(None,original)
+    response["rows_written"] = 0
+    with pytest.raises(ValueError,match="acquisition receipt"):
+        inventory.verify_parent_actions(None,original)
+    rows[0]["split_from"] = 20
+    with pytest.raises(ValueError,match="catalog changed"):
+        inventory.verify_parent_actions(None,original)
+
+
 def bars(ends, price=10):
     a = np.zeros(len(ends), dtype=BAR)
     a["end_us"] = ends

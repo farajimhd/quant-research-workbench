@@ -21,6 +21,12 @@ the frozen 2019–2025 training-action history. The 2026-11-10 publication
 2026-01-01 through exclusive 2026-10-03. Actual pilot/build evidence must establish
 which sealed publication the dataset uses.
 
+The canonical reference table is latest-state, so a later acquisition can replace
+rows from an older source run. Parent verification checks the exact sealed frozen
+catalog, its row/ID/ratio invariants and its original acquisition receipt/hash;
+it does not rebuild historical actions from that mutable latest-state table.
+The fresh validation publication is independently counted/read back and frozen.
+
 Recorded: 2026-11-10 UTC. Current implementation baseline: **`1cb1bffe8`**,
 committed/pushed and hash-synchronized as 709 Python files to native
 `D:/TradingML/codes/bargpt-shards-1cb1bffe8`.

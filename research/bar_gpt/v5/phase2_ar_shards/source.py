@@ -148,11 +148,10 @@ def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109):
         expected = {
             k: v for k, v in body["authority"].items() if k != "corporate_actions"
         }
-        if (
-            authority != expected
-            or sip.split_authority(client, range(2019, 2026))
-            != body["authority"]["corporate_actions"]
-        ):
+        from .inventory import verify_parent_actions
+
+        verify_parent_actions(client, body["authority"]["corporate_actions"])
+        if authority != expected:
             raise ValueError("Canonical authority changed since phase one")
         from .inventory import extend_plan
 
