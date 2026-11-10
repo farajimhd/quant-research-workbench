@@ -728,3 +728,26 @@ def test_engineering_revision_rejects_semantic_changes_or_missing_native_proof(t
     ap.write_text('{}')
     with pytest.raises(ValueError):
         verify_engineering_revision(prior,current,pp)
+
+
+def test_frozen_resume_normalizes_dtype_json_but_rejects_geometry_change(tmp_path, monkeypatch):
+    from research.bar_gpt.v5.phase2_ar_shards import source, inventory
+    parent = tmp_path / 'parent'
+    parent.mkdir()
+    (parent / 'repair-contract.json').write_text('{}')
+    body = dict(code={'producer':'fixed'}, geometry=Geometry().manifest(),
+                parent_binding='parent', ordinal_hash='ordinals', authority={})
+    prior = json.loads(json.dumps(dict(body, seed=17, validation_authority={})))
+    prior['hash'] = digest(prior)
+    (tmp_path / 'plan.json').write_text(json.dumps(prior))
+    monkeypatch.setattr(source, 'require_complete', lambda *_:None)
+    monkeypatch.setattr(source, 'describe', lambda *_:(body, {}))
+    monkeypatch.setattr(inventory, 'verify_inventory', lambda *_:None)
+    monkeypatch.setattr(inventory, 'check_validation_year', lambda *_:{})
+    monkeypatch.setattr(source.sip, 'client', lambda *a, **kw:object())
+    monkeypatch.setattr(source.sip, 'close', lambda *_:None)
+    monkeypatch.setattr(source.sip, 'preflight', lambda *_:{})
+    assert source.freeze(tmp_path,parent,Geometry(),'test',seed=17)==prior
+    body['geometry']['history'][0]=65
+    with pytest.raises(ValueError,match='contract changed'):
+        source.freeze(tmp_path,parent,Geometry(),'test',seed=17)

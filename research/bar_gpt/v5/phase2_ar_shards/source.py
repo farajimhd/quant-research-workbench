@@ -142,6 +142,9 @@ def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109,
         raise ValueError("A released corrected phase-one parent is required")
     require_complete(parent)
     body, manifest = describe(parent, geometry)
+    # JSON seals normalize NumPy dtype descriptor tuples to lists. Compare the
+    # same representation on restart; actual fields/widths remain exact.
+    body["geometry"] = json.loads(json.dumps(body["geometry"]))
     if (root / "plan.json").exists():
         prior = json.loads((root / "plan.json").read_text())
         if prior["hash"] != digest({k: v for k, v in prior.items() if k != "hash"}):
