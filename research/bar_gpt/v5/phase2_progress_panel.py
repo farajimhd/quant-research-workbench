@@ -105,7 +105,7 @@ def worker_table(snapshot, role, slots, width):
     table.add_column("Session" if role=='cpu' else "Files",width=7,justify="right",no_wrap=True)
     table.add_column("Tasks D/A",width=13,justify="right",no_wrap=True)
     if width>=88:table.add_column("Tkrs",width=4,justify="right")
-    if width>=95:table.add_column("Q" if role=='cpu' else "MB",width=5,justify="right")
+    if width>=95:table.add_column("%" if snapshot['progress'].get(assignment_key) else "Q" if role=='cpu' else "MB",width=5,justify="right")
     if width>=95:table.add_column("Time",width=5,justify="right")
     if width>=110:table.add_column("PID",width=6,justify="right")
     if width>=120 and role=='cpu':table.add_column("CPU%",width=5,justify="right")
@@ -124,7 +124,7 @@ def worker_table(snapshot, role, slots, width):
         cells=[Text(f"{'C' if role=='cpu' else 'I'}{slot+1:02d}"),Text(task),Text(state,style),bar,
                Text(f"{r.get('progress_done',0)}/{r['progress_total']}" if r.get('progress_total') is not None else '—'),Text(f"{done}/{total}" if assignment else f"{r.get('completed',0)}/{r.get('assigned',0)}")]
         if width>=88:cells.append(Text(str(assignment['tickers'] if assignment else r.get('tickers',0))))
-        if width>=95:cells.append(Text(str(r.get('queries',0)) if role=='cpu' else f"{r.get('bytes_done',0)/1e6:.1f}"))
+        if width>=95:cells.append(Text(f"{100*done/total:.2f}" if assignment and total else "100" if assignment else str(r.get('queries',0)) if role=='cpu' else f"{r.get('bytes_done',0)/1e6:.1f}"))
         if width>=95:cells.append(Text(duration(snapshot['now']-r['task_started'] if r.get('task_started') else r.get('task_seconds',0))))
         if width>=110:cells.append(Text(str(r.get('pid','—'))))
         if width>=120 and role=='cpu':cells.append(Text(f"{r['cpu_pct']:.0f}" if r.get('cpu_pct') is not None else '—'))
@@ -183,7 +183,7 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     if waits:groups.append(Text('Waiting: '+' · '.join(f'{n} {why}' for why,n in waits.most_common(2)),style='yellow'))
     if snapshot.get('read_errors'):groups.append(Text('Retaining last snapshot: '+', '.join(snapshot['read_errors']),style='yellow'))
     groups.append(Text('Plan: done+capacity-deferred/fixed assigned months; Tkrs: assigned tickers.' if p.get('worker_assignments') else 'Tasks D/A = done/assigned tasks; Tkrs = unique tickers; plan includes deferrals.',style='dim'))
-    groups.append(Text('Read-only | Ctrl+C closes panel only | CPU: sessions; I/O: sealed files.',style='dim'))
+    groups.append(Text('Read-only | Ctrl+C closes panel only | Session/Files show the current unit.',style='dim'))
     for item in groups:
         if isinstance(item,Text):
             item.no_wrap=True
