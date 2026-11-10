@@ -42,7 +42,9 @@ class BarCache:
 
     def _paths(self, identity):
         key = digest(identity)
-        directory = self.root / digest(self.binding)[:24] / digest(identity["ticker"])[:24] / identity["source_row"]["source_date"][:7]
+        # One combined namespace keeps full content-hash filenames below the
+        # native Windows path limit even in dated audit/test runtime roots.
+        directory = self.root / digest([self.binding, identity["ticker"]])[:24] / identity["source_row"]["source_date"][:7]
         return key, directory / ("coarse.json" if identity["coarse"] else "fine.json"), directory
 
     def _remember(self, key, arrays):
