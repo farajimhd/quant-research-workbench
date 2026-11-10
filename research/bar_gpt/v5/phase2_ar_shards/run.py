@@ -33,16 +33,6 @@ from ..quote_repair_io_v1 import payload_io
 STATE = None
 
 
-def verified_deferral_rows(db, binding):
-    """One sequential validation pass; reuse exact seals during owner recovery."""
-    for key, report, sealed in db.execute("SELECT key,report,hash FROM deferrals"):
-        prior = json.loads(report)
-        if (digest(prior) != sealed or prior["binding"] != binding
-            or key != digest([prior["unit"]["ticker"], prior["unit"]["month"]])):
-            raise ValueError("Deferred-session seal/key changed")
-        yield key, prior, sealed
-
-
 def initialize(root, plan, settings, active, lock, stop):
     global STATE
     STATE = dict(
@@ -310,10 +300,6 @@ def main(argv=None):
         )
         queues = ordered_units(root, plan, args.only_ticker, args.pilot_unit)
         catalog = Catalog(root)
-        catalog.db.executescript(
-            "CREATE TABLE IF NOT EXISTS deferrals(key TEXT PRIMARY KEY,report TEXT,hash TEXT); CREATE TABLE IF NOT EXISTS completed_months(key TEXT PRIMARY KEY,report TEXT,hash TEXT);"
-        )
-        catalog.db.commit()
         ctx = mp.get_context("spawn")
         active_query, lock, stop = ctx.Value("i", 0), ctx.Lock(), ctx.Event()
         handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
@@ -335,11 +321,8 @@ def main(argv=None):
             deferred_source_origins=0,
             capacity_deferred=0,
         )
-        verified_deferrals = {}
-        for key, prior, sealed in verified_deferral_rows(catalog.db, plan["hash"]):
-            verified_deferrals[key] = sealed
-            counters["deferred_sessions"] += 1
-            counters["deferred_source_origins"] += prior["stats"]["source_origins"]
+        counters['deferred_sessions'] = catalog.deferred_sessions
+        counters['deferred_source_origins'] = catalog.deferred_source_origins
         began, last_report = time.monotonic(), float("-inf")
         last_index, indexed_units = float("-inf"), -1
         failure = None
@@ -360,11 +343,7 @@ def main(argv=None):
                     body = dict(
                         binding=plan["hash"], unit=g["unit"], sessions=g["sessions"]
                     )
-                    with catalog.db:
-                        catalog.db.execute(
-                            "INSERT INTO completed_months VALUES(?,?,?)",
-                            (group, json.dumps(body), digest(body)),
-                        )
+                    catalog.complete_month(group, body)
                     counters["completed_months_this_run"] += 1
                 del groups[group]
 
@@ -377,20 +356,11 @@ def main(argv=None):
                 stats=compiled["stats"],
                 sampling=compiled["sampling"],
             )
-            sealed = digest(body)
-            prior = verified_deferrals.get(key)
-            if prior:
-                if prior != sealed:
-                    raise ValueError("Deferred session changed")
-                return sealed
-            with catalog.db:
-                catalog.db.execute(
-                    "INSERT INTO deferrals VALUES(?,?,?)",
-                    (key, json.dumps(body), sealed),
-                )
-            verified_deferrals[key] = sealed
-            counters["deferred_sessions"] += 1
-            counters["deferred_source_origins"] += body["stats"]["source_origins"]
+            prior_count = catalog.deferred_sessions
+            sealed = catalog.defer(key, body)
+            if catalog.deferred_sessions != prior_count:
+                counters['deferred_sessions'] += 1
+                counters['deferred_source_origins'] += body['stats']['source_origins']
             return sealed
 
         with ProcessPoolExecutor(
@@ -418,44 +388,11 @@ def main(argv=None):
                     unit = queues.popleft()
                     key = month_key(unit)
                     split = int(unit["split"])
-                    previous = catalog.db.execute(
-                        "SELECT report,hash FROM completed_months WHERE key=?", (key,)
-                    ).fetchone()
-                    if previous:
-                        report = json.loads(previous[0])
-                        if (
-                            digest(report) != previous[1]
-                            or report["binding"] != plan["hash"]
-                            or report["unit"] != unit
-                        ):
-                            raise ValueError("Completed month seal changed")
-                        for record in report["sessions"]:
-                            if record["kind"] == "published":
-                                path = (
-                                    root
-                                    / "shards"
-                                    / digest(unit["ticker"])[:24]
-                                    / record["session"]
-                                )
-                                receipt = read_receipt(path, plan["hash"])
-                                if receipt["hash"] != record["seal"]:
-                                    raise ValueError("Completed session changed")
-                                if any(
-                                    (path / f["name"]).stat().st_size != f["bytes"]
-                                    for f in receipt["files"]
-                                ):
-                                    raise ValueError(
-                                        "Completed session payload changed"
-                                    )
-                            elif record["kind"] == "deferred":
-                                proof = verified_deferrals.get(
-                                    digest([unit["ticker"], record["session"]])
-                                )
-                                if not proof or proof != record["seal"]:
-                                    raise ValueError(
-                                        "Completed session deferral changed"
-                                    )
+                    if catalog.is_complete(unit):
                         continue
+                    if (root / 'STOP').exists():
+                        stop.set()
+                        break
                     if (
                         catalog.split_bytes.get(split, 0) + reserved[split]
                         >= caps[split] - 1_000_000
@@ -612,6 +549,7 @@ def main(argv=None):
                     **counters,
                     **catalog.stats(),
                 )
+                catalog.flush()
                 write_json(root / "progress.json", snapshot)
                 if snapshot["units"] != indexed_units and time.monotonic() - last_index >= 60:
                     catalog.inspection_catalog(plan)
@@ -667,7 +605,7 @@ def main(argv=None):
         if awake:
             power(0x80000000)
         if catalog is not None:
-            catalog.db.close()
+            catalog.close()
         lease.close()
 
 

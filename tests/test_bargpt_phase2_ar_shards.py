@@ -263,13 +263,11 @@ def test_catalog_exact_mix_restart_and_constant_time_progress(tmp_path):
     selection = cat.export("binding")
     assert selection["origins"] == 8 * BLOCK
     # Polling uses only counters; no count(*) table scans per two-second tick.
-    cat.db.set_authorizer(lambda *_: 1)
     assert cat.stats() == expected
-    cat.db.set_authorizer(None)
-    cat.db.close()
+    cat.close()
     resumed = Catalog(tmp_path)
     assert resumed.stats() == expected
-    resumed.db.close()
+    resumed.close()
 
 
 def test_catalog_empty_export_and_crossing_blocks_unselected(tmp_path):
@@ -294,7 +292,7 @@ def test_catalog_empty_export_and_crossing_blocks_unselected(tmp_path):
         ),
     )
     assert c.stats()["selected_blocks"] == 0
-    c.db.close()
+    c.close()
 
 
 @pytest.mark.parametrize(
@@ -379,7 +377,7 @@ def test_selection_tamper_cannot_be_resealed(tmp_path):
     ).write_parquet(tmp_path / selection["path"])
     with pytest.raises(ValueError, match="selection changed"):
         cat.export("binding")
-    cat.db.close()
+    cat.close()
 
 
 def test_origin_coverage_cannot_silently_drop_records(tmp_path):
@@ -404,4 +402,4 @@ def test_origin_coverage_cannot_silently_drop_records(tmp_path):
     )
     with pytest.raises(ValueError, match="coverage does not reconcile"):
         cat.stats()
-    cat.db.close()
+    cat.close()

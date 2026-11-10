@@ -103,7 +103,7 @@ def describe(parent, geometry):
     return body, manifest
 
 
-def verify_engineering_revision(prior, current, proof_path):
+def verify_engineering_revision(prior, current, proof_path, root=None):
     """Admit only a sealed, audited physical short-session preflight revision."""
     from ..quote_repair_v1 import verify_seal
 
@@ -114,8 +114,11 @@ def verify_engineering_revision(prior, current, proof_path):
     changed = {k for k in set(prior["code"]) | set(current["code"])
                if prior["code"].get(k) != current["code"].get(k)}
     allowed = {"phase2_ar_shards/" + k for k in ("source.py", "sampling.py", "run.py")}
+    kind = proof.get("kind")
+    if kind == "file-ledger-eligibility-v1":
+        allowed |= {"phase2_ar_shards/"+k for k in ("storage.py","ledger.py","migrate_ledger.py")}
     if (not changed or not changed <= allowed
-        or proof.get("kind") != "exact-short-session-preflight-v1"
+        or kind not in ("exact-short-session-preflight-v1","file-ledger-eligibility-v1")
         or proof.get("plan_hash") != prior["hash"]
         or proof.get("from_code") != prior["code"]
         or proof.get("to_code") != current["code"]):
@@ -132,6 +135,21 @@ def verify_engineering_revision(prior, current, proof_path):
         or audit.get("counts_parity_cases", 0) < 12
         or audit.get("complete_output_parity_cases", 0) < 2):
         raise ValueError("Engineering revision lacks exact native parity evidence")
+    if kind == "file-ledger-eligibility-v1":
+        from .ledger import FileLedger
+
+        path = Path(proof["migration_path"])
+        if root is None or path.resolve() != (Path(root)/"ledger-file-v1/migration.json").resolve():
+            raise ValueError("Migration proof belongs to another runtime root")
+        migration = json.loads(path.read_text());verify_seal(migration,"hash")
+        ledger = FileLedger(root)
+        if (file_hash(path)!=proof["migration_sha256"] or not migration.get("passed")
+            or migration.get("plan_hash")!=prior["hash"] or not migration.get("read_only_legacy")
+            or not migration.get("exact_tables") or not migration.get("selected_order_exact")
+            or digest(ledger.manifest["checkpoint"])!=migration.get("checkpoint_hash")
+            or audit.get("file_ledger_tests_passed") is not True
+            or audit.get("no_sqlite_loader_verified") is not True):
+            raise ValueError("File ledger migration parity proof is incomplete")
 
 
 def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109,
@@ -152,7 +170,7 @@ def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109,
         if prior["code"] != body["code"]:
             if engineering_proof is None:
                 raise ValueError("Frozen sampled code changed without engineering proof")
-            verify_engineering_revision(prior, body, engineering_proof)
+            verify_engineering_revision(prior, body, engineering_proof, root=root)
         if (
             any(
                 prior[k] != body[k]

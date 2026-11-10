@@ -271,7 +271,7 @@ def research_fixture(tmp_path,monkeypatch):
     write_json(tmp_path/'progress.json',dict(state='running',bytes=1,units=1,updated=1))
     receipt=publish(tmp_path,'TEST',session['session'],1,plan['hash'],digest(session),compiled,Geometry())
     directory=tmp_path/'shards'/digest('TEST')[:24]/session['session']
-    cat=Catalog(tmp_path);cat.register(directory,receipt);cat.inspection_catalog(plan);cat.db.close()
+    cat=Catalog(tmp_path);cat.register(directory,receipt);cat.inspection_catalog(plan);cat.close()
     monkeypatch.setattr(inspection,'ROOT',tmp_path)
     entry=inspection.catalog()['streams'][0]
     return inspection,entry,directory,receipt,compiled
@@ -375,7 +375,7 @@ def test_blocks_have_one_session_and_shared_sparse_coarse_arrays(tmp_path):
     cat = Catalog(tmp_path)
     cat.register(directory, receipt)
     assert cat.stats()["reconciled_source_origins"] == first["stats"]["source_origins"]
-    cat.db.close()
+    cat.close()
 
 
 def test_forward_reverse_split_snapshots_are_immutable_and_not_double_adjusted(
@@ -751,23 +751,3 @@ def test_frozen_resume_normalizes_dtype_json_but_rejects_geometry_change(tmp_pat
     body['geometry']['history'][0]=65
     with pytest.raises(ValueError,match='contract changed'):
         source.freeze(tmp_path,parent,Geometry(),'test',seed=17)
-
-
-@pytest.mark.parametrize('corruption', [None, 'key', 'report', 'binding'])
-def test_sequential_deferral_seals_are_exact_and_reject_corruption(corruption):
-    import sqlite3
-    from research.bar_gpt.v5.phase2_ar_shards.run import verified_deferral_rows
-    db=sqlite3.connect(':memory:')
-    db.execute('CREATE TABLE deferrals(key TEXT PRIMARY KEY,report TEXT,hash TEXT)')
-    body=dict(binding='plan',unit=dict(ticker='X',month='2025-01-02'))
-    key=digest(['X','2025-01-02']);sealed=digest(body)
-    if corruption=='key':key='foreign'
-    if corruption=='report':body['unit']['month']='2025-01-03'
-    db.execute('INSERT INTO deferrals VALUES(?,?,?)',(key,json.dumps(body),sealed))
-    try:
-        if corruption:
-            with pytest.raises(ValueError,match='seal/key'):
-                list(verified_deferral_rows(db,'foreign' if corruption=='binding' else 'plan'))
-        else:
-            assert dict((key,sealed) for key,_,sealed in verified_deferral_rows(db,'plan'))=={key:sealed}
-    finally:db.close()
