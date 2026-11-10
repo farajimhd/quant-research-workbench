@@ -26,7 +26,7 @@ def read_receipt(directory, binding=None):
     return value
 
 
-def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometry):
+def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometry, observer=None):
     """Publish one session snapshot; no per-query/per-origin file transactions."""
     basis = compiled.get("price_basis")
     if basis:
@@ -64,15 +64,24 @@ def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometr
     else:
         write_json(marker, dict(identity=identity))
     files = []
+    total_files = sum((len(rows)+(128*1024**2//BAR.itemsize)-1)//(128*1024**2//BAR.itemsize) for rows in compiled["views"]) + 2
+
+    def notify(stage, **fields):
+        if observer is not None:
+            try:observer(state=stage,progress_done=len(files),progress_total=total_files,
+                         bytes_done=sum(item["bytes"] for item in files),**fields)
+            except Exception:pass  # Optional observer never controls publication.
 
     def save(name, array):
         path = temporary / name
+        notify("Write", detail=name)
         with path.open("wb") as stream:
             np.save(stream, np.ascontiguousarray(array), allow_pickle=False)
             stream.flush()
             os.fsync(stream.fileno())
         item = dict(name=name, bytes=path.stat().st_size, sha256=file_hash(path))
         files.append(item)
+        notify("Verify", detail=name)
         return name
 
     views = []
@@ -114,8 +123,10 @@ def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometr
     )
     receipt = json.loads(json.dumps(receipt))
     receipt["hash"] = digest(receipt)
+    notify("Commit", detail="Sealing session receipt")
     write_json(temporary / "receipt.json", receipt)
     temporary.rename(final)
+    notify("Published", detail="Session committed")
     return receipt
 
 

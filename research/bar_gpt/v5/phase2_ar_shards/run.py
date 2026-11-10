@@ -29,12 +29,16 @@ from .storage import Catalog, publish, read_receipt
 from ..shards.contract import digest, write_json
 from ..phase2_shards.training_guard import TrainingGuard
 from ..quote_repair_io_v1 import payload_io
+from .telemetry import cpu_telemetry, ObservedReader, PublicationTelemetry
 
 STATE = None
 
 
 def initialize(root, plan, settings, active, lock, stop):
     global STATE
+    if STATE and STATE.get("telemetry") and mp.current_process().name == "MainProcess":
+        STATE["telemetry"].close()  # Thread-pool integration fixtures reuse this process.
+    reporter = cpu_telemetry(root, settings)
     STATE = dict(
         root=Path(root),
         plan=plan,
@@ -42,6 +46,7 @@ def initialize(root, plan, settings, active, lock, stop):
         active=active,
         lock=lock,
         stop=stop,
+        telemetry=reporter,
         jobs={j["ticker"]: j for j in plan["jobs"]},
         reader=CanonicalReader(
             root, plan, settings.get("endpoint"), settings["query_memory_gib"]
@@ -52,6 +57,7 @@ def initialize(root, plan, settings, active, lock, stop):
             settings["validation_lanes"],
         ),
     )
+    STATE["reader"] = ObservedReader(STATE["reader"], reporter, plan["seed"])
 
 
 @contextmanager
@@ -63,22 +69,46 @@ def query_admission():
         if s["stop"].is_set() or (s["root"] / "STOP").exists():
             raise InterruptedError("Graceful stop before canonical query")
         with s["lock"]:
+            limit = s["guard"].refresh()
             if (
-                s["active"].value < s["guard"].refresh()
+                s["active"].value < limit
                 and psutil.virtual_memory().available - s["active"].value * budget
                 >= reserve + budget
             ):
                 s["active"].value += 1
                 break
+            reason = s["guard"].reason if s["active"].value >= limit else "RAM reserve + requested query budgets"
+        if s.get("telemetry"):
+            s["telemetry"].emit(state="Wait", detail=reason,
+                                admission_limit=s["guard"].limit)
         s["stop"].wait(0.25)
+    try:s["telemetry"].query(True)
+    except Exception:pass
     try:
         yield
     finally:
+        try:s["telemetry"].query(False)
+        except Exception:pass
         with s["lock"]:
             s["active"].value -= 1
 
 
 def produce(unit):
+    reporter = STATE.get("telemetry")
+    if reporter:
+        reporter.begin(unit)
+    try:
+        result = _produce(unit)
+    except BaseException as error:
+        if reporter:
+            reporter.end(error)
+        raise
+    if reporter:
+        reporter.end()
+    return result
+
+
+def _produce(unit):
     """One CPU owner retains raw history across consecutive sessions in a month."""
     s = STATE
     geometry = Geometry(
@@ -113,10 +143,25 @@ def produce(unit):
         else:
             result = dict(compiled=compiled, timing=timing)
         outputs.append((session, result))
+        if s.get("telemetry"):
+            s["telemetry"].session()
     return outputs
 
 
-def publication(root, plan, unit, result, reserve_disk_gib):
+def publication(root, plan, unit, result, reserve_disk_gib, observers=None):
+    reporter = observers.worker() if observers is not None else None
+    if reporter:reporter.begin(unit)
+    try:
+        output = _publication(root, plan, unit, result, reserve_disk_gib,
+                              reporter.emit if reporter else None)
+    except BaseException as error:
+        if reporter:reporter.end(error)
+        raise
+    if reporter:reporter.end()
+    return output
+
+
+def _publication(root, plan, unit, result, reserve_disk_gib, observer=None):
     """Dedicated coordinator I/O thread; CPU workers never perform shard writes."""
     root = Path(root)
     compiled = result["compiled"]
@@ -145,6 +190,7 @@ def publication(root, plan, unit, result, reserve_disk_gib):
             digest(unit),
             compiled,
             Geometry(tuple(plan["geometry"]["history"]), plan["geometry"]["cutoff"]),
+            observer=observer,
         )
     timing = dict(result["timing"], publication_seconds=time.monotonic() - began)
     return (
@@ -286,6 +332,7 @@ def main(argv=None):
     power = ctypes.windll.kernel32.SetThreadExecutionState
     power.argtypes, power.restype = [ctypes.c_uint], ctypes.c_uint
     awake = False
+    observers = None
     try:
         plan = freeze(
             root, args.parent, geometry, args.source_revision, args.endpoint, args.seed,
@@ -294,11 +341,14 @@ def main(argv=None):
         settings = vars(args).copy()
         settings.update(parent=str(args.parent), output=str(root),
                         engineering_proof=str(args.engineering_proof) if args.engineering_proof else None)
+        settings["telemetry_run"] = f"{os.getpid()}-{time.time_ns()}"
+        observers = PublicationTelemetry(root, settings["telemetry_run"])
         write_json(
             root / "execution.json",
             dict(settings, pid=os.getpid(), started=time.time(), binding=plan["hash"]),
         )
         queues = ordered_units(root, plan, args.only_ticker, args.pilot_unit)
+        planned_units = len(queues)
         catalog = Catalog(root)
         ctx = mp.get_context("spawn")
         active_query, lock, stop = ctx.Value("i", 0), ctx.Lock(), ctx.Event()
@@ -324,6 +374,7 @@ def main(argv=None):
         counters['deferred_sessions'] = catalog.deferred_sessions
         counters['deferred_source_origins'] = catalog.deferred_source_origins
         began, last_report = time.monotonic(), float("-inf")
+        panel_guard = TrainingGuard(args.training_campaign,args.workers,args.validation_lanes)
         last_index, indexed_units = float("-inf"), -1
         failure = None
 
@@ -448,6 +499,7 @@ def main(argv=None):
                                 unit,
                                 result,
                                 args.reserve_disk_gib,
+                                observers,
                             )
                         ] = (key, unit, reservation)
                     except Exception as error:
@@ -544,6 +596,10 @@ def main(argv=None):
                     staged_sessions=len(staged),
                     active_queries=active_query.value,
                     queued_units=len(queues),
+                    planned_units=planned_units,
+                    active_months=len(cpus)+len(groups),
+                    accounted_months=planned_units-len(queues)-len(cpus)-len(groups),
+                    query_limit=panel_guard.refresh(),
                     elapsed_seconds=time.monotonic() - began,
                     failure=failure,
                     **counters,
@@ -586,6 +642,9 @@ def main(argv=None):
             failure=failure,
             selection=selection,
             validation_budget=args.validation_bytes,
+            planned_units=planned_units,
+            accounted_months=planned_units-len(queues),
+            active_months=0,
             **counters,
             **catalog.stats(),
         )
@@ -604,8 +663,12 @@ def main(argv=None):
     finally:
         if awake:
             power(0x80000000)
-        if catalog is not None:
-            catalog.close()
+        try:
+            if catalog is not None:catalog.close()
+        finally:
+            if observers is not None:observers.close()
+            if STATE and STATE.get("telemetry") and mp.current_process().name=="MainProcess":
+                STATE["telemetry"].close()
         lease.close()
 
 

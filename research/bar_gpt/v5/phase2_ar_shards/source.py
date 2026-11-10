@@ -115,10 +115,12 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
                if prior["code"].get(k) != current["code"].get(k)}
     allowed = {"phase2_ar_shards/" + k for k in ("source.py", "sampling.py", "run.py")}
     kind = proof.get("kind")
-    if kind == "file-ledger-eligibility-v1":
+    if kind in ("file-ledger-eligibility-v1", "file-ledger-observability-v1"):
         allowed |= {"phase2_ar_shards/"+k for k in ("storage.py","ledger.py","migrate_ledger.py")}
+    if kind == "file-ledger-observability-v1":
+        allowed.add("phase2_ar_shards/telemetry.py")
     if (not changed or not changed <= allowed
-        or kind not in ("exact-short-session-preflight-v1","file-ledger-eligibility-v1")
+        or kind not in ("exact-short-session-preflight-v1","file-ledger-eligibility-v1","file-ledger-observability-v1")
         or proof.get("plan_hash") != prior["hash"]
         or proof.get("from_code") != prior["code"]
         or proof.get("to_code") != current["code"]):
@@ -135,7 +137,13 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
         or audit.get("counts_parity_cases", 0) < 12
         or audit.get("complete_output_parity_cases", 0) < 2):
         raise ValueError("Engineering revision lacks exact native parity evidence")
-    if kind == "file-ledger-eligibility-v1":
+    if kind == "file-ledger-observability-v1" and (
+        audit.get("observer_payload_parity_cases", 0) < 2
+        or audit.get("worker_status_tests_passed") is not True
+        or audit.get("exact_sampling_and_canonical_reader") is not True
+    ):
+        raise ValueError("Worker observability lacks native payload parity evidence")
+    if kind in ("file-ledger-eligibility-v1", "file-ledger-observability-v1"):
         from .ledger import FileLedger
 
         path = Path(proof["migration_path"])
