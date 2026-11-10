@@ -131,3 +131,12 @@ def test_immutable_manifest_collision_preserves_incident_bytes(tmp_path):
     with pytest.raises(ValueError,match='manifest collision'):
         sealed_write(path,dict(value=2))
     assert path.read_bytes()==before
+
+
+def test_journal_preserves_disk_reserve(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from research.bar_gpt.v5.phase2_ar_shards import ledger
+    c=Catalog(tmp_path);c.register(tmp_path/'A',receipt('A',1,3))
+    monkeypatch.setattr(ledger.psutil,'disk_usage',lambda _:SimpleNamespace(free=149*1024**3))
+    with pytest.raises(OSError,match='disk reserve'):c.flush(True)
+    assert not list((tmp_path/'ledger-file-v1').glob('journal-*.parquet'))

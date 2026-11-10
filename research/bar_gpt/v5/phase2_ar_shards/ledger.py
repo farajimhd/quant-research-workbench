@@ -7,6 +7,7 @@ from pathlib import Path
 import time
 
 import polars as pl
+import psutil
 
 from .contract import BLOCK
 from ..shards.contract import digest, file_hash, write_json
@@ -30,6 +31,8 @@ def save_part(path, table):
     """fsync, independently hash the target, retain orphan parts on interruption."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    if psutil.disk_usage(str(path.parent)).free < 150*1024**3 + 2*table.estimated_size() + 1024**2:
+        raise OSError("Ledger publication would consume disk reserve")
     temporary = path.with_suffix(".partial")
     with temporary.open("wb") as stream:
         table.write_parquet(stream, compression="zstd")
