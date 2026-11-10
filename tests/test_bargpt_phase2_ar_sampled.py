@@ -258,7 +258,7 @@ def save(root, item):
     return root / "shards" / digest("TEST")[:24] / session["session"], receipt
 
 
-def test_research_adapter_uses4096_origins_and_all_five_causal_views(tmp_path,monkeypatch):
+def research_fixture(tmp_path,monkeypatch):
     from research.bar_gpt.v5.phase2_ar_shards import inspection
     from research.bar_gpt.v5.phase2_ar_shards.contract import VERSION
     from research.bar_gpt.v5.shards.contract import write_json
@@ -274,6 +274,11 @@ def test_research_adapter_uses4096_origins_and_all_five_causal_views(tmp_path,mo
     cat=Catalog(tmp_path);cat.register(directory,receipt);cat.inspection_catalog(plan);cat.db.close()
     monkeypatch.setattr(inspection,'ROOT',tmp_path)
     entry=inspection.catalog()['streams'][0]
+    return inspection,entry,directory,receipt,compiled
+
+
+def test_research_adapter_uses4096_origins_and_all_five_causal_views(tmp_path,monkeypatch):
+    inspection,entry,directory,receipt,compiled=research_fixture(tmp_path,monkeypatch)
     assert entry['blocks']==len(compiled['blocks'])
     assert inspection.units(entry['stream'])['units'][0]['unit']==20260102
     for frame in range(5):
@@ -283,19 +288,24 @@ def test_research_adapter_uses4096_origins_and_all_five_causal_views(tmp_path,mo
         assert all(b['end_us']<=sample['origin_us'] for b in sample['bars'])
         if frame==0:
             assert sample['bars'][-1]['end_us']==sample['origin_us']
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-    from src.backend.research_model_service import router
-    app=FastAPI();app.include_router(router)
-    with TestClient(app) as client:
-        response=client.get('/api/research/models/bargpt/phase2/sample',params=dict(stream=entry['stream'],decision=4095,frame=4))
-        assert response.status_code==200 and response.json()['decision']==4095
-        assert client.get('/api/research/models/bargpt/phase2/sample',params=dict(stream=entry['stream'],decision=4096)).status_code==422
     with pytest.raises(ValueError):inspection.sample(stream='../bad')
     with pytest.raises(ValueError):inspection.sample(stream=entry['stream'],decision=4096)
     payload=directory/receipt['files'][0]['name'];payload.write_bytes(payload.read_bytes()+b'corrupt')
     with pytest.raises(ValueError,match='mutation'):
         inspection.sample(stream=entry['stream'])
+
+
+def test_research_api_accepts4095_and_rejects4096(tmp_path,monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from src.backend.research_model_service import router
+
+    inspection,entry,_,_,_=research_fixture(tmp_path,monkeypatch)
+    app=FastAPI();app.include_router(router)
+    with TestClient(app) as client:
+        response=client.get('/api/research/models/bargpt/phase2/sample',params=dict(stream=entry['stream'],decision=4095,frame=4))
+        assert response.status_code==200 and response.json()['decision']==4095
+        assert client.get('/api/research/models/bargpt/phase2/sample',params=dict(stream=entry['stream'],decision=4096)).status_code==422
 
 
 def test_explicit_pilot_units_cannot_silently_change_full_build(tmp_path):
