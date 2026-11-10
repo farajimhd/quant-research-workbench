@@ -160,8 +160,9 @@ class PublicationTelemetry:
         self.lock=threading.Lock()
         self.reporters={}
 
-    def worker(self):
-        slot=int(threading.current_thread().name.rsplit('_',1)[-1])
+    def worker(self, slot=None):
+        if slot is None:
+            slot=int(threading.current_thread().name.rsplit('_',1)[-1])
         with self.lock:
             if slot not in self.reporters:self.reporters[slot]=WorkerTelemetry(self.root,self.run,"io",slot)
             return self.reporters[slot]

@@ -100,9 +100,10 @@ def worker_table(snapshot, role, slots, width):
     table.add_column("ID",width=3)
     table.add_column("Ticker / task",min_width=9,max_width=17,no_wrap=True,overflow="ellipsis")
     table.add_column("State",width=8,no_wrap=True,overflow="ellipsis")
-    table.add_column("Plan" if role=='cpu' and snapshot['progress'].get('worker_assignments') else "Prepared" if role=='cpu' else "Sealed",width=8)
+    assignment_key='worker_assignments' if role=='cpu' else 'io_assignments'
+    table.add_column("Plan" if snapshot['progress'].get(assignment_key) else "Prepared" if role=='cpu' else "Sealed",width=8)
     table.add_column("Session" if role=='cpu' else "Files",width=7,justify="right",no_wrap=True)
-    table.add_column("Tasks D/A",width=11,justify="right",no_wrap=True)
+    table.add_column("Tasks D/A",width=13,justify="right",no_wrap=True)
     if width>=88:table.add_column("Tkrs",width=4,justify="right")
     if width>=95:table.add_column("Q" if role=='cpu' else "MB",width=5,justify="right")
     if width>=95:table.add_column("Time",width=5,justify="right")
@@ -113,7 +114,9 @@ def worker_table(snapshot, role, slots, width):
         record=snapshot['workers'].get((role,slot))
         state,style=worker_state(record,running)
         r=record or {}
-        assignment=next((a for a in snapshot['progress'].get('worker_assignments',[]) if a['slot']==slot),None) if role=='cpu' else None
+        assignment=next((a for a in snapshot['progress'].get(assignment_key,[]) if a['slot']==slot),None)
+        if record is None and assignment is not None and role=='io' and running:
+            state,style='Idle','dim'
         total=assignment['total'] if assignment else r.get('progress_total')
         done=assignment['completed']+assignment['deferred'] if assignment else r.get('progress_done',0)
         bar=ProgressBar(total=total,completed=done,width=8,pulse=total is None and state not in ('Ready','Exited','Starting'),complete_style='cyan' if role=='cpu' else 'green') if total is not None or state not in ('Starting','Ready','Exited') else Text('—',style='dim')
@@ -173,13 +176,13 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     io_pages=max(1,math.ceil(ios/max(1,io_capacity)))
     io_page=(int(now//10) if page is None else int(page))%io_pages
     io_begin=io_page*io_capacity
-    groups.append(Text('I/O WORKERS | sealed files'+(f' | page {io_page+1}/{io_pages}, cycles 10s' if io_pages>1 else ''),style='bold'))
+    groups.append(Text('I/O WORKERS | '+('fixed assigned month groups' if p.get('io_assignments') else 'sealed files')+(f' | page {io_page+1}/{io_pages}, cycles 10s' if io_pages>1 else ''),style='bold'))
     tables=[worker_table(snapshot,'io',range(io_begin+i*io_rows,min(ios,io_begin+(i+1)*io_rows)),half) for i in range(columns)]
     groups.append(paired(tables))
     waits=Counter(r.get('detail','admission') for (role,_),r in snapshot['workers'].items() if role=='cpu' and r.get('state')=='Wait')
     if waits:groups.append(Text('Waiting: '+' · '.join(f'{n} {why}' for why,n in waits.most_common(2)),style='yellow'))
     if snapshot.get('read_errors'):groups.append(Text('Retaining last snapshot: '+', '.join(snapshot['read_errors']),style='yellow'))
-    groups.append(Text('CPU plan: done+capacity-deferred/fixed assigned months; Tkrs: assigned tickers.' if p.get('worker_assignments') else 'Tasks D/A = done/assigned tasks; Tkrs = unique tickers; plan includes deferrals.',style='dim'))
+    groups.append(Text('Plan: done+capacity-deferred/fixed assigned months; Tkrs: assigned tickers.' if p.get('worker_assignments') else 'Tasks D/A = done/assigned tasks; Tkrs = unique tickers; plan includes deferrals.',style='dim'))
     groups.append(Text('Read-only | Ctrl+C closes panel only | CPU: sessions; I/O: sealed files.',style='dim'))
     for item in groups:
         if isinstance(item,Text):

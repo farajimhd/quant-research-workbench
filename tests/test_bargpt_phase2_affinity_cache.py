@@ -52,7 +52,7 @@ def test_persistent_context_reload_is_exact_and_unadjusted(tmp_path):
     for row in rows:
         for coarse in (False, True):
             actual, kind = fresh.get("TEST", row, coarse)
-            assert kind == "disk"
+            assert kind in ("disk", "memory")
             for i in range(5):
                 a = arrays[i]
                 expected = a[(a["end_us"] > clock(row["source_date"],4)) &
@@ -95,7 +95,8 @@ def test_history_reads_use_ram_then_disk_without_source_queries(tmp_path):
         assert a[-64:].tobytes() == b[-64:].tobytes()
     reader.context_cache = BarCache(tmp_path,"source")
     disk, third = reader.history_fetch("TEST",rows,nullcontext)
-    assert third["context_disk_hits"] == 4 and third["queries"] == 0
+    assert third["context_disk_hits"] >= 1 and third["queries"] == 0
+    assert third["context_disk_hits"] + third["context_memory_hits"] == 4
     assert all(a.tobytes()==b.tobytes() for a,b in zip(history,disk))
     # A tail is NEVER accepted as the complete fine-frame current session.
     again, final = reader.fetch("TEST",rows,nullcontext)
@@ -107,11 +108,13 @@ def test_primary_worker_bar_does_not_reset_between_months():
     from research.bar_gpt.v5.phase2_progress_panel import render
     s = snapshot()
     s["progress"]["worker_assignments"] = [dict(slot=i,total=100,completed=25,deferred=5,tickers=4) for i in range(32)]
+    s["progress"]["io_assignments"] = [dict(slot=i,total=400,completed=100,deferred=20,tickers=16) for i in range(8)]
     s["workers"]["cpu",0].update(progress_done=0,progress_total=20)
     console = Console(file=io.StringIO(), width=200, no_color=True)
     with console.capture() as capture:
         console.print(render(s,200,52,page=0))
     assert "30/100" in capture.get() and "fixed assigned months" in capture.get()
+    assert "120/400" in capture.get() and "fixed assigned month groups" in capture.get()
 
 
 def test_cross_month_context_and_split_outputs_match_full_history(tmp_path):

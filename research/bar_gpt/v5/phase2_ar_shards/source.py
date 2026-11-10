@@ -255,7 +255,7 @@ class CanonicalReader:
         producer = {k:v for k,v in plan["code"].items()
                     if not k.startswith("phase2_ar_shards/")}
         self.context_cache = BarCache(
-            self.root.parent / "phase2-session-context-v1",
+            self.root.parent / "phase2-session-context-v2",
             digest(dict(authority=plan["authority"], producer=producer,
                         source_query=plan["source_query"])),
             fine_tail_rows=max(plan["geometry"]["history"][:3]),
@@ -339,8 +339,7 @@ class CanonicalReader:
             arrays, costs = self._fetch_uncached(ticker, missing, gate, chunk_events, tuple(group))
             for key, value in costs.items():
                 timing[key] = timing.get(key, 0) + value
-            for row in missing:
-                self.context_cache.put(ticker, row, group.start == 3, arrays)
+            self.context_cache.put_many(ticker, missing, group.start == 3, arrays)
             timing["context_source_sessions"] += len(missing)
             return arrays
 

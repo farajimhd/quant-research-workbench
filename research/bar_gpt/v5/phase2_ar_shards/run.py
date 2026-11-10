@@ -149,8 +149,8 @@ def _produce(unit):
     return outputs
 
 
-def publication(root, plan, unit, result, reserve_disk_gib, observers=None):
-    reporter = observers.worker() if observers is not None else None
+def publication(root, plan, unit, result, reserve_disk_gib, observers=None, io_slot=None):
+    reporter = observers.worker(io_slot) if observers is not None else None
     if reporter:reporter.begin(unit)
     try:
         output = _publication(root, plan, unit, result, reserve_disk_gib,
@@ -373,6 +373,15 @@ def main(argv=None):
                          completed=worker_done[i], deferred=worker_deferred[i])
                     for i, a in enumerate(assignments)]
 
+        def io_progress():
+            cpu = worker_progress()
+            return [dict(slot=i,
+                         total=sum(a["total"] for a in cpu if a["slot"] % args.io_workers == i),
+                         tickers=sum(a["tickers"] for a in cpu if a["slot"] % args.io_workers == i),
+                         completed=sum(a["completed"] for a in cpu if a["slot"] % args.io_workers == i),
+                         deferred=sum(a["deferred"] for a in cpu if a["slot"] % args.io_workers == i))
+                    for i in range(args.io_workers)]
+
         ctx = mp.get_context("spawn")
         active_query, lock, stop = ctx.Value("i", 0), ctx.Lock(), ctx.Event()
         handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
@@ -438,9 +447,7 @@ def main(argv=None):
                 counters['deferred_source_origins'] += body['stats']['source_origins']
             return sealed
 
-        with ExitStack() as pools, ThreadPoolExecutor(
-            args.io_workers, thread_name_prefix="ar-shard-io"
-        ) as io:
+        with ExitStack() as pools:
             # A dedicated single-process executor is the ownership guarantee;
             # a shared ProcessPoolExecutor does not offer worker affinity.
             owners = [pools.enter_context(ProcessPoolExecutor(
@@ -449,6 +456,8 @@ def main(argv=None):
                           planned_tasks=assignments[i]["tasks"],
                           planned_tickers=len(assignments[i]["tickers"])),
                           active_query, lock, stop))) for i in range(args.workers)]
+            io_owners = [pools.enter_context(ThreadPoolExecutor(
+                1, thread_name_prefix=f"ar-shard-io-{i}")) for i in range(args.io_workers)]
             while queued_count() or cpus or ios or staged:
                 if (root / "STOP").exists():
                     stop.set()
@@ -514,8 +523,9 @@ def main(argv=None):
                                 "Staged publications would consume disk reserve"
                             )
                         reserved[split] += reservation
+                        io_slot = groups[key]["slot"] % args.io_workers
                         ios[
-                            io.submit(
+                            io_owners[io_slot].submit(
                                 publication,
                                 root,
                                 plan,
@@ -523,6 +533,7 @@ def main(argv=None):
                                 result,
                                 args.reserve_disk_gib,
                                 observers,
+                                io_slot,
                             )
                         ] = (key, unit, reservation)
                     except Exception as error:
@@ -625,6 +636,7 @@ def main(argv=None):
                     active_months=len(cpus)+len(groups),
                     accounted_months=initially_complete+sum(worker_done)+sum(worker_deferred),
                     worker_assignments=worker_progress(),
+                    io_assignments=io_progress(),
                     query_limit=panel_guard.refresh(),
                     elapsed_seconds=time.monotonic() - began,
                     failure=failure,
@@ -671,6 +683,7 @@ def main(argv=None):
             planned_units=planned_units,
             accounted_months=initially_complete+sum(worker_done)+sum(worker_deferred),
             worker_assignments=worker_progress(),
+            io_assignments=io_progress(),
             active_months=0,
             **counters,
             **catalog.stats(),
