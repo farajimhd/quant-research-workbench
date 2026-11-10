@@ -1,5 +1,111 @@
 # Phase two: session shard generator and data contract
 
+## Separate Rich worker panel (2026-11-10)
+
+The phase-two task now uses source **`d22eae554`**; its separate read-only viewer
+uses **`207bb51b2`**. Both were committed, pushed and synchronized as immutable,
+SHA-verified snapshots. Concurrent training changes belong to another agent;
+this deployment did not edit, signal or restart training. Snapshot overlays
+copied only phase-two files over the previous verified source, excluding the
+other agent's training edits.
+
+`BarGPT-Phase2-AR-Sampled-v2-Panel` opens the Rich console on the workstation.
+It displays training/validation byte budgets, accounted ticker-month work,
+published sessions/selected origins, recent durable byte rate and query admission.
+All 32 CPU and eight I/O rows fit a wide terminal; compact terminals explicitly
+paginate every ten seconds. CPU bars count prepared sessions within the current
+ticker-month. I/O bars count fsynced, hash-verified payload files within the
+current session publication. These are distinct from the overall published
+byte count. Task assignments are dynamic: completed/assigned task counts and
+unique ticker counts are per worker since this generator attempt, not a promise
+that every ticker has been preassigned to a permanent worker.
+
+`telemetry.py` writes bounded one-way operational JSON heartbeats at 1Hz under
+`worker-status/<attempt>/`; computation updates memory only. Records include
+PID/creation, stage, task/session counters, query time/cache hits and write errors.
+The viewer checks run/slot identity and process creation, labels stale/exited/
+failed rows, and retains the last readable status on read errors. Publication
+callbacks cannot alter payloads or receipts. Optional status-write failures do
+not fail data publication. The viewer closes independently on Ctrl+C, supports
+plain redirected output/`--once`/`NO_COLOR`, and enables VT on its own Windows
+console handle. It neither opens SQLite nor controls either job.
+
+Validation: 80 focused laptop tests, 79 native tests with the app-only API test
+excluded, and eight native viewer tests after the Windows-console revision.
+Two real full publications matched the previous writer byte-for-byte, including
+receipt seals. Six newly published sessions passed payload hashes, all five
+frames, causal block-index checks and quote-guard idempotence. Native console
+buffer inspection confirmed all 40 rows. During deployment the old generator
+was found terminal after a ClickHouse `RemoteDisconnected`; its logs, execution,
+progress and task definitions were archived before resuming the same frozen
+root. The recovery preserved 115.36GB and subsequently published new sessions.
+This instrumentation is not a measured whole-build speedup.
+
+Native entry point (read-only, no generator launch):
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+& C:/Users/Mehdi/miniconda3/envs/ml4t/python.exe -B D:/TradingML/codes/bargpt-shards-207bb51b2/research/bar_gpt/v5/run_phase2_progress_panel.py --root D:/TradingML/runtimes/bar_gpt/phase2-ar-sampled-v2
+```
+
+Evidence: native `corrected-restart-20261110/worker-panel-final-check.json`,
+`worker-panel-native-audit-d22eae554.json`,
+`worker-panel-engineering-proof-d22eae554.json` and
+`worker-panel-deploy-d22eae554/`. Scheduled Codex monitoring remains disabled
+as requested; the separate progress terminal does not re-enable it.
+
+## File-ledger amendment: SQLite removed from generation (2026-11-10)
+
+The user rejected SQLite for the phase-two extractor. This amendment supersedes
+the earlier SQLite and recovery-cache implementation notes below. Its first source
+was **`011a4c8ff`**, committed/pushed and SHA-verified as 717 Python files (714 runtime
+files plus three focused test files). Training remains independently pinned to
+its existing source and process; no model, optimizer, scheduler or RNG change was
+made for this extractor work.
+
+`ledger.py` now owns coordination through typed in-memory indices, immutable
+Parquet checkpoints and a batched Parquet event journal. There are no SQLite
+connections in generation, recovery or the Research reader. Five checkpoint
+tables retain publication references, exact block selection/order, tails,
+deferrals and completed-month proofs. An atomic `ledger-file-v1/HEAD.json` points
+to a sealed, content-addressed manifest. Journal batches flush after 256 events
+or two seconds; each part is fsynced, hashed and independently read back before
+the manifest/pointer commits. Segments bound the active manifest to 128 part
+descriptors. The 150GiB disk reserve also applies to ledger writes. Orphan parts
+are preserved but are not committed transactions. Corrupt parts/manifests and a
+missing HEAD with existing ledger evidence fail closed; there is no SQLite
+fallback or silent empty-ledger reset.
+
+The explicit `migrate_ledger --execute` command is the sole legacy SQLite access
+path. It requires a stopped owner and STOP marker, opens the old database in
+read-only/query-only mode, verifies frozen binding, record hashes/identity keys
+and completed-session references, then independently compares every exported
+field and row order against Parquet readback. The native migration took 95.65s:
+99,052 publications, 116,524 candidate blocks, 99,052 tails, 2,476,247 deferrals and
+244,813 completed months were copied exactly. All 18,348 selected blocks retained
+their order and membership. The 110.7GB of bar payloads were not regenerated.
+The original 2.9GB database is retained read-only as incident/migration evidence.
+
+File-ledger recovery measured **4.86s with SQLite connections explicitly blocked**,
+preserving all counters, selection export and Research index. The final native
+suite passed 71 focused tests; the app-only API test passed separately on the
+laptop. A real bounded AAPL February-2025 unit then ran with SQLite connections
+forbidden: it published a new February-28 session with four full blocks. Payload
+hashes, all five frames, causal indices and quote-guard idempotence passed.
+The normal full task was then resumed on the same final root and frozen plan.
+
+The sealed file-ledger engineering proof binds the exact previous/current code
+maps, native parity evidence and runtime-specific migration/checkpoint hashes.
+Canonical aggregation, quote rules, payload writer/reader ASTs, seeded sampling,
+geometry, source inventory, common split basis, 75/25 mix and existing selected
+IDs remain unchanged. Recovery validates ledger checkpoint/journal hashes in
+bulk; existing shard readers continue to verify full payload hashes before use.
+This replaces repeated opening of old payloads during coordinator startup.
+No phase-two model training is authorized; raw shards remain
+`training_ready=false`. Detailed evidence is in native
+`corrected-restart-20261110/no-sqlite-migration-20261110` and
+`file-ledger-native-audit-011a4c8ff.json`.
+
 ## Measured short-session optimization (2026-11-10)
 
 The overnight bottleneck investigation found canonical reconstruction dominating:
