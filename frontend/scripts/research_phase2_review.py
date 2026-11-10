@@ -34,20 +34,23 @@ def main():
             page.screenshot(path=str(output / "initial-empty.png"))
             page.get_by_label("Phase 2 ticker search", exact=True).fill("EVAX")
             page.get_by_label("Phase 2 year", exact=True).select_option("2025")
-            key = "54cab2fdca816a10b60e6df9"
+            discovery = page.request.get('http://127.0.0.1:8000/api/research/models/bargpt/phase2/catalog?search=EVAX&year=2025').json()
+            key = discovery['streams'][0]['stream']
+            units = page.request.get('http://127.0.0.1:8000/api/research/models/bargpt/phase2/units?stream='+key).json()
+            session_unit = str(next(unit['unit'] for unit in units['units'] if unit['blocks'] > 1))
             selector = page.get_by_label("Phase 2 ticker / year", exact=True)
             selector.locator(f'option[value="{key}"]').wait_for(
                 state="attached", timeout=60000
             )
             selector.select_option(key)
             page.get_by_label("Phase 2 saved unit", exact=True).locator(
-                'option[value="0"]'
+                f'option[value="{session_unit}"]'
             ).wait_for(state="attached", timeout=60000)
-            page.get_by_label("Phase 2 saved unit", exact=True).select_option("0")
+            page.get_by_label("Phase 2 saved unit", exact=True).select_option(session_unit)
 
             def response_for(action):
                 with page.expect_response(
-                    lambda response: "/bargpt/phase2/sample?" in response.url,
+                    lambda response: "/bargpt/phase2/sample?" in response.url and response.status not in (429,503),
                     timeout=120000,
                 ) as captured:
                     action()
@@ -63,6 +66,7 @@ def main():
                     "button", name="Load block", exact=True
                 ).click()
             )
+            page.locator(".phase2-details > summary").click()
             for frame in range(5):
                 if frame:
                     result = response_for(
@@ -120,10 +124,40 @@ def main():
                     ".phase2-shard-research .bar-shard-legend"
                 ).inner_text()
             )
-            page.get_by_label("Chart basis", exact=True).select_option("raw")
-            page.get_by_label("Chart basis", exact=True).select_option("adjusted")
+            families = page.locator('.bar-shard-chart g[role=button]').first.locator('g[data-family]').evaluate_all('(els)=>els.map(e=>e.dataset.family)')
+            assert families == ['bid','ask','trade'], families
+            for bar in result['bars']:
+                group = page.locator('.bar-shard-chart g[role=button]').nth(bar['index'])
+                for family, offset in [('bid',6),('ask',12),('trade',0)]:
+                    o,c = bar['values'][offset],bar['values'][offset+3]
+                    expected = 'shard-candle-down' if o is not None and c is not None and c<o else 'shard-candle-up'
+                    assert expected in group.locator(f'g[data-family={family}]').get_attribute('class')
             page.get_by_label("Phase 2 price series", exact=True).select_option("bid")
             page.get_by_label("Phase 2 price series", exact=True).select_option("all")
+            truth = page.locator('.phase2-ground-truth')
+            truth.get_by_role('button', name='Earlier history',exact=True).wait_for()
+            page.wait_for_function("() => !document.querySelector('.phase2-ground-truth')?.textContent.includes('Loading…')")
+            with page.expect_response(lambda r: '/phase2/events?' in r.url and 'before_us=' in r.url,timeout=60000) as older:
+                truth.get_by_role('button',name='Earlier history',exact=True).click()
+            assert older.value.ok, older.value.text()
+            assert older.value.json()['source'] == 'market_sip_compact.events_YYYY'
+            with page.expect_response(lambda r: '/phase2/events?' in r.url and 'timeframe=5m' in r.url and r.status not in (429,503),timeout=60000) as extra_frame:
+                truth.get_by_role('button',name='5m',exact=True).click()
+            assert extra_frame.value.ok
+            assert page.get_by_label('Phase 2 timeframe',exact=True).input_value() == '4'
+            with page.expect_response(lambda r: '/phase2/events?' in r.url and 'before_us=' not in r.url and r.status not in (429,503),timeout=60000) as full:
+                truth.get_by_label('Full session',exact=True).check()
+            assert full.value.ok
+            truth.get_by_label('Full session',exact=True).uncheck()
+            # A physical zoom-out at the left edge must request older canonical data.
+            page.wait_for_timeout(1000)
+            canvas = truth.locator('canvas').first
+            canvas.scroll_into_view_if_needed()
+            box = canvas.bounding_box()
+            page.mouse.move(box['x']+10,box['y']+box['height']/2)
+            with page.expect_response(lambda r: '/phase2/events?' in r.url and 'before_us=' in r.url and r.status not in (429,503),timeout=60000) as zoom:
+                page.mouse.wheel(0,4000)
+            assert zoom.value.ok,zoom.value.text()
             page.get_by_text("Corporate actions and provenance", exact=True).click()
             page.screenshot(path=str(output / "provenance.png"), full_page=True)
             for theme in ("light", "dark"):
@@ -159,16 +193,18 @@ def main():
                             "Phase 2 ticker / year", exact=True
                         ).select_option(key)
                         page.get_by_label("Phase 2 saved unit", exact=True).locator(
-                            'option[value="0"]'
+                            f'option[value="{session_unit}"]'
                         ).wait_for(state="attached", timeout=60000)
                         page.get_by_label(
                             "Phase 2 saved unit", exact=True
-                        ).select_option("0")
+                        ).select_option(session_unit)
                         response_for(
                             lambda: page.get_by_role(
                                 "button", name="Load block", exact=True
                             ).click()
                         )
+                        page.wait_for_function("() => document.querySelector('.phase2-ground-truth canvas') !== null")
+                        page.wait_for_timeout(1200)
                         assert page.evaluate(
                             "document.documentElement.scrollWidth <= innerWidth + 2"
                         )

@@ -130,7 +130,7 @@ def sample(stream="",unit=-1,block=0,decision=4095,frame=0,view=-1,
             unit=int(receipt["session_date"].replace("-","")),block=block,block_count=receipt["blocks"],
             decision=decision,decisions=cached.ends.tolist(),origin_us=int(cached.ends[decision]),
             frame=frame,view=chosen,summaries=summaries,channels=list(CHANNELS),time_channels=list(TIME_CHANNELS),
-            bars=bars,split=cached.split,actions=[dict(r,effective_by_origin=clock(r["execution_date"],4)<=cached.ends[decision]) for r in actions],
+            bars=bars,split=cached.split,actions=[dict(r,effective_by_origin=bool(clock(r["execution_date"],4)<=cached.ends[decision])) for r in actions],
             receipt_hash=receipt["hash"],plan_hash=plan["hash"],producer_revision=revision,view_version=VERSION,
             price_basis=receipt["price_basis"],artifact_role="raw-ar-context-shards",training_ready=False)
     finally:

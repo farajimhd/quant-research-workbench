@@ -21,3 +21,18 @@
 .phase2-shard-research input[type="number"] {
   width: 6rem;
 }
+
+.phase2-ground-truth { min-width: 0; margin-bottom: 1rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.phase2-chart-heading { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: baseline; padding: .75rem 1rem 0; }
+.phase2-chart-heading h2 { margin: 0; }
+.phase2-details > summary { cursor: pointer; padding: .75rem 0; font-weight: 600; }
+.phase2-shard-research .shard-candle-up { fill: var(--success); stroke: var(--success); }
+.phase2-shard-research .shard-candle-down { fill: var(--danger); stroke: var(--danger); }
+.phase2-shard-research .shard-family-label { text-transform: capitalize; }
+.phase2-shard-research .bar-shard-chart { min-height: 180px; }
+
+.phase2-session-toggle { display: flex; align-items: center; gap: .4rem; white-space: nowrap; font-size: .8rem; }
+
+.phase2-ground-truth .chart-component-toolbar.compact { flex-wrap: wrap; height: auto; }
+.phase2-ground-truth .chart-timeframe-row { flex-wrap: wrap; }
+.phase2-ground-truth .button { flex-shrink: 0; white-space: nowrap; }

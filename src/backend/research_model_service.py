@@ -32,6 +32,16 @@ def bargpt_phase2_sample(stream: str = '', unit: int = Query(-1, ge=-1), block: 
     return read(inspection.sample, stream, unit, block, decision, frame, view, randomize, search, year, liquid)
 
 
+@router.get('/bargpt/phase2/events')
+def bargpt_phase2_events(stream: str, unit: int, timeframe: str='1s',
+                         before_us: int | None=Query(None,gt=0),limit: int=Query(4000,ge=1,le=50000)):
+    from research.bar_gpt.v5.event_inspection import chart
+    try:
+        return read(chart,stream,unit,timeframe,before_us,limit)
+    except RuntimeError as error:
+        raise HTTPException(503,detail=f'Canonical event chart: {error}') from error
+
+
 @router.get('/bargpt/shards/catalog')
 def bargpt_shard_catalog(search: str = '', year: int = 0, offset: int = Query(0, ge=0)):
     from research.bar_gpt.v5 import shard_inspection as inspection

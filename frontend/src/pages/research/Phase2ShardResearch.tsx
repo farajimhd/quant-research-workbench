@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { query } from "../../api/client";
 import { researchApi } from "./researchApi";
+import { Phase2GroundTruth } from "./Phase2GroundTruth";
 import { ShardCandles } from "./BarShardResearch";
 import "./BarShardResearch.css";
 import "./Phase2ShardResearch.css";
@@ -62,6 +63,7 @@ type Catalog = {
   progress: { state: string; bytes: number; units: number; updated: number };
 };
 const endpoint = "/api/research/models/bargpt/phase2";
+const frameCodes = ["1s", "10s", "1m", "1h", "1d"];
 const frames = ["1s", "10s", "1min", "1hour", "Daily"];
 const clock = (us: number) =>
   new Date(us / 1000).toISOString().replace("T", " ").replace("Z", " UTC");
@@ -87,7 +89,8 @@ export function Phase2ShardResearch() {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState(63);
   const [family, setFamily] = useState("all");
-  const [basis, setBasis] = useState("adjusted");
+  const [truthFrame, setTruthFrame] = useState("1s");
+  const truthSelection = useRef(0);
   const serial = useRef(0);
 
   // Debounced discovery never recursively scans payloads or polls the training process.
@@ -134,6 +137,7 @@ export function Phase2ShardResearch() {
     }> = {},
   ) {
     const request = ++serial.current;
+    const truthRequest = truthSelection.current;
     setBusy(true);
     setError("");
     try {
@@ -157,6 +161,7 @@ export function Phase2ShardResearch() {
       );
       if (request !== serial.current) return;
       setSample(result);
+      if (truthRequest === truthSelection.current) setTruthFrame(frameCodes[result.frame]);
       setStream(result.stream);
       setUnit(result.unit);
       setSelected(63);
@@ -176,6 +181,10 @@ export function Phase2ShardResearch() {
       view: number;
     }>,
   ) {
+    if (overrides.frame !== undefined) {
+      truthSelection.current++;
+      setTruthFrame(frameCodes[overrides.frame]);
+    }
     if (sample)
       void load(false, {
         stream: sample.stream,
@@ -188,14 +197,7 @@ export function Phase2ShardResearch() {
       });
   }
   const chosen = sample?.bars[selected];
-  const chartBars =
-    sample?.bars.map((bar) => ({
-      ...bar,
-      values:
-        basis === "raw"
-          ? bar.raw.map((value, i) => (bar.valid[i] ? value : null))
-          : bar.values,
-    })) ?? [];
+  const chartBars = sample?.bars ?? [];
   const selectionMatches = sample?.stream === stream && sample?.unit === unit;
   return (
     <div
@@ -206,8 +208,7 @@ export function Phase2ShardResearch() {
         <div>
           <h1>BarGPT phase 2 data</h1>
           <p>
-            4,096 consecutive origins per session · completed-bar causality · one
-            shared session split basis
+            Saved bars and canonical events
           </p>
         </div>
         {catalog && (
@@ -319,7 +320,7 @@ export function Phase2ShardResearch() {
               <option value={-1}>Any sealed unit</option>
               {units.map((row) => (
                 <option key={row.unit} value={row.unit}>
-                  #{row.unit} · {row.begin} → {row.end} · {row.blocks} blocks
+                  {row.begin} · {row.blocks} blocks
                 </option>
               ))}
             </select>
@@ -346,11 +347,6 @@ export function Phase2ShardResearch() {
             Next tickers
           </button>
         </div>
-        <p className="research-muted">
-          {catalog?.total.toLocaleString() ?? "Loading"} materialized
-          ticker-years. Random chooses a stream, sealed unit and block; this is
-          not a uniform training-corpus sample.
-        </p>
       </section>
       {error && (
         <p className="bar-shard-error" role="alert">
@@ -363,13 +359,16 @@ export function Phase2ShardResearch() {
         </div>
       ) : (
         <>
+          <Phase2GroundTruth stream={sample.stream} unit={sample.unit} ticker={sample.ticker}
+            timeframe={truthFrame} origin={sample.origin_us} start={sample.bars[0]?.end_us}
+            onTimeframeChange={value => { truthSelection.current++; setTruthFrame(value); const frame = frameCodes.indexOf(value); if (frame >= 0) inspect({ frame, view: -1 }); }} />
           <section
             className="bar-shard-chart-panel"
             aria-label="Phase 2 decision"
           >
             <div className="research-controls">
               <h2>
-                {sample.ticker} · {sample.year} · unit {sample.unit}
+                Saved context · {frames[sample.frame]} · {sample.ticker} · {sample.unit}
               </h2>
               <label>
                 Block
@@ -418,20 +417,6 @@ export function Phase2ShardResearch() {
               <strong>
                 1s close / causal cutoff: {clock(sample.origin_us)}
               </strong>
-              <span>
-                All input bars close at or before this time. Share basis uses
-                this same origin.
-              </span>
-            </p>
-            <p className="research-muted">
-              {sample.split === 0
-                ? "Training-era candidate"
-                : sample.split === 1
-                  ? "Validation-era candidate"
-                  : "Purged: full context crosses split cutoff"}{" "}
-              · {sample.liquid ? "Liquid" : "Less liquid"}. Candidate
-              eligibility does not guarantee inclusion in the balanced training
-              release.
             </p>
             <div className="research-controls">
               <label>
@@ -479,24 +464,13 @@ export function Phase2ShardResearch() {
                 </select>
               </label>
               <label>
-                Chart basis
-                <select
-                  aria-label="Chart basis"
-                  value={basis}
-                  onChange={(e) => setBasis(e.target.value)}
-                >
-                  <option value="adjusted">Origin / session basis</option>
-                  <option value="raw">Saved session-basis values</option>
-                </select>
-              </label>
-              <label>
                 Price series
                 <select
                   aria-label="Phase 2 price series"
                   value={family}
                   onChange={(e) => setFamily(e.target.value)}
                 >
-                  <option value="all">Trades + bid + ask</option>
+                  <option value="all">Bid · Ask · Trade</option>
                   <option value="trade">Trades</option>
                   <option value="bid">Bid</option>
                   <option value="ask">Ask</option>
@@ -511,6 +485,7 @@ export function Phase2ShardResearch() {
                   bar index; gaps are preserved.
                 </p>
                 <ShardCandles
+                  triplets
                   bars={chartBars}
                   family={family}
                   selected={selected}
@@ -524,6 +499,8 @@ export function Phase2ShardResearch() {
               </div>
             )}
           </section>
+          <details className="phase2-details"><summary>Values, masks and provenance</summary>
+          <p className="research-muted">{sample.split === 0 ? "Training-era candidate" : sample.split === 1 ? "Validation-era candidate" : "Purged: context crosses split cutoff"} · {sample.liquid ? "Liquid" : "Less liquid"} · candidate status does not imply balanced-release inclusion.</p>
           {chosen && (
             <section
               className="bar-shard-inspector"
@@ -579,8 +556,8 @@ export function Phase2ShardResearch() {
                   <thead>
                     <tr>
                       <th>Market channel</th>
-                      <th>Raw stored</th>
-                      <th>Adjusted to origin</th>
+                      <th>Stored · session basis</th>
+                      <th>Valid value</th>
                       <th>Valid</th>
                     </tr>
                   </thead>
@@ -653,6 +630,7 @@ export function Phase2ShardResearch() {
               </table>
             </div>
           </section>
+          </details>
         </>
       )}
     </div>

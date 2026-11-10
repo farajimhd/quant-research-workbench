@@ -95,18 +95,18 @@ export function BarShardResearch() {
 }
 
 /** Draw only available OHLC fields; missing bodies never become synthetic candles. */
-export function ShardCandles({ bars, family, selected, onSelect }: { bars: Bar[]; family: string; selected: number; onSelect: (index: number) => void }) {
-  const families = [{ name: "trade", offset: 0 }, { name: "bid", offset: 6 }, { name: "ask", offset: 12 }].filter(f => family === "all" || family === f.name);
+export function ShardCandles({ bars, family, selected, onSelect, triplets = false }: { bars: Bar[]; family: string; selected: number; triplets?: boolean; onSelect: (index: number) => void }) {
+  const families = (triplets ? [{ name: "bid", offset: 6 }, { name: "ask", offset: 12 }, { name: "trade", offset: 0 }] : [{ name: "trade", offset: 0 }, { name: "bid", offset: 6 }, { name: "ask", offset: 12 }]).filter(f => family === "all" || family === f.name);
   const prices = bars.flatMap(b => families.flatMap(f => b.values.slice(f.offset, f.offset + 4).filter((v): v is number => v !== null)));
   const low = Math.min(...prices), high = Math.max(...prices); const range = Math.max(high - low, high * .0001);
   const y = (v: number) => 300 - (v - low) / range * 260;
-  return <><div className="bar-shard-legend">{families.map(f => <span key={f.name} className={`shard-${f.name}`}>● {f.name}</span>)}<span>{bars.some(bar => bar.padding) ? "Shaded slots: padding · " : ""}Click a bar for exact values</span></div>
+  return <><div className="bar-shard-legend">{families.map(f => <span key={f.name} className={triplets ? "shard-family-label" : `shard-${f.name}`}>{triplets ? "" : "● "}{f.name}</span>)}<span>{bars.some(bar => bar.padding) ? "Shaded slots: padding · " : ""}{triplets ? "Green: close ≥ open · Red: close < open" : "Click a bar for exact values"}</span></div>
     {!prices.length && <p className="research-muted">No valid prices in the selected series. Raw masks remain available below.</p>}
     <svg className="bar-shard-chart" viewBox="0 0 1200 350" role="group" aria-label="64-bar candlestick inspection">
       {prices.length > 0 && [0, 1, 2, 3, 4].map(i => { const value = low + range * i / 4; return <g key={i} className="bar-shard-grid"><line x1={65} x2={1190} y1={y(value)} y2={y(value)} /><text x={60} y={y(value) + 4} textAnchor="end">{value.toLocaleString("en-US", { maximumSignificantDigits: 6 })}</text></g>; })}
       {bars.map(b => { const x = 75 + b.index * 17.4; return <g key={b.index} role="button" tabIndex={0} aria-label={`Inspect bar ${b.index + 1}${b.padding ? ", padding" : ""}`} aria-pressed={selected === b.index} onClick={() => onSelect(b.index)} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onSelect(b.index); } }}>
         <title>{`Bar ${b.index + 1} · ${clock(b.end_us)}`}</title><rect x={x - 8} y={20} width={17} height={292} className={`bar-shard-hit${b.padding ? " padded" : ""}${b.index === selected ? " selected" : ""}`} />
-        {prices.length > 0 && families.map((f, j) => { const [o, h, l, c] = b.values.slice(f.offset, f.offset + 4); const center = x + (j - (families.length - 1) / 2) * 4; return <g key={f.name} className={`shard-${f.name}`} pointerEvents="none">{h !== null && l !== null && <line x1={center} x2={center} y1={y(h)} y2={y(l)} />}{o !== null && c !== null ? <rect x={center - 1.5} width={3} y={Math.min(y(o), y(c))} height={Math.max(1, Math.abs(y(o) - y(c)))} /> : c !== null && <circle cx={center} cy={y(c)} r={1.5} />}</g>; })}
+        {prices.length > 0 && families.map((f, j) => { const [o, h, l, c] = b.values.slice(f.offset, f.offset + 4); const center = x + (j - (families.length - 1) / 2) * (triplets ? 4.8 : 4); return <g key={f.name} data-family={f.name} className={triplets ? (o !== null && c !== null && c < o ? "shard-candle-down" : "shard-candle-up") : `shard-${f.name}`} pointerEvents="none">{h !== null && l !== null && <line x1={center} x2={center} y1={y(h)} y2={y(l)} />}{o !== null && c !== null ? <rect x={center - 1.5} width={3} y={Math.min(y(o), y(c))} height={Math.max(1, Math.abs(y(o) - y(c)))} /> : c !== null && <circle cx={center} cy={y(c)} r={1.5} />}</g>; })}
         {(b.index % 8 === 0 || b.index === 63) && <text x={x} y={335} textAnchor="middle" className="bar-shard-axis">{b.index + 1}</text>}
       </g>; })}
     </svg></>;

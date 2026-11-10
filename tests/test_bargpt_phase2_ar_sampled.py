@@ -258,14 +258,14 @@ def save(root, item):
     return root / "shards" / digest("TEST")[:24] / session["session"], receipt
 
 
-def research_fixture(tmp_path,monkeypatch):
+def research_fixture(tmp_path,monkeypatch,actions=()):
     from research.bar_gpt.v5.phase2_ar_shards import inspection
     from research.bar_gpt.v5.phase2_ar_shards.contract import VERSION
     from research.bar_gpt.v5.shards.contract import write_json
 
     reader=Reader(days=("2026-01-02",),counts=(5000,),prices=(10,))
-    session,compiled,_=next(compile(reader))
-    plan=dict(version=VERSION,jobs=[dict(ticker="TEST",years=[dict(year=2026,liquid=1)])],authority=dict(corporate_actions=dict(rows=[])))
+    session,compiled,_=next(compile(reader, actions))
+    plan=dict(version=VERSION,jobs=[dict(ticker="TEST",years=[dict(year=2026,liquid=1)])],authority=dict(corporate_actions=dict(rows=list(actions))))
     plan['hash']=digest(plan);write_json(tmp_path/'plan.json',plan)
     write_json(tmp_path/'provenance.json',dict(source_revision='test'))
     write_json(tmp_path/'progress.json',dict(state='running',bytes=1,units=1,updated=1))
@@ -295,12 +295,13 @@ def test_research_adapter_uses4096_origins_and_all_five_causal_views(tmp_path,mo
         inspection.sample(stream=entry['stream'])
 
 
-def test_research_api_accepts4095_and_rejects4096(tmp_path,monkeypatch):
+@pytest.mark.parametrize("actions", [(), (dict(provider_ticker="TEST",execution_date="2025-12-01",split_from=1,split_to=4),)])
+def test_research_api_accepts4095_and_rejects4096(tmp_path,monkeypatch,actions):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
     from src.backend.research_model_service import router
 
-    inspection,entry,_,_,_=research_fixture(tmp_path,monkeypatch)
+    inspection,entry,_,_,_=research_fixture(tmp_path,monkeypatch,actions)
     app=FastAPI();app.include_router(router)
     with TestClient(app) as client:
         response=client.get('/api/research/models/bargpt/phase2/sample',params=dict(stream=entry['stream'],decision=4095,frame=4))
