@@ -19,6 +19,18 @@ older schedule-preservation notes below for this specific continuation only.
 Activation and pilot/build results belong in native `corrected-restart-20261110`;
 the existence of this amendment alone is not proof of activation.
 
+Activation was subsequently verified in **train-06**, pinned to `19bc5c716`,
+from immutable train-05 epoch 40 at actual optimizer step **1,817,587**. The
+new total is epoch 80. All 884,750 repaired receipts passed the completion audit;
+exact split membership/order/cutoff/purge and frozen calibration were retained.
+Before updating, the corrected-data baseline measured untrained probe
+0.7180275433, trained probe 0.08920595290 and full validation 0.10090916735.
+These are new-domain baselines, not directly comparable to old-data losses.
+Live metrics and remote W&B readback confirmed the original `train-01` /
+`1rpdtas2` identity, `3e-4` learning rate and monotonic reported steps. A separate
+`optimizer_global_step` retains the actual update count after partial-epoch replay.
+The native old STOP markers and launcher were archived before owned-marker removal.
+
 Recorded: 2026-11-10 UTC. Implementation and evidence were reviewed against the
 laptop source and native runtime records. This is the consolidated phase-one
 record; [PHASE2.md](PHASE2.md) defines the different phase-two storage contract.

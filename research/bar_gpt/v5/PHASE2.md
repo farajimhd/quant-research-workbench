@@ -28,6 +28,30 @@ five frames and shared UTC transforms. Displayed saved prices are already on
 the session split basis; the reader applies no second split adjustment. The
 artifact remains context-shard data, not a finalized future-target training set.
 
+The final implementation was committed/pushed and hash-synchronized as
+**`f67054dfb` (712 Python files)**. The targeted six-unit final pilot published
+34 sessions / 80 candidate blocks; its 60 selected blocks contained 33/11
+liquid/less-liquid training blocks and 12/4 validation blocks. Every pilot file,
+all origin/tail indices, all cached-pool clocks and quote-guard idempotence were
+checked. Canonical AAPL/XPON re-reads matched all five frames byte-for-byte.
+A real SXTP historical context matched independent 4x price and inverse-size
+adjustment, with unchanged counts/masks/clocks. One identical coarse query fell
+from 1.428s uncached to 0.00438s cached; this is a page-level reuse measurement,
+not a whole-build speedup promise. Tests: 63 laptop, 62 native generator tests;
+the app-only API test runs on the laptop. Frontend type/build and real browser
+five-frame normal/compact inspection passed.
+
+The full native task **`BarGPT-Phase2-AR-Sampled-v2`** was then launched against
+`D:/TradingML/runtimes/bar_gpt/phase2-ar-sampled-v2`, with **32 CPU processes,
+8 I/O threads, 2M-event pages and a 4GiB per-query limit**. Its source plan binds
+the same `7aca8f9ad7ce7ba4509c08c6c3d10ab48061bb6612b949cb827c2ab43d0d5ccc`
+as the final pilot. No pilot filters are present in the full command. Native
+ownership, increasing publications, reserves and SYSTEM keep-awake requests
+were verified; six additional full-build sessions passed bounded payload/quote/
+causal-index audits. Live status is in `corrected-restart-20261110/last-check.json`.
+The Research page now reads this final root at
+`http://127.0.0.1:5173/?research=phase2-shards#research-workspace`.
+
 ## Corporate-action empty-receipt correction (2026-11-10)
 
 The previously reported July-25 coverage gap was traced to the extractor selecting
