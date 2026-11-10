@@ -581,6 +581,7 @@ def main(argv=None):
                                     "compile_seconds",
                                     "resource_page_splits",
                                     "coarse_cache_hits",
+                                    "context_memory_hits", "context_disk_hits", "context_source_sessions",
                                 )
                             }
                             out.write(
