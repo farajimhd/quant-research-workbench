@@ -39,7 +39,12 @@ class CudaBatches:
 
             self.next_batch = PreparedBatch(
                 **{
-                    field.name: getattr(cpu, field.name).to("cuda", non_blocking=True)
+                    field.name: (
+                        getattr(cpu, field.name)
+                        if field.name.startswith("native_")
+                        and not getattr(cpu, field.name).numel()
+                        else getattr(cpu, field.name).to("cuda", non_blocking=True)
+                    )
                     for field in fields(cpu)
                 }
             )
@@ -54,7 +59,9 @@ class CudaBatches:
         stream.wait_event(self.ready)
         result, self.next_batch = self.next_batch, None
         for field in fields(result):
-            getattr(result, field.name).record_stream(stream)
+            item = getattr(result, field.name)
+            if not field.name.startswith("native_") or item.numel():
+                item.record_stream(stream)
         return result
 
 
@@ -106,6 +113,8 @@ def run_steps(
     counts = torch.zeros(18, device="cuda", dtype=torch.int64)
     mae_sums = torch.zeros_like(sums)
     squared_sums = torch.zeros_like(sums)
+    native = None
+    native_prefix = (metric_prefix or "validation") + "_raw_mae"
     samples = measured = consumed = 0
     exhausted = False
     begin_measure = None
@@ -164,6 +173,8 @@ def run_steps(
                 )
         if optimizer:
             values["learning_rate"] = optimizer.param_groups[0]["lr"]
+        if native is not None:
+            values.update(native.metrics(native_prefix))
         reporter.log(values, log_base + consumed if training else log_base)
         report_seconds += time.perf_counter() - report_began
         last_upload_samples, last_upload_clock = samples, time.perf_counter()
@@ -237,6 +248,13 @@ def run_steps(
                     batch.hidden_ids.flatten(),
                     error.square().sum(-1).double().flatten(),
                 )
+                if not training and batch.native_values.numel():
+                    from .native_validation_v1 import NativeMAE, evaluate_full
+
+                    if native is None:
+                        native = NativeMAE("cuda")
+                    evaluate_full(model, batch, native, precision)
+                    end.record()  # Validation timing includes the additional full-input forward.
                 measured += 1
                 samples += len(batch.visible)
             # Enqueue the next input while current kernels execute, rather than synchronizing each step.
@@ -312,6 +330,12 @@ def run_steps(
                 value if count else None
                 for value, count in zip(result[key], result["target_counts"])
             ]
+        if native is not None:
+            from .native_validation_v1 import CONTRACT
+
+            result["native_validation"] = dict(
+                contract=CONTRACT, metrics=native.metrics(native_prefix)
+            )
         if reporter:
             with reporter.lock:
                 readings = [

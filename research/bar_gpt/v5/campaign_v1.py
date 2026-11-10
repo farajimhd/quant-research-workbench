@@ -261,6 +261,9 @@ def train_campaign(args, manifest, stats, reporter):
             # so their sample subset remains identical to its frozen baseline.
             ordered=training or probe or args.validation_steps != 0,
         )
+        # Separate all-visible reconstruction diagnostic. Existing masked loss,
+        # probe population, checkpoint selection and stopping evidence stay exact.
+        loader.dataset.full_validation = not training and not probe
         limit = (args.train_steps if training else args.validation_steps) or len(loader)
         if probe:
             limit = min(len(loader), args.guard_probe_steps)

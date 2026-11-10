@@ -1,11 +1,12 @@
 """CPU masking and agreed market scaling, separate from the neural architecture.
 
 Raw batches come from the fixed-array shard contract, never from a DataFrame.
-Only compact visible inputs, time context, and masked loss targets move to GPU.
-No hidden-input placeholders are sent to the encoder.
+Training transfers compact visible inputs, time context, and masked loss targets.
+Full validation can additionally retain unmasked inputs/raw truth for diagnostics.
+No hidden-input placeholders are sent to the training encoder.
 """
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 
 import torch
 from torch import Tensor
@@ -95,6 +96,14 @@ class PreparedBatch:
     target_valid: Tensor
     time: Tensor
     time_valid: Tensor
+    # Evaluation-only payload. Empty tensors preserve lightweight training and
+    # the tensor-only loader/pinning contract; never passed to training forward.
+    native_values: Tensor = field(default_factory=lambda: torch.empty(0))
+    native_valid: Tensor = field(default_factory=lambda: torch.empty(0))
+    native_targets: Tensor = field(default_factory=lambda: torch.empty(0))
+    native_reference: Tensor = field(default_factory=lambda: torch.empty(0))
+    native_frames: Tensor = field(default_factory=lambda: torch.empty(0))
+    native_stats: Tensor = field(default_factory=lambda: torch.empty(0))
 
     def pin_memory(self) -> "PreparedBatch":
         """Let DataLoader's pinning thread prepare asynchronous GPU transfers."""
@@ -112,7 +121,8 @@ class PreparedBatch:
 
 
 def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: Tensor | int,
-                  stats: ActivityStats, generator: torch.Generator, *, mask_rate: float = 0.6) -> PreparedBatch:
+                  stats: ActivityStats, generator: torch.Generator, *, mask_rate: float = 0.6,
+                  native_validation: bool = False) -> PreparedBatch:
     """Scale and pack raw CPU shards into visible feature tokens and hidden targets.
 
     Raw shapes: values/valid [B,64,18], end_us [B,64], timeframe_us scalar or [B].
@@ -166,8 +176,14 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
     hidden_index = hidden_ids[..., None].expand(-1, -1, 64)
     if masked and not evidence.gather(1, hidden_index).any():
         raise ValueError("Batch has no observed hidden reconstruction targets.")
+    diagnostics = {}
+    if native_validation:
+        from .native_validation_v1 import prepare_full
+
+        diagnostics = prepare_full(values, valid, timeframe_us, stats)
     return PreparedBatch(
         columns.gather(1, visible_index), evidence.gather(1, visible_index), feature_ids, hidden_ids,
         columns.gather(1, hidden_index), evidence.gather(1, hidden_index),
         transformed.values[..., 18:].contiguous(), transformed.valid[..., 18:].contiguous(),
+        **diagnostics,
     )

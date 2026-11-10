@@ -23,9 +23,49 @@ from research.bar_gpt.v5.overnight_v1 import read, metadata_io
 from research.bar_gpt.v5.shards.phase1_contract import write_json
 
 
-def boundary_ready(status, review, results, epoch):
+def updated_launcher(text, old_revision, new_revision, resume_checkpoint=None):
+    """Rebind an explicit prepared entry to an ordinary retained latest state.
+
+    The original preparation proof belongs only to that independent prepared
+    file. A trained attempt's own checkpoint instead uses normal manifest/RNG/
+    checkpoint validation, preserving its complete corrected-data ancestry.
+    """
+    if old_revision not in text:
+        raise ValueError("Launcher no longer pins the expected old source")
+    result = text.replace(old_revision, new_revision)
+    if resume_checkpoint is not None:
+        value = str(resume_checkpoint).replace("\\", "/").replace("'", "''")
+        quoted = r"""(?:"[^"]*"|'[^']*')"""
+        pattern = rf"'--resume-training'\s*,\s*{quoted}(?:\s*,\s*'--data-transition-proof'\s*,\s*{quoted})?"
+        result, count = re.subn(
+            pattern, lambda _: f"'--resume-training','{value}'", result
+        )
+        if count != 1 or "'--data-transition-proof'" in result:
+            raise ValueError("Unrecognized explicit resume launcher; no broad rewrite")
+        # Keep the operational ledger honest as well as the actual command.
+        result, count = re.subn(
+            rf"resume\s*=\s*{quoted}", lambda _: f"resume='{value}'", result
+        )
+        if count != 1:
+            raise ValueError("Unrecognized launcher resume ledger")
+    return result
+
+
+def boundary_ready(status, review, results, epoch, *, before_validation=False):
     """Accept only a complete healthy epoch, before meaningful next-epoch work."""
     history = results.get("history", [])
+    if before_validation:
+        # A durable phase=validation checkpoint exists before this loader starts.
+        # The previous completed review must still be healthy; never bypass it.
+        return (
+            bool(history)
+            and history[-1]["epoch"] == epoch - 1
+            and review.get("epoch") == epoch - 1
+            and review.get("action") == "continue"
+            and status.get("epoch") == epoch
+            and status.get("stage")
+            in {"starting validation loader", "measuring validation", "validation"}
+        )
     if not history or history[-1]["epoch"] != epoch:
         return False
     if review.get("epoch") != epoch or review.get("action") != "continue":
@@ -43,6 +83,16 @@ def main(argv=None):
     parser.add_argument("--old-revision", required=True)
     parser.add_argument("--new-revision", required=True)
     parser.add_argument("--train-label", default="train-01")
+    parser.add_argument(
+        "--before-validation",
+        action="store_true",
+        help="Resume the saved complete-training phase directly into validation",
+    )
+    parser.add_argument(
+        "--resume-latest",
+        action="store_true",
+        help="Replace the explicit prepared entry with this attempt's retained checkpoint",
+    )
     args = parser.parse_args(argv)
     root = args.output.resolve()
     runtime = Path("D:/TradingML/runtimes/bar_gpt").resolve()
@@ -98,7 +148,11 @@ def main(argv=None):
                     )
                     return 0
                 if boundary_ready(
-                    status, review, read(train / "results.json"), args.epoch
+                    status,
+                    review,
+                    read(train / "results.json"),
+                    args.epoch,
+                    before_validation=args.before_validation,
                 ):
                     break
                 write_json(
@@ -115,9 +169,35 @@ def main(argv=None):
                 raise TimeoutError(
                     "No safe complete-epoch boundary reached within three hours"
                 )
-            checkpoint = train / f"checkpoint_epoch_{args.epoch:03d}.pt"
+            checkpoint = train / (
+                "checkpoint_last.pt"
+                if args.before_validation
+                else f"checkpoint_epoch_{args.epoch:03d}.pt"
+            )
             if not checkpoint.is_file():
                 raise ValueError("Complete epoch checkpoint is missing")
+            if args.before_validation:
+                # Preserve the exact training-complete boundary before requesting
+                # STOP. A validator may have read batches but never updates weights.
+                from research.bar_gpt.v5.shards.contract import file_hash
+
+                retained = (
+                    root / f"telemetry-upgrade-validation-epoch-{args.epoch:03d}.pt"
+                )
+                if retained.exists():
+                    raise ValueError(
+                        "Preserve the existing upgrade checkpoint; no overwrite"
+                    )
+                before_hash = file_hash(checkpoint)
+                shutil.copyfile(checkpoint, retained)
+                if (
+                    file_hash(retained) != before_hash
+                    or file_hash(checkpoint) != before_hash
+                ):
+                    raise ValueError(
+                        "Validation-boundary checkpoint changed during copy"
+                    )
+                checkpoint = retained
             owner = read(root / "process.json")
             child = read(root / (args.train_label + "-child.json"))
             process = psutil.Process(owner["pid"])
@@ -137,6 +217,14 @@ def main(argv=None):
                     or abs(child_process.create_time() - child["created"]) > 1
                 ):
                     raise ValueError("Training child ownership changed")
+            launcher = root / "run.ps1"
+            prior_launcher = launcher.read_text()
+            next_launcher = updated_launcher(
+                prior_launcher,
+                args.old_revision,
+                args.new_revision,
+                train / "checkpoint_last.pt" if args.resume_latest else None,
+            )  # Validate the full rewrite before stopping healthy owners.
             write_json(
                 evidence,
                 dict(
@@ -186,11 +274,19 @@ def main(argv=None):
                 train / "checkpoint_last.pt", map_location="cpu", weights_only=False
             )
             if (
-                saved["epoch"] != args.epoch
-                or saved["phase"] != "train"
+                saved["epoch"] != args.epoch - int(args.before_validation)
+                or saved["phase"]
+                != ("validation" if args.before_validation else "train")
                 or saved["step"] != saved["scheduler"]["updates"]
             ):
                 raise ValueError("Last checkpoint is not the intended complete epoch")
+            if (
+                args.before_validation
+                and file_hash(train / "checkpoint_last.pt") != before_hash
+            ):
+                raise ValueError(
+                    "Drained last checkpoint differs from retained training boundary"
+                )
             write_json(
                 root / "telemetry-upgrade-old-progress.json",
                 read(train / "progress.json"),
@@ -207,12 +303,18 @@ def main(argv=None):
                     root / name, root / ("before-telemetry-upgrade-" + name)
                 )
             launcher = root / "run.ps1"
-            text = launcher.read_text()
-            if args.old_revision not in text:
-                raise ValueError("Launcher no longer pins the expected old source")
-            launcher.write_text(
-                text.replace(args.old_revision, args.new_revision), encoding="utf-8"
-            )
+            if launcher.read_text() != prior_launcher:
+                raise ValueError("Launcher changed while draining; preserve it")
+            if args.resume_latest:
+                child_stop = train / "STOP"
+                if child_stop.exists():
+                    if (
+                        child_stop.read_text(encoding="utf-8")
+                        != "Controller stop or 20-minute progress stall"
+                    ):
+                        raise RuntimeError("Preserve changed training STOP")
+                    child_stop.unlink()  # Only the verified controller-owned stop.
+            launcher.write_text(next_launcher, encoding="utf-8")
             code = Path(__file__).resolve().parents[3]
 
             def quote(value):
@@ -240,6 +342,17 @@ def main(argv=None):
                 ),
             )
             return 0
+        except BaseException as error:
+            write_json(
+                evidence,
+                dict(
+                    state="failed",
+                    epoch=args.epoch,
+                    error=f"{type(error).__name__}: {error}",
+                    updated=time.time(),
+                ),
+            )
+            raise
         finally:
             execution(0x80000000)
 

@@ -465,6 +465,7 @@ class EligibleStream(IterableDataset):
             else list(manifest["splits"][split])
         )
         self.strict_market = manifest.get("dataset_version") == VERSION
+        self.full_validation = False  # Enabled only by the full-validation campaign path.
         if split == "train" and compact is None:
             np.random.default_rng(seed + epoch).shuffle(self.entries)
         self.stats, self.batch_size, self.seed, self.epoch = (
@@ -532,6 +533,7 @@ class EligibleStream(IterableDataset):
                 torch.from_numpy(rows["timeframe_us"].copy()),
                 self.stats,
                 torch.Generator().manual_seed(rng),
+                native_validation=self.full_validation,
             )
 
         for item in self.entries[lane::workers]:

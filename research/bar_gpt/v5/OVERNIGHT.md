@@ -1,5 +1,26 @@
 # Unattended v6 handoff
 
+Full validation additionally reports `validation_raw_mae/<timeframe>/<channel>`:
+all 18 market columns and all 64 bar positions are supplied without random masking
+to a separate inference-only encoder/decoder forward. This is full-input
+reconstruction, not forecasting. Existing masked loss, probes, best-checkpoint
+selection and learning guards remain unchanged. No extra forward runs in training
+or the bounded learning probe. Validation takes additional compute time.
+
+Decoder prices invert as `reference * exp(prediction/100)`; the full-input
+reference is the median of all observed trade/bid/ask closes in that sample.
+Activity inverts as `expm1(prediction*scale+median)` using frozen training-only
+calibration. MAE compares those predictions directly with the original raw input
+values for the same source-valid positions. Price units are dollars per share on
+the saved sample's split-adjusted basis; quantity units remain exactly as stored,
+without an assumed lot conversion; counts are observed events. Timeframes and
+heads have separate metrics, never a mixed-unit overall MAE. The accompanying
+`validation_raw_mae_counts` counts stored observations, including repeated windows,
+not unique market messages. Invalid source observations are excluded. Predictions
+are neither rounded nor clipped. Inverse/reduction overflow makes that metric
+explicitly unavailable with separate overflow evidence, rather than silently
+dropping observations. Aggregate historical transformed errors cannot be inverted.
+
 Performance maintenance keeps the existing model, sample order, masks,
 optimizer and scheduler contracts. The derived loader-index-v1 files bind the
 sealed split hash and are mmap metadata, not a new dataset. All market payload
