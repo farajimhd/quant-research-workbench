@@ -68,6 +68,11 @@ def validate_contract(saved, current, manifest, calibration):
         split_hash=manifest["manifest_hash"],
         data_transition=certificate["hash"],
     )
+    from .schedule_transition_v1 import validate as validate_schedule, planned_contract
+
+    reset = validate_schedule(saved)
+    if reset is not None:
+        planned = planned_contract(planned, reset)
     expected = dict(current, data_transition=certificate["hash"])
     if not compatible_resume_contract(
         saved["contract"], planned

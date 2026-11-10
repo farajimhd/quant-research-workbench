@@ -89,7 +89,7 @@ def test_state_hash_binds_types_shape_dtype_and_sequence_order():
         migration.state_hash(object())
 
 
-def reporting_fixture(tmp_path):
+def reporting_fixture(tmp_path, reset_schedule=False):
     """Prepare a genuine copied checkpoint and a sealed target split/calibration."""
     source, certificate, old, _ = fixture(tmp_path)
     manifest = dict(
@@ -130,7 +130,8 @@ def reporting_fixture(tmp_path):
     )
     persist(tmp_path, identity)
     output = tmp_path / "prepared"
-    proof = migration.prepare_copy(source, output, certificate, old, calibration)
+    proof = migration.prepare_copy(source, output, certificate, old, calibration,
+                                   reset_schedule=reset_schedule)
     config = dict(
         original,
         resume=proof["target"],
@@ -139,6 +140,44 @@ def reporting_fixture(tmp_path):
         calibration=str(units),
     )
     return output, config, identity
+
+
+def test_authorized_scheduler_restart_preserves_weights_moments_rng_and_identity(tmp_path):
+    from .campaign_v1 import EpochCosine
+    from .schedule_transition_v1 import validate
+
+    output, config, original = reporting_fixture(tmp_path, reset_schedule=True)
+    proof = json.loads((output / "checkpoint-preparation.json").read_text())
+    saved = torch.load(proof["target"], weights_only=False)
+    parent = torch.load(proof["source"], weights_only=False)
+    for key in migration.PRESERVED:
+        if key != "scheduler":
+            assert migration.state_hash(saved[key]) == migration.state_hash(parent[key])
+    assert "scheduler" not in proof["preserved"]
+    plan = validate(saved)
+    assert plan["start_epoch"] == 22 and saved["contract"]["epochs"] == 62
+    schedule = EpochCosine(1, 0, 1, 0)
+    schedule.load_state_dict(saved["scheduler"])
+    assert schedule.value() == pytest.approx(3e-4)
+    schedule.epoch = 39
+    assert schedule.value() == pytest.approx(5e-5)
+    config.update(epochs=62, learning_rate=3e-4, min_learning_rate=5e-5, warmup_updates=0)
+    (tmp_path / "metrics.jsonl").write_text(json.dumps(dict(step=10500)) + "\n")
+    revised = migration.prepare_reporting_identity(output, config, "project")
+    assert revised["id"] == original["id"] and revised["name"] == "train-01"
+    assert revised["global_step_offset"] == 501
+    _, resumed = migration.resume_inputs(config["resume"], output / "checkpoint-preparation.json", tmp_path.parent)
+    assert resumed["epochs"] == 62
+    saved["scheduler"]["updates"] += 1
+    with pytest.raises(ValueError, match="position"):
+        validate(saved)
+
+
+def test_reset_bridge_refuses_uncertified_rate(tmp_path):
+    output, config, _ = reporting_fixture(tmp_path, reset_schedule=True)
+    config.update(epochs=62, learning_rate=0.002, min_learning_rate=5e-5, warmup_updates=0)
+    with pytest.raises(ValueError, match="authorized scheduler"):
+        migration.prepare_reporting_identity(output, config, "project")
 
 
 def test_explicit_reporting_bridge_preserves_original_remote_id_and_lease_root(

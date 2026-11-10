@@ -104,7 +104,7 @@ def state_hash(state):
     return result.hexdigest()
 
 
-def prepare_copy(source, output, certificate, old_calibration, new_calibration):
+def prepare_copy(source, output, certificate, old_calibration, new_calibration, *, reset_schedule=False):
     """Publish a new independently verified checkpoint and sealed CPU state proof.
 
     Source is read and hashed again after serialization to detect concurrent
@@ -121,7 +121,12 @@ def prepare_copy(source, output, certificate, old_calibration, new_calibration):
     prepared = prepare_checkpoint_state(
         saved, certificate, old_calibration, new_calibration, source_sha
     )
-    preserved = {key: state_hash(saved[key]) for key in PRESERVED}
+    if reset_schedule:
+        from .schedule_transition_v1 import prepare
+
+        prepare(saved, prepared)
+    preserved_keys = tuple(k for k in PRESERVED if not (reset_schedule and k == "scheduler"))
+    preserved = {key: state_hash(saved[key]) for key in preserved_keys}
     expected = state_hash(prepared)
     temporary, target = (
         output / "checkpoint_prepared.pt.partial",
@@ -135,7 +140,7 @@ def prepare_copy(source, output, certificate, old_calibration, new_calibration):
     # by two CPU checkpoint copies rather than three. No GPU allocation occurs.
     del saved, prepared
     readback = torch.load(temporary, map_location="cpu", weights_only=False)
-    actual = {key: state_hash(readback[key]) for key in PRESERVED}
+    actual = {key: state_hash(readback[key]) for key in preserved_keys}
     if actual != preserved or state_hash(readback) != expected:
         raise ValueError(
             "Checkpoint serialization changed preserved state or transition metadata"
@@ -197,6 +202,16 @@ def prepare_reporting_identity(output, config, project):
     if identity["signature"] != signature(original) or identity["project"] != project:
         raise ValueError("Parent reporting identity does not bind its experiment")
     data_keys = {"dataset", "split_manifest", "calibration"}
+    saved = torch.load(target, map_location="cpu", weights_only=False)
+    from .schedule_transition_v1 import validate as validate_schedule
+
+    reset = validate_schedule(saved)
+    if reset is not None:
+        expected = dict(epochs=reset["start_epoch"] + 40, learning_rate=3e-4,
+                        min_learning_rate=5e-5, warmup_updates=0)
+        if any(config.get(k) != v for k, v in expected.items()):
+            raise ValueError("Reporting settings differ from authorized scheduler reset")
+        data_keys.update(expected)
     if any(
         original.get(key) != config.get(key)
         for key in EXPERIMENT_KEYS
@@ -238,6 +253,17 @@ def prepare_reporting_identity(output, config, project):
     revised = dict(
         identity, signature=signature(config), quote_data_bridge=bridge["hash"]
     )
+    # A stopped partial epoch may have uploaded beyond the retained checkpoint.
+    # Keep the optimizer's true step, but never move the original chart backwards.
+    journal = parent.parent / "metrics.jsonl"
+    maximum = saved["step"] + identity.get("global_step_offset", 0)
+    if journal.exists():
+        with journal.open(encoding="utf-8") as rows:
+            for row in rows:
+                item = json.loads(row)
+                maximum = max(maximum, item.get("reported_global_step", item["step"]))
+    revised["global_step_offset"] = maximum + 1 - saved["step"]
+    revised["global_step_origin"] = dict(checkpoint_step=saved["step"], prior_reported_maximum=maximum)
     persist(output, revised)
     write_json(
         output / "manifest.json",

@@ -373,7 +373,7 @@ class Controller:
         elif status.get("state") == "complete":
             self.update(
                 state="complete",
-                stage="50 epochs completed",
+                stage=f"{config['epochs']} epochs completed",
                 training_output=str(output),
             )
         else:

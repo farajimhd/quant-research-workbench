@@ -397,7 +397,8 @@ def train_campaign(args, manifest, stats, reporter):
         )
     save("checkpoint_last.pt")
     while epoch < args.epochs and not (args.output / "STOP").exists():
-        scheduler.epoch = epoch
+        schedule_start = (transition or {}).get("schedule_reset", {}).get("start_epoch", 0)
+        scheduler.epoch = epoch - schedule_start
         if phase == "train":
             training_metrics = evaluate_or_train("train")
             if not training_metrics["complete_pass"]:

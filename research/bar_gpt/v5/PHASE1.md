@@ -1,5 +1,24 @@
 # Phase one: shard generator, data contract, quote repair and training record
 
+## Explicit corrected-data continuation amendment (2026-11-10)
+
+The user subsequently authorized stopping the original-data trainer, auditing
+both completed quote-v4 members, and continuing from a complete checkpoint with
+**40 additional epochs**, a fresh cosine schedule **3e-4 to 5e-5**, and no warmup.
+Global epoch numbers continue from the parent; scheduler epoch zero is the first
+corrected-data epoch. Model/decoder weights, AdamW moments, RNG and actual update
+step are retained. The original `train-01` W&B identity is explicitly bridged.
+Old-domain learning evidence remains separate; corrected-data fixed probes and
+full-validation baseline run before any update. Patience eight and other guards
+remain in force. `schedule_transition_v1` seals this narrow authorization; ordinary
+resume compatibility stays strict. The preparation utility must receive
+`reset_schedule=True`. A reporting offset preserves monotonic charts if a stopped
+partial epoch uploaded beyond the retained checkpoint; `optimizer_global_step`
+remains the true retained/replayed optimizer count. This amendment supersedes
+older schedule-preservation notes below for this specific continuation only.
+Activation and pilot/build results belong in native `corrected-restart-20261110`;
+the existence of this amendment alone is not proof of activation.
+
 Recorded: 2026-11-10 UTC. Implementation and evidence were reviewed against the
 laptop source and native runtime records. This is the consolidated phase-one
 record; [PHASE2.md](PHASE2.md) defines the different phase-two storage contract.

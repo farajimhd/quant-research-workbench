@@ -47,8 +47,9 @@ class Reporter:
 
 
 @pytest.mark.parametrize("interrupt_baseline", [False, True])
+@pytest.mark.parametrize("reset_schedule", [False, True])
 def test_corrected_campaign_preserves_state_and_resumes_baseline_best(
-    tmp_path, monkeypatch, interrupt_baseline
+    tmp_path, monkeypatch, interrupt_baseline, reset_schedule
 ):
     """No update occurs before baselines; no-history best can survive another resume."""
     monkeypatch.setattr(campaign_v1, "MaskedAutoencoderV1", TinyModel)
@@ -135,6 +136,10 @@ def test_corrected_campaign_preserves_state_and_resumes_baseline_best(
     certificate["hash"] = digest({k: v for k, v in certificate.items() if k != "hash"})
     calibration = rebind_calibration(old, certificate, "old", manifest["manifest_hash"])
     migrated = prepare_checkpoint_state(parent, certificate, old, calibration, "a" * 64)
+    if reset_schedule:
+        from .schedule_transition_v1 import prepare
+        prepare(parent, migrated)
+        args.epochs, args.learning_rate, args.warmup_updates = 41, 3e-4, 0
     prepared_path = tmp_path / "prepared.pt"
     torch.save(migrated, prepared_path)
     args.resume, args.output = prepared_path, tmp_path / "new"
@@ -142,7 +147,7 @@ def test_corrected_campaign_preserves_state_and_resumes_baseline_best(
     (args.output / "calibration.json").write_text(json.dumps(calibration))
     calls.clear()
     reporter = Reporter(
-        args.output, "data_revision/certificate" if interrupt_baseline else None
+        args.output, "data_revision/certificate" if interrupt_baseline else ("epoch/validation_loss" if reset_schedule else None)
     )
     campaign_v1.train_campaign(args, manifest, stats, reporter)
     assert [(training, role) for training, role, _ in calls[:3]] == [
@@ -159,7 +164,7 @@ def test_corrected_campaign_preserves_state_and_resumes_baseline_best(
     if interrupt_baseline:
         assert state["history"] == [] and state["best_epoch"] == 1
         assert state["step"] == parent["step"]
-        assert state["scheduler"] == parent["scheduler"]
+        assert state["scheduler"] == migrated["scheduler"]
         assert torch.equal(state["rng"], parent["rng"])
         args.resume, args.output = (
             args.output / "checkpoint_last.pt",
@@ -168,12 +173,15 @@ def test_corrected_campaign_preserves_state_and_resumes_baseline_best(
         args.output.mkdir()
         (args.output / "calibration.json").write_text(json.dumps(calibration))
         calls.clear()
-        campaign_v1.train_campaign(args, manifest, stats, Reporter(args.output))
+        campaign_v1.train_campaign(args, manifest, stats, Reporter(args.output, "epoch/validation_loss" if reset_schedule else None))
         # Sealed baseline is reused, and baseline best is copied despite empty history.
         assert calls[0][:2] == (True, None)
         state = torch.load(args.output / "checkpoint_last.pt", weights_only=False)
     assert state["epoch"] == 2 and state["step"] == parent["step"] + 1
-    assert state["scheduler"]["updates"] == parent["scheduler"]["updates"] + 1
+    assert state["scheduler"]["updates"] == (1 if reset_schedule else parent["scheduler"]["updates"] + 1)
+    if reset_schedule:
+        assert state["scheduler"]["epoch"] == 0
+        assert state["history"][0]["learning_rate"] == pytest.approx(3e-4)
     assert [row["epoch"] for row in state["history"]] == [2]
     assert state["best_epoch"] == 1  # Equal score retains the trained baseline best.
     for name, tensor in state["model"].items():

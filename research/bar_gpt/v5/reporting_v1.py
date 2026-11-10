@@ -26,6 +26,7 @@ class Reporter:
         self.gpu_samples = []
         # Output folders identify processes; the persisted ID identifies the experiment.
         identity = resume_identity(config, project) if mode != "disabled" else None
+        self.global_step_offset = (identity or {}).get("global_step_offset", 0)
         self.writer_lease = None
         if identity:
             self.writer_lease = WriterLease(identity["root"]).acquire(takeover=True)
@@ -144,12 +145,13 @@ class Reporter:
 
     def log(self, metrics: dict, step: int):
         """Append exact local evidence before uploading; W&B errors are not silently ignored."""
+        reported_step = step + self.global_step_offset
         self.journal.write(
-            json.dumps(dict(step=step, **metrics), allow_nan=False) + "\n"
+            json.dumps(dict(step=step, reported_global_step=reported_step, **metrics), allow_nan=False) + "\n"
         )
         if self.run:
             # A separate W&B row index permits delayed loss uploads and validation at a fixed train step.
-            self.run.log(dict(metrics, global_step=step))
+            self.run.log(dict(metrics, global_step=reported_step, optimizer_global_step=step))
 
     def finish(self, state="complete", error=None):
         self.stop.set()
