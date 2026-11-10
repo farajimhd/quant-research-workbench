@@ -1,5 +1,41 @@
 # Phase two: session shard generator and data contract
 
+## Measured short-session optimization (2026-11-10)
+
+The overnight bottleneck investigation found canonical reconstruction dominating:
+2,000 recent month reports contained 4,620 query-worker seconds versus 11 compile
+seconds; a three-minute query-log sample read 1.85 billion rows. I/O queues were
+empty. The broad 21,556-ticker universe produces many sessions with fewer than
+4,096 observed origins and a large liquid-block surplus awaiting the selected
+75/25 mix. Stored GB, candidate origins and selected training origins are distinct
+metrics; the historical 300-ticker v3 trade-bar build is not a matched benchmark.
+
+`CanonicalReader.origin_counts` derives the unchanged canonical decoded trade
+predicates and counts completed 1s buckets with independent last-price, extremes
+and volume eligibility. Quote messages cannot create a trade-bearing origin.
+When all selected sessions fit the existing first bounded page and every exact
+count is below 4,096, compilation returns the same explicit short-session
+deferrals without reconstructing quote OHLC/carry or warming history. Eligible
+and multi-page units retain the original complete producer, context, quote guard,
+seeded origin selection and split adjustment. This is offline eligibility, never
+a model input or a quote-quality filter.
+
+The optimization passed 12 native exact-count cases and two complete compiler
+output comparisons, including quote values/masks, clocks, all causal indices,
+tails and split basis. Matched full-month query trials measured 2.64x/3.14x/3.31x
+for LARK/CPAC/FMIVW and 20.53x for quote-heavy AAPX. These are query-level examples,
+not whole-build speedups; the bounded-page eligibility condition still applies.
+Final focused tests: 60 laptop, 59 native plus one app-only test run locally.
+
+Resume requires an explicit sealed engineering proof binding the exact old plan,
+old/new code maps and immutable native parity evidence. Only the reviewed
+source/sampling/coordinator file set may differ; semantic producer, quote policy,
+geometry, inventory and seed remain strict. Frozen geometry is normalized to its
+JSON representation before comparison, correcting dtype tuple/list mismatch
+without accepting changed fields or widths. Existing payloads, caches and
+receipts are preserved. Activation evidence and incident records are under native
+`corrected-restart-20261110/eligibility-*`; active generator source is `5eb875d43`.
+
 ## Final-build operating additions (2026-11-10)
 
 Matched live-load 1M/2M/8M event-page trials over the same three AAPL sessions
