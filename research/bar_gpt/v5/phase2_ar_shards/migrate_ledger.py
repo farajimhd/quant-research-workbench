@@ -1,4 +1,4 @@
-"""Explicit one-time READ-ONLY legacy export. Generation never imports SQLite."""
+"""Explicit one-time READ-ONLY legacy export. Generation never opens SQLite."""
 
 import argparse
 import hashlib
