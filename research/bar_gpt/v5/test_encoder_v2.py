@@ -224,3 +224,46 @@ def test_full_statistics_ledger_resume_and_training_only(tmp_path, monkeypatch):
     second = module.fit(tmp_path / "split.json", directory, workers=1)
     assert first == second
     load_calibration(directory / "calibration.json", manifest)
+
+
+def test_fresh_v2_command_preserves_science_except_transform_and_peak():
+    from .run_zscore_upgrade_v2 import training_command
+    from .run_encoder_v2 import arguments
+
+    parent = dict(
+        dataset="D:/data",
+        split_manifest="D:/split.json",
+        model="large",
+        precision="bf16",
+        attention="sdpa",
+        attention_dropout=0.0,
+        batch_size=4096,
+        workers=32,
+        prefetch=2,
+        epochs=80,
+        train_steps=0,
+        validation_steps=0,
+        scheduler="cosine",
+        min_learning_rate=5e-5,
+        warmup_updates=0,
+        metrics_every=1000,
+        loss_every=10,
+        checkpoint_every=0,
+        seed=17,
+        wandb_mode="online",
+        wandb_project="bargpt-v6-latest-bar-overnight",
+        guard_probe_steps=32,
+        overfit_patience=8,
+        learning_guard=True,
+        panel=True,
+    )
+    command = training_command(parent, "D:/new-run", "D:/stats.json", "revision")
+    args = arguments(command[5:])
+    assert args.resume is None and args.learning_rate == 1e-3 and args.epochs == 80
+    assert args.workers == 32 and args.batch_size == 4096 and args.warmup_updates == 0
+    assert (
+        args.overfit_patience == 8
+        and args.validation_steps == 0
+        and args.train_steps == 0
+    )
+    assert args.learning_guard and args.panel

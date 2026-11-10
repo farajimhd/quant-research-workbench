@@ -1,7 +1,7 @@
-"""Full-epoch MAE orchestration; model mathematics remain in encoder_v1/trainer_v1.
+"""Full-epoch z-score v2 orchestration; duplicated v1 schedule/guard/checkpoints.
 
-Inputs are the sealed split manifest and training-only ActivityStats produced by
-data_v1. Loaders deliver PreparedBatch tensors, with seven/eight visible market
+Inputs are the sealed split manifest and frozen full-training ZScoreStats.
+Loaders deliver PreparedBatch tensors, with seven/eight visible market
 columns over 64 bars. This module owns scheduling, validation and durable state.
 """
 
