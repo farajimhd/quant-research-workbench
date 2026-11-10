@@ -37,17 +37,16 @@ class CudaBatches:
             # Inputs are already pinned by DataLoader; request asynchronous copies explicitly.
             from .pretraining_v1 import PreparedBatch
 
-            self.next_batch = PreparedBatch(
-                **{
-                    field.name: (
-                        getattr(cpu, field.name)
-                        if field.name.startswith("native_")
-                        and not getattr(cpu, field.name).numel()
-                        else getattr(cpu, field.name).to("cuda", non_blocking=True)
+            cache, transferred = {}, {}
+            for field in fields(cpu):
+                tensor = getattr(cpu, field.name)
+                if id(tensor) not in cache:
+                    cache[id(tensor)] = (
+                        tensor if field.name.startswith("native_") and not tensor.numel()
+                        else tensor.to("cuda", non_blocking=True)
                     )
-                    for field in fields(cpu)
-                }
-            )
+                transferred[field.name] = cache[id(tensor)]
+            self.next_batch = PreparedBatch(**transferred)
             self.ready = torch.cuda.Event()
             self.ready.record(self.stream)
 
@@ -249,11 +248,11 @@ def run_steps(
                     error.square().sum(-1).double().flatten(),
                 )
                 if not training and batch.native_values.numel():
-                    from .native_validation_v1 import NativeMAE, evaluate_full
+                    from .native_validation_v1 import NativeMAE
 
                     if native is None:
                         native = NativeMAE("cuda")
-                    evaluate_full(model, batch, native, precision)
+                    native.add(prediction, batch)  # SAME full-input forward, never a second inference.
                     end.record()  # Validation timing includes the additional full-input forward.
                 measured += 1
                 samples += len(batch.visible)

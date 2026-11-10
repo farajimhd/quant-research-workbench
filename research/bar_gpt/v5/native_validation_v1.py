@@ -54,7 +54,7 @@ def inverse(prediction, reference, stats):
     """Invert all18 decoder channels [B,18,64], without rounding or clipping."""
     if prediction.ndim != 3 or prediction.shape[1:] != (18, 64):
         raise ValueError("Expected predictions [B,18,64] in canonical column order")
-    result = prediction.double().clone()
+    result = prediction.to(dtype=torch.float64, copy=True)
     result[:, PRICES] = reference * torch.exp(result[:, PRICES] / 100)
     result[:, ACTIVITY] = torch.expm1(
         result[:, ACTIVITY] * stats[1, :, None] + stats[0, :, None]
@@ -73,20 +73,19 @@ class NativeMAE:
 
     def add(self, prediction, batch):
         decoded = inverse(prediction, batch.native_reference, batch.native_stats)
-        errors = (decoded - batch.native_targets.double()).abs()
+        errors = decoded.sub_(batch.native_targets).abs_()
         finite = torch.isfinite(errors)
         mask = batch.native_valid
         frame = torch.searchsorted(self.frames, batch.native_frames)
         keys = frame[:, None] * 18 + torch.arange(18, device=decoded.device)
-        self.sums.flatten().scatter_add_(
-            0, keys.flatten(), torch.where(mask & finite, errors, 0).sum(-1).flatten()
-        )
+        errors.masked_fill_(~(mask & finite), 0)
+        self.sums.flatten().scatter_add_(0, keys.flatten(), errors.sum(-1).flatten())
         self.counts.flatten().scatter_add_(0, keys.flatten(), mask.sum(-1).flatten())
         self.overflows.flatten().scatter_add_(
             0, keys.flatten(), (mask & ~finite).sum(-1).flatten()
         )
 
-    def metrics(self, prefix="validation_raw_mae"):
+    def metrics(self, prefix="validation_full_raw_mae"):
         sums, counts, bad = (
             x.cpu().tolist() for x in (self.sums, self.counts, self.overflows)
         )

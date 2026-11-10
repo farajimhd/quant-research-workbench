@@ -61,6 +61,13 @@ def compatible_resume_contract(saved, current):
     for contract in (left, right):
         if "learning_guard" in contract:
             contract["learning_guard"].pop("overfit_patience", None)
+    if (
+        "validation_protocol" not in left
+        and right.get("validation_protocol") == "all-visible-v1"
+    ):
+        right.pop(
+            "validation_protocol"
+        )  # One explicit legacy->full protocol migration only.
     return left == right
 
 
@@ -129,6 +136,7 @@ def train_campaign(args, manifest, stats, reporter):
         args.learning_rate, args.min_learning_rate, args.epochs, args.warmup_updates
     )
     contract = dict(
+        validation_protocol="all-visible-v1",
         split_hash=manifest["manifest_hash"],
         model=asdict(model.config),
         batch=args.batch_size,
@@ -165,6 +173,7 @@ def train_campaign(args, manifest, stats, reporter):
             contract["learning_guard"]["overfit_patience"] = overfit_patience
     phase, history, best, training_metrics = "train", [], None, None
     transition, best_epoch = None, None
+    masked_archive, protocol_untrained = None, None
     if args.resume:
         saved = torch.load(args.resume, map_location="cpu", weights_only=False)
         old_guard = saved["contract"].get("learning_guard", {})
@@ -180,10 +189,22 @@ def train_campaign(args, manifest, stats, reporter):
             calibration = json.loads((args.output / "calibration.json").read_text())
             contract = validate_contract(saved, contract, manifest, calibration)
             transition = deepcopy(saved["data_transition"])
+            if transition["state"] == "requires-corrected-data-baselines":
+                transition["validation_protocol"] = "all-visible-v1"
         if not compatible_resume_contract(saved["contract"], contract):
             raise ValueError(
                 "Resume requires identical data, model, optimizer and schedule contracts."
             )
+        masked_archive = deepcopy(saved.get("masked_validation_history"))
+        legacy_protocol = "validation_protocol" not in saved["contract"] and not (
+            transition and transition["state"] == "requires-corrected-data-baselines"
+        )
+        if guarded and (
+            legacy_protocol or (masked_archive and saved.get("probe_baseline") is None)
+        ):
+            protocol_untrained = deepcopy(
+                model
+            )  # Seeded initial model BEFORE loading trained weights.
         model.load_state_dict(saved["model"])
         optimizer.load_state_dict(saved["optimizer"])
         scheduler.load_state_dict(saved["scheduler"])
@@ -195,6 +216,34 @@ def train_campaign(args, manifest, stats, reporter):
         )
         probe_baseline = saved.get("probe_baseline")
         best_epoch = saved.get("best_epoch")
+        if legacy_protocol:
+            from .shards.contract import digest, file_hash
+
+            masked_archive = dict(
+                contract=deepcopy(saved["contract"]),
+                history=deepcopy(history),
+                best_validation=best,
+                best_epoch=best_epoch,
+                probe_baseline=probe_baseline,
+                source_checkpoint=str(args.resume),
+                source_checkpoint_sha256=file_hash(args.resume),
+                epoch=epoch,
+                step=step,
+            )
+            masked_archive["hash"] = digest(masked_archive)
+            write_json(args.output / "masked-validation-history.json", masked_archive)
+            if best is not None:
+                archive_dir = args.output / "masked-validation"
+                archive_dir.mkdir(exist_ok=True)
+                preserve_prior_best(
+                    args.resume,
+                    archive_dir,
+                    best,
+                    saved["contract"],
+                    best_epoch
+                    or min(history, key=lambda r: r["validation"]["loss"])["epoch"],
+                )
+            history, best, best_epoch, probe_baseline = [], None, None, None
         if old_patience != overfit_patience:
             write_json(
                 args.output / "guard-policy-change.json",
@@ -236,6 +285,8 @@ def train_campaign(args, manifest, stats, reporter):
         )
         if transition is not None:
             state["data_transition"] = deepcopy(transition)
+        if masked_archive is not None:
+            state["masked_validation_history"] = deepcopy(masked_archive)
         temporary = args.output / (name + ".partial")
         torch.save(state, temporary)
         temporary.replace(args.output / name)
@@ -263,7 +314,7 @@ def train_campaign(args, manifest, stats, reporter):
         )
         # Separate all-visible reconstruction diagnostic. Existing masked loss,
         # probe population, checkpoint selection and stopping evidence stay exact.
-        loader.dataset.full_validation = not training and not probe
+        loader.dataset.full_validation = not training
         limit = (args.train_steps if training else args.validation_steps) or len(loader)
         if probe:
             limit = min(len(loader), args.guard_probe_steps)
@@ -308,7 +359,12 @@ def train_campaign(args, manifest, stats, reporter):
                 loss_every=args.loss_every,
                 before_step=set_rate if training else None,
                 on_step=advance_schedule if training else None,
-                metric_prefix=metric_role or ("probe" if probe else None),
+                metric_prefix=metric_role
+                or (
+                    "validation_full_probe"
+                    if probe
+                    else "validation_full" if not training else None
+                ),
                 status_stage=(
                     metric_role.replace("_", " ")
                     if metric_role
@@ -387,20 +443,33 @@ def train_campaign(args, manifest, stats, reporter):
         save("checkpoint_best.pt")
 
     # Initial state allows a failed/interrupted first epoch to restart without losing initialization.
+    reporter.update(validation_protocol="all-visible-v1")
     if guarded and probe_baseline is None:
-        probe_baseline = evaluate_or_train("validation", probe=True)["loss"]
+        save(
+            "checkpoint_last.pt"
+        )  # Resumable protocol migration before any evaluation/update.
+        probe_baseline = evaluate_or_train(
+            "validation",
+            probe=True,
+            evaluated_model=protocol_untrained,
+            metric_role="validation_full_untrained_probe",
+        )["loss"]
+        protocol_untrained = None
         write_json(
             args.output / "learning-baseline.json",
             dict(
                 loss=probe_baseline,
                 probe_steps=args.guard_probe_steps,
-                masks_epoch=0,
+                validation_protocol="all-visible-v1",
+                validation_epoch=0,
                 split_hash=manifest["manifest_hash"],
             ),
         )
     save("checkpoint_last.pt")
     while epoch < args.epochs and not (args.output / "STOP").exists():
-        schedule_start = (transition or {}).get("schedule_reset", {}).get("start_epoch", 0)
+        schedule_start = (
+            (transition or {}).get("schedule_reset", {}).get("start_epoch", 0)
+        )
         scheduler.epoch = epoch - schedule_start
         if phase == "train":
             training_metrics = evaluate_or_train("train")
@@ -446,16 +515,16 @@ def train_campaign(args, manifest, stats, reporter):
             {
                 "epoch": epoch,
                 "epoch/train_loss": training_metrics["loss"],
-                "epoch/validation_loss": score,
-                "epoch/best_validation_loss": best,
-                "epoch/full_validation_samples_per_second": validation[
+                "epoch/validation_full_loss": score,
+                "epoch/validation_full_best_loss": best,
+                "epoch/validation_full_samples_per_second": validation[
                     "samples_per_second"
                 ],
                 **(
                     {
-                        "epoch/probe_samples_per_second": history[-1]["probe"][
-                            "samples_per_second"
-                        ]
+                        "epoch/validation_full_probe_samples_per_second": history[-1][
+                            "probe"
+                        ]["samples_per_second"]
                     }
                     if guarded
                     else {}

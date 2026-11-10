@@ -107,7 +107,13 @@ class PreparedBatch:
 
     def pin_memory(self) -> "PreparedBatch":
         """Let DataLoader's pinning thread prepare asynchronous GPU transfers."""
-        return PreparedBatch(**{field.name: getattr(self, field.name).pin_memory() for field in fields(self)})
+        cache, result = {}, {}
+        for item in fields(self):
+            tensor = getattr(self, item.name)
+            if id(tensor) not in cache:
+                cache[id(tensor)] = tensor.pin_memory()
+            result[item.name] = cache[id(tensor)]
+        return PreparedBatch(**result)
 
     def to(self, device: torch.device | str, *, pin_memory: bool = False) -> "PreparedBatch":
         """Transfer only packed tensors; optionally pin CPU buffers for CUDA transfer."""
@@ -138,6 +144,18 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
         raise ValueError("mask_rate must be in [0,1).")
     if end_us.device.type != "cpu" or (isinstance(timeframe_us, Tensor) and timeframe_us.device.type != "cpu"):
         raise ValueError("Raw clocks and timeframe metadata must be on CPU.")
+    if native_validation:
+        from .native_validation_v1 import prepare_full
+
+        payload = prepare_full(values, valid, timeframe_us, stats)
+        full, evidence = payload["native_values"], payload["native_valid"]
+        ids = torch.arange(18).expand(len(values), -1)
+        transformed = BarInputTransformV1()(full.transpose(1, 2), valid, end_us, timeframe_us)
+        # The validation protocol supplies every column and reconstructs every
+        # column. No masking RNG is consumed and no hidden-only pass is run.
+        return PreparedBatch(full, evidence, ids, ids, full, evidence,
+                             transformed.values[..., 18:].contiguous(),
+                             transformed.valid[..., 18:].contiguous(), **payload)
     batch = len(values)
     expected = 18 * mask_rate
     masked = int(expected) + int(torch.rand((), generator=generator) < expected % 1)
@@ -176,14 +194,8 @@ def prepare_batch(values: Tensor, valid: Tensor, end_us: Tensor, timeframe_us: T
     hidden_index = hidden_ids[..., None].expand(-1, -1, 64)
     if masked and not evidence.gather(1, hidden_index).any():
         raise ValueError("Batch has no observed hidden reconstruction targets.")
-    diagnostics = {}
-    if native_validation:
-        from .native_validation_v1 import prepare_full
-
-        diagnostics = prepare_full(values, valid, timeframe_us, stats)
     return PreparedBatch(
         columns.gather(1, visible_index), evidence.gather(1, visible_index), feature_ids, hidden_ids,
         columns.gather(1, hidden_index), evidence.gather(1, hidden_index),
         transformed.values[..., 18:].contiguous(), transformed.valid[..., 18:].contiguous(),
-        **diagnostics,
     )

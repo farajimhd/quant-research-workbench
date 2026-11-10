@@ -74,6 +74,23 @@ def validate_contract(saved, current, manifest, calibration):
     if reset is not None:
         planned = planned_contract(planned, reset)
     expected = dict(current, data_transition=certificate["hash"])
+    if (
+        saved["contract"].get("validation_protocol") == "all-visible-v1"
+        and transition.get("validation_protocol") == "all-visible-v1"
+    ):
+        planned["validation_protocol"] = "all-visible-v1"
+    archived = saved.get("masked_validation_history")
+    if archived is not None:
+        verify_seal(archived, "hash")
+        if (
+            saved["contract"].get("validation_protocol") != "all-visible-v1"
+            or "validation_protocol" in archived["contract"]
+            or not compatible_resume_contract(archived["contract"], planned)
+        ):
+            raise ValueError("Invalid masked-validation protocol ancestry")
+        # The original data-transition evidence remains sealed and is checked
+        # against its original metric domain, never the new full-input scores.
+        planned["validation_protocol"] = "all-visible-v1"
     if not compatible_resume_contract(
         saved["contract"], planned
     ) or not compatible_resume_contract(saved["contract"], expected):
@@ -103,11 +120,13 @@ def validate_contract(saved, current, manifest, calibration):
                 float(baselines[role]["loss"])
             ):
                 raise ValueError("Invalid corrected-data baseline evidence")
+        evidence_state = archived if archived is not None else saved
         if (
-            saved["probe_baseline"] != baselines["untrained_probe"]["loss"]
-            or saved["best_validation"] is None
-            or saved["best_validation"] > baselines["trained_validation"]["loss"]
-            or saved.get("best_epoch") is None
+            evidence_state["probe_baseline"] != baselines["untrained_probe"]["loss"]
+            or evidence_state["best_validation"] is None
+            or evidence_state["best_validation"]
+            > baselines["trained_validation"]["loss"]
+            or evidence_state.get("best_epoch") is None
         ):
             raise ValueError(
                 "Corrected-data best/probe state differs from sealed baselines"

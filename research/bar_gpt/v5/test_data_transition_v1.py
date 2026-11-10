@@ -45,6 +45,50 @@ def test_transition_contract_requires_exact_scientific_settings():
         validate_contract(saved, current, manifest, calibration)
 
 
+def test_full_protocol_archive_preserves_sealed_masked_baseline_checks():
+    from copy import deepcopy
+    from .campaign_v1 import compatible_resume_contract
+
+    saved, current, manifest, calibration = transition_fixture()
+    baseline = dict(loss=0.5, complete_pass=True)
+    evidence = dict(
+        epoch=saved["epoch"],
+        step=saved["step"],
+        split_hash=manifest["manifest_hash"],
+        certificate=saved["data_transition"]["certificate"]["hash"],
+        baselines=dict(
+            untrained_probe=baseline,
+            trained_probe=baseline,
+            trained_validation=baseline,
+        ),
+    )
+    evidence["hash"] = digest(evidence)
+    saved["data_transition"].update(
+        state="baselines-complete", baseline_evidence=evidence
+    )
+    saved.update(probe_baseline=0.5, best_validation=0.5, best_epoch=saved["epoch"])
+    archive = dict(
+        contract=deepcopy(saved["contract"]),
+        probe_baseline=0.5,
+        best_validation=0.5,
+        best_epoch=saved["epoch"],
+        history=deepcopy(saved["history"]),
+    )
+    archive["hash"] = digest(archive)
+    saved["masked_validation_history"] = archive
+    saved["contract"]["validation_protocol"] = "all-visible-v1"
+    current["validation_protocol"] = "all-visible-v1"
+    saved.update(probe_baseline=0.9, best_validation=None, best_epoch=None, history=[])
+    assert validate_contract(saved, current, manifest, calibration) == saved["contract"]
+    assert not compatible_resume_contract(
+        saved["contract"],
+        {k: v for k, v in saved["contract"].items() if k != "validation_protocol"},
+    )
+    archive["probe_baseline"] = 0.1
+    with pytest.raises(ValueError):
+        validate_contract(saved, current, manifest, calibration)
+
+
 def test_transition_rejects_tampered_split_and_calibration():
     saved, current, manifest, calibration = transition_fixture()
     manifest["purged_crossing"] = 0

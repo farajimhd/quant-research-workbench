@@ -53,7 +53,7 @@ def test_inverse_roundtrip_all_heads_and_raw_truth_retained():
     assert b.native_values.shape == (6, 18, 64)
 
 
-def test_native_payload_does_not_change_masks_targets_or_rng():
+def test_full_validation_does_not_draw_masking_rng_and_training_stays_masked():
     values, valid, stats, b = sample(enabled=False)
     ends = torch.arange(1, 65)[None].expand(6, -1) * 1_000_000 + 1_700_000_000_000_000
     a_rng, b_rng = torch.Generator().manual_seed(73), torch.Generator().manual_seed(73)
@@ -61,12 +61,16 @@ def test_native_payload_does_not_change_masks_targets_or_rng():
     full = prepare_batch(
         values, valid, ends, torch.tensor(FRAMES), stats, b_rng, native_validation=True
     )
+    assert plain.visible.shape[1] < 18 and full.visible.shape == (6, 18, 64)
+    assert torch.equal(full.feature_ids, torch.arange(18).expand(6, -1))
+    assert torch.equal(full.feature_ids, full.hidden_ids)
+    assert torch.equal(full.targets, full.visible)
+    assert torch.equal(full.target_valid, full.valid)
+    assert torch.equal(b_rng.get_state(), torch.Generator().manual_seed(73).get_state())
+    assert not torch.equal(a_rng.get_state(), b_rng.get_state())
     for field in fields(b):
-        if not field.name.startswith("native_"):
-            assert torch.equal(getattr(plain, field.name), getattr(full, field.name))
-        else:
+        if field.name.startswith("native_"):
             assert getattr(plain, field.name).numel() == 0
-    assert torch.equal(a_rng.get_state(), b_rng.get_state())
     rng = torch.get_rng_state().clone()
     prepare_full(values, valid, torch.tensor(FRAMES), stats)
     assert torch.equal(rng, torch.get_rng_state())
@@ -97,10 +101,10 @@ def test_known_raw_error_masks_and_timeframe_counts():
     acc.add(prediction, b)
     m = acc.metrics()
     for key, value in m.items():
-        if key.startswith("validation_raw_mae/"):
+        if key.startswith("validation_full_raw_mae/"):
             assert value == pytest.approx(2.0, abs=1e-10)
-    assert m["validation_raw_mae_counts/100ms/bid_open"] == 60
-    assert m["validation_raw_mae_counts/1s/trade_close"] == 64
+    assert m["validation_full_raw_mae_counts/100ms/bid_open"] == 60
+    assert m["validation_full_raw_mae_counts/1s/trade_close"] == 64
     assert acc.counts.sum().item() == b.native_valid.sum().item()
 
 
@@ -124,9 +128,9 @@ def test_overflow_is_reported_without_dropping_denominator_or_clipping():
     acc = NativeMAE("cpu")
     acc.add(prediction, b)
     m = acc.metrics()
-    assert m["validation_raw_mae/100ms/trade_open"] is None
-    assert m["validation_raw_mae_overflows/100ms/trade_open"] == 1
-    assert m["validation_raw_mae_counts/100ms/trade_open"] == 64
+    assert m["validation_full_raw_mae/100ms/trade_open"] is None
+    assert m["validation_full_raw_mae_overflows/100ms/trade_open"] == 1
+    assert m["validation_full_raw_mae_counts/100ms/trade_open"] == 64
 
 
 def test_actual_model_full_input_path_has_all_columns_and_no_state_or_rng_change():
@@ -246,18 +250,22 @@ def test_real_engine_publishes_separate_unmasked_metrics_on_cpu(monkeypatch):
         precision="fp32",
         training=False,
         reporter=reporter,
+        metric_prefix="validation_full",
         metrics_every=1,
         loss_every=1,
     )
     assert result["loss"] == 0
     raw = result["native_validation"]["metrics"]
-    assert raw["validation_raw_mae/1s/trade_close"] < 1e-5
+    assert raw["validation_full_raw_mae/1s/trade_close"] < 1e-5
     assert (
-        sum(v for k, v in raw.items() if k.startswith("validation_raw_mae_counts/"))
+        sum(
+            v for k, v in raw.items() if k.startswith("validation_full_raw_mae_counts/")
+        )
         == batch.native_valid.sum().item()
     )
     assert any(
-        "validation/loss" in row and "validation_raw_mae/1s/trade_close" in row
+        "validation_full/loss" in row
+        and "validation_full_raw_mae/1s/trade_close" in row
         for row, _ in reporter.rows
     )
 
@@ -273,8 +281,45 @@ def test_actual_loader_adds_full_payload_only_when_requested(inventory):
     full = next(iter(dataset))
     assert full.native_values.shape == (5, 18, 64)
     assert full.native_targets.shape == full.native_values.shape
-    for field in fields(masked):
-        if not field.name.startswith("native_"):
-            assert torch.equal(getattr(masked, field.name), getattr(full, field.name))
+    assert full.visible.shape[1] == full.hidden_ids.shape[1] == 18
+    assert masked.visible.shape[1] < 18
     training = next(iter(EligibleStream(manifest, "train", stats, 5, seed=17)))
     assert training.native_values.numel() == 0
+
+
+def test_wandb_native_series_starts_at_resumed_training_axis_without_backfill():
+    import io, json
+    from .reporting_v1 import Reporter
+
+    class Run:
+        def __init__(self):
+            self.rows = []
+
+        def log(self, row):
+            self.rows.append(row)
+
+    reporter = Reporter.__new__(Reporter)
+    reporter.global_step_offset = 17916
+    reporter.journal = io.StringIO()
+    reporter.run = Run()
+    reporter.log({"validation_full_raw_mae/1s/trade_close": 0.12}, 2317427)
+    row = reporter.run.rows[0]
+    assert row["optimizer_global_step"] == 2317427
+    assert row["global_step"] == 2317427 + 17916
+    assert len(reporter.run.rows) == 1
+    assert json.loads(reporter.journal.getvalue())["step"] == 2317427
+
+
+def test_full_input_target_aliases_are_pinned_only_once(monkeypatch):
+    _, _, _, batch = sample()
+    calls = []
+
+    def pin(tensor):
+        calls.append(id(tensor))
+        return tensor.clone()
+
+    monkeypatch.setattr(torch.Tensor, "pin_memory", pin)
+    pinned = batch.pin_memory()
+    assert len(calls) == len({id(getattr(batch, f.name)) for f in fields(batch)})
+    assert pinned.visible is pinned.targets is pinned.native_values
+    assert pinned.valid is pinned.target_valid is pinned.native_valid

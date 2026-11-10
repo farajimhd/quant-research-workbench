@@ -1,25 +1,37 @@
 # Unattended v6 handoff
 
-Full validation additionally reports `validation_raw_mae/<timeframe>/<channel>`:
-all 18 market columns and all 64 bar positions are supplied without random masking
-to a separate inference-only encoder/decoder forward. This is full-input
-reconstruction, not forecasting. Existing masked loss, probes, best-checkpoint
-selection and learning guards remain unchanged. No extra forward runs in training
-or the bounded learning probe. Validation takes additional compute time.
+The `all-visible-v1` validation protocol uses one unmasked forward over all 18
+market columns and all 64 bar positions. `validation_full/...` contains its
+transformed loss/MAE/RMSE; `validation_full_raw_mae/<timeframe>/<channel>`
+contains errors from the SAME predictions in original sample units. Old
+`validation/...` and masked-probe series are no longer written. Training remains
+masked and unchanged. Validation/probe inputs consume no random masking RNG.
 
-Decoder prices invert as `reference * exp(prediction/100)`; the full-input
-reference is the median of all observed trade/bid/ask closes in that sample.
+Price predictions invert as `reference * exp(prediction/100)`, where reference
+is the median of all observed trade/bid/ask closes in the full input sample.
 Activity inverts as `expm1(prediction*scale+median)` using frozen training-only
-calibration. MAE compares those predictions directly with the original raw input
-values for the same source-valid positions. Price units are dollars per share on
-the saved sample's split-adjusted basis; quantity units remain exactly as stored,
-without an assumed lot conversion; counts are observed events. Timeframes and
-heads have separate metrics, never a mixed-unit overall MAE. The accompanying
-`validation_raw_mae_counts` counts stored observations, including repeated windows,
-not unique market messages. Invalid source observations are excluded. Predictions
-are neither rounded nor clipped. Inverse/reduction overflow makes that metric
-explicitly unavailable with separate overflow evidence, rather than silently
-dropping observations. Aggregate historical transformed errors cannot be inverted.
+calibration. Compare directly against the raw input values at source-valid
+positions. Price units are dollars per share on the saved split-adjusted basis;
+quantities retain stored source units (no assumed lot conversion); counts are
+observed events. No rounding/clipping, mixed-unit mean, fabricated history or
+backfill of previously unavailable raw metrics. Counts include overlapping
+stored observations, not unique source messages. Overflows are reported and
+make affected MAEs unavailable rather than silently dropping observations.
+
+A legacy checkpoint upgrade retains all masked history, baseline and best
+checkpoint evidence separately. A narrowly recognized protocol tag prevents
+old trainers from accepting these new checkpoints. The new unmasked fixed-probe
+baseline uses the original seeded untrained architecture, before further
+optimizer updates; new best/overfit evidence is compared only within the new
+protocol. Original sealed data-transition evidence is validated against its
+archived masked metric domain, not against incomparable new scores.
+
+A complete-training `phase=validation` checkpoint may be resumed directly into
+this validation under an explicitly owned one-time source handoff. Preserve all
+optimizer/scheduler/model/RNG states and the original W&B identity/step offset.
+New series start at the resumed training global step and retain missing history
+as missing. Shared full-input/target tensor aliases are pinned/transferred once;
+reductions are vectorized and published only at the existing metric cadence.
 
 Performance maintenance keeps the existing model, sample order, masks,
 optimizer and scheduler contracts. The derived loader-index-v1 files bind the
