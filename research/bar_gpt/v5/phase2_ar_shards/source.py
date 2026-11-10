@@ -103,7 +103,39 @@ def describe(parent, geometry):
     return body, manifest
 
 
-def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109):
+def verify_engineering_revision(prior, current, proof_path):
+    """Admit only a sealed, audited physical short-session preflight revision."""
+    from ..quote_repair_v1 import verify_seal
+
+    proof = json.loads(Path(proof_path).read_text())
+    if "hash" not in proof:
+        raise ValueError("Missing engineering proof seal")
+    verify_seal(proof, "hash")
+    changed = {k for k in set(prior["code"]) | set(current["code"])
+               if prior["code"].get(k) != current["code"].get(k)}
+    allowed = {"phase2_ar_shards/" + k for k in ("source.py", "sampling.py", "run.py")}
+    if (not changed or not changed <= allowed
+        or proof.get("kind") != "exact-short-session-preflight-v1"
+        or proof.get("plan_hash") != prior["hash"]
+        or proof.get("from_code") != prior["code"]
+        or proof.get("to_code") != current["code"]):
+        raise ValueError("Uncertified engineering revision")
+    audit_path = Path(proof["audit_path"])
+    audit = json.loads(audit_path.read_text())
+    if "hash" not in audit:
+        raise ValueError("Missing native audit seal")
+    verify_seal(audit, "hash")
+    if (file_hash(audit_path) != proof["audit_sha256"]
+        or audit.get("passed") is not True
+        or audit.get("plan_hash") != prior["hash"]
+        or audit.get("to_code") != current["code"]
+        or audit.get("counts_parity_cases", 0) < 12
+        or audit.get("complete_output_parity_cases", 0) < 2):
+        raise ValueError("Engineering revision lacks exact native parity evidence")
+
+
+def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109,
+           engineering_proof=None):
     """Production requires released repaired phase-one data and exact authority."""
     root, parent = Path(root), Path(parent)
     if not (parent / "repair-contract.json").exists():
@@ -114,10 +146,14 @@ def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109):
         prior = json.loads((root / "plan.json").read_text())
         if prior["hash"] != digest({k: v for k, v in prior.items() if k != "hash"}):
             raise ValueError("Frozen sampled plan seal changed")
+        if prior["code"] != body["code"]:
+            if engineering_proof is None:
+                raise ValueError("Frozen sampled code changed without engineering proof")
+            verify_engineering_revision(prior, body, engineering_proof)
         if (
             any(
                 prior[k] != body[k]
-                for k in ("code", "geometry", "parent_binding", "ordinal_hash")
+                for k in ("geometry", "parent_binding", "ordinal_hash")
             )
             or prior["seed"] != seed
         ):
@@ -196,6 +232,43 @@ class CanonicalReader:
             yield from session_batches(
                 grouped[month], max_events=chunk_events or 8_000_000, max_days=32
             )
+
+    def origin_counts(self, ticker, rows, gate):
+        """Exact completed trade-bearing 1s counts, without quote reconstruction.
+
+        Use the unchanged producer's decoded predicates and the SAME three
+        independent trade eligibility flags. Different trades can supply last,
+        extremes and volume within one second. This is offline eligibility only.
+        """
+        sql = partition_page(bar_query(ticker, rows, self.plan["authority"]["rules"]), rows)
+        marker = "    base AS (SELECT "
+        if sql.count(marker) != 1:
+            raise ValueError("Unknown producer shape for exact session eligibility")
+        prefix = sql.split(marker)[0].rstrip()
+        if not prefix.endswith(","):
+            raise ValueError("Missing decoded producer boundary")
+        begin, end = clock(rows[0]["source_date"], 4), clock(rows[-1]["source_date"], 20)
+        sql = prefix + f""" eligible AS (
+          SELECT session,intDiv(sip_timestamp_us,1000000)*1000000 bucket,
+            max(p_ok) pv,max(e_ok) ev,countIf(v_ok) n
+          FROM decoded WHERE in_session AND core=1 AND kind=1
+          GROUP BY session,bucket
+          HAVING pv AND ev AND n>0 AND bucket>={begin} AND bucket+1000000<={end})
+          SELECT toString(session) session,count() origins FROM eligible
+          GROUP BY session ORDER BY session FORMAT ArrowStream"""
+        began = time.monotonic()
+        with gate():
+            querying = time.monotonic()
+            table = sip.arrow(self.client, sql, "ar-eligibility-" + digest([ticker, rows])[:24], allow_empty=True)
+        counts = {r["source_date"]: 0 for r in rows}
+        for row in table.to_dicts():
+            if row["session"] not in counts or not 0 <= row["origins"] <= 57600:
+                raise ValueError("Eligibility result outside frozen sessions")
+            counts[row["session"]] = int(row["origins"])
+        return counts, dict(queries=1, query_seconds=time.monotonic()-querying,
+                            admission_wait_seconds=querying-began,
+                            fetch_seconds=time.monotonic()-began,
+                            eligibility_queries=1)
 
     def fetch(self, ticker, rows, gate, chunk_events=0, frames=tuple(range(5))):
         import polars as pl

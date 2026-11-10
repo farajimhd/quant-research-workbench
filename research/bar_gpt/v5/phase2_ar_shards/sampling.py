@@ -74,18 +74,30 @@ def compile_sessions(
     if first is None:
         raise ValueError("Frozen sampled month has no session")
     first_open = clock(first[0]["source_date"], 4)
-    initial, timing = reader.fetch(
-        unit["ticker"], first, gate, chunk_events, frames=(0, 1, 2)
-    )
-    counts = [
-        int(
-            (
-                (initial[0]["end_us"] > clock(r["source_date"], 4))
-                & (initial[0]["end_us"] <= clock(r["source_date"], 20))
-            ).sum()
+    # Exact cheap rejection only when it replaces the OLD all-short-month
+    # branch. Eligible/multi-page months always keep the original full producer.
+    preflight = getattr(reader, "origin_counts", None)
+    counts, timing, initial = None, {}, None
+    if preflight is not None and len(first) == len(selected):
+        exact, timing = preflight(unit["ticker"], first, gate)
+        counts = [exact[r["source_date"]] for r in first]
+        if any(n >= BLOCK for n in counts):
+            counts = None
+    if counts is None:
+        initial, elapsed = reader.fetch(
+            unit["ticker"], first, gate, chunk_events, frames=(0, 1, 2)
         )
-        for r in first
-    ]
+        for key, value in elapsed.items():
+            timing[key] = timing.get(key, 0) + value
+        counts = [
+            int(
+                (
+                    (initial[0]["end_us"] > clock(r["source_date"], 4))
+                    & (initial[0]["end_us"] <= clock(r["source_date"], 20))
+                ).sum()
+            )
+            for r in first
+        ]
     if len(first) == len(selected) and all(n < BLOCK for n in counts):
         # Offline session eligibility, never an input feature. A month with no
         # eligible session needs neither coarse reconstruction nor64-day warmup.

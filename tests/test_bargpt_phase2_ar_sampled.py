@@ -554,7 +554,7 @@ def test_coordinator_separate_io_budget_and_completed_month_resume(
         )
 
     monkeypatch.setattr(run, "describe", lambda *_: (plan, {}))
-    monkeypatch.setattr(run, "freeze", lambda *_: plan)
+    monkeypatch.setattr(run, "freeze", lambda *_, **kw: plan)
     monkeypatch.setattr(run, "CanonicalReader", FakeReader)
     monkeypatch.setattr(run, "ProcessPoolExecutor", cpu)
     monkeypatch.setattr(quote_repair_v1, "require_complete", lambda *_: None)
@@ -668,3 +668,63 @@ def test_extended_inventory_is_sealed_and_preserves_utc_year_units(
         out.write(b"mutation")
     with pytest.raises(ValueError, match="ordinal inventory changed"):
         inventory.verify_inventory(output, plan)
+
+@pytest.mark.parametrize('counts', [(0, 10), (4095, 4095), (4096, 5000)])
+def test_exact_preflight_preserves_outputs_and_never_skips_eligible_sessions(counts):
+    old = Reader(counts=counts)
+    new = Reader(counts=counts)
+    probes = []
+    def preflight(ticker, rows, gate):
+        probes.append(1)
+        return dict(zip(new.days, counts)), dict(queries=1, query_seconds=.001)
+    new.origin_counts = preflight
+    a, b = list(compile(old)), list(compile(new))
+    assert probes and len(a) == len(b)
+    for (sa, ca, _), (sb, cb, _) in zip(a, b):
+        assert sa == sb and ca.keys() == cb.keys()
+        for key in ca:
+            if isinstance(ca[key], np.ndarray):
+                assert ca[key].tobytes() == cb[key].tobytes()
+            elif key == 'views':
+                assert all(x.tobytes() == y.tobytes() for x,y in zip(ca[key], cb[key]))
+            else:
+                assert ca[key] == cb[key]
+    assert bool(new.calls) == (max(counts) >= BLOCK)
+
+
+def test_eligibility_sql_keeps_independent_trade_flags_and_complete_clocks(monkeypatch):
+    from research.bar_gpt.v5.phase2_ar_shards import source
+    reader = source.CanonicalReader.__new__(source.CanonicalReader)
+    reader.plan, reader.client = dict(authority=dict(rules=[])), object()
+    rows = [dict(source_date='2025-01-02')]
+    monkeypatch.setattr(source, 'bar_query', lambda *a: 'WITH raw AS (SELECT 1), decoded AS (SELECT 1),\n    base AS (SELECT irrelevant)')
+    monkeypatch.setattr(source, 'partition_page', lambda sql, rows: sql)
+    def arrow(c, sql, *a, **kw):
+        assert 'max(p_ok) pv,max(e_ok) ev,countIf(v_ok) n' in sql
+        assert 'HAVING pv AND ev AND n>0' in sql and 'kind=1' in sql
+        assert 'irrelevant' not in sql and 'quote_events' not in sql
+        return pl.DataFrame(dict(session=['2025-01-02'], origins=[17]))
+    monkeypatch.setattr(source.sip, 'arrow', arrow)
+    result, timing = reader.origin_counts('X', rows, nullcontext)
+    assert result == {'2025-01-02':17} and timing['queries'] == 1
+
+
+def test_engineering_revision_rejects_semantic_changes_or_missing_native_proof(tmp_path):
+    from research.bar_gpt.v5.phase2_ar_shards.source import verify_engineering_revision
+    from research.bar_gpt.v5.shards.contract import file_hash
+    prior = dict(hash='plan',code={'phase2_ar_shards/source.py':'old','quote_quality_v1.py':'same'})
+    current = dict(code=dict(prior['code'], **{'phase2_ar_shards/source.py':'new'}))
+    audit = dict(passed=True,plan_hash='plan',to_code=current['code'],counts_parity_cases=12,complete_output_parity_cases=2)
+    audit['hash']=digest(audit)
+    ap=tmp_path/'audit.json';ap.write_text(json.dumps(audit))
+    proof=dict(kind='exact-short-session-preflight-v1',plan_hash='plan',from_code=prior['code'],to_code=current['code'],audit_path=str(ap),audit_sha256=file_hash(ap))
+    proof['hash']=digest(proof)
+    pp=tmp_path/'proof.json';pp.write_text(json.dumps(proof))
+    verify_engineering_revision(prior,current,pp)
+    current['code']['quote_quality_v1.py']='changed'
+    with pytest.raises(ValueError,match='Uncertified'):
+        verify_engineering_revision(prior,current,pp)
+    current['code']['quote_quality_v1.py']='same'
+    ap.write_text('{}')
+    with pytest.raises(ValueError):
+        verify_engineering_revision(prior,current,pp)

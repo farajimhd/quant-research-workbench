@@ -192,6 +192,7 @@ def arguments(argv=None):
     p.add_argument("--max-months", type=int, default=0)
     p.add_argument("--pilot-unit", action="append", default=[], help="Exact TICKER:YYYY-MM units for a bounded pilot only")
     p.add_argument("--endpoint")
+    p.add_argument("--engineering-proof", type=Path, help="Sealed same-contract native parity proof for a reviewed physical optimization")
     return p.parse_args(argv)
 
 
@@ -287,10 +288,12 @@ def main(argv=None):
     awake = False
     try:
         plan = freeze(
-            root, args.parent, geometry, args.source_revision, args.endpoint, args.seed
+            root, args.parent, geometry, args.source_revision, args.endpoint, args.seed,
+            engineering_proof=args.engineering_proof,
         )
         settings = vars(args).copy()
-        settings.update(parent=str(args.parent), output=str(root))
+        settings.update(parent=str(args.parent), output=str(root),
+                        engineering_proof=str(args.engineering_proof) if args.engineering_proof else None)
         write_json(
             root / "execution.json",
             dict(settings, pid=os.getpid(), started=time.time(), binding=plan["hash"]),
