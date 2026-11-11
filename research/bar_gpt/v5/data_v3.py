@@ -386,8 +386,9 @@ class ShardBatches(Dataset):
 
 
 def worker_init(worker_id):
-    """Prevent CPU oversubscription: each process performs vectorized work on one thread."""
-    torch.set_num_threads(1)
+    """Bound intra-worker preparation parallelism independently of logical lanes."""
+    worker = torch.utils.data.get_worker_info()
+    torch.set_num_threads(getattr(worker.dataset, "prepare_threads", 1))
 
 
 class EligibleStream(IterableDataset):

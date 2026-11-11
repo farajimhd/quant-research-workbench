@@ -75,6 +75,7 @@ def arguments(argv=None):
     parser.add_argument("--batches", default="256,1024,4096")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--prefetch", type=int, default=2)
+    parser.add_argument("--prepare-threads", type=int, choices=(1, 2, 4), default=2)
     parser.add_argument(
         "--shard-prefetch",
         type=int,
@@ -352,6 +353,7 @@ def loader_for(
         telemetry=str(args.output / "workers"),
     )
     dataset.shard_prefetch = args.shard_prefetch
+    dataset.prepare_threads = args.prepare_threads
     dataset.shard_prefetch_bytes = args.shard_prefetch_mib * 2**20
     return make_loader(dataset, workers, args.prefetch, ordered=ordered)
 
