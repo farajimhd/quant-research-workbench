@@ -56,6 +56,25 @@ split adjustment and nine context features (including timeframe) are unchanged.
 The decoder remains included in every model checkpoint. Market preprocessing
 is vectorized over batches, bars and features; there is no per-observation loop.
 
+## Profiled execution changes
+
+The native profile found near-zero loader starvation and exactly one forward,
+backward and AdamW update per batch. V3's SDPA path now keeps batch-first
+projections instead of using MultiheadAttention's sequence-first adapters.
+Weights, attention semantics, residual/attention dropout probabilities and loss
+are retained. Forward/gradient parity is checked with dropout disabled; different
+tensor layouts can change seeded dropout-mask realizations during training.
+The execution layout is explicitly bound in the checkpoint model configuration.
+Quantity medians sort contiguous64-value feature arrays without changing the
+Float64 interpolated-median contract. The loss/reduction rewrite tested in the
+profile was rejected because it did not improve throughput.
+
+The authorized fresh50-epoch run uses cosine1e-3 to5e-5, zero warmup, batch4096,
+16 loader workers and prefetch2. Worker16 and32 trials had matching throughput;
+worker16 cut Windows startup roughly in half. Prefetch4 was slower. Interleaved
+same-batch GPU trials measured about58k to68k samples/sec after the layout
+change; this is a bounded compute-path comparison, not a whole-corpus guarantee.
+
 ## Validation scope
 
 `test_encoder_v3.py` covers independent inverse arithmetic, all18 features and

@@ -169,7 +169,12 @@ def test_architecture_copy_and_real_masked_backward_and_full_forward():
     )
     torch.manual_seed(17)
     old = MaskedAutoencoderV1(
-        OldConfig(**dict(asdict(cfg), architecture="column-latest-bar-v1"))
+        OldConfig(
+            **dict(
+                {k: v for k, v in asdict(cfg).items() if k != "attention_layout"},
+                architecture="column-latest-bar-v1",
+            )
+        )
     )
     torch.manual_seed(17)
     new = MaskedAutoencoderV3(cfg)
@@ -318,3 +323,30 @@ def test_real_v3_campaign_routes_masks_and_serializes_policy(tmp_path, monkeypat
     assert saved["contract"]["reference_policy"]["version"] == TRANSFORM
     assert saved["step"] == 1 and saved["scheduler"]["updates"] == 1
     assert (tmp_path / "checkpoint_best.pt").exists()
+
+
+@pytest.mark.parametrize("length", [10, 11, 12])
+def test_batch_first_attention_matches_v1_outputs_and_gradients(length):
+    from .encoder_v1 import AttentionBlock as OldBlock
+    from .encoder_v3 import AttentionBlock
+
+    torch.manual_seed(17)
+    old = OldBlock(32, 4, 64, 0.0, "sdpa", 0.0)
+    new = AttentionBlock(32, 4, 64, 0.0, "sdpa", 0.0)
+    new.load_state_dict(old.state_dict())
+    x = torch.randn(3, length, 32, requires_grad=True)
+    y = x.detach().clone().requires_grad_()
+    expected = old(x)
+    actual = new(y)
+    torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-6)
+    expected.square().mean().backward()
+    actual.square().mean().backward()
+    torch.testing.assert_close(x.grad, y.grad, rtol=2e-4, atol=2e-6)
+    for (_, a), (_, b) in zip(old.named_parameters(), new.named_parameters()):
+        torch.testing.assert_close(a.grad, b.grad, rtol=2e-4, atol=2e-6)
+    old.eval()
+    new.eval()
+    with torch.inference_mode():
+        torch.testing.assert_close(
+            new(x.detach()), old(x.detach()), rtol=2e-5, atol=2e-6
+        )

@@ -48,7 +48,10 @@ def local_references(values, valid):
     if not torch.isfinite(price).all() or not (price > 0).all():
         raise ValueError("Each raw window requires an observed positive closing price")
     activity = torch.where(valid[..., ACTIVITY], values[..., ACTIVITY], torch.nan)
-    quantity = torch.nanquantile(activity.double(), 0.5, dim=1)
+    # Same interpolated Float64 median; each 64-value feature is contiguous.
+    quantity = torch.nanquantile(
+        activity.transpose(1, 2).contiguous().double(), 0.5, dim=-1
+    )
     quantity = torch.where(valid[..., ACTIVITY].any(dim=1), quantity, 0)
     if not torch.isfinite(quantity).all():
         raise ValueError("Invalid local quantity reference")

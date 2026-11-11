@@ -32,6 +32,7 @@ class EncoderConfig:
     architecture: str = (
         "column-latest-bar-local-reference-v3"  # Bind checkpoints to the mandatory latest-bar path.
     )
+    attention_layout: str = "batch-first-sdpa-v3"  # Bind profiled execution/RNG layout.
 
 
 @lru_cache(maxsize=1)
@@ -68,8 +69,7 @@ class AttentionBlock(nn.TransformerEncoderLayer):
 
     def forward(self, hidden: Tensor) -> Tensor:
         """Full bidirectional attention over packed [B,L,D]; no dense masking placeholders."""
-        if self.backend == "sdpa":
-            return super().forward(hidden)  # PyTorch uses SDPA with need_weights=False.
+        # Avoid MultiheadAttention's sequence-first transpose/contiguous copies.
         normalized = self.norm1(hidden)
         batch, length, width = normalized.shape
         heads = self.self_attn.num_heads
@@ -81,9 +81,15 @@ class AttentionBlock(nn.TransformerEncoderLayer):
             .permute(2, 0, 3, 1, 4)
             .unbind(0)
         )
-        attended = compiled_flex()(
-            query, key, value
-        )  # [B,H,L,D/H], fused forward/backward kernels.
+        if self.backend == "sdpa":
+            attended = F.scaled_dot_product_attention(
+                query,
+                key,
+                value,
+                dropout_p=self.self_attn.dropout if self.training else 0.0,
+            )
+        else:
+            attended = compiled_flex()(query, key, value)
         attended = attended.transpose(1, 2).reshape(batch, length, width)
         hidden = hidden + self.dropout1(self.self_attn.out_proj(attended))
         update = self.linear2(
@@ -185,6 +191,8 @@ class ColumnEncoderV3(nn.Module):
         super().__init__()
         if config.architecture != "column-latest-bar-local-reference-v3":
             raise ValueError("Unsupported encoder architecture revision.")
+        if config.attention_layout != "batch-first-sdpa-v3":
+            raise ValueError("Unsupported v3 attention execution layout")
         self.config = config
         self.values = nn.Linear(64, config.width)  # One column [B,K,64] -> [B,K,D].
         self.missing = nn.Linear(
