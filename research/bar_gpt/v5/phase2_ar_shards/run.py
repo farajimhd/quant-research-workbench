@@ -51,7 +51,7 @@ def capacity_status(used, reserved, caps, rejected, deferred, rejection_limit=16
     return result
 
 
-def initialize(root, plan, settings, active, lock, stop):
+def initialize(root, plan, settings, active, lock, stop, reserved, dense, dense_active, dense_attempts):
     global STATE
     if STATE and STATE.get("telemetry") and mp.current_process().name == "MainProcess":
         STATE["telemetry"].close()  # Thread-pool integration fixtures reuse this process.
@@ -61,12 +61,14 @@ def initialize(root, plan, settings, active, lock, stop):
         plan=plan,
         settings=settings,
         active=active,
+        reserved=reserved,dense=dense,dense_active=dense_active,dense_attempts=dense_attempts,
         lock=lock,
         stop=stop,
         telemetry=reporter,
         jobs={j["ticker"]: j for j in plan["jobs"]},
         reader=CanonicalReader(
-            root, plan, settings.get("endpoint"), settings["query_memory_gib"]
+            root, plan, settings.get("endpoint"), settings["query_memory_gib"],
+            settings.get('query_max_memory_gib',4)
         ),
         guard=TrainingGuard(
             settings.get("training_campaign"),
@@ -80,36 +82,50 @@ def initialize(root, plan, settings, active, lock, stop):
 
 
 @contextmanager
-def query_admission():
+def query_admission(memory_gib=None):
     s = STATE
-    budget = int(s["settings"]["query_memory_gib"] * 1024**3)
+    initial=s['settings']['query_memory_gib']
+    requested=initial if memory_gib is None else memory_gib
+    if not initial<=requested<=s['settings'].get('query_max_memory_gib',4):
+        raise ValueError('Requested query budget is outside configured bounds')
+    budget = int(requested * 1024**3)
     reserve = int(s["settings"]["reserve_memory_gib"] * 1024**3)
-    while True:
-        if s["stop"].is_set() or (s["root"] / "STOP").exists():
-            raise InterruptedError("Graceful stop before canonical query")
-        with s["lock"]:
-            limit = s["guard"].refresh()
-            if (
-                s["active"].value < limit
-                and psutil.virtual_memory().available - s["active"].value * budget
-                >= reserve + budget
-            ):
-                s["active"].value += 1
-                break
-            reason = s["guard"].reason if s["active"].value >= limit else "RAM reserve + requested query budgets"
-        if s.get("telemetry"):
-            s["telemetry"].emit(state="Wait", detail=reason,
-                                admission_limit=s["guard"].limit)
-        s["stop"].wait(0.25)
-    try:s["telemetry"].query(True)
-    except Exception:pass
+    dense=requested>initial;permit=False;admitted=False
     try:
+        if dense:
+            while not s['dense'].acquire(timeout=.25):
+                if s['stop'].is_set() or (s['root']/'STOP').exists():raise InterruptedError('Graceful stop awaiting dense query slot')
+                if s.get('telemetry'):s['telemetry'].emit(state='Wait',detail='Dense memory retries: two slots')
+            permit=True
+        while True:
+            if s["stop"].is_set() or (s["root"] / "STOP").exists():
+                raise InterruptedError("Graceful stop before canonical query")
+            with s["lock"]:
+                limit = s["guard"].refresh()
+                held=s['reserved'].value
+                if s["active"].value < limit and psutil.virtual_memory().available-held>=reserve+budget:
+                    s["active"].value += 1
+                    s['reserved'].value+=budget
+                    if dense:s['dense_active'].value+=1;s['dense_attempts'].value+=1
+                    admitted=True;break
+                reason=s['guard'].reason if s['active'].value>=limit else 'RAM reserve + weighted query budgets'
+            if s.get('telemetry'):s['telemetry'].emit(state='Wait',detail=reason,admission_limit=s['guard'].limit)
+            s['stop'].wait(.25)
+        try:
+            if s.get('telemetry'):
+                s['telemetry'].emit(query_memory_gib=requested,admission_limit=limit)
+                s['telemetry'].query(True)
+        except Exception:pass
         yield
     finally:
-        try:s["telemetry"].query(False)
-        except Exception:pass
-        with s["lock"]:
-            s["active"].value -= 1
+        if admitted:
+            try:s['telemetry'].query(False)
+            except Exception:pass
+            with s['lock']:
+                s['active'].value-=1
+                s['reserved'].value-=budget
+                if dense:s['dense_active'].value-=1
+        if permit:s['dense'].release()
 
 
 def produce(unit):
@@ -243,7 +259,8 @@ def arguments(argv=None):
     )
     p.add_argument("--history-bars", default="64,64,64,64,64")
     p.add_argument("--seed", type=int, default=20261109)
-    p.add_argument("--query-memory-gib", type=float, default=8)
+    p.add_argument("--query-memory-gib", type=float, default=1)
+    p.add_argument('--query-max-memory-gib',type=float,default=4)
     p.add_argument("--reserve-memory-gib", type=float, default=64)
     p.add_argument("--reserve-disk-gib", type=float, default=150)
     p.add_argument(
@@ -294,7 +311,7 @@ def main(argv=None):
         not 1 <= args.workers <= 61
         or not 1 <= args.io_workers <= 16
         or not 1 <= args.validation_lanes <= args.workers
-        or not 0 < args.query_memory_gib <= 8
+        or not .25 <= args.query_memory_gib <= args.query_max_memory_gib <= 8
         or args.reserve_memory_gib < 64
         or args.reserve_disk_gib < 150
         or args.chunk_events < 0
@@ -404,6 +421,8 @@ def main(argv=None):
 
         ctx = mp.get_context("spawn")
         active_query, lock, stop = ctx.Value("i", 0), ctx.Lock(), ctx.Event()
+        reserved_query=ctx.Value('q',0);dense=ctx.BoundedSemaphore(2)
+        dense_active=ctx.Value('i',0);dense_attempts=ctx.Value('q',0)
         handlers = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
         for sig in handlers:
             signal.signal(sig, lambda *_: stop.set())
@@ -476,7 +495,7 @@ def main(argv=None):
                 initargs=(str(root), plan, dict(settings, worker_slot=i,
                           planned_tasks=assignments[i]["tasks"],
                           planned_tickers=len(assignments[i]["tickers"])),
-                          active_query, lock, stop))) for i in range(args.workers)]
+                          active_query, lock, stop,reserved_query,dense,dense_active,dense_attempts))) for i in range(args.workers)]
             io_owners = [pools.enter_context(ThreadPoolExecutor(
                 1, thread_name_prefix=f"ar-shard-io-{i}")) for i in range(args.io_workers)]
             while queued_count() or cpus or ios or staged:
@@ -619,6 +638,7 @@ def main(argv=None):
                                     "resource_page_splits",
                                     "coarse_cache_hits",
                                     "context_memory_hits", "context_disk_hits", "context_source_sessions",
+                                    'memory_retries',
                                 )
                             }
                             out.write(
@@ -639,6 +659,8 @@ def main(argv=None):
                             (key, session, result) for session, result in outputs
                         )
                     except Exception as error:
+                        if isinstance(error,InterruptedError) and stop.is_set():
+                            continue  # Incomplete month stays absent from the resume ledger.
                         failure = (
                             failure
                             or f'{unit["ticker"]}:{unit["month"]} {type(error).__name__}: {error}'
@@ -664,6 +686,9 @@ def main(argv=None):
                     worker_assignments=worker_progress(),
                     io_assignments=io_progress(),
                     query_limit=panel_guard.refresh(),
+                    query_memory_gib_base=args.query_memory_gib,query_memory_gib_max=args.query_max_memory_gib,
+                    reserved_query_gib=reserved_query.value/1024**3,active_dense_queries=dense_active.value,
+                    dense_query_attempts=dense_attempts.value,ram_available_gib=psutil.virtual_memory().available/1024**3,
                     capacity=capacity_status(catalog.split_bytes, reserved, caps, rejected, deferred_by_split, args.io_workers * 2),
                     elapsed_seconds=time.monotonic() - began,
                     failure=failure,
@@ -714,6 +739,9 @@ def main(argv=None):
             io_assignments=io_progress(),
             active_months=0,
             queued_units=queued_count(),
+            query_memory_gib_base=args.query_memory_gib,query_memory_gib_max=args.query_max_memory_gib,
+            reserved_query_gib=reserved_query.value/1024**3,active_dense_queries=dense_active.value,
+            dense_query_attempts=dense_attempts.value,
             capacity=capacity_status(catalog.split_bytes, reserved, caps, rejected, deferred_by_split, args.io_workers * 2),
             **counters,
             **catalog.stats(),

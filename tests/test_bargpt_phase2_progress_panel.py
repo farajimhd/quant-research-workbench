@@ -102,12 +102,14 @@ def test_completed_queue_and_terminal_rate_are_explicit(tmp_path):
 
 @pytest.mark.parametrize('width,height',[(200,52),(80,24)])
 def test_campaign_total_and_plan_rows_fit(width,height):
-    s=snapshot();s['progress'].update(campaign=True,campaign_plan_number=2)
+    s=snapshot();s['progress'].update(campaign=True,campaign_plan_number=2,
+        query_memory_gib_base=1,query_memory_gib_max=4,reserved_query_gib=32,active_dense_queries=1,dense_query_attempts=7)
     console=Console(file=io.StringIO(),width=width,height=height,no_color=True)
     with console.capture() as captured:console.print(render(s,width,height,page=0))
     text=captured.get();assert 'current plan 2' in text
     cpu=text.split('I/O WORKERS')[0]
     assert '5 done' in cpu and '5/20' not in cpu
+    assert 'Query RAM 1-4 GiB/request' in text
     assert len(text.splitlines())<=height
 
 

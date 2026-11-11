@@ -163,8 +163,9 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     cpus=int(e.get('workers',32));ios=int(e.get('io_workers',8))
     columns=2 if width>=170 else 1
     half=(width-2*(columns-1))//columns
-    io_rows=min(math.ceil(ios/columns),max(1,(height-19)//4))
-    per_column=max(1,min(math.ceil(cpus/columns),height-19-io_rows))
+    overhead=20 if 'query_memory_gib_base' in p else 19
+    io_rows=min(math.ceil(ios/columns),max(1,(height-overhead)//4))
+    per_column=max(1,min(math.ceil(cpus/columns),height-overhead-io_rows))
     capacity=per_column*columns;pages=max(1,math.ceil(cpus/capacity))
     current=int(now//10)%pages if page is None else int(page)%pages
     visible=list(range(current*capacity,min(cpus,(current+1)*capacity)))
@@ -193,6 +194,8 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     summary=Text(f"Published {byte_label(p.get('bytes',0))}  ·  {p.get('units',0):,} sessions  ·  {p.get('selected_origins',0):,} selected origins  ·  {rate}")
     activity=Text(f"CPU tasks {p.get('active_cpu',0)}/{cpus}  ·  I/O active {p.get('active_io',0)}/{ios}  ·  Source queries {p.get('active_queries',0)} / cap {p.get('query_limit','—')}  ·  Queued months {p.get('queued_units',0):,}",style='dim')
     groups=[heading,overview,summary,activity]
+    if 'query_memory_gib_base' in p:
+        groups.append(Text(f"Query RAM {p['query_memory_gib_base']:g}-{p['query_memory_gib_max']:g} GiB/request · reserved {p.get('reserved_query_gib',0):g} GiB · dense {p.get('active_dense_queries',0)}/2 · {p.get('dense_query_attempts',0):,} larger attempts",style='dim'))
     if p.get('campaign'):
         groups.append(Text(f"Campaign total · current plan {p.get('campaign_plan_number','—')} · blocks stay within one session; context overlap only",style='bold cyan'))
     if terminal and p.get('state')=='inventory_exhausted':

@@ -115,6 +115,8 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
                if prior["code"].get(k) != current["code"].get(k)}
     allowed = {"phase2_ar_shards/" + k for k in ("source.py", "sampling.py", "run.py")}
     kind = proof.get("kind")
+    if kind=='adaptive-query-memory-v1':
+        allowed={'phase2_ar_shards/'+name for name in ('source.py','run.py','telemetry.py','query_memory.py')}
     ledger_kinds = ("file-ledger-eligibility-v1", "file-ledger-observability-v1", "ticker-affinity-context-v1", "coordinator-capacity-v1")
     if kind in ledger_kinds:
         allowed |= {"phase2_ar_shards/"+k for k in ("storage.py","ledger.py","migrate_ledger.py")}
@@ -123,7 +125,7 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
     if kind in ("ticker-affinity-context-v1", "coordinator-capacity-v1"):
         allowed |= {"phase2_ar_shards/"+k for k in ("assignment.py", "bar_cache.py")}
     if (not changed or not changed <= allowed
-        or kind not in ("exact-short-session-preflight-v1", *ledger_kinds)
+        or kind not in ("exact-short-session-preflight-v1", 'adaptive-query-memory-v1', *ledger_kinds)
         or proof.get("plan_hash") != prior["hash"]
         or proof.get("from_code") != prior["code"]
         or proof.get("to_code") != current["code"]):
@@ -140,6 +142,10 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
         or audit.get("counts_parity_cases", 0) < 12
         or audit.get("complete_output_parity_cases", 0) < 2):
         raise ValueError("Engineering revision lacks exact native parity evidence")
+    if kind=='adaptive-query-memory-v1' and not all(audit.get(key) is True for key in (
+        'weighted_admission_tests_passed','client_limits_restored','identical_sql_retry_verified',
+        'unchanged_payload_selection_and_cache_binding','training_guards_preserved')):
+        raise ValueError('Adaptive query budgets lack bounded same-contract proof')
     if kind == "file-ledger-observability-v1" and (
         audit.get("observer_payload_parity_cases", 0) < 2
         or audit.get("worker_status_tests_passed") is not True
@@ -250,8 +256,14 @@ def freeze(root, parent, geometry, revision, endpoint=None, seed=20261109,
 class CanonicalReader:
     """One worker-owned client; source pages do not define publication boundaries."""
 
-    def __init__(self, root, plan, endpoint=None, memory_gib=3):
+    query_memory_gib=1.0
+    query_max_memory_gib=4.0
+
+    def __init__(self, root, plan, endpoint=None, memory_gib=1, max_memory_gib=4):
         self.root, self.plan = Path(root), plan
+        from .query_memory import tiers
+        tiers(memory_gib,max_memory_gib)
+        self.query_memory_gib,self.query_max_memory_gib=memory_gib,max_memory_gib
         self.client = sip.client(endpoint, memory_gib=memory_gib)
         self.client.default_query_params.update(max_threads=1, max_execution_time=60)
         self.bounds = OrderedDict()
@@ -312,27 +324,16 @@ class CanonicalReader:
           SELECT toString(session) session,count() origins FROM eligible
           GROUP BY session ORDER BY session FORMAT ArrowStream"""
         began = time.monotonic()
-        with gate():
-            querying = time.monotonic()
-            for attempt in range(3):
-                try:
-                    table = sip.arrow(self.client, sql,
-                        "ar-eligibility-" + digest([ticker, rows])[:24] + f"-{attempt}",
-                        allow_empty=True)
-                    break
-                except (ConnectionError, OSError):
-                    if attempt == 2:
-                        raise
-                    time.sleep(.25 * 2**attempt)
+        from .query_memory import execute
+        costs={}
+        table=execute(self.client,sql,'ar-eligibility-'+digest([ticker,rows])[:24],gate,
+                      self.query_memory_gib,self.query_max_memory_gib,costs)
         counts = {r["source_date"]: 0 for r in rows}
         for row in table.to_dicts():
             if row["session"] not in counts or not 0 <= row["origins"] <= 57600:
                 raise ValueError("Eligibility result outside frozen sessions")
             counts[row["session"]] = int(row["origins"])
-        return counts, dict(queries=attempt+1, query_seconds=time.monotonic()-querying,
-                            admission_wait_seconds=querying-began,
-                            fetch_seconds=time.monotonic()-began,
-                            eligibility_queries=1)
+        return counts, dict(costs,fetch_seconds=time.monotonic()-began,eligibility_queries=1)
 
     def history_fetch(self, ticker, rows, gate, chunk_events=0, frames=tuple(range(5))):
         return self.fetch(ticker, rows, gate, chunk_events, frames, history=True)
@@ -398,35 +399,22 @@ class CanonicalReader:
         import polars as pl
 
         pieces = [[] for _ in FRAMES]
-        began, queries = time.monotonic(), 0
-        query_seconds = admission_seconds = 0.0
+        began = time.monotonic()
         resource_splits = 0
         cache_hits = 0
+        costs={}
 
         def query_page(page, coarse, sql=None):
-            nonlocal queries, query_seconds, admission_seconds, resource_splits
+            nonlocal resource_splits
             sql = sql or partition_page(bar_query(ticker, page, self.plan["authority"]["rules"], coarse), page)
-            awaiting = time.monotonic()
             resource_error = None
-            with gate():
-                querying = time.monotonic()
-                admission_seconds += querying - awaiting
-                try:
-                    for attempt in range(3):
-                        queries += 1
-                        try:
-                            return sip.arrow(self.client, sql,
-                                f"ar-month-{digest([ticker, page, coarse])[:24]}-{attempt}", allow_empty=True)
-                        except (ConnectionError, OSError):
-                            if attempt == 2:
-                                raise
-                            time.sleep(0.25 * 2**attempt)
-                except RuntimeError as error:
-                    if len(page) <= 1 or not any(code in str(error) for code in ("TIMEOUT_EXCEEDED", "MEMORY_LIMIT_EXCEEDED")):
-                        raise
-                    resource_error = error
-                finally:
-                    query_seconds += time.monotonic() - querying
+            from .query_memory import execute
+            try:
+                return execute(self.client,sql,f'ar-month-{digest([ticker,page,coarse])[:24]}',gate,
+                    self.query_memory_gib,self.query_max_memory_gib,costs)
+            except RuntimeError as error:
+                if len(page)<=1 or not any(code in str(error) for code in ('TIMEOUT_EXCEEDED','MEMORY_LIMIT_EXCEEDED')):raise
+                resource_error=error
             # Release query admission before recursion. Every session remains
             # complete, disjoint and ordered; carry resets at session boundaries.
             if resource_error is not None:
@@ -456,10 +444,11 @@ class CanonicalReader:
             np.concatenate(parts) if parts else np.empty(0, dtype=BAR)
             for parts in pieces
         ], dict(
-            query_seconds=query_seconds,
-            admission_wait_seconds=admission_seconds,
+            query_seconds=costs.get('query_seconds',0),
+            admission_wait_seconds=costs.get('admission_wait_seconds',0),
             fetch_seconds=time.monotonic() - began,
-            queries=queries,
+            queries=costs.get('queries',0),
+            memory_retries=costs.get('memory_retries',0),
             resource_page_splits=resource_splits,
             coarse_cache_hits=cache_hits,
         )

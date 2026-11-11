@@ -102,7 +102,8 @@ def test_dense_pages_preserve_whole_sessions_and_resource_retry_order(monkeypatc
     from research.bar_gpt.v5.phase2_ar_shards import source
 
     reader = source.CanonicalReader.__new__(source.CanonicalReader)
-    reader.plan, reader.client = dict(authority=dict(rules=[])), object()
+    from types import SimpleNamespace
+    reader.plan, reader.client = dict(authority=dict(rules=[])), SimpleNamespace(default_query_params={})
     days = [dict(source_date=f"2024-01-{i:02d}", event_count=3_000_000) for i in range(1,5)]
     assert [len(p) for p in reader.pages(days)] == [2,2]
     assert len(list(reader.pages([dict(days[0], event_count=20_000_000)]))[0]) == 1
@@ -116,7 +117,7 @@ def test_dense_pages_preserve_whole_sessions_and_resource_retry_order(monkeypatc
     monkeypatch.setattr(source,"unpack",lambda table:(np.ones((len(table),18),np.float32),np.ones((len(table),18),np.uint8),table["stamp"].to_numpy()))
     active=[]
     @contextmanager
-    def gate():
+    def gate(memory_gib):
         assert not active
         active.append(1)
         try:yield
@@ -696,7 +697,8 @@ def test_exact_preflight_preserves_outputs_and_never_skips_eligible_sessions(cou
 def test_eligibility_sql_keeps_independent_trade_flags_and_complete_clocks(monkeypatch):
     from research.bar_gpt.v5.phase2_ar_shards import source
     reader = source.CanonicalReader.__new__(source.CanonicalReader)
-    reader.plan, reader.client = dict(authority=dict(rules=[])), object()
+    from types import SimpleNamespace
+    reader.plan, reader.client = dict(authority=dict(rules=[])), SimpleNamespace(default_query_params={})
     rows = [dict(source_date='2025-01-02')]
     monkeypatch.setattr(source, 'bar_query', lambda *a: 'WITH raw AS (SELECT 1), decoded AS (SELECT 1),\n    base AS (SELECT irrelevant)')
     monkeypatch.setattr(source, 'partition_page', lambda sql, rows: sql)

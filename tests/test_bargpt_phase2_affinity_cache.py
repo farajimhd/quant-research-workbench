@@ -122,7 +122,8 @@ def test_eligibility_reconnect_retries_identical_sql_and_stops_at_bound(monkeypa
     import polars as pl
     from research.bar_gpt.v5.phase2_ar_shards import source
     reader = CanonicalReader.__new__(CanonicalReader)
-    reader.plan,reader.client = dict(authority=dict(rules=[])),object()
+    from types import SimpleNamespace
+    reader.plan,reader.client = dict(authority=dict(rules=[])),SimpleNamespace(default_query_params={})
     monkeypatch.setattr(source,"bar_query",lambda *a:"prefix,    base AS (SELECT dummy")
     monkeypatch.setattr(source,"partition_page",lambda sql,rows:sql)
     monkeypatch.setattr(source.time,"sleep",lambda *_:None)

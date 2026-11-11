@@ -831,3 +831,21 @@ origins are exhausted before4TB, status explicitly becomes
 `origin_coverage_exhausted`; the campaign must not pad with repeated origins or
 cross-session blocks. A completed plan shows Done workers and no active transfer,
 not a frozen last throughput estimate. Training remains independent and untouched.
+
+### Adaptive query budgets
+
+The query-memory revision uses1GiB per normal request, with bounded retries of
+the identical SQL at2/4GiB ONLY for `MEMORY_LIMIT_EXCEEDED`. Each worker restores
+its client's original limit after success or failure. Network reconnects remain
+bounded to three attempts per tier; unrelated errors fail closed. After the
+largest tier, the existing whole-session page split remains the only resource
+fallback; no session truncation or global ClickHouse setting changes are allowed.
+
+Admission tracks the SUM of in-flight requested bytes, not active-count times
+one fixed budget. The64GiB available-RAM reserve plus each requested budget is
+still required. A shared two-slot semaphore bounds larger-budget retries across
+all workers. The read-only training guard still lowers admission to4 during
+validation/startup/stale status. Panel/status expose base/max request budgets,
+reserved GiB, active dense retries and cumulative larger-budget attempts.
+Increasing CPU workers is a separate measured operating choice, never permission
+to relax source/geometry, RAM/disk reserves or training protection.
