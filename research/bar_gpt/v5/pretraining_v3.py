@@ -6,6 +6,7 @@ arrays are evaluation metadata, never additional encoder or decoder tokens.
 """
 
 from dataclasses import dataclass, field
+import numpy as np
 import torch
 
 from .pretraining_v1 import PreparedBatch, validate_market, PRICES, CLOSES, ACTIVITY
@@ -43,6 +44,23 @@ class LocalReferencePolicy:
 
 def local_references(values, valid):
     """Vectorized source-valid medians, independent of augmentation RNG/masks."""
+    if values.device.type == "cpu" and values.dtype == torch.float32:
+        # Float32 operands have exact Float64 midpoint arithmetic. Use NumPy's
+        # vectorized CPU median while retaining the Torch path on other devices.
+        raw, observed = values.numpy(), valid.numpy()
+        closes = np.where(observed[..., CLOSES], raw[..., CLOSES], np.nan)
+        if not observed[..., CLOSES].any(axis=(1, 2)).all():
+            raise ValueError("Each raw window requires an observed positive closing price")
+        price = np.nanmedian(closes.reshape(len(raw), -1).astype(np.float64), axis=1)
+        if not np.isfinite(price).all() or not (price > 0).all():
+            raise ValueError("Each raw window requires an observed positive closing price")
+        activity = np.where(observed[..., ACTIVITY], raw[..., ACTIVITY], np.nan)
+        present = observed[..., ACTIVITY].any(axis=1)
+        activity = np.where(present[:, None, :], activity, 0)
+        quantity = np.nanmedian(activity.transpose(0, 2, 1).astype(np.float64), axis=-1)
+        if not np.isfinite(quantity).all():
+            raise ValueError("Invalid local quantity reference")
+        return torch.from_numpy(price[:, None, None]), torch.from_numpy(quantity)
     closes = torch.where(valid[..., CLOSES], values[..., CLOSES], torch.nan)
     price = torch.nanquantile(closes.flatten(1).double(), 0.5, dim=1)[:, None, None]
     if not torch.isfinite(price).all() or not (price > 0).all():
