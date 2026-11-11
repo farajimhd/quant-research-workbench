@@ -350,3 +350,60 @@ def test_batch_first_attention_matches_v1_outputs_and_gradients(length):
         torch.testing.assert_close(
             new(x.detach()), old(x.detach()), rtol=2e-5, atol=2e-6
         )
+
+
+def test_profile_honors_requested_reporting_cadence(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from . import run_encoder_v3 as run
+    from .test_campaign_transition_v1 import Reporter
+
+    class Model(torch.nn.Module):
+        def __init__(self, config):
+            super().__init__()
+            self.config = config
+            self.encoder = torch.nn.Linear(2, 2)
+            self.decoder = torch.nn.Linear(2, 2)
+
+        def cuda(self):
+            return self
+
+    class Loader:
+        dataset = SimpleNamespace(counters=torch.zeros(1, 3))
+
+    calls = []
+
+    def steps(*args, **kw):
+        calls.append(kw)
+        return dict(samples_per_second=100, samples=2, seconds=0.02)
+
+    monkeypatch.setattr(run, "MaskedAutoencoderV3", Model)
+    monkeypatch.setattr(run, "loader_for", lambda *a, **k: Loader())
+    monkeypatch.setattr(run, "run_steps", steps)
+    args = run.arguments(
+        [
+            "--output",
+            str(tmp_path),
+            "--models",
+            "small",
+            "--batches",
+            "2",
+            "--workers",
+            "1",
+            "--steps",
+            "1",
+            "--warmup",
+            "0",
+            "--metrics-every",
+            "1000",
+            "--loss-every",
+            "10",
+            "--wandb-mode",
+            "disabled",
+        ]
+    )
+    run.profile(args, {}, LocalReferencePolicy(), Reporter(tmp_path))
+    assert (
+        len(calls) == 1
+        and calls[0]["metrics_every"] == 1000
+        and calls[0]["loss_every"] == 10
+    )

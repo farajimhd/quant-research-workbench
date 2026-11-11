@@ -443,6 +443,8 @@ def profile(args, manifest, stats, reporter):
                     seconds_limit=args.seconds,
                     stop_path=args.output / "STOP",
                     profiler=profiler,
+                    metrics_every=args.metrics_every,
+                    loss_every=args.loss_every,
                 )
             if args.trace:
                 (args.output / (label + "-operators.txt")).write_text(
