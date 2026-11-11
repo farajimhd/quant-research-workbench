@@ -177,7 +177,8 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
             groups.append(Text(f"{name.title()} admission closed: {c.get('reason','byte limit')} · {byte_label(c.get('remaining_bytes',0))} remaining · {c.get('deferred_units',0):,} capacity deferrals",style='yellow'))
     terminal=p.get('state') in ('complete','capacity_reached','inventory_exhausted','pilot_complete','failed','stopped')
     unfinished=sum(max(0,a['total']-a['completed']-a['deferred']) for a in p.get('worker_assignments',[]))
-    if terminal and unfinished:groups.append(Text(f'STOPPED WITH QUEUED WORK: {unfinished:,} assigned months unprocessed',style='bold red'))
+    if terminal and unfinished and not state.startswith('starting'):
+        groups.append(Text(f'STOPPED WITH QUEUED WORK: {unfinished:,} assigned months unprocessed',style='bold red'))
     if p.get('failure') and not state.startswith('starting'):groups.append(Text('Failure: '+str(p['failure']),style='bold red'))
     groups.append(Text(f"CPU WORKERS {visible[0]+1 if visible else 0}-{visible[-1]+1 if visible else 0}/{cpus}"+(f' | page {current+1}/{pages}, cycles 10s' if pages>1 else '')+(' | fixed assigned months' if p.get('worker_assignments') else ' | prepared sessions'),style='bold'))
     tables=[worker_table(snapshot,'cpu',visible[i*per_column:(i+1)*per_column],half) for i in range(columns)]

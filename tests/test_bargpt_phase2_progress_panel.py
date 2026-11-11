@@ -62,6 +62,14 @@ def test_failure_and_staleness_remain_visible():
     assert "Canonical query failed" in capture.get() and "FAILED" in capture.get()
 
 
+def test_restart_does_not_label_prior_attempt_as_current_stop():
+    s=snapshot();s['progress'].update(state='capacity_reached',worker_assignments=[dict(total=10,completed=3,deferred=2)])
+    s['execution']['started']=s['progress']['updated']+1
+    console=Console(file=io.StringIO(),width=200)
+    with console.capture() as captured:console.print(render(s,200,52))
+    assert 'restoring file ledger' in captured.get() and 'STOPPED WITH QUEUED WORK' not in captured.get()
+
+
 @pytest.mark.parametrize("width,height", [(200,52),(100,36),(80,24)])
 def test_separate_capacity_states_fit_terminal(width,height):
     from research.bar_gpt.v5.phase2_ar_shards.run import capacity_status
