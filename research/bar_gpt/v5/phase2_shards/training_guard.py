@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import time
+import os
 
 import psutil
 
@@ -23,6 +24,45 @@ class TrainingGuard:
         self.checked = float("-inf")
 
     def activity_limit(self):
+        cache = os.environ.get('BARGPT_ADMISSION_CACHE')
+        if cache:
+            return self.shared_activity_limit(Path(cache))
+        return self.scan_activity()
+
+    def shared_activity_limit(self, path):
+        """One nonblocking native observer; workers reuse its bounded-age decision."""
+        import msvcrt
+        from ..shards.contract import write_json
+        binding = [str(self.campaign.resolve()), self.full, self.reduced]
+        def cached(age):
+            try:
+                value = json.loads(path.read_text())
+                if value['binding'] == binding and 0 <= time.time()-value['updated'] < age:
+                    return value['limit'], value['reason']
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
+        value = cached(3)
+        if value is not None:
+            return value
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.with_suffix('.lock').open('a+b') as lock:
+            if lock.tell() == 0:
+                lock.write(b'0'); lock.flush()
+            lock.seek(0)
+            try:
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                return cached(10) or (self.reduced, 'awaiting activity observer')
+            try:
+                value = cached(3)
+                if value is None:
+                    value = self.scan_activity()
+                    write_json(path, dict(binding=binding, updated=time.time(), limit=value[0], reason=value[1]))
+                return value
+            finally:
+                lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+
+    def scan_activity(self):
         """Read-only fallback: discover replacement trainers, not just an old PID.
 
         A live trainer with unknown stage remains protected. Absence is established
@@ -55,13 +95,16 @@ class TrainingGuard:
                 except psutil.NoSuchProcess:
                     continue
             free = psutil.virtual_memory().available / 1024**3
-            cpu = psutil.cpu_percent(interval=None)
+            # Windows processor groups can overstate aggregate utilization on
+            # hosts with >64 logical CPUs. Average the explicit per-CPU values.
+            loads = psutil.cpu_percent(interval=None, percpu=True)
+            cpu = sum(loads) / len(loads)
         except (psutil.Error, OSError):
             return self.reduced, 'trainer activity unavailable'
         if live and protected:
             return self.reduced, f'{len(live)} live trainer(s); stage unknown'
         if free < 80 or cpu >= 85:
-            return self.reduced, f'no trainer; resource pressure CPU {cpu:.0f}% RAM {free:.0f} GiB'
+            return self.reduced, f'resource pressure CPU {cpu:.0f}% RAM {free:.0f} GiB'
         return self.full, f'{len(live)} live normal trainer(s); CPU {cpu:.0f}% RAM {free:.0f} GiB'
 
     def refresh(self):

@@ -82,7 +82,7 @@ def test_stale_activity_and_pressure(tmp_path, monkeypatch):
     original=path.read_bytes()
     monkeypatch.setattr(psutil,'process_iter',lambda attrs: [])
     monkeypatch.setattr(psutil,'virtual_memory',lambda: SimpleNamespace(available=130*1024**3))
-    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None: 25)
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None,percpu=True: [25]*128)
     assert TrainingGuard(tmp_path,48,4).refresh()==48
     process=SimpleNamespace(info={'name':'python.exe'},pid=123,cmdline=lambda:['python','run_encoder_v3.py'],create_time=lambda:456)
     monkeypatch.setattr(psutil,'process_iter',lambda attrs: [process])
@@ -97,9 +97,17 @@ def test_stale_activity_and_pressure(tmp_path, monkeypatch):
     process.cmdline=denied
     assert TrainingGuard(tmp_path,48,4).refresh()==4
     monkeypatch.setattr(psutil,'process_iter',lambda attrs: [])
-    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None: 90)
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None,percpu=True: [90]*128)
     assert TrainingGuard(tmp_path,48,4).refresh()==4
-    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None: 25)
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None,percpu=True: [25]*128)
     monkeypatch.setattr(psutil,'virtual_memory',lambda: SimpleNamespace(available=70*1024**3))
     assert TrainingGuard(tmp_path,48,4).refresh()==4
     assert path.read_bytes()==original
+
+
+def test_shared_observer_reuses_decision(tmp_path,monkeypatch):
+    monkeypatch.setenv('BARGPT_ADMISSION_CACHE',str(tmp_path/'observer.json'))
+    calls=[]
+    monkeypatch.setattr(TrainingGuard,'scan_activity',lambda self:(calls.append(1) or (48,'safe')))
+    for _ in range(48):assert TrainingGuard(tmp_path,48,4).activity_limit()==(48,'safe')
+    assert len(calls)==1
