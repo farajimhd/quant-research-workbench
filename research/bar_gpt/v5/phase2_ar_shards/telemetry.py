@@ -128,7 +128,8 @@ class ObservedReader:
             if not isinstance(result,(list,tuple)):return result
             from .sampling import origin_clock
             unit=self.reporter.unit
-            chosen=origin_clock(unit,self.seed)
+            chosen=(int(unit['first_us']) if getattr(self.reader,'plan',{}).get('continuation')
+                    else origin_clock(unit,self.seed))
             total=sum(r["source_date"].startswith(unit["month"]) and int(r["last_sip_timestamp_us"])>=chosen for _,rows in result for r in rows)
             self.reporter.emit(progress_total=total)
         except (KeyError,TypeError,AttributeError):

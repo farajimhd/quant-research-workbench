@@ -106,7 +106,21 @@ def test_campaign_total_and_plan_rows_fit(width,height):
     console=Console(file=io.StringIO(),width=width,height=height,no_color=True)
     with console.capture() as captured:console.print(render(s,width,height,page=0))
     text=captured.get();assert 'current plan 2' in text
+    cpu=text.split('I/O WORKERS')[0]
+    assert '5 done' in cpu and '5/20' not in cpu
     assert len(text.splitlines())<=height
+
+
+def test_continuation_observer_counts_full_month_sessions(tmp_path):
+    reporter=WorkerTelemetry(tmp_path,'test','cpu',0,heartbeat=False)
+    reporter.begin(dict(ticker='A',month='2025-01',first_us=1,last_us=100))
+    class Reader:
+        plan={'continuation':{'parents':['earlier']}}
+        def months(self,job):return [('2025-01',[dict(source_date='2025-01-02',last_sip_timestamp_us=10),dict(source_date='2025-01-03',last_sip_timestamp_us=100)])]
+    observer=ObservedReader(Reader(),reporter,17)
+    assert len(observer.months({})[0][1])==2
+    assert reporter.snapshot()['progress_total']==2
+    reporter.close()
 
 
 def test_campaign_observer_reads_only_active_sibling_worker_root(tmp_path):
