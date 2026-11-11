@@ -75,6 +75,23 @@ worker16 cut Windows startup roughly in half. Prefetch4 was slower. Interleaved
 same-batch GPU trials measured about58k to68k samples/sec after the layout
 change; this is a bounded compute-path comparison, not a whole-corpus guarantee.
 
+## Bounded source read-ahead
+
+Each of the existing logical loader lanes uses one background I/O thread to
+verify and open up to32 upcoming source files, capped at128MiB of queued file
+extents per lane. A single oversized file is admitted alone as a read-only mmap.
+This overlaps full SHA256 and complete-market validation with batch preparation;
+it preserves entry order, worker lanes, row permutations, masks and partial tails.
+`--shard-prefetch 0` selects the synchronous comparison path. Prepared-batch
+prefetch remains separately bounded by `workers*prefetch`.
+
+Worker telemetry separates source wait/read time and CPU packing time. CUDA
+`input_gap_pct` measures the exposed compute-stream gap between consecutive
+steps, including data readiness and host overhead. CPU `loader_wait_pct` may
+overlap GPU work and must not be interpreted as GPU idle time. Neither metric
+promises zero stalls on every shard. Engineering upgrades resume from a complete
+training checkpoint during validation; completed optimizer updates are retained.
+
 ## Validation scope
 
 `test_encoder_v3.py` covers independent inverse arithmetic, all18 features and

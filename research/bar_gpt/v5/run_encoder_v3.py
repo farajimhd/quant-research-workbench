@@ -76,6 +76,18 @@ def arguments(argv=None):
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--prefetch", type=int, default=2)
     parser.add_argument(
+        "--shard-prefetch",
+        type=int,
+        default=32,
+        help="Per-lane verified source lookahead; 0 selects synchronous reads",
+    )
+    parser.add_argument(
+        "--shard-prefetch-mib",
+        type=int,
+        default=128,
+        help="Per-lane source lookahead byte budget; readonly oversized file admitted alone",
+    )
+    parser.add_argument(
         "--steps",
         type=int,
         default=24,
@@ -144,6 +156,8 @@ def arguments(argv=None):
         help="Consecutive worsening validations before stopping; inherit on resume, otherwise 3",
     )
     args = parser.parse_args(argv)
+    if not 0 <= args.shard_prefetch <= 64 or not 1 <= args.shard_prefetch_mib <= 512:
+        parser.error("Source prefetch depth must be0..64 and budget1..512 MiB")
     if args.overfit_patience is not None and args.overfit_patience < 1:
         parser.error("Overfit patience must be positive.")
     if args.guard_probe_steps < 1:
@@ -337,6 +351,8 @@ def loader_for(
         cursor,
         telemetry=str(args.output / "workers"),
     )
+    dataset.shard_prefetch = args.shard_prefetch
+    dataset.shard_prefetch_bytes = args.shard_prefetch_mib * 2**20
     return make_loader(dataset, workers, args.prefetch, ordered=ordered)
 
 

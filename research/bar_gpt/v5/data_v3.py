@@ -423,6 +423,8 @@ class EligibleStream(IterableDataset):
         self.full_validation = (
             False  # Enabled only by the full-validation campaign path.
         )
+        self.shard_prefetch = 32
+        self.shard_prefetch_bytes = 128 * 2**20
         if split == "train" and compact is None:
             np.random.default_rng(seed + epoch).shuffle(self.entries)
         self.stats, self.batch_size, self.seed, self.epoch = (
@@ -455,8 +457,9 @@ class EligibleStream(IterableDataset):
         completed = scanned = excluded = pending_count = 0
         pieces = []
         began = time.perf_counter()
-        verified = set()
         last_report = 0.0
+        reader = None
+        pack_seconds = pack_last_ms = 0.0
 
         def publish(stage):
             nonlocal last_report
@@ -474,16 +477,21 @@ class EligibleStream(IterableDataset):
                         scanned_candidates=scanned,
                         excluded_no_price=excluded,
                         prepare_ms=(time.perf_counter() - began) * 1000,
+                        pack_seconds=pack_seconds,
+                        pack_last_ms=pack_last_ms,
+                        **(reader.telemetry() if reader is not None else {}),
                         updated=time.time(),
                     ),
                 )
                 last_report = time.perf_counter()
 
         def pack(rows):
+            nonlocal pack_seconds, pack_last_ms
+            pack_started = time.perf_counter()
             # Lane-local sequence identifies the batch independently of scheduling/prefetch timing.
             rng = self.seed + self.epoch * 1_000_003 + completed * workers + lane
             rows = rows[np.random.default_rng(rng).permutation(len(rows))]
-            return prepare_batch(
+            batch = prepare_batch(
                 torch.from_numpy(rows["values"].copy()),
                 torch.from_numpy(rows["valid"].astype(bool)),
                 torch.from_numpy(rows["end_us"].copy()),
@@ -492,24 +500,22 @@ class EligibleStream(IterableDataset):
                 torch.Generator().manual_seed(rng),
                 native_validation=self.full_validation,
             )
+            elapsed = time.perf_counter() - pack_started
+            pack_seconds += elapsed
+            pack_last_ms = elapsed * 1000
+            return batch
 
-        for item in self.entries[lane::workers]:
-            path = item["path"]
-            publish("reading / verifying")
-            if path not in verified:
-                if (
-                    Path(path).stat().st_size != item["bytes"]
-                    or file_hash(path) != item["sha256"]
-                ):
-                    raise ValueError(f"Changed sealed payload: {path}")
-                verified.add(path)
-            data = np.load(path, mmap_mode="r", allow_pickle=False)[
-                item["start"] : item["stop"]
-            ]
-            if self.strict_market:
-                validate_complete_market(
-                    data
-                )  # Invalid v6 bars stop the run instead of becoming exclusions.
+        from .shard_prefetch_v3 import VerifiedShardPrefetch
+
+        reader = VerifiedShardPrefetch(
+            self.entries[lane::workers],
+            depth=self.shard_prefetch,
+            byte_budget=self.shard_prefetch_bytes,
+            validator=validate_complete_market if self.strict_market else None,
+            on_wait=lambda: publish("waiting for verified source"),
+        )
+        for item, data in reader:
+            publish("source ready")
             scanned += len(data)
             if self.strict_market:
                 # Complete-market validation already proves every trade close

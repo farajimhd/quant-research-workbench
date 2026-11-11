@@ -112,6 +112,8 @@ def run_steps(
             total=warmup + steps,
         )
     events = []
+    gap_events, gap_ms = [], []
+    previous_ready = None
     finite = torch.ones((), device="cuda", dtype=torch.bool)
     pending_losses = []  # Keep tiny device scalars until the next metrics upload.
     sums = torch.zeros(18, device="cuda", dtype=torch.float64)
@@ -162,6 +164,14 @@ def run_steps(
             prefix + "reporting_seconds": report_seconds,
             prefix + "samples": samples,
         }
+        # The existing metric downloads above already wait for completed work.
+        # Measure exposed compute-stream gaps, not CPU loader wait that may overlap GPU work.
+        while len(gap_ms) < len(gap_events):
+            a, b = gap_events[len(gap_ms)]
+            if not b.query():
+                break
+            gap_ms.append(a.elapsed_time(b))
+        values[prefix + "input_gap_pct"] = 100 * sum(gap_ms) / 1000 / elapsed
         # Accumulate on device each step; materialize full metrics only at the requested cadence.
         from .shards.phase1_contract import CHANNELS
 
@@ -207,6 +217,8 @@ def run_steps(
                 enable_timing=True
             )
             start.record()
+            if previous_ready is not None and step > warmup:
+                gap_events.append((previous_ready, start))
             if before_step is not None:
                 before_step(
                     consumed
@@ -268,6 +280,8 @@ def run_steps(
                     end.record()  # Validation timing includes the additional full-input forward.
                 measured += 1
                 samples += len(batch.visible)
+            previous_ready = torch.cuda.Event(enable_timing=True)
+            previous_ready.record()  # After this step's metric kernels, before host data fetch.
             # Enqueue the next input while current kernels execute, rather than synchronizing each step.
             if step + 1 < warmup + steps:
                 batches.advance()
@@ -315,6 +329,9 @@ def run_steps(
         if reporter:
             publish_metrics()  # Include the final partial interval at an epoch/window boundary.
         milliseconds = np.array([start.elapsed_time(end) for start, end in events])
+        while len(gap_ms) < len(gap_events):
+            a, b = gap_events[len(gap_ms)]
+            gap_ms.append(a.elapsed_time(b))
         valid = counts > 0
         per_feature = sums / counts.clamp_min(1)
         result = dict(
@@ -330,6 +347,9 @@ def run_steps(
             compute_ms_mean=float(milliseconds.mean()),
             compute_ms_p95=float(np.quantile(milliseconds, 0.95)),
             compute_duty_pct=min(100.0, float(milliseconds.sum() / 10 / elapsed)),
+            input_gap_pct=100 * sum(gap_ms) / 1000 / elapsed,
+            input_gap_ms_mean=float(np.mean(gap_ms)) if gap_ms else 0.0,
+            input_gap_ms_p95=float(np.quantile(gap_ms, 0.95)) if gap_ms else 0.0,
             loader_wait_pct=100 * (batches.wait_seconds - wait_start) / elapsed,
             peak_gib=torch.cuda.max_memory_allocated() / 2**30,
             reserved_gib=torch.cuda.max_memory_reserved() / 2**30,
