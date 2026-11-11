@@ -62,6 +62,20 @@ def test_failure_and_staleness_remain_visible():
     assert "Canonical query failed" in capture.get() and "FAILED" in capture.get()
 
 
+@pytest.mark.parametrize("width,height", [(200,52),(100,36),(80,24)])
+def test_separate_capacity_states_fit_terminal(width,height):
+    from research.bar_gpt.v5.phase2_ar_shards.run import capacity_status
+    s=snapshot();s['execution'].update(target_bytes=4_000_000_000_000,validation_bytes=250_000_000)
+    s['progress'].update(state='inventory_exhausted',capacity=capacity_status(
+        {0:406_720_703_548,1:248_587_869},{0:0,1:0},{0:4_000_000_000_000,1:250_000_000},{0:0,1:0},{0:0,1:116402}))
+    console=Console(file=io.StringIO(),width=width,height=height,no_color=True)
+    with console.capture() as captured:console.print(render(s,width,height,page=0))
+    text=captured.get()
+    assert 'Training cap OPEN' in text and 'Validation cap LIMIT' in text
+    assert 'Plan exhausted' in text and 'minimum_block_fit' in text
+    assert len(text.splitlines())<=height and all(len(x)<=width for x in text.splitlines())
+
+
 def test_observer_exact_return_identity_and_optional_failure(tmp_path, monkeypatch):
     reporter = WorkerTelemetry(tmp_path, "run-1", "cpu", 0, heartbeat=False)
     reporter.begin(dict(ticker="A", month="2025-01"))

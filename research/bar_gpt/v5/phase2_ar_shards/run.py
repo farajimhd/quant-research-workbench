@@ -22,7 +22,7 @@ os.environ.setdefault("POLARS_MAX_THREADS", "2")
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 
 import psutil
-from .contract import Geometry
+from .contract import Geometry, BAR, ORIGIN, BLOCK
 from .assignment import assign
 from .source import CanonicalReader, describe, freeze
 from .sampling import compile_sessions
@@ -33,6 +33,22 @@ from ..quote_repair_io_v1 import payload_io
 from .telemetry import cpu_telemetry, ObservedReader, PublicationTelemetry
 
 STATE = None
+
+
+def capacity_status(used, reserved, caps, rejected, deferred, rejection_limit=16):
+    """Operational byte admission only; never change selection or payloads."""
+    result = {}
+    for split, name in ((0, "training"), (1, "validation")):
+        occupied = used.get(split, 0) + reserved[split]
+        minimum = 1_000_000 + BLOCK * (BAR.itemsize + ORIGIN.itemsize)
+        reason = ("byte_headroom" if occupied >= caps[split] - 1_000_000
+                  else "minimum_block_fit" if caps[split] - occupied < minimum
+                  else "session_fit_limit" if rejected[split] >= rejection_limit else None)
+        result[name] = dict(used_bytes=used.get(split, 0), reserved_bytes=reserved[split],
+                            limit_bytes=caps[split], remaining_bytes=max(0, caps[split]-occupied),
+                            blocked=reason is not None, reason=reason, minimum_block_bytes=minimum,
+                            deferred_units=deferred[split])
+    return result
 
 
 def initialize(root, plan, settings, active, lock, stop):
@@ -395,6 +411,7 @@ def main(argv=None):
         reserved = {0: 0, 1: 0}
         caps = {0: args.target_bytes, 1: args.validation_bytes}
         rejected = {0: 0, 1: 0}
+        deferred_by_split = {0: 0, 1: 0}
         counters = dict(
             admitted_months_this_run=0,
             completed_months_this_run=0,
@@ -474,10 +491,9 @@ def main(argv=None):
                             stop.set()
                             queue.appendleft(unit)
                             break
-                        if (catalog.split_bytes.get(split, 0) + reserved[split]
-                            >= caps[split] - 1_000_000
-                            or rejected[split] >= args.io_workers * 2):
+                        if capacity_status(catalog.split_bytes, reserved, caps, rejected, deferred_by_split, args.io_workers * 2)["validation" if split else "training"]["blocked"]:
                             counters["capacity_deferred"] += 1
+                            deferred_by_split[split] += 1
                             worker_deferred[slot] += 1
                             continue
                         future = owners[slot].submit(produce, unit)
@@ -511,6 +527,7 @@ def main(argv=None):
                         ):
                             rejected[split] += 1
                             counters["capacity_deferred"] += 1
+                            deferred_by_split[split] += 1
                             finish(key, unit, "capacity")
                             continue
                         if (
@@ -544,6 +561,11 @@ def main(argv=None):
                         stop.set()
                 if not cpus and not ios:
                     if staged:
+                        continue
+                    # Draining only short-session deferrals/capacity rejections
+                    # may create no I/O future. Queued CPU work must still run.
+                    if (queued_count() and not stop.is_set()
+                        and not (args.max_months and counters["admitted_months_this_run"] >= args.max_months)):
                         continue
                     break
                 watched = (
@@ -638,6 +660,7 @@ def main(argv=None):
                     worker_assignments=worker_progress(),
                     io_assignments=io_progress(),
                     query_limit=panel_guard.refresh(),
+                    capacity=capacity_status(catalog.split_bytes, reserved, caps, rejected, deferred_by_split, args.io_workers * 2),
                     elapsed_seconds=time.monotonic() - began,
                     failure=failure,
                     **counters,
@@ -665,8 +688,9 @@ def main(argv=None):
                     "pilot_complete"
                     if args.max_months or args.only_ticker
                     else (
-                        "capacity_reached"
-                        if counters["capacity_deferred"]
+                        ("capacity_reached" if all(v["blocked"] for v in capacity_status(
+                            catalog.split_bytes, reserved, caps, rejected, deferred_by_split, args.io_workers * 2).values())
+                         else "inventory_exhausted") if counters["capacity_deferred"]
                         else "complete"
                     )
                 )
@@ -685,6 +709,8 @@ def main(argv=None):
             worker_assignments=worker_progress(),
             io_assignments=io_progress(),
             active_months=0,
+            queued_units=queued_count(),
+            capacity=capacity_status(catalog.split_bytes, reserved, caps, rejected, deferred_by_split, args.io_workers * 2),
             **counters,
             **catalog.stats(),
         )

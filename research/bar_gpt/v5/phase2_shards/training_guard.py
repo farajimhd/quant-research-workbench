@@ -27,6 +27,16 @@ class TrainingGuard:
         self.checked = time.monotonic()
         try:
             controller = json.loads((self.campaign / "progress.json").read_text())
+            # Encoder-v2 is a direct run, without the old overnight controller.
+            # Terminal/unknown direct status stays conservative: it has no child
+            # identity ledger proving that no replacement trainer is live.
+            if "child" not in controller and "stage" in controller:
+                if time.time() - controller["updated"] > 30:
+                    raise ValueError("Direct trainer progress is stale")
+                state, stage = controller["state"], controller["stage"]
+                self.limit = self.full if state == "running" and stage == "training" else self.reduced
+                self.reason = f"direct trainer {stage} ({state})"
+                return self.limit
             if controller.get("state") == "complete":
                 self.limit, self.reason = self.full, "training campaign complete"
                 return self.limit

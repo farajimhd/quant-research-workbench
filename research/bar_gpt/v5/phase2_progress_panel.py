@@ -109,7 +109,7 @@ def worker_table(snapshot, role, slots, width):
     if width>=95:table.add_column("Time",width=5,justify="right")
     if width>=110:table.add_column("PID",width=6,justify="right")
     if width>=120 and role=='cpu':table.add_column("CPU%",width=5,justify="right")
-    running=snapshot['progress'].get('state') not in ('complete','capacity_reached','pilot_complete','failed','stopped')
+    running=snapshot['progress'].get('state') not in ('complete','capacity_reached','inventory_exhausted','pilot_complete','failed','stopped')
     for slot in slots:
         record=snapshot['workers'].get((role,slot))
         state,style=worker_state(record,running)
@@ -151,23 +151,33 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     current=int(now//10)%pages if page is None else int(page)%pages
     visible=list(range(current*capacity,min(cpus,(current+1)*capacity)))
     state=p.get('state','waiting for status');age=max(0,now-p.get('updated',0))
+    if state=='inventory_exhausted':state='Plan exhausted; byte targets are upper limits'
     if e.get('started',0)>p.get('updated',0):state='starting / restoring file ledger'
     severity='bold red' if p.get('failure') and not state.startswith('starting') else ('yellow' if age>15 else 'green')
     heading=Text('BarGPT  PHASE TWO  ',style='bold cyan');heading.append(state,style=severity)
     stamp=datetime.fromtimestamp(p.get('updated',now),ZoneInfo(timezone)).strftime('%H:%M:%S %Z')
     heading.append(f'    {stamp} · {age:.0f}s old',style='dim')
     overview=Table.grid(expand=True,padding=(0,1))
-    overview.add_column(width=19);overview.add_column(ratio=1);overview.add_column(justify='right',width=29)
+    overview.add_column(width=21);overview.add_column(ratio=1);overview.add_column(justify='right',width=29)
+    capacities=p.get('capacity',{})
     train=p.get('train_bytes',0);target=e.get('target_bytes',4_000_000_000_000)
-    overview.add_row('Training data cap',ProgressBar(total=target,completed=train),f'{byte_label(train)} / {byte_label(target)}')
     val=p.get('validation_bytes',0);vtarget=e.get('validation_bytes',250_000_000)
-    overview.add_row('Validation data cap',ProgressBar(total=vtarget,completed=val,complete_style='green'),f'{byte_label(val)} / {byte_label(vtarget)}')
+    for name,used,limit,color in [('Training',train,target,'cyan'),('Validation',val,vtarget,'green')]:
+        c=capacities.get(name.lower(),{})
+        label='LIMIT' if c.get('blocked') else 'OPEN' if c else '?'
+        overview.add_row(f'{name} cap {label}',ProgressBar(total=limit,completed=used,complete_style=color),f'{byte_label(used)} / {byte_label(limit)}')
     planned=p.get('planned_units');accounted=p.get('accounted_months',0)
     overview.add_row('Month plan status',ProgressBar(total=planned,completed=accounted,pulse=planned is None),f'{accounted:,} / {planned:,}' if planned is not None else 'awaiting plan counters')
     rate=byte_label(snapshot['rate'])+'/s' if snapshot.get('rate') is not None else 'warming rate'
     summary=Text(f"Published {byte_label(p.get('bytes',0))}  ·  {p.get('units',0):,} sessions  ·  {p.get('selected_origins',0):,} selected origins  ·  {rate}")
     activity=Text(f"CPU tasks {p.get('active_cpu',0)}/{cpus}  ·  I/O active {p.get('active_io',0)}/{ios}  ·  Source queries {p.get('active_queries',0)} / cap {p.get('query_limit','—')}  ·  Queued months {p.get('queued_units',0):,}",style='dim')
     groups=[heading,overview,summary,activity]
+    for name,c in capacities.items():
+        if c.get('blocked'):
+            groups.append(Text(f"{name.title()} admission closed: {c.get('reason','byte limit')} · {byte_label(c.get('remaining_bytes',0))} remaining · {c.get('deferred_units',0):,} capacity deferrals",style='yellow'))
+    terminal=p.get('state') in ('complete','capacity_reached','inventory_exhausted','pilot_complete','failed','stopped')
+    unfinished=sum(max(0,a['total']-a['completed']-a['deferred']) for a in p.get('worker_assignments',[]))
+    if terminal and unfinished:groups.append(Text(f'STOPPED WITH QUEUED WORK: {unfinished:,} assigned months unprocessed',style='bold red'))
     if p.get('failure') and not state.startswith('starting'):groups.append(Text('Failure: '+str(p['failure']),style='bold red'))
     groups.append(Text(f"CPU WORKERS {visible[0]+1 if visible else 0}-{visible[-1]+1 if visible else 0}/{cpus}"+(f' | page {current+1}/{pages}, cycles 10s' if pages>1 else '')+(' | fixed assigned months' if p.get('worker_assignments') else ' | prepared sessions'),style='bold'))
     tables=[worker_table(snapshot,'cpu',visible[i*per_column:(i+1)*per_column],half) for i in range(columns)]

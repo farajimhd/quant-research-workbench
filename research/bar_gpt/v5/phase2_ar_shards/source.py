@@ -115,12 +115,12 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
                if prior["code"].get(k) != current["code"].get(k)}
     allowed = {"phase2_ar_shards/" + k for k in ("source.py", "sampling.py", "run.py")}
     kind = proof.get("kind")
-    ledger_kinds = ("file-ledger-eligibility-v1", "file-ledger-observability-v1", "ticker-affinity-context-v1")
+    ledger_kinds = ("file-ledger-eligibility-v1", "file-ledger-observability-v1", "ticker-affinity-context-v1", "coordinator-capacity-v1")
     if kind in ledger_kinds:
         allowed |= {"phase2_ar_shards/"+k for k in ("storage.py","ledger.py","migrate_ledger.py")}
-    if kind in ("file-ledger-observability-v1", "ticker-affinity-context-v1"):
+    if kind in ("file-ledger-observability-v1", "ticker-affinity-context-v1", "coordinator-capacity-v1"):
         allowed.add("phase2_ar_shards/telemetry.py")
-    if kind == "ticker-affinity-context-v1":
+    if kind in ("ticker-affinity-context-v1", "coordinator-capacity-v1"):
         allowed |= {"phase2_ar_shards/"+k for k in ("assignment.py", "bar_cache.py")}
     if (not changed or not changed <= allowed
         or kind not in ("exact-short-session-preflight-v1", *ledger_kinds)
@@ -146,13 +146,20 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
         or audit.get("exact_sampling_and_canonical_reader") is not True
     ):
         raise ValueError("Worker observability lacks native payload parity evidence")
-    if kind == "ticker-affinity-context-v1" and (
+    if kind in ("ticker-affinity-context-v1", "coordinator-capacity-v1") and (
         audit.get("session_cache_parity_cases", 0) < 12
         or audit.get("fixed_assignment_tests_passed") is not True
         or audit.get("uncached_aggregation_exact") is not True
         or audit.get("existing_selection_preserved") is not True
     ):
         raise ValueError("Ticker ownership lacks source/cache/assignment parity evidence")
+    if kind == "coordinator-capacity-v1" and (
+        audit.get("queued_deferral_regression_passed") is not True
+        or audit.get("separate_capacity_tests_passed") is not True
+        or audit.get("direct_training_guard_tests_passed") is not True
+        or audit.get("unchanged_all_data_producers") is not True
+    ):
+        raise ValueError("Coordinator recovery lacks bounded same-contract evidence")
     if kind in ledger_kinds:
         from .ledger import FileLedger
 
