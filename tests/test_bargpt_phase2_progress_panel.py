@@ -63,7 +63,7 @@ def test_failure_and_staleness_remain_visible():
 
 
 def test_restart_does_not_label_prior_attempt_as_current_stop():
-    s=snapshot();s['progress'].update(state='capacity_reached',worker_assignments=[dict(total=10,completed=3,deferred=2)])
+    s=snapshot();s['progress'].update(state='capacity_reached',worker_assignments=[dict(slot=0,total=10,completed=3,deferred=2,tickers=1)])
     s['execution']['started']=s['progress']['updated']+1
     console=Console(file=io.StringIO(),width=200)
     with console.capture() as captured:console.print(render(s,200,52))
