@@ -92,7 +92,10 @@ def test_stale_activity_and_pressure(tmp_path, monkeypatch):
     process.cmdline=lambda:['python','run_encoder_v3.py','--output',str(replacement)]
     assert TrainingGuard(tmp_path,48,4).refresh()==48
     (replacement/'progress.json').write_text(json.dumps(dict(state='running',stage='validation',updated=time.time())))
-    assert TrainingGuard(tmp_path,48,4).refresh()==4
+    assert TrainingGuard(tmp_path,48,4).refresh()==16
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None,percpu=True: [75]*128)
+    assert TrainingGuard(tmp_path,48,4).refresh()==8
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None,percpu=True: [25]*128)
     def denied():raise psutil.AccessDenied(123)
     process.cmdline=denied
     assert TrainingGuard(tmp_path,48,4).refresh()==4

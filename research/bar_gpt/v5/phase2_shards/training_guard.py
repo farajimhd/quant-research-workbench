@@ -71,6 +71,7 @@ class TrainingGuard:
         """
         live = []
         protected = False
+        known_validation = True
         try:
             for process in psutil.process_iter(['pid', 'name']):
                 if 'python' not in (process.info['name'] or '').lower():
@@ -90,8 +91,14 @@ class TrainingGuard:
                                       and 0 <= time.time() - status['updated'] <= 30
                                       and status['updated'] >= process.create_time())
                             protected |= not normal
+                            known_validation &= (normal or (
+                                status['state'] == 'running'
+                                and status['stage'] in ('validation', 'learning probe', 'probe')
+                                and 0 <= time.time()-status['updated'] <= 30
+                                and status['updated'] >= process.create_time()))
                         except (OSError, ValueError, KeyError, IndexError, TypeError):
                             protected = True
+                            known_validation = False
                 except psutil.NoSuchProcess:
                     continue
             free = psutil.virtual_memory().available / 1024**3
@@ -102,6 +109,9 @@ class TrainingGuard:
         except (psutil.Error, OSError):
             return self.reduced, 'trainer activity unavailable'
         if live and protected:
+            if known_validation:
+                lanes = 16 if free >= 112 and cpu < 65 else 8 if free >= 96 and cpu < 80 else self.reduced
+                return min(self.full, max(self.reduced, lanes)), f'live validation/probe; CPU {cpu:.0f}% RAM {free:.0f} GiB'
             return self.reduced, f'{len(live)} live trainer(s); stage unknown'
         if free < 80 or cpu >= 85:
             return self.reduced, f'resource pressure CPU {cpu:.0f}% RAM {free:.0f} GiB'
@@ -122,7 +132,10 @@ class TrainingGuard:
                 if time.time() - controller["updated"] > 30 or state != 'running':
                     self.limit, self.reason = self.activity_limit()
                     return self.limit
-                self.limit = self.full if state == "running" and stage == "training" else self.reduced
+                if stage != 'training':
+                    self.limit, self.reason = self.activity_limit()
+                    return self.limit
+                self.limit = self.full
                 self.reason = f"direct trainer {stage} ({state})"
                 return self.limit
             if controller.get("state") == "complete":
