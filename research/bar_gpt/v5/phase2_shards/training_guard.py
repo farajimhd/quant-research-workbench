@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 import time
 
+import psutil
+
 
 class TrainingGuard:
     """Refresh small authoritative status files at most once every two seconds.
@@ -20,6 +22,35 @@ class TrainingGuard:
         self.reason = "awaiting trainer status" if self.campaign else "not configured"
         self.checked = float("-inf")
 
+    def activity_limit(self):
+        """Read-only fallback: discover replacement trainers, not just an old PID.
+
+        A live trainer with unknown stage remains protected. Absence is established
+        by a complete process scan; inaccessible Python commands fail closed.
+        No process is signalled and no training files are written.
+        """
+        live = []
+        try:
+            for process in psutil.process_iter(['pid', 'name']):
+                if 'python' not in (process.info['name'] or '').lower():
+                    continue
+                try:
+                    command = ' '.join(process.cmdline()).lower()
+                    if any(token in command for token in
+                           ('run_encoder', 'run_train', 'campaign_v3', 'torch.distributed.run')):
+                        live.append((process.pid, process.create_time()))
+                except psutil.NoSuchProcess:
+                    continue
+            free = psutil.virtual_memory().available / 1024**3
+            cpu = psutil.cpu_percent(interval=None)
+        except (psutil.Error, OSError):
+            return self.reduced, 'trainer activity unavailable'
+        if live:
+            return self.reduced, f'{len(live)} live trainer(s); stage unknown'
+        if free < 80 or cpu >= 85:
+            return self.reduced, f'no trainer; resource pressure CPU {cpu:.0f}% RAM {free:.0f} GiB'
+        return self.full, f'no live trainer; CPU {cpu:.0f}% RAM {free:.0f} GiB'
+
     def refresh(self):
         """Return a cap and reason; unreadable status stays conservative."""
         if self.campaign is None or time.monotonic() - self.checked < 2:
@@ -31,9 +62,10 @@ class TrainingGuard:
             # Terminal/unknown direct status stays conservative: it has no child
             # identity ledger proving that no replacement trainer is live.
             if "child" not in controller and "stage" in controller:
-                if time.time() - controller["updated"] > 30:
-                    raise ValueError("Direct trainer progress is stale")
                 state, stage = controller["state"], controller["stage"]
+                if time.time() - controller["updated"] > 30 or state != 'running':
+                    self.limit, self.reason = self.activity_limit()
+                    return self.limit
                 self.limit = self.full if state == "running" and stage == "training" else self.reduced
                 self.reason = f"direct trainer {stage} ({state})"
                 return self.limit
@@ -77,5 +109,5 @@ class TrainingGuard:
             )
             self.reason = f"trainer {stage} ({state})"
         except (OSError, ValueError, KeyError, TypeError):
-            self.limit, self.reason = self.reduced, "trainer status unavailable/stale"
+            self.limit, self.reason = self.activity_limit()
         return self.limit

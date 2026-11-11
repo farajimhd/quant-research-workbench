@@ -58,7 +58,8 @@ def test_minimum_fit_bound_never_rejects_a_publishable_block():
 
 
 @pytest.mark.parametrize('stage,state,age,expected',[('training','running',0,32),('validation','running',0,4),('probe','running',0,4),('training','running',31,4),('training','stopped',0,4)])
-def test_direct_v2_status_is_read_only_and_conservative(tmp_path,stage,state,age,expected):
+def test_direct_v2_status_is_read_only_and_conservative(tmp_path,stage,state,age,expected,monkeypatch):
+    monkeypatch.setattr(TrainingGuard,"activity_limit",lambda self:(4,"live trainer"))
     path=tmp_path/'progress.json';raw=json.dumps(dict(stage=stage,state=state,updated=time.time()-age));path.write_text(raw)
     guard=TrainingGuard(tmp_path,32,4)
     assert guard.refresh()==expected and path.read_text()==raw

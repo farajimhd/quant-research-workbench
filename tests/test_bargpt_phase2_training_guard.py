@@ -6,7 +6,8 @@ import time
 from research.bar_gpt.v5.phase2_shards.training_guard import TrainingGuard
 
 
-def test_training_validation_and_stale_status_caps(tmp_path):
+def test_training_validation_and_stale_status_caps(tmp_path, monkeypatch):
+    monkeypatch.setattr(TrainingGuard, "activity_limit", lambda self: (4, "live trainer"))
     attempt = tmp_path / "train-03"
     attempt.mkdir()
     controller = tmp_path / "progress.json"
@@ -48,6 +49,7 @@ def test_terminal_trainer_without_live_child_releases_admission(tmp_path, monkey
 
 
 def test_terminal_label_alone_does_not_prove_trainer_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(TrainingGuard, "activity_limit", lambda self: (4, "live trainer"))
     """Retain conservative admission if the same trainer still exists."""
     import psutil
     from types import SimpleNamespace
@@ -70,3 +72,28 @@ def test_terminal_label_alone_does_not_prove_trainer_absent(tmp_path, monkeypatc
         psutil, "Process", lambda _: SimpleNamespace(create_time=lambda: 100.0)
     )
     assert TrainingGuard(tmp_path, 16, 4).refresh() == 4
+
+
+def test_stale_activity_and_pressure(tmp_path, monkeypatch):
+    import psutil
+    from types import SimpleNamespace
+    path=tmp_path/'progress.json'
+    path.write_text(json.dumps(dict(state='failed',stage='measuring',updated=0)))
+    original=path.read_bytes()
+    monkeypatch.setattr(psutil,'process_iter',lambda attrs: [])
+    monkeypatch.setattr(psutil,'virtual_memory',lambda: SimpleNamespace(available=130*1024**3))
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None: 25)
+    assert TrainingGuard(tmp_path,48,4).refresh()==48
+    process=SimpleNamespace(info={'name':'python.exe'},pid=123,cmdline=lambda:['python','run_encoder_v3.py'],create_time=lambda:456)
+    monkeypatch.setattr(psutil,'process_iter',lambda attrs: [process])
+    assert TrainingGuard(tmp_path,48,4).refresh()==4
+    def denied():raise psutil.AccessDenied(123)
+    process.cmdline=denied
+    assert TrainingGuard(tmp_path,48,4).refresh()==4
+    monkeypatch.setattr(psutil,'process_iter',lambda attrs: [])
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None: 90)
+    assert TrainingGuard(tmp_path,48,4).refresh()==4
+    monkeypatch.setattr(psutil,'cpu_percent',lambda interval=None: 25)
+    monkeypatch.setattr(psutil,'virtual_memory',lambda: SimpleNamespace(available=70*1024**3))
+    assert TrainingGuard(tmp_path,48,4).refresh()==4
+    assert path.read_bytes()==original
