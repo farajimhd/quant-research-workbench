@@ -21,6 +21,8 @@ from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
+TERMINAL = frozenset(('complete','capacity_reached','inventory_exhausted','origin_coverage_exhausted','pilot_complete','failed','stopped'))
+
 
 def byte_label(value):
     number=float(value or 0)
@@ -53,9 +55,15 @@ class SnapshotReader:
         if run!=self.run:
             self.workers.clear();self.cpu.clear();self.rate.clear();self.run=run
         now=time.time()
+        worker_root=self.root
+        name=self.execution.get('worker_root')
+        if name:
+            if Path(name).name!=name or name in ('.','..'):
+                errors.append('Invalid campaign worker root')
+            else:worker_root=self.root.parent/name
         native=not str(self.root).startswith("\\\\")
         if run and re.fullmatch(r"[a-zA-Z0-9_-]{1,100}",run):
-            directory=self.root/"worker-status"/run
+            directory=worker_root/"worker-status"/run
             for role,total in (("cpu",self.execution.get("workers",32)),("io",self.execution.get("io_workers",8))):
                 for slot in range(int(total)):
                     key=(role,slot)
@@ -81,7 +89,10 @@ class SnapshotReader:
         if point[0] and (not self.rate or point[0]>self.rate[-1][0]):self.rate.append(point)
         while len(self.rate)>2 and self.rate[-1][0]-self.rate[0][0]>60:self.rate.popleft()
         rate=None
-        if len(self.rate)>1 and self.rate[-1][0]>self.rate[0][0]:rate=(self.rate[-1][1]-self.rate[0][1])/(self.rate[-1][0]-self.rate[0][0])
+        if (p.get('state') not in TERMINAL and now-p.get('updated',0)<=15
+            and self.execution.get('started',0)<=p.get('updated',0)
+            and len(self.rate)>1 and self.rate[-1][0]>self.rate[0][0]):
+            rate=(self.rate[-1][1]-self.rate[0][1])/(self.rate[-1][0]-self.rate[0][0])
         return dict(execution=self.execution,progress=p,workers=dict(self.workers),now=now,
                     read_errors=errors,rate=rate,native=native)
 
@@ -109,7 +120,8 @@ def worker_table(snapshot, role, slots, width):
     if width>=95:table.add_column("Time",width=5,justify="right")
     if width>=110:table.add_column("PID",width=6,justify="right")
     if width>=120 and role=='cpu':table.add_column("CPU%",width=5,justify="right")
-    running=snapshot['progress'].get('state') not in ('complete','capacity_reached','inventory_exhausted','pilot_complete','failed','stopped')
+    running=snapshot['progress'].get('state') not in TERMINAL
+    restoring=snapshot['execution'].get('started',0)>snapshot['progress'].get('updated',0)
     for slot in slots:
         record=snapshot['workers'].get((role,slot))
         state,style=worker_state(record,running)
@@ -119,12 +131,16 @@ def worker_table(snapshot, role, slots, width):
             state,style='Idle','dim'
         total=assignment['total'] if assignment else r.get('progress_total')
         done=assignment['completed']+assignment['deferred'] if assignment else r.get('progress_done',0)
+        if assignment and done>=total and not restoring and state!='FAILED':
+            state,style='Done','green'
+        elif not running and not restoring and state!='FAILED':
+            state,style='Stopped','yellow'
         bar=ProgressBar(total=total,completed=done,width=8,pulse=total is None and state not in ('Ready','Exited','Starting'),complete_style='cyan' if role=='cpu' else 'green') if total is not None or state not in ('Starting','Ready','Exited') else Text('—',style='dim')
         task=(str(r.get('ticker','—'))+' '+str(r.get('month',''))[2:]).strip()
         cells=[Text(f"{'C' if role=='cpu' else 'I'}{slot+1:02d}"),Text(task),Text(state,style),bar,
                Text(f"{r.get('progress_done',0)}/{r['progress_total']}" if r.get('progress_total') is not None else '—'),Text(f"{done}/{total}" if assignment else f"{r.get('completed',0)}/{r.get('assigned',0)}")]
         if width>=88:cells.append(Text(str(assignment['tickers'] if assignment else r.get('tickers',0))))
-        if width>=95:cells.append(Text(f"{100*done/total:.2f}" if assignment and total else "100" if assignment else str(r.get('queries',0)) if role=='cpu' else f"{r.get('bytes_done',0)/1e6:.1f}"))
+        if width>=95:cells.append(Text(f"{100*done/total:.1f}" if assignment and total else "100" if assignment else str(r.get('queries',0)) if role=='cpu' else f"{r.get('bytes_done',0)/1e6:.1f}"))
         if width>=95:cells.append(Text(duration(snapshot['now']-r['task_started'] if r.get('task_started') else r.get('task_seconds',0))))
         if width>=110:cells.append(Text(str(r.get('pid','—'))))
         if width>=120 and role=='cpu':cells.append(Text(f"{r['cpu_pct']:.0f}" if r.get('cpu_pct') is not None else '—'))
@@ -152,11 +168,13 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     visible=list(range(current*capacity,min(cpus,(current+1)*capacity)))
     state=p.get('state','waiting for status');age=max(0,now-p.get('updated',0))
     if state=='inventory_exhausted':state='Plan exhausted; byte targets are upper limits'
+    if state=='origin_coverage_exhausted':state='Eligible unique origins exhausted'
     if e.get('started',0)>p.get('updated',0):state='starting / restoring file ledger'
-    severity='bold red' if p.get('failure') and not state.startswith('starting') else ('yellow' if age>15 else 'green')
+    terminal=p.get('state') in TERMINAL and not state.startswith('starting')
+    severity='bold red' if p.get('failure') and not state.startswith('starting') else ('yellow' if age>15 and not terminal else 'green')
     heading=Text('BarGPT  PHASE TWO  ',style='bold cyan');heading.append(state,style=severity)
     stamp=datetime.fromtimestamp(p.get('updated',now),ZoneInfo(timezone)).strftime('%H:%M:%S %Z')
-    heading.append(f'    {stamp} · {age:.0f}s old',style='dim')
+    heading.append(f"    {stamp} · "+('final status' if terminal else f'{age:.0f}s old'),style='dim')
     overview=Table.grid(expand=True,padding=(0,1))
     overview.add_column(width=21);overview.add_column(ratio=1);overview.add_column(justify='right',width=29)
     capacities=p.get('capacity',{})
@@ -164,18 +182,22 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     val=p.get('validation_bytes',0);vtarget=e.get('validation_bytes',250_000_000)
     for name,used,limit,color in [('Training',train,target,'cyan'),('Validation',val,vtarget,'green')]:
         c=capacities.get(name.lower(),{})
-        label='LIMIT' if c.get('blocked') else 'OPEN' if c else '?'
-        overview.add_row(f'{name} cap {label}',ProgressBar(total=limit,completed=used,complete_style=color),f'{byte_label(used)} / {byte_label(limit)}')
+        label='LIMIT' if c.get('blocked') else 'HEADROOM' if p.get('state')=='inventory_exhausted' and c else 'OPEN' if c else '?'
+        title=f'{name} headroom' if label=='HEADROOM' else f'{name} cap {label}'
+        overview.add_row(title,ProgressBar(total=limit,completed=used,complete_style=color),f'{byte_label(used)} / {byte_label(limit)}')
     planned=p.get('planned_units');accounted=p.get('accounted_months',0)
     overview.add_row('Month plan status',ProgressBar(total=planned,completed=accounted,pulse=planned is None),f'{accounted:,} / {planned:,}' if planned is not None else 'awaiting plan counters')
-    rate=byte_label(snapshot['rate'])+'/s' if snapshot.get('rate') is not None else 'warming rate'
+    rate='no active transfer' if terminal else byte_label(snapshot['rate'])+'/s' if snapshot.get('rate') is not None else 'warming rate'
     summary=Text(f"Published {byte_label(p.get('bytes',0))}  ·  {p.get('units',0):,} sessions  ·  {p.get('selected_origins',0):,} selected origins  ·  {rate}")
     activity=Text(f"CPU tasks {p.get('active_cpu',0)}/{cpus}  ·  I/O active {p.get('active_io',0)}/{ios}  ·  Source queries {p.get('active_queries',0)} / cap {p.get('query_limit','—')}  ·  Queued months {p.get('queued_units',0):,}",style='dim')
     groups=[heading,overview,summary,activity]
+    if p.get('campaign'):
+        groups.append(Text(f"Campaign total · current plan {p.get('campaign_plan_number','—')} · blocks stay within one session; context overlap only",style='bold cyan'))
+    if terminal and p.get('state')=='inventory_exhausted':
+        groups.append(Text('No queued work in this plan. Campaign continuation requires the next sample plan.',style='bold yellow'))
     for name,c in capacities.items():
         if c.get('blocked'):
             groups.append(Text(f"{name.title()} admission closed: {c.get('reason','byte limit')} · {byte_label(c.get('remaining_bytes',0))} remaining · {c.get('deferred_units',0):,} capacity deferrals",style='yellow'))
-    terminal=p.get('state') in ('complete','capacity_reached','inventory_exhausted','pilot_complete','failed','stopped')
     unfinished=sum(max(0,a['total']-a['completed']-a['deferred']) for a in p.get('worker_assignments',[]))
     if terminal and unfinished and not state.startswith('starting'):
         groups.append(Text(f'STOPPED WITH QUEUED WORK: {unfinished:,} assigned months unprocessed',style='bold red'))

@@ -79,9 +79,44 @@ def test_separate_capacity_states_fit_terminal(width,height):
     console=Console(file=io.StringIO(),width=width,height=height,no_color=True)
     with console.capture() as captured:console.print(render(s,width,height,page=0))
     text=captured.get()
-    assert 'Training cap OPEN' in text and 'Validation cap LIMIT' in text
+    assert 'Training headroom' in text and 'Validation cap LIMIT' in text
     assert 'Plan exhausted' in text and 'minimum_block_fit' in text
     assert len(text.splitlines())<=height and all(len(x)<=width for x in text.splitlines())
+
+
+def test_completed_queue_and_terminal_rate_are_explicit(tmp_path):
+    s=snapshot();s['rate']=1_500_000
+    s['progress'].update(state='inventory_exhausted',worker_assignments=[dict(slot=0,total=10,completed=3,deferred=7,tickers=1)])
+    console=Console(file=io.StringIO(),width=200,height=52,no_color=True)
+    with console.capture() as captured:console.print(render(s,200,52,page=0))
+    text=captured.get()
+    assert 'Done' in text and 'no active transfer' in text and '1.5 MB/s' not in text
+    assert 'No queued work' in text and 'final status' in text
+    (tmp_path/'execution.json').write_text(json.dumps(dict(workers=0,io_workers=0)))
+    reader=SnapshotReader(tmp_path)
+    for state,updated,size in [('running',time.time()-5,100),('inventory_exhausted',time.time(),200)]:
+        (tmp_path/'progress.json').write_text(json.dumps(dict(state=state,updated=updated,bytes=size)))
+        result=reader.read()
+    assert result['rate'] is None
+
+
+@pytest.mark.parametrize('width,height',[(200,52),(80,24)])
+def test_campaign_total_and_plan_rows_fit(width,height):
+    s=snapshot();s['progress'].update(campaign=True,campaign_plan_number=2)
+    console=Console(file=io.StringIO(),width=width,height=height,no_color=True)
+    with console.capture() as captured:console.print(render(s,width,height,page=0))
+    text=captured.get();assert 'current plan 2' in text
+    assert len(text.splitlines())<=height
+
+
+def test_campaign_observer_reads_only_active_sibling_worker_root(tmp_path):
+    campaign=tmp_path/'campaign';worker=tmp_path/'plan2';campaign.mkdir();(worker/'worker-status/new').mkdir(parents=True)
+    (campaign/'execution.json').write_text(json.dumps(dict(worker_root='plan2',telemetry_run='new',workers=1,io_workers=0)))
+    (campaign/'progress.json').write_text(json.dumps(dict(updated=time.time(),state='running')))
+    (worker/'worker-status/new/cpu-00.json').write_text(json.dumps(dict(run='new',role='cpu',slot=0,pid=999999,created=1,state='Ready')))
+    s=SnapshotReader(campaign).read();assert ('cpu',0) in s['workers']
+    (campaign/'execution.json').write_text(json.dumps(dict(worker_root='../outside',workers=0,io_workers=0)))
+    assert 'Invalid campaign worker root' in SnapshotReader(campaign).read()['read_errors']
 
 
 def test_observer_exact_return_identity_and_optional_failure(tmp_path, monkeypatch):

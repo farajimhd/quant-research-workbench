@@ -121,6 +121,8 @@ def publish(root, ticker, month, liquid, binding, source_hash, compiled, geometr
         files=files,
         bytes=sum(f["bytes"] for f in files),
     )
+    if 'origin_coverage' in compiled:
+        receipt['origin_coverage']=compiled['origin_coverage']
     receipt = json.loads(json.dumps(receipt))
     receipt["hash"] = digest(receipt)
     notify("Commit", detail="Sealing session receipt")

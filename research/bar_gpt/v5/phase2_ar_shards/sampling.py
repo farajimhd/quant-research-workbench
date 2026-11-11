@@ -56,13 +56,14 @@ def compile_sessions(
     actions,
     chunk_events=0,
     seed=20261109,
+    prior_roots=(),
 ):
     """One CPU owner warms once, then emits independent single-session snapshots."""
     from ..shards.sql import clock
     from ..shards.contract import digest
 
     rows = [r for _, month in reader.months(job) for r in month]
-    chosen = origin_clock(unit, seed)
+    chosen = int(unit['first_us']) if prior_roots else origin_clock(unit, seed)
     selected = [
         r
         for r in rows
@@ -179,7 +180,7 @@ def compile_sessions(
             count = len(current[0])
             start = (
                 seed_for(seed, unit["ticker"], day, "origin") % (count - BLOCK + 1)
-                if count >= BLOCK
+                if count >= BLOCK and not prior_roots
                 else 0
             )
             origin = int(current[0]["end_us"][start]) if count else opened
@@ -230,6 +231,9 @@ def compile_sessions(
                     )
                 ),
             )
+            if prior_roots:
+                from .continuation import uncovered
+                compiled=uncovered(compiled,current[0],unit['ticker'],day,prior_roots,geometry.history)
             # Freeze compiled arrays before advancing the separate RAW cache.
             # Even skipped/short sessions contribute real context to the next day.
             cache = [

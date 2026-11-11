@@ -6,7 +6,7 @@ import heapq
 from ..shards.contract import digest
 
 
-def assign(units, jobs, workers):
+def assign(units, jobs, workers, *, heavy_first=False):
     """Never split a ticker between slots; preserve every frozen unit verbatim."""
     if workers < 1:
         raise ValueError("Positive worker count required")
@@ -35,7 +35,7 @@ def assign(units, jobs, workers):
         heapq.heappush(loads, (load + costs[ticker], slot))
     queues, manifests = [], []
     for slot, tickers in enumerate(owners):
-        ordered = sorted(tickers, key=lambda t: (priorities[t], t))
+        ordered = sorted(tickers, key=lambda t: (-costs[t], priorities[t], t) if heavy_first else (priorities[t], t))
         tasks = [u for ticker in ordered for u in sorted(grouped[ticker], key=lambda u: u["month"])]
         queues.append(deque(tasks))
         manifests.append(dict(slot=slot, tasks=len(tasks), tickers=ordered,

@@ -795,3 +795,39 @@ validate actual loader paths and decoder/normalization compatibility; resolve
 the reference coverage gap; run bounded real-context and recovery pilots; and
 publish a sealed realized selection. No phase-three/four or phase-two model
 training is authorized merely by the existence of these source files.
+
+## 14. Continuing the build across plans (2026-11-11)
+
+The campaign byte budget applies across successive immutable sample plans, not
+only one sampled pass. `phase2_build_campaign_v1.py` preserves the original
+`phase2-ar-sampled-v2` root and prepares its uncovered-origin continuation in
+`phase2-ar-sampled-v2-plan-0002`. Campaign status is under
+`phase2-ar-campaign-v1`; the Rich viewer shows cumulative bytes and the current
+plan's worker queues. Existing shards, receipts, selection IDs, source ordinal
+inventory, quote policy, frozen liquidity classes and validation data stay intact.
+The coordinator now uses the sealed Parquet checkpoint/journal ledger, without
+SQLite; the earlier SQLite description above is historical.
+
+Every block still has4096 consecutive observed1s origins in one NY04-20 session.
+Only causal context may overlap earlier blocks. The continuation covers each
+full frozen session, excludes origin-rank ranges proved by earlier sealed
+receipts, and forms blocks separately inside each remaining consecutive run.
+It never joins across a previous block, a session boundary or a missing range.
+Short residual runs remain explicit pending/boundary deferrals. Optional sealed
+`origin_coverage` receipt metadata records these rank ranges; BAR/ORIGIN dtypes,
+five frames,64-bar contexts and common-session split basis remain unchanged.
+Unused intervening/future pool rows are removed with exact causal index remapping.
+
+Preparation copies and independently hashes frozen metadata, preserves the
+universe, records closed validation work, and excludes only months whose largest
+source session has fewer than4096 events: such a session cannot supply4096
+observed1s origins. All exclusions are recorded in a hashed Parquet artifact.
+Ticker ownership remains exclusive and chronological; continuation queues start
+with heavier ticker groups to reduce late single-worker tails. The separate
+32CPU/8I/O configuration and training-aware32/4 source admission remain bounded.
+
+The4TB training/250MB validation ceilings are cumulative. If eligible unique
+origins are exhausted before4TB, status explicitly becomes
+`origin_coverage_exhausted`; the campaign must not pad with repeated origins or
+cross-session blocks. A completed plan shows Done workers and no active transfer,
+not a frozen last throughput estimate. Training remains independent and untouched.

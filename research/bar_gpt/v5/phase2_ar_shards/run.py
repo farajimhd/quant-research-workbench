@@ -75,6 +75,8 @@ def initialize(root, plan, settings, active, lock, stop):
         ),
     )
     STATE["reader"] = ObservedReader(STATE["reader"], reporter, plan["seed"])
+    from .continuation import validate_parents
+    STATE['prior_roots']=validate_parents(plan)
 
 
 @contextmanager
@@ -146,6 +148,7 @@ def _produce(unit):
         actions=actions,
         chunk_events=s["settings"]["chunk_events"],
         seed=s["plan"]["seed"],
+        prior_roots=s.get('prior_roots',()),
     ):
         directory = (
             s["root"] / "shards" / digest(unit["ticker"])[:24] / session["session"]
@@ -369,7 +372,8 @@ def main(argv=None):
         catalog = Catalog(root)
         remaining = [u for u in queues if not catalog.is_complete(u)]
         initially_complete = planned_units - len(remaining)
-        worker_queues, assignments = assign(remaining, plan["jobs"], args.workers)
+        worker_queues, assignments = assign(remaining, plan["jobs"], args.workers,
+                                           heavy_first=bool(plan.get('continuation')))
         assignment = dict(version="ticker-affinity-v1", binding=plan["hash"],
                           attempt=settings["telemetry_run"], initially_complete=initially_complete,
                           planned_units=planned_units, workers=assignments)
