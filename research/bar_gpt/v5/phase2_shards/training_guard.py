@@ -30,26 +30,39 @@ class TrainingGuard:
         No process is signalled and no training files are written.
         """
         live = []
+        protected = False
         try:
             for process in psutil.process_iter(['pid', 'name']):
                 if 'python' not in (process.info['name'] or '').lower():
                     continue
                 try:
-                    command = ' '.join(process.cmdline()).lower()
+                    args = process.cmdline()
+                    command = ' '.join(args).lower()
                     if any(token in command for token in
                            ('run_encoder', 'run_train', 'campaign_v3', 'torch.distributed.run')):
                         live.append((process.pid, process.create_time()))
+                        try:
+                            output = Path(args[args.index('--output') + 1]).resolve()
+                            if not output.is_relative_to(self.campaign.parent.resolve()):
+                                raise ValueError('Trainer outside configured runtime')
+                            status = json.loads((output / 'progress.json').read_text())
+                            normal = (status['state'] == 'running' and status['stage'] == 'training'
+                                      and 0 <= time.time() - status['updated'] <= 30
+                                      and status['updated'] >= process.create_time())
+                            protected |= not normal
+                        except (OSError, ValueError, KeyError, IndexError, TypeError):
+                            protected = True
                 except psutil.NoSuchProcess:
                     continue
             free = psutil.virtual_memory().available / 1024**3
             cpu = psutil.cpu_percent(interval=None)
         except (psutil.Error, OSError):
             return self.reduced, 'trainer activity unavailable'
-        if live:
+        if live and protected:
             return self.reduced, f'{len(live)} live trainer(s); stage unknown'
         if free < 80 or cpu >= 85:
             return self.reduced, f'no trainer; resource pressure CPU {cpu:.0f}% RAM {free:.0f} GiB'
-        return self.full, f'no live trainer; CPU {cpu:.0f}% RAM {free:.0f} GiB'
+        return self.full, f'{len(live)} live normal trainer(s); CPU {cpu:.0f}% RAM {free:.0f} GiB'
 
     def refresh(self):
         """Return a cap and reason; unreadable status stays conservative."""

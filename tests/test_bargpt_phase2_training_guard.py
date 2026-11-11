@@ -87,6 +87,12 @@ def test_stale_activity_and_pressure(tmp_path, monkeypatch):
     process=SimpleNamespace(info={'name':'python.exe'},pid=123,cmdline=lambda:['python','run_encoder_v3.py'],create_time=lambda:456)
     monkeypatch.setattr(psutil,'process_iter',lambda attrs: [process])
     assert TrainingGuard(tmp_path,48,4).refresh()==4
+    replacement=tmp_path.parent/(tmp_path.name+'-replacement');replacement.mkdir()
+    (replacement/'progress.json').write_text(json.dumps(dict(state='running',stage='training',updated=time.time())))
+    process.cmdline=lambda:['python','run_encoder_v3.py','--output',str(replacement)]
+    assert TrainingGuard(tmp_path,48,4).refresh()==48
+    (replacement/'progress.json').write_text(json.dumps(dict(state='running',stage='validation',updated=time.time())))
+    assert TrainingGuard(tmp_path,48,4).refresh()==4
     def denied():raise psutil.AccessDenied(123)
     process.cmdline=denied
     assert TrainingGuard(tmp_path,48,4).refresh()==4
