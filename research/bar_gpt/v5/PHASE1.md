@@ -191,6 +191,11 @@ read the immutable root's `contract.json` before reproducing a run.
 
 ### Liquid supplement
 
+The independent hourly/daily balancing addendum is documented in
+[COARSE_SUPPLEMENT.md](COARSE_SUPPLEMENT.md). It retains the active April-2024
+split and corrected quote contract, excludes exact parent windows, limits overlap
+between NEW supplement windows to 50%, and never activates itself in training.
+
 [liquid_universe_v1.py](liquid_universe_v1.py),
 [supplement_v1.py](supplement_v1.py) and
 [run_liquid_supplement.py](run_liquid_supplement.py) build an independent sibling.
