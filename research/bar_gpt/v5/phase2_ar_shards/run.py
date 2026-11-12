@@ -641,6 +641,7 @@ def main(argv=None):
                                     "context_memory_hits", "context_disk_hits", "context_source_sessions",
                                     'memory_retries',
                                     'cached_eligibility_sessions','inventory_empty_sessions','eligibility_unknown_sessions',
+                                    'eligibility_cache_fragment_fallbacks',
                                 )
                             }
                             out.write(

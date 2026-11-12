@@ -310,7 +310,7 @@ class CanonicalReader:
 
     def origin_counts(self, ticker, rows, gate):
         """Filter exact known-short/empty sessions BEFORE querying; keep all counts."""
-        began=time.monotonic();counts={};pending=[]
+        began=time.monotonic();counts={};pending=[];resolved=[]
         costs=dict(queries=0,query_seconds=0.,admission_wait_seconds=0.,
                    cached_eligibility_sessions=0,inventory_empty_sessions=0,eligibility_unknown_sessions=0)
         def flush():
@@ -326,6 +326,20 @@ class CanonicalReader:
                    and first<=last and (last<opened or first>=closed)))
             cache=getattr(self,'eligibility_cache',None)
             n=0 if empty else cache.get(ticker,row) if cache else None
+            resolved.append((row,n,empty))
+        # Do not replace one small monthly query with many tiny queries when
+        # partial cache coverage has holes. Query the original page once and
+        # cross-check known counts instead; complete/prefix hits still prune.
+        runs=sum(n is None and (i==0 or resolved[i-1][1] is not None)
+                 for i,(_,n,_) in enumerate(resolved))
+        if runs>1:
+            found,timing=self._origin_counts_uncached(ticker,rows,gate)
+            for row,n,_ in resolved:
+                if n is not None and found[row['source_date']]!=n:
+                    raise ValueError('Canonical count differs from sealed eligibility evidence')
+            timing.update(eligibility_cache_fragment_fallbacks=1,fetch_seconds=time.monotonic()-began)
+            return found,timing
+        for row,n,empty in resolved:
             if n is None:
                 pending.append(row);costs['eligibility_unknown_sessions']+=1
             else:

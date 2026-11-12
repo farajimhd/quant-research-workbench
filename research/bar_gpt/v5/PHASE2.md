@@ -925,3 +925,7 @@ causal64-bar context, split basis, origin uniqueness,75/25mix and payload bytes
 remain unchanged. Monthly timing reports cache hits, proven-empty hits, unknown
 sessions, actual queries and costs. A cache never declares an unqueried estimate
 as a source count or relaxes a validity condition to improve MB/s.
+For fragmented partial cache coverage, retain one original page query instead of
+multiplying a small monthly query into many tiny requests. Known counts are then
+cross-checked against the result. Complete cache hits and contiguous missing-prefix
+or suffix runs still prune; this fallback preserves both correctness and latency.

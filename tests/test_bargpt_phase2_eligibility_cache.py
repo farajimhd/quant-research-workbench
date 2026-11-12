@@ -67,6 +67,18 @@ def test_dense_cached_counts_are_retained_not_filtered_as_short(tmp_path):
     assert counts[r['source_date']]==4096  # Compiler still fetches/compiles this candidate.
 
 
+def test_fragmented_cache_never_multiplies_queries(tmp_path):
+    c,r,_,_=cache(tmp_path)
+    reader=source.CanonicalReader.__new__(source.CanonicalReader);reader.eligibility_cache=c;calls=[]
+    def query(ticker,rows,gate):
+        calls.append(list(rows));return {x['source_date']:31 if x==r else 4096 for x in rows},dict(queries=1)
+    reader._origin_counts_uncached=query
+    rows=[row('2021-01-03'),r,row('2021-01-05')]
+    found,timing=reader.origin_counts('T',rows,nullcontext)
+    assert len(calls)==1 and calls[0]==rows and found[r['source_date']]==31
+    assert timing['eligibility_cache_fragment_fallbacks']==1
+
+
 def test_inventory_empty_proof_and_unknown_bounds(tmp_path):
     reader=source.CanonicalReader.__new__(source.CanonicalReader);reader.eligibility_cache=None;calls=[]
     def query(ticker,rows,gate):
