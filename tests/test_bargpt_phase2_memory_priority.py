@@ -16,6 +16,8 @@ def test_pid_reuse_and_training_process_are_rejected_before_any_mutation(monkeyp
         module.set_memory_priority(1,99,1000,0,0,apply=True)
     with pytest.raises(ValueError,match='not the phase-two'):
         module.set_memory_priority(1,100,1000,0,0,apply=True)
+    with pytest.raises(ValueError,match='not the phase-two'):
+        module.set_memory_priority(1,100,1000,0,0,apply=True,controller=True)
 
 
 def test_low_headroom_rejected_before_openprocess(monkeypatch):

@@ -18,11 +18,12 @@ def reserve_ok(available, private, query_reserved, reserve):
     return available >= reserve + query_reserved + private
 
 
-def set_memory_priority(pid, created, available, reserved, reserve, *, apply=False, retain_working_set=False, normalize_io=False):
+def set_memory_priority(pid, created, available, reserved, reserve, *, apply=False, retain_working_set=False, normalize_io=False, controller=False):
     p=psutil.Process(pid)
     if abs(p.create_time()-created)>.01:
         raise ValueError('Coordinator PID identity changed')
-    if 'phase2_ar_shards.run' not in ' '.join(p.cmdline()):
+    expected='run_phase2_build_campaign_v1.py' if controller else 'phase2_ar_shards.run'
+    if expected not in ' '.join(p.cmdline()):
         raise ValueError('Process is not the phase-two data coordinator')
     cpu_priority=p.nice();info=p.memory_info()
     if not reserve_ok(available,info.private,reserved,reserve):
@@ -89,6 +90,7 @@ def main(argv=None):
     p.add_argument('--apply',action='store_true')
     p.add_argument('--retain-working-set',action='store_true')
     p.add_argument('--normalize-io',action='store_true')
+    p.add_argument('--controller-owner',type=Path,help='Optional exact parent-controller ownership ledger')
     p.add_argument('--output',type=Path,required=True)
     args=p.parse_args(argv)
     read=lambda path:json.loads(path.read_text())
@@ -99,6 +101,13 @@ def main(argv=None):
     report=set_memory_priority(owner['pid'],owner['created'],psutil.virtual_memory().available,
         int(progress.get('reserved_query_gib',0)*1024**3),
         int(settings['reserve_memory_gib']*1024**3),apply=args.apply,retain_working_set=args.retain_working_set,normalize_io=args.normalize_io)
+    if args.controller_owner:
+        parent=read(args.controller_owner)
+        if psutil.Process(owner['pid']).ppid()!=parent['pid']:
+            raise ValueError('Controller is not the current data coordinator parent')
+        report['controller']=set_memory_priority(parent['pid'],parent['created'],psutil.virtual_memory().available,
+            int(progress.get('reserved_query_gib',0)*1024**3),int(settings['reserve_memory_gib']*1024**3),
+            apply=args.apply,normalize_io=args.normalize_io,controller=True)
     from .shards.contract import write_json
     report.update(checked=time.time(),campaign=str(args.campaign),training_untouched=True)
     write_json(args.output,report)

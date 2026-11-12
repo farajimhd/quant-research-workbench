@@ -887,3 +887,10 @@ The initial working-set-floor experiment showed no reliable throughput benefit;
 its original minimum/maximum/flags were restored. Do not enable that option by
 default or describe it as a demonstrated optimization. Retain before/after evidence
 and distinguish records processed/s from bytes published/s for sparse workloads.
+
+Supply `--controller-owner <phase2-full-process.json>` to apply NORMAL memory/I/O
+priority to the exact parent campaign controller too. The coordinator's PPID must
+match that ledger and both PID creation times/modules are verified. Native child-
+process testing confirmed NORMAL I/O priority inheritance while BELOW_NORMAL CPU
+priority stays unchanged, so successive plan coordinators inherit the correction.
+No background monitor, trainer changes or generator restart is needed.
