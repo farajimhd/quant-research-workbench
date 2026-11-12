@@ -81,14 +81,14 @@ def test_zero_error_and_extreme_quantile_are_explicit():
 
 def test_restart_requires_complete_validation_guard_and_exact_epoch():
     from research.bar_gpt.v5.run_price_metrics_upgrade_v3 import boundary_ready, resume_command
-    state=dict(epoch=20,phase='train',step=100,scheduler=dict(updates=100),history=[dict(
-        epoch=20,training=dict(complete_pass=True),validation=dict(complete_pass=True),learning_guard=dict(action='continue'))])
+    state=dict(epoch=19,phase='validation',step=100,scheduler=dict(updates=100),training_metrics=dict(complete_pass=True),history=[dict(
+        epoch=19,training=dict(complete_pass=True),validation=dict(complete_pass=True),learning_guard=dict(action='continue'))])
     assert boundary_ready(state,20)
     assert not boundary_ready(state,19)
     state['history'][-1]['learning_guard']['action']='stop'
     assert not boundary_ready(state,20)
     state['history'][-1]['learning_guard']['action']='continue'
-    state['phase']='validation'
+    state['phase']='train'
     assert not boundary_ready(state,20)
     original=['python','-B','-m','research.bar_gpt.v5.run_encoder_v3','--output','old','--resume','old.pt','--source-revision','old','--workers','16','--prepare-threads','1']
     changed=resume_command(original,'epoch20.pt','new','revision')

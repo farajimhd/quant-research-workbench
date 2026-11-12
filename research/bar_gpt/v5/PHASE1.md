@@ -592,10 +592,10 @@ No extra validation forward, training objective or normalization change.
 
 Reporter continues logging through its existing W&B identity/lease and unchanged
 optimizer/global-step mapping. New keys are absent before first computation;
-no historical zero filling or backfill. The first full new-metric validation after
-a complete epoch20 restart is epoch21. Prior epoch20 history stays original.
-`run_price_metrics_upgrade_v3.py` waits for the complete epoch20 checkpoint,
-full validation and continuing learning guard, then uses an exact owned STOP,
+no historical zero filling or backfill. The first full new-metric validation is epoch20, after its training completes
+and BEFORE its validation. Prior epochs retain their original history.
+`run_price_metrics_upgrade_v3.py` waits for the epoch20 complete-training checkpoint in phase=validation,
+with epoch19 history and continuing prior learning guard, then uses an exact owned STOP,
 checks every nested checkpoint state hash, resumes into an independent output
 with the original command arguments, and verifies the initial resumed checkpoint
 and original W&B identity. Any human STOP, newer saved state, identity change or

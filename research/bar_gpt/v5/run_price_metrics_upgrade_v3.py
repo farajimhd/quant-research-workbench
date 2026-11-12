@@ -17,11 +17,10 @@ from .shards.contract import file_hash, write_json
 
 def boundary_ready(saved, epoch):
     history = saved.get('history', [])
-    return (saved.get('epoch') == epoch and saved.get('phase') == 'train'
+    return (saved.get('epoch') == epoch - 1 and saved.get('phase') == 'validation'
             and saved.get('scheduler', {}).get('updates') == saved.get('step')
-            and len(history) > 0 and history[-1].get('epoch') == epoch
-            and history[-1].get('training', {}).get('complete_pass') is True
-            and history[-1].get('validation', {}).get('complete_pass') is True
+            and saved.get('training_metrics', {}).get('complete_pass') is True
+            and len(history) > 0 and history[-1].get('epoch') == epoch - 1
             and history[-1].get('learning_guard', {}).get('action', 'continue') == 'continue')
 
 
@@ -51,7 +50,7 @@ def main(argv=None):
     assert not output.exists()
     for name,sha in config['files'].items():
         assert file_hash(source/name)==sha,'Immutable snapshot drift: '+name
-    checkpoint=parent/f"checkpoint_epoch_{config['epoch']:03d}.pt"
+    checkpoint=parent/'checkpoint_last.pt'
     write_json(setup/'owner.json',dict(pid=os.getpid(),created=psutil.Process().create_time()))
     try:
         while True:
@@ -59,18 +58,19 @@ def main(argv=None):
             if not alive():raise RuntimeError('Original trainer exited; no blind restart')
             status=read(parent/'progress.json')
             if status['state'] not in ('running',):raise RuntimeError('Trainer is terminal; no restart')
-            report('waiting-complete-epoch',target_epoch=config['epoch'],epoch=status.get('epoch'),stage=status.get('stage'))
-            if checkpoint.exists() and (parent/'results.json').exists():
-                results=read(parent/'results.json')
-                if results.get('history') and results['history'][-1]['epoch']>=config['epoch']:
+            report('waiting-training-boundary',target_epoch=config['epoch'],epoch=status.get('epoch'),stage=status.get('stage'))
+            if status.get('epoch',0)>config['epoch']:
+                raise RuntimeError('Requested boundary already passed; refuse delayed restart')
+            if status.get('epoch')==config['epoch'] and status.get('stage') in (
+                'starting validation loader','measuring validation','validation') and checkpoint.exists():
                     saved=torch.load(checkpoint,map_location='cpu',weights_only=False)
-                    if not boundary_ready(saved,config['epoch']):raise ValueError('Epoch is incomplete or learning guard stopped')
+                    if not boundary_ready(saved,config['epoch']):raise ValueError('Training boundary is incomplete or learning guard stopped')
                     break
             time.sleep(.5)
         marker='OWNED_PRICE_RELATIVE_METRICS:'+config['revision']
         with (parent/'STOP').open('x',encoding='utf-8') as f:f.write(marker)
         sha=file_hash(checkpoint)
-        report('draining-complete-epoch',epoch=saved['epoch'],step=saved['step'])
+        report('draining-before-validation',epoch=config['epoch'],step=saved['step'])
         deadline=time.monotonic()+180
         while alive() and time.monotonic()<deadline:time.sleep(.5)
         if alive():raise TimeoutError('Trainer did not drain; no signals sent')
@@ -79,6 +79,14 @@ def main(argv=None):
         last=torch.load(parent/'checkpoint_last.pt',map_location='cpu',weights_only=False)
         assert state_hash(last)==state_hash(saved),'Newer/changed state exists; refuse to discard it'
         del last
+        # Freeze the drained alias in a NEW immutable entry for resume provenance.
+        import shutil
+        frozen=setup/'checkpoint_before_validation.pt'
+        assert not frozen.exists()
+        shutil.copyfile(checkpoint,frozen)
+        assert file_hash(frozen)==sha
+        # Resume through the intact parent directory so best-checkpoint and W&B
+        # ancestry remain unchanged; the extra copy is immutable audit evidence.
         proof={key:state_hash(value) for key,value in saved.items()}
         command=resume_command(config['command'],checkpoint,output,config['revision'])
         write_json(setup/'boundary-proof.json',dict(parent_sha256=sha,state_hashes=proof,command=command,wandb=config['wandb']))
