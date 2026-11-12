@@ -560,3 +560,44 @@ unrelated source changes and immutable evidence. Generic repair/guard examples
 in older portions of [QUOTE_REPAIR.md](QUOTE_REPAIR.md) and older patience text
 in [OVERNIGHT.md](OVERNIGHT.md) are historical where they conflict with the
 explicit current v4/eight-validation contract recorded here.
+
+## V3 price-relative validation diagnostics (2026-11-12)
+
+Keep every existing `validation_full_raw_mae` metric. New price-only means use
+`validation_full_price_mape_pct/<frame>/<channel>`. The corresponding median and
+P90 keys are `validation_full_price_median_ape_pct` and
+`validation_full_price_p90_ape_pct`. Each also has a `_by_price_band` namespace,
+with `<band>/<frame>/<channel>`. Only trade/bid/ask OPEN/HIGH/LOW/CLOSE appear;
+volume, sizes and counts never appear in these metric namespaces.
+
+The numerator is the absolute error AFTER the v3 inverse converts decoder output
+back to sample-basis USD prices. Divide each observation by its own actual USD
+price and multiply by100; then average observations, never batch means or a
+ratio of aggregate dollar MAE to aggregate price. The original validity mask is
+retained. Nonfinite/nonpositive actual prices are excluded and counted. Nonfinite
+eligible predictions cause the affected aggregate to be unavailable with explicit
+overflow counts. Empty groups are unavailable, not zero. Bands follow the actual
+split-adjusted per-observation price: below1,1–5,5–20,20–100,100andabove; lower
+bounds inclusive. Stored occurrences are observation-weighted as in raw MAE.
+
+Mean APE uses all eligible values directly in Float64. Median/P90 use nearest-rank
+streaming logarithmic histograms; these are approximate order statistics, NOT
+exact percentiles. 8192 bins cover1e-9..1e9 percent, zero has an exact separate bin,
+and an out-of-range percentile is unavailable. Bin relative width~0.507percent
+is logged in `*_price_relative_quantile_bin_relative_width`; midpoint estimates
+are within the selected bin. Histograms consume~27MiB per accumulator and merge
+counts rather than averaging percentiles. The existing bounded asynchronous CPU
+reducer merges price statistics alongside raw MAE after the SAME model forward.
+No extra validation forward, training objective or normalization change.
+
+Reporter continues logging through its existing W&B identity/lease and unchanged
+optimizer/global-step mapping. New keys are absent before first computation;
+no historical zero filling or backfill. The first full new-metric validation after
+a complete epoch20 restart is epoch21. Prior epoch20 history stays original.
+`run_price_metrics_upgrade_v3.py` waits for the complete epoch20 checkpoint,
+full validation and continuing learning guard, then uses an exact owned STOP,
+checks every nested checkpoint state hash, resumes into an independent output
+with the original command arguments, and verifies the initial resumed checkpoint
+and original W&B identity. Any human STOP, newer saved state, identity change or
+intentional learning-guard stop fails closed. Source synchronization must follow
+local tests, commit and push; do not edit the active immutable snapshot.

@@ -9,6 +9,7 @@ import torch
 
 from .shards.contract import FRAMES
 from .shards.phase1_contract import CHANNELS
+from .price_relative_v3 import PriceRelative, CONTRACT as PRICE_RELATIVE_CONTRACT
 
 PRICES = (0, 1, 2, 3, 6, 7, 8, 9, 12, 13, 14, 15)
 ACTIVITY = (4, 5, 10, 11, 16, 17)
@@ -27,6 +28,7 @@ CONTRACT = dict(
     overflow="MAE unavailable for affected head/frame; explicit count",
     purpose="reference-conditioned reconstruction, not absolute-scale recovery or forecasting",
     backend="bounded asynchronous CPU Float64 reduction; one GPU forward",
+    price_relative=PRICE_RELATIVE_CONTRACT,
 )
 
 
@@ -54,6 +56,7 @@ class NativeMAE:
         self.sums = torch.zeros((len(FRAMES), 18), device=device, dtype=torch.float64)
         self.counts = torch.zeros_like(self.sums, dtype=torch.int64)
         self.overflows = torch.zeros_like(self.counts)
+        self.price_relative = PriceRelative()
 
     def add(self, prediction, batch):
         decoded = inverse(prediction, batch.native_reference, batch.native_stats)
@@ -61,6 +64,7 @@ class NativeMAE:
         finite = torch.isfinite(errors)
         mask = batch.native_valid
         frame = torch.searchsorted(self.frames, batch.native_frames)
+        self.price_relative.add(errors, batch.native_targets, mask, frame)
         keys = frame[:, None] * 18 + torch.arange(18, device=decoded.device)
         errors.masked_fill_(~(mask & finite), 0)
         self.sums.flatten().scatter_add_(0, keys.flatten(), errors.sum(-1).flatten())
@@ -86,6 +90,7 @@ class NativeMAE:
                 result[f"{prefix}_overflows/{frame}/{channel}"] = overflow
                 if not math.isfinite(total):
                     result[f"{prefix}_sum_overflow/{frame}/{channel}"] = 1
+        result.update(self.price_relative.metrics(prefix, FRAME_NAMES, CHANNELS))
         return result
 
 
@@ -98,7 +103,7 @@ class AsyncNativeMAE:
     per-publication counts. Worker exceptions propagate instead of losing data.
     """
 
-    def __init__(self, device="cuda", workers=2, max_pending=4):
+    def __init__(self, device="cuda", workers=4, max_pending=4):
         self.stream = torch.cuda.Stream(device=device)
         self.pool = ThreadPoolExecutor(
             max_workers=workers, thread_name_prefix="native-mae"
@@ -126,7 +131,7 @@ class AsyncNativeMAE:
         with torch.inference_mode():
             partial = NativeMAE("cpu")
             partial.add(prediction, metadata)
-        return partial.sums, partial.counts, partial.overflows
+        return partial.sums, partial.counts, partial.overflows, partial.price_relative
 
     def merge_one(self):
         values = self.pending.popleft().result()
@@ -134,6 +139,7 @@ class AsyncNativeMAE:
             (self.total.sums, self.total.counts, self.total.overflows), values
         ):
             target.add_(value)
+        self.total.price_relative.merge(values[3])
 
     def add(self, prediction, batch):
         if len(self.pending) >= self.max_pending:
