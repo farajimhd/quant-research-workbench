@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 
 import pytest
 import torch
@@ -9,11 +10,12 @@ from research.bar_gpt.v5.wandb_identity_v1 import signature
 
 
 def test_readback_flag_is_operational_and_defaults_to_original_behavior():
-    baseline=arguments([])
-    candidate=arguments(['--async-loss-readback'])
+    baseline=arguments(['--output','D:/TradingML/runtimes/test-readback'])
+    candidate=arguments(['--output','D:/TradingML/runtimes/test-readback','--async-loss-readback'])
     assert baseline.async_loss_readback is False
     assert candidate.async_loss_readback is True
-    assert signature(vars(baseline))==signature(vars(candidate))
+    normalize=lambda args:{k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()}
+    assert signature(normalize(baseline))==signature(normalize(candidate))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA scalar lifetime/readback test')
