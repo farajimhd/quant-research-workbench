@@ -152,9 +152,9 @@ def test_extraction_real_publication_resume_path(tmp_path, monkeypatch):
     output = tmp_path / "supplement"
     output.mkdir()
     cached = {f: bars(200, f) for f in s.COARSE}
-    jobs = [dict(ticker="TEST", key="key", years=[dict(year=2020)])]
+    jobs = [dict(ticker="TEST", key="key", years=[dict(year=2020, days=100, events=10000)])]
     body = dict(configuration=dict(workers=2, io_workers=2, query_memory_gib=1,
-                                  ram_reserve_gib=64, disk_reserve_gib=150, target_bytes=10**8),
+                                  ram_reserve_gib=64, disk_reserve_gib=150, target_bytes=10**8, chunk_events=500000),
                 authority=dict(schema=[], dictionary_hash="d", rules=[], corporate_actions=dict(rows=[])),
                 targets={name: {str(f): 3 for f in s.COARSE} for name in ["train", "validation"]}, cutoff_us=2**62)
     contract = dict(contract=body, binding=s.digest(body))

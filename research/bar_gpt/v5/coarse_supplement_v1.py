@@ -425,7 +425,12 @@ def extract(output, contract, plan, parents, *, endpoint=None):
     budget = Budget(cfg["target_bytes"], sum(p.stat().st_size for p in output.rglob("*") if p.is_file()))
     (output / "completed").mkdir(exist_ok=True)
     saved = {name: Counter() for name in ("train", "validation")}
-    jobs = sorted(plan["jobs"], key=lambda j: (j["ticker"], j["key"]))
+    # Frozen cost order avoids starting with a multi-billion-event alphabetical
+    # ticker and holding all completed short ticker futures behind it. Counts
+    # are metadata estimates only; every frozen job remains in the plan.
+    jobs = sorted(plan["jobs"], key=lambda j: (
+        sum(y["days"] / 3 + y["events"] / cfg["chunk_events"] for y in j["years"]),
+        j["ticker"], j["key"]))
     actions = {}
     for action in authority["corporate_actions"]["rows"]:
         actions.setdefault(action["provider_ticker"], []).append(action)

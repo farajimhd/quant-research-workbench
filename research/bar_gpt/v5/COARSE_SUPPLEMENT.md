@@ -54,7 +54,9 @@ repeating warmup queries. Corporate-action adjustment happens once, only on copi
 accepted 64-bar windows. Cache pages are not training shards. No SQLite is used.
 
 Futures and ticker memory are bounded. The coordinator accepts results in frozen
-ticker order, so selection under global quotas does not depend on query timing.
+metadata-cost order (source days and events, with ticker/key tie-breaks), so a
+huge alphabetical first ticker does not hold the initial queue behind it and
+selection under global quotas does not depend on query timing.
 Completed ticker receipts resume without queries or repeated parent scans. Keep
 64 GiB RAM plus requested query reservations, and 150 GiB free disk. Hard payload
 budget defaults to 512 GB. These limits do not alter scientific eligibility.
