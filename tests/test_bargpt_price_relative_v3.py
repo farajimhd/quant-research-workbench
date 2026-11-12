@@ -113,3 +113,15 @@ def test_reporter_keeps_current_step_and_old_history_has_no_new_keys():
     assert rows[1]['global_step']==323 and rows[1]['optimizer_global_step']==200
     assert journal[1]['step']==200 and journal[1]['reported_global_step']==323
     assert rows[1]['validation_full_price_mape_pct/1s/trade_high']==pytest.approx(5)
+
+
+def test_boundary_observer_retries_transient_windows_publication_races():
+    from research.bar_gpt.v5.run_price_metrics_upgrade_v3 import read_json
+    class ChangingFile:
+        calls=0
+        def read_text(self,**kwargs):
+            self.calls+=1
+            if self.calls<3:raise PermissionError('Writer replacing progress')
+            return '{"state":"running"}'
+    file=ChangingFile()
+    assert read_json(file)=={'state':'running'} and file.calls==3

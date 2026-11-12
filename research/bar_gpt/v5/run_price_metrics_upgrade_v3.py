@@ -15,6 +15,17 @@ from .checkpoint_transition_v1 import state_hash
 from .shards.contract import file_hash, write_json
 
 
+def read_json(path):
+    """Tolerate bounded Windows sharing races during atomic progress publication."""
+    for attempt in range(8):
+        try:
+            return json.loads(path.read_text(encoding='utf-8-sig'))
+        except (OSError, ValueError):
+            if attempt == 7:
+                raise
+            time.sleep(.05)
+
+
 def boundary_ready(saved, epoch):
     history = saved.get('history', [])
     return (saved.get('epoch') == epoch - 1 and saved.get('phase') == 'validation'
@@ -38,7 +49,7 @@ def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--setup',type=Path,required=True)
     args=parser.parse_args(argv);setup=args.setup
-    read=lambda p:json.loads(p.read_text(encoding='utf-8-sig'))
+    read=read_json
     config=read(setup/'deployment.json');parent=Path(config['parent']);output=Path(config['output']);source=Path(config['source'])
     def report(state,**fields):write_json(setup/'progress.json',dict(state=state,updated=time.time(),**fields))
     owner=config['owner'];old=psutil.Process(owner['pid'])
