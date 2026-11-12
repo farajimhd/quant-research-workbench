@@ -489,6 +489,11 @@ def main(argv=None):
             return sealed
 
         with ExitStack() as pools:
+            # Retain diagnostic handles: repeatedly opening the growing monthly
+            # log can stall the coordinator while completed workers wait.
+            # Line buffering preserves per-record visibility and close-on-exit.
+            timing_log = pools.enter_context((root / "timing.jsonl").open("a", buffering=1))
+            monthly_log = pools.enter_context((root / "monthly-timing.jsonl").open("a", buffering=1))
             # A dedicated single-process executor is the ownership guarantee;
             # a shared ProcessPoolExecutor does not offer worker affinity.
             owners = [pools.enter_context(ProcessPoolExecutor(
@@ -608,8 +613,7 @@ def main(argv=None):
                         catalog.register(path, receipt)
                         counters["published_sessions_this_run"] += 1
                         finish(key, unit, "published", receipt["hash"])
-                        with (root / "timing.jsonl").open("a") as out:
-                            out.write(json.dumps(dict(unit=unit, **timing)) + "\n")
+                        timing_log.write(json.dumps(dict(unit=unit, **timing)) + "\n")
                     except Exception as error:
                         failure = (
                             failure
@@ -624,32 +628,31 @@ def main(argv=None):
                     key = month_key(unit)
                     try:
                         outputs = future.result()
-                        with (root / "monthly-timing.jsonl").open("a") as out:
-                            totals = {
-                                k: sum(
-                                    result.get("timing", {}).get(k, 0)
-                                    for _, result in outputs
-                                )
-                                for k in (
-                                    "queries",
-                                    "query_seconds",
-                                    "admission_wait_seconds",
-                                    "fetch_seconds",
-                                    "compile_seconds",
-                                    "resource_page_splits",
-                                    "coarse_cache_hits",
-                                    "context_memory_hits", "context_disk_hits", "context_source_sessions",
-                                    'memory_retries',
-                                    'cached_eligibility_sessions','inventory_empty_sessions','eligibility_unknown_sessions',
-                                    'eligibility_cache_fragment_fallbacks',
-                                )
-                            }
-                            out.write(
-                                json.dumps(
-                                    dict(unit=unit, sessions=len(outputs), **totals)
-                                )
-                                + "\n"
+                        totals = {
+                            k: sum(
+                                result.get("timing", {}).get(k, 0)
+                                for _, result in outputs
                             )
+                            for k in (
+                                "queries",
+                                "query_seconds",
+                                "admission_wait_seconds",
+                                "fetch_seconds",
+                                "compile_seconds",
+                                "resource_page_splits",
+                                "coarse_cache_hits",
+                                "context_memory_hits", "context_disk_hits", "context_source_sessions",
+                                'memory_retries',
+                                'cached_eligibility_sessions','inventory_empty_sessions','eligibility_unknown_sessions',
+                                'eligibility_cache_fragment_fallbacks',
+                            )
+                        }
+                        monthly_log.write(
+                            json.dumps(
+                                dict(unit=unit, sessions=len(outputs), **totals)
+                            )
+                            + "\n"
+                        )
                         groups[key] = dict(
                             unit=unit, slot=slot,
                             remaining=len(outputs),
