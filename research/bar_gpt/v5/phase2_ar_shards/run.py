@@ -68,7 +68,7 @@ def initialize(root, plan, settings, active, lock, stop, reserved, dense, dense_
         jobs={j["ticker"]: j for j in plan["jobs"]},
         reader=CanonicalReader(
             root, plan, settings.get("endpoint"), settings["query_memory_gib"],
-            settings.get('query_max_memory_gib',4)
+            settings.get('query_max_memory_gib',4),settings.get('eligibility_cache')
         ),
         guard=TrainingGuard(
             settings.get("training_campaign"),
@@ -275,6 +275,7 @@ def arguments(argv=None):
     p.add_argument("--max-months", type=int, default=0)
     p.add_argument("--pilot-unit", action="append", default=[], help="Exact TICKER:YYYY-MM units for a bounded pilot only")
     p.add_argument("--endpoint")
+    p.add_argument('--eligibility-cache',help='Sealed exact ancestor counts; misses use canonical queries')
     p.add_argument("--engineering-proof", type=Path, help="Sealed same-contract native parity proof for a reviewed physical optimization")
     return p.parse_args(argv)
 
@@ -639,6 +640,7 @@ def main(argv=None):
                                     "coarse_cache_hits",
                                     "context_memory_hits", "context_disk_hits", "context_source_sessions",
                                     'memory_retries',
+                                    'cached_eligibility_sessions','inventory_empty_sessions','eligibility_unknown_sessions',
                                 )
                             }
                             out.write(

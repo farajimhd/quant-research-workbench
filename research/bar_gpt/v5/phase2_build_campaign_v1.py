@@ -136,6 +136,7 @@ def main(argv=None):
     parser.add_argument('--query-memory-gib',type=float,default=1)
     parser.add_argument('--query-max-memory-gib',type=float,default=4)
     parser.add_argument('--engineering-proof',type=Path)
+    parser.add_argument('--eligibility-cache')
     parser.add_argument('--target-bytes',type=int,default=4_000_000_000_000)
     parser.add_argument('--validation-bytes',type=int,default=250_000_000)
     parser.add_argument('--training-campaign',default='D:/TradingML/runtimes/bar_gpt/encoder-v2-zscore-all18-large-20261110')
@@ -184,6 +185,7 @@ def main(argv=None):
                 '--validation-bytes',str(max(1,args.validation_bytes-initial['validation_bytes'])),
                 '--training-campaign',args.training_campaign]
             if args.engineering_proof:command.extend(['--engineering-proof',str(args.engineering_proof)])
+            if args.eligibility_cache:command.extend(['--eligibility-cache',args.eligibility_cache])
             with (active/'controller.stdout.log').open('ab') as stdout,(active/'controller.stderr.log').open('ab') as stderr:
                 child=subprocess.Popen(command,stdout=stdout,stderr=stderr,creationflags=subprocess.CREATE_NO_WINDOW)
             import psutil

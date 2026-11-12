@@ -117,6 +117,8 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
     kind = proof.get("kind")
     if kind=='adaptive-query-memory-v1':
         allowed={'phase2_ar_shards/'+name for name in ('source.py','run.py','telemetry.py','query_memory.py')}
+    if kind=='source-eligibility-cache-v1':
+        allowed={'phase2_ar_shards/'+name for name in ('source.py','run.py','telemetry.py','query_memory.py','eligibility_cache.py')}
     ledger_kinds = ("file-ledger-eligibility-v1", "file-ledger-observability-v1", "ticker-affinity-context-v1", "coordinator-capacity-v1")
     if kind in ledger_kinds:
         allowed |= {"phase2_ar_shards/"+k for k in ("storage.py","ledger.py","migrate_ledger.py")}
@@ -125,7 +127,7 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
     if kind in ("ticker-affinity-context-v1", "coordinator-capacity-v1"):
         allowed |= {"phase2_ar_shards/"+k for k in ("assignment.py", "bar_cache.py")}
     if (not changed or not changed <= allowed
-        or kind not in ("exact-short-session-preflight-v1", 'adaptive-query-memory-v1', *ledger_kinds)
+        or kind not in ("exact-short-session-preflight-v1", 'adaptive-query-memory-v1', 'source-eligibility-cache-v1', *ledger_kinds)
         or proof.get("plan_hash") != prior["hash"]
         or proof.get("from_code") != prior["code"]
         or proof.get("to_code") != current["code"]):
@@ -146,6 +148,10 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
         'weighted_admission_tests_passed','client_limits_restored','identical_sql_retry_verified',
         'unchanged_payload_selection_and_cache_binding','training_guards_preserved')):
         raise ValueError('Adaptive query budgets lack bounded same-contract proof')
+    if kind=='source-eligibility-cache-v1' and not all(audit.get(key) is True for key in (
+        'exact_eligibility_counts_verified','missing_metadata_fails_open',
+        'source_binding_tests_passed','unchanged_payload_and_history')):
+        raise ValueError('Eligibility cache lacks exact source-bound query-elision proof')
     if kind == "file-ledger-observability-v1" and (
         audit.get("observer_payload_parity_cases", 0) < 2
         or audit.get("worker_status_tests_passed") is not True
@@ -259,7 +265,7 @@ class CanonicalReader:
     query_memory_gib=1.0
     query_max_memory_gib=4.0
 
-    def __init__(self, root, plan, endpoint=None, memory_gib=1, max_memory_gib=4):
+    def __init__(self, root, plan, endpoint=None, memory_gib=1, max_memory_gib=4, eligibility_cache=None):
         self.root, self.plan = Path(root), plan
         from .query_memory import tiers
         tiers(memory_gib,max_memory_gib)
@@ -267,6 +273,8 @@ class CanonicalReader:
         self.client = sip.client(endpoint, memory_gib=memory_gib)
         self.client.default_query_params.update(max_threads=1, max_execution_time=60)
         self.bounds = OrderedDict()
+        from .eligibility_cache import EligibilityCache
+        self.eligibility_cache=EligibilityCache(eligibility_cache,plan) if eligibility_cache else None
         from .coarse_cache import CoarseCache
 
         self.coarse_cache = CoarseCache(self.root.parent / "phase2-coarse-cache-v1", digest(plan["authority"]))
@@ -301,6 +309,33 @@ class CanonicalReader:
             )
 
     def origin_counts(self, ticker, rows, gate):
+        """Filter exact known-short/empty sessions BEFORE querying; keep all counts."""
+        began=time.monotonic();counts={};pending=[]
+        costs=dict(queries=0,query_seconds=0.,admission_wait_seconds=0.,
+                   cached_eligibility_sessions=0,inventory_empty_sessions=0,eligibility_unknown_sessions=0)
+        def flush():
+            if pending:
+                found,timing=self._origin_counts_uncached(ticker,pending,gate)
+                counts.update(found)
+                for k,v in timing.items():costs[k]=costs.get(k,0)+v
+                pending.clear()
+        for row in rows:
+            opened,closed=clock(row['source_date'],4),clock(row['source_date'],20)
+            first,last=row.get('first_sip_timestamp_us'),row.get('last_sip_timestamp_us')
+            empty=(row.get('event_count')==0 or (first is not None and last is not None
+                   and first<=last and (last<opened or first>=closed)))
+            cache=getattr(self,'eligibility_cache',None)
+            n=0 if empty else cache.get(ticker,row) if cache else None
+            if n is None:
+                pending.append(row);costs['eligibility_unknown_sessions']+=1
+            else:
+                flush();counts[row['source_date']]=n
+                costs['inventory_empty_sessions' if empty else 'cached_eligibility_sessions']+=1
+        flush()
+        costs['fetch_seconds']=time.monotonic()-began
+        return counts,costs
+
+    def _origin_counts_uncached(self, ticker, rows, gate):
         """Exact completed trade-bearing 1s counts, without quote reconstruction.
 
         Use the unchanged producer's decoded predicates and the SAME three

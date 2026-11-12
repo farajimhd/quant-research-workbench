@@ -894,3 +894,34 @@ match that ledger and both PID creation times/modules are verified. Native child
 process testing confirmed NORMAL I/O priority inheritance while BELOW_NORMAL CPU
 priority stays unchanged, so successive plan coordinators inherit the correction.
 No background monitor, trainer changes or generator restart is needed.
+
+## Exact pre-query session eligibility cache
+
+`run_build_phase2_eligibility_cache` prepares a new immutable Parquet sidecar from
+SHA-verified checkpoint/journal parts of a successfully terminal ancestor plan.
+Only sealed deferrals explicitly reporting a complete session with fewer than4096
+origins, with source_origins equal to session_origins, are reusable. Partial-prefix,
+unknown, estimated or conflicting counts are not accepted. Preparation may target
+pending tickers and a bounded journal suffix; omitted records are cache misses.
+It verifies each reused report seal and matches the exact frozen ticker/day row.
+No historical flatfiles, SQL tables, SQLite or live source rewrites are involved.
+
+`--eligibility-cache <directory>` on the campaign/generator enables reuse before
+ClickHouse origin-count probes. The sidecar binds ancestor identity, complete
+source/producer semantic identity, full source-row fields, hashes, schema/counts
+and source evidence. Foreign/stale/corrupt metadata fails closed. Missing cache
+entries always run the original canonical query; unknown never means zero.
+Provably empty in-session timestamp envelopes can return exact zero without SQL.
+Other inventory event-count/time bounds alone cannot supply exact observed-bar
+counts, so they are never substituted as observed counts.
+
+Known short sessions remain explicit deferrals with their exact counts and prior
+reason. They skip origin-only eligibility queries, not necessary history. Mixed
+months still retain the original full bar/context producer whenever a complete
+block may exist. Counts at4096 or above remain candidates. Cached sessions split
+unknown count-query runs so excluded gaps need not be scanned; every missing run
+uses the identical shared canonical eligibility SQL. Trade/quote flags, order,
+causal64-bar context, split basis, origin uniqueness,75/25mix and payload bytes
+remain unchanged. Monthly timing reports cache hits, proven-empty hits, unknown
+sessions, actual queries and costs. A cache never declares an unqueried estimate
+as a source count or relaxes a validity condition to improve MB/s.
