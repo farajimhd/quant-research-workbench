@@ -871,3 +871,11 @@ source selection, payloads, or OS-wide settings, and never locks/pins pages. The
 normal process-lifetime Windows policy still governs residency under real pressure.
 Readback confirms priority5 and unchanged CPU priority. Recheck after any separate
 coordinator restart; this operation does not mutate an immutable running snapshot.
+
+If NORMAL memory priority alone leaves coordinator residency low, the explicit
+`--retain-working-set` option additionally sets its process-local hard minimum to
+its private memory rounded UP to a whole GiB (5GiB for the observed4.35GB index).
+This requires reserve+reserved-query-budgets+that entire minimum available before
+application. It keeps no hard maximum and uses no VirtualLock; before/after limits
+and flags are independently read back and retained for rollback. CPU priority and
+all other processes remain unchanged. Fail closed if Windows denies the operation.

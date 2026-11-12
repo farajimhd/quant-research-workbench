@@ -18,7 +18,7 @@ def reserve_ok(available, private, query_reserved, reserve):
     return available >= reserve + query_reserved + private
 
 
-def set_memory_priority(pid, created, available, reserved, reserve, *, apply=False):
+def set_memory_priority(pid, created, available, reserved, reserve, *, apply=False, retain_working_set=False):
     p=psutil.Process(pid)
     if abs(p.create_time()-created)>.01:
         raise ValueError('Coordinator PID identity changed')
@@ -34,7 +34,7 @@ def set_memory_priority(pid, created, available, reserved, reserve, *, apply=Fal
     kernel.GetProcessInformation.argtypes=[wintypes.HANDLE,ctypes.c_int,ctypes.c_void_p,wintypes.DWORD]
     kernel.SetProcessInformation.argtypes=kernel.GetProcessInformation.argtypes
     kernel.CloseHandle.argtypes=[wintypes.HANDLE]
-    handle=kernel.OpenProcess(0x200|0x1000,False,pid)
+    handle=kernel.OpenProcess(0x100|0x200|0x400|0x1000,False,pid)
     if not handle:raise ctypes.WinError(ctypes.get_last_error())
     priority=wintypes.ULONG()
     try:
@@ -50,9 +50,28 @@ def set_memory_priority(pid, created, available, reserved, reserve, *, apply=Fal
         if apply and priority.value!=5:raise RuntimeError('Memory priority readback differs')
         assert p.nice()==cpu_priority,'CPU priority changed'
         assert abs(p.create_time()-created)<.01
+        working_set = None
+        if retain_working_set:
+            minimum=((info.private+1024**3-1)//1024**3)*1024**3
+            if not reserve_ok(available,minimum,reserved,reserve):
+                raise MemoryError('Working-set floor would consume RAM reserve')
+            lo,hi=ctypes.c_size_t(),ctypes.c_size_t();flags=wintypes.DWORD()
+            kernel.GetProcessWorkingSetSizeEx.argtypes=[wintypes.HANDLE,ctypes.POINTER(ctypes.c_size_t),ctypes.POINTER(ctypes.c_size_t),ctypes.POINTER(wintypes.DWORD)]
+            kernel.SetProcessWorkingSetSizeEx.argtypes=[wintypes.HANDLE,ctypes.c_size_t,ctypes.c_size_t,wintypes.DWORD]
+            if not kernel.GetProcessWorkingSetSizeEx(handle,ctypes.byref(lo),ctypes.byref(hi),ctypes.byref(flags)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            working_set=dict(before=dict(minimum=lo.value,maximum=hi.value,flags=flags.value))
+            if apply:
+                # Per-process hard minimum; no hard maximum and no VirtualLock.
+                if not kernel.SetProcessWorkingSetSizeEx(handle,minimum,max(hi.value,minimum*2),9):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if not kernel.GetProcessWorkingSetSizeEx(handle,ctypes.byref(lo),ctypes.byref(hi),ctypes.byref(flags)):
+                    raise ctypes.WinError(ctypes.get_last_error())
+                assert lo.value>=minimum and flags.value&1
+            working_set['after']=dict(minimum=lo.value,maximum=hi.value,flags=flags.value)
         return dict(pid=pid,created=created,memory_priority_before=before,
                     memory_priority_after=priority.value,cpu_priority_unchanged=cpu_priority,
-                    private_bytes=info.private,resident_bytes=info.rss,applied=apply)
+                    private_bytes=info.private,resident_bytes=info.rss,applied=apply,working_set=working_set)
     finally:kernel.CloseHandle(handle)
 
 
@@ -60,6 +79,7 @@ def main(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--campaign',type=Path,required=True)
     p.add_argument('--apply',action='store_true')
+    p.add_argument('--retain-working-set',action='store_true')
     p.add_argument('--output',type=Path,required=True)
     args=p.parse_args(argv)
     read=lambda path:json.loads(path.read_text())
@@ -69,7 +89,7 @@ def main(argv=None):
     assert time.time()-progress['updated']<15
     report=set_memory_priority(owner['pid'],owner['created'],psutil.virtual_memory().available,
         int(progress.get('reserved_query_gib',0)*1024**3),
-        int(settings['reserve_memory_gib']*1024**3),apply=args.apply)
+        int(settings['reserve_memory_gib']*1024**3),apply=args.apply,retain_working_set=args.retain_working_set)
     from .shards.contract import write_json
     report.update(checked=time.time(),campaign=str(args.campaign),training_untouched=True)
     write_json(args.output,report)
