@@ -11,6 +11,34 @@ import torch
 from .trainer_v1 import reconstruction_loss
 
 
+class LossReadback:
+    """Read a status scalar as soon as its forward finishes, not after backward.
+
+    The caller still waits/checks at exactly the original status cadence. Only
+    the dependency of that wait changes; no model/loss/update or RNG operation.
+    """
+    def __init__(self):
+        self.stream = torch.cuda.Stream()
+        self.buffer = None
+
+    def submit(self, loss):
+        value = loss.detach()
+        if self.buffer is None:
+            self.buffer = torch.empty_like(value, device='cpu', pin_memory=True)
+        ready = torch.cuda.Event()
+        ready.record(torch.cuda.current_stream())
+        with torch.cuda.stream(self.stream):
+            self.stream.wait_event(ready)
+            self.buffer.copy_(value, non_blocking=True)
+            self.done = torch.cuda.Event()
+            self.done.record(self.stream)
+            value.record_stream(self.stream)
+
+    def value(self):
+        self.done.synchronize()
+        return float(self.buffer)
+
+
 class CudaBatches:
     """Overlap worker preparation and next-batch transfer with the current training step."""
 
@@ -90,6 +118,7 @@ def run_steps(
     before_step=None,
     metric_prefix=None,
     status_stage=None,
+    async_loss_readback=False,
 ):
     """Run a bounded actual-loader window; return throughput, latency, losses, and evidence counts.
 
@@ -104,6 +133,7 @@ def run_steps(
     mode.__enter__()
     began = time.perf_counter()
     batches = CudaBatches(loader)
+    loss_readback = LossReadback() if training and reporter and async_loss_readback else None
     startup_seconds = time.perf_counter() - began
     if reporter:
         reporter.update(
@@ -235,6 +265,8 @@ def run_steps(
                     batch.time_valid,
                 )
                 loss, batch_sums, batch_counts = reconstruction_loss(prediction, batch)
+            if loss_readback is not None and (step + 1) % loss_every == 0:
+                loss_readback.submit(loss)
             if training:
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -286,9 +318,8 @@ def run_steps(
             if step + 1 < warmup + steps:
                 batches.advance()
             if reporter and (step + 1) % loss_every == 0:
-                observed_loss = float(
-                    loss.detach()
-                )  # Wait only for compute, not next-batch H2D on another stream.
+                observed_loss = (loss_readback.value() if loss_readback is not None
+                                 else float(loss.detach()))
                 if not math.isfinite(observed_loss):
                     raise FloatingPointError("Nonfinite loss during measured run.")
                 elapsed = time.perf_counter() - (begin_measure or began)

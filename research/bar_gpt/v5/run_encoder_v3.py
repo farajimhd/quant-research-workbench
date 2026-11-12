@@ -75,6 +75,8 @@ def arguments(argv=None):
     parser.add_argument("--batches", default="256,1024,4096")
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--prefetch", type=int, default=2)
+    parser.add_argument('--async-loss-readback', action='store_true',
+                        help='Preserve status finite checks while overlapping scalar readback with backward')
     parser.add_argument("--prepare-threads", type=int, choices=(1, 2, 4), default=2)
     parser.add_argument(
         "--shard-prefetch",

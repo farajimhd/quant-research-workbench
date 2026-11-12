@@ -371,6 +371,7 @@ def train_campaign(args, manifest, stats, reporter):
                     if metric_role
                     else ("learning probe" if probe else None)
                 ),
+                async_loss_readback=getattr(args, 'async_loss_readback', False),
             )
             result["complete_pass"] = (
                 result["exhausted"] or result["consumed_batches"] >= limit
