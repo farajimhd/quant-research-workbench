@@ -879,3 +879,11 @@ This requires reserve+reserved-query-budgets+that entire minimum available befor
 application. It keeps no hard maximum and uses no VirtualLock; before/after limits
 and flags are independently read back and retained for rollback. CPU priority and
 all other processes remain unchanged. Fail closed if Windows denies the operation.
+
+`--normalize-io` additionally restores the owned coordinator's I/O scheduling to
+NORMAL2 from LOW1, with readback. It never raises I/O above normal or changes CPU
+priority. This targets journal/receipt starvation during concurrent training reads.
+The initial working-set-floor experiment showed no reliable throughput benefit;
+its original minimum/maximum/flags were restored. Do not enable that option by
+default or describe it as a demonstrated optimization. Retain before/after evidence
+and distinguish records processed/s from bytes published/s for sparse workloads.

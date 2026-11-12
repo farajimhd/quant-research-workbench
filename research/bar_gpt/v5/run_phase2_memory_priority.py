@@ -18,7 +18,7 @@ def reserve_ok(available, private, query_reserved, reserve):
     return available >= reserve + query_reserved + private
 
 
-def set_memory_priority(pid, created, available, reserved, reserve, *, apply=False, retain_working_set=False):
+def set_memory_priority(pid, created, available, reserved, reserve, *, apply=False, retain_working_set=False, normalize_io=False):
     p=psutil.Process(pid)
     if abs(p.create_time()-created)>.01:
         raise ValueError('Coordinator PID identity changed')
@@ -69,9 +69,17 @@ def set_memory_priority(pid, created, available, reserved, reserve, *, apply=Fal
                     raise ctypes.WinError(ctypes.get_last_error())
                 assert lo.value>=minimum and flags.value&1
             working_set['after']=dict(minimum=lo.value,maximum=hi.value,flags=flags.value)
+        io_priority=None
+        if normalize_io:
+            prior_io=p.ionice()
+            if apply:p.ionice(psutil.IOPRIO_NORMAL)
+            observed_io=p.ionice()
+            if apply and observed_io!=psutil.IOPRIO_NORMAL:raise RuntimeError('I/O priority readback differs')
+            io_priority=dict(before=int(prior_io),after=int(observed_io))
+        assert p.nice()==cpu_priority
         return dict(pid=pid,created=created,memory_priority_before=before,
                     memory_priority_after=priority.value,cpu_priority_unchanged=cpu_priority,
-                    private_bytes=info.private,resident_bytes=info.rss,applied=apply,working_set=working_set)
+                    private_bytes=info.private,resident_bytes=info.rss,applied=apply,working_set=working_set,io_priority=io_priority)
     finally:kernel.CloseHandle(handle)
 
 
@@ -80,6 +88,7 @@ def main(argv=None):
     p.add_argument('--campaign',type=Path,required=True)
     p.add_argument('--apply',action='store_true')
     p.add_argument('--retain-working-set',action='store_true')
+    p.add_argument('--normalize-io',action='store_true')
     p.add_argument('--output',type=Path,required=True)
     args=p.parse_args(argv)
     read=lambda path:json.loads(path.read_text())
@@ -89,7 +98,7 @@ def main(argv=None):
     assert time.time()-progress['updated']<15
     report=set_memory_priority(owner['pid'],owner['created'],psutil.virtual_memory().available,
         int(progress.get('reserved_query_gib',0)*1024**3),
-        int(settings['reserve_memory_gib']*1024**3),apply=args.apply,retain_working_set=args.retain_working_set)
+        int(settings['reserve_memory_gib']*1024**3),apply=args.apply,retain_working_set=args.retain_working_set,normalize_io=args.normalize_io)
     from .shards.contract import write_json
     report.update(checked=time.time(),campaign=str(args.campaign),training_untouched=True)
     write_json(args.output,report)
