@@ -1,6 +1,8 @@
 """Raw-price relative reconstruction errors; bounded deterministic quantiles."""
 
 import numpy as np
+import math
+from numba import njit
 
 PRICES = (0, 1, 2, 3, 6, 7, 8, 9, 12, 13, 14, 15)
 BANDS = ('below_1', '1_to_5', '5_to_20', '20_to_100', '100_and_above')
@@ -15,7 +17,37 @@ CONTRACT = dict(
     quantile_max_bin_relative_width=float(EDGES[1]/EDGES[0]-1),
     quantile_bounds='zero exact; outside [1e-9,1e9) percent reported unavailable',
     nonfinite_prediction='eligible observation counted as overflow; affected aggregate unavailable',
+    backend='fused CPU Float64 no-GIL loop; no fastmath; JIT cache disabled',
 )
+
+
+@njit(nogil=True, cache=False, error_model='numpy')
+def _reduce_prices(errors, targets, valid, frames, sums, counts, bad, excluded, hist):
+    """Fused Float64 CPU loop; no fastmath, sampling or extra price-array copies."""
+    for row in range(errors.shape[0]):
+        frame = frames[row]
+        for head in range(12):
+            channel = PRICES[head]
+            for clock in range(errors.shape[2]):
+                if not valid[row, channel, clock]:
+                    continue
+                actual = targets[row, channel, clock]
+                if not math.isfinite(actual) or actual <= 0:
+                    excluded[frame, head] += 1
+                    continue
+                band = 1 if actual < 1 else 2 if actual < 5 else 3 if actual < 20 else 4 if actual < 100 else 5
+                counts[frame, head, band] += 1
+                value = 100. * errors[row, channel, clock] / actual
+                if not math.isfinite(value):
+                    bad[frame, head, band] += 1
+                    continue
+                sums[frame, head, band] += value
+                if value == 0:
+                    bucket = 0
+                else:
+                    scaled = min(8192., max(-1., (math.log10(value) + 9) * (8192 / 18)))
+                    bucket = int(math.floor(scaled)) + 2
+                hist[frame, head, band, bucket] += 1
 
 
 class PriceRelative:
@@ -29,32 +61,18 @@ class PriceRelative:
     def add(self, errors, targets, valid, frames):
         # errors are already inversely converted absolute USD errors. No log-space error.
         take = lambda x: x.detach().cpu().numpy()
-        e, y, mask = (take(x)[:, PRICES] for x in (errors, targets, valid))
-        f = take(frames).astype(np.int64)
-        eligible = mask & np.isfinite(y) & (y > 0)
-        with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
-            ape = 100 * e / y
-        for frame in np.unique(f):
-            rows = f == frame
-            ok, values, actual = eligible[rows], ape[rows], y[rows]
-            self.excluded[frame] += (mask[rows] & ~ok).sum(axis=(0, 2))
-            h = np.broadcast_to(np.arange(12)[None, :, None], ok.shape)[ok]
-            values, actual = values[ok], actual[ok]
-            band = np.searchsorted([1., 5., 20., 100.], actual, side='right')
-            groups = h * 5 + band
-            finite = np.isfinite(values)
-            def merge_bands(target, values):
-                target[frame,:,1:] += values
-                target[frame,:,0] += values.sum(axis=1)
-            merge_bands(self.counts, np.bincount(groups, minlength=60).reshape(12, 5))
-            merge_bands(self.bad, np.bincount(groups[~finite], minlength=60).reshape(12, 5))
-            groups, values = groups[finite], values[finite]
-            merge_bands(self.sums, np.bincount(groups, weights=values, minlength=60).reshape(12, 5))
-            with np.errstate(divide='ignore'):
-                scaled = np.clip((np.log10(values)+9)*(8192/18), -1, 8192)
-            bins = np.floor(scaled).astype(np.int64) + 2
-            bins[values == 0] = 0
-            merge_bands(self.hist, np.bincount(groups * NBINS + bins, minlength=60 * NBINS).reshape(12, 5, NBINS))
+        e, y, mask, f = (take(x) for x in (errors, targets, valid, frames))
+        if (e.ndim != 3 or e.shape[1:] != (18,64) or y.shape != e.shape
+                or mask.shape != e.shape or mask.dtype != np.bool_
+                or f.shape != (len(e),) or f.dtype.kind not in 'iu'
+                or np.any(f < 0) or np.any(f >= 6)):
+            raise ValueError('Price reduction requires aligned [B,18,64] arrays and frame indices0..5')
+        _reduce_prices(e, y, mask, f,
+                       self.sums, self.counts, self.bad, self.excluded, self.hist)
+        # Keep the all-price aggregate observation weighted. Only small summaries
+        # and the fixed histogram are reduced; no [batch,12,64] temporaries.
+        for array in (self.sums, self.counts, self.bad, self.hist):
+            array[:, :, 0] = array[:, :, 1:].sum(axis=2)
 
     def merge(self, other):
         for name in ('sums', 'counts', 'bad', 'excluded', 'hist'):

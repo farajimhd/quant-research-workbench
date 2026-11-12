@@ -125,3 +125,43 @@ def test_boundary_observer_retries_transient_windows_publication_races():
             return '{"state":"running"}'
     file=ChangingFile()
     assert read_json(file)=={'state':'running'} and file.calls==3
+
+
+@pytest.mark.parametrize('dtype',[torch.float32,torch.float64])
+def test_fused_reducer_matches_numpy_histogram_all_frames_bands_and_masks(dtype):
+    from research.bar_gpt.v5.price_relative_v3 import NBINS
+    rng=np.random.default_rng(81)
+    y=torch.tensor(10.**rng.uniform(-5,4,(48,18,64)),dtype=dtype)
+    errors=torch.tensor(rng.uniform(0,.5,(48,18,64)),dtype=torch.float64)
+    mask=torch.tensor(rng.uniform(size=(48,18,64))>.2)
+    frames=torch.arange(48)%6
+    y[0,0,:4]=torch.tensor([0,-1,float('nan'),float('inf')],dtype=dtype)
+    errors[1,PRICES[0],0]=float('inf')
+    result=PriceRelative();result.add(errors,y,mask,frames)
+    for f in range(6):
+        rows=(frames==f).numpy()
+        for h,c in enumerate(PRICES):
+            truth=y.numpy()[rows,c].reshape(-1).astype(np.float64)
+            err=errors.numpy()[rows,c].reshape(-1)
+            valid=mask.numpy()[rows,c].reshape(-1)
+            eligible=valid&np.isfinite(truth)&(truth>0)
+            assert result.excluded[f,h]==np.count_nonzero(valid&~eligible)
+            truth,err=truth[eligible],err[eligible]
+            ape=100*err/truth
+            bands=np.searchsorted([1.,5.,20.,100.],truth,side='right')+1
+            for band in range(6):
+                values=ape if band==0 else ape[bands==band]
+                assert result.counts[f,h,band]==len(values)
+                assert result.bad[f,h,band]==np.count_nonzero(~np.isfinite(values))
+                values=values[np.isfinite(values)]
+                assert result.sums[f,h,band]==pytest.approx(values.sum(),rel=2e-14,abs=1e-10)
+                with np.errstate(divide='ignore'):
+                    bins=np.floor(np.clip((np.log10(values)+9)*(8192/18),-1,8192)).astype(np.int64)+2
+                bins[values==0]=0
+                assert np.array_equal(result.hist[f,h,band],np.bincount(bins,minlength=NBINS))
+
+
+def test_fused_frame_index_validation_prevents_out_of_bounds():
+    a=PriceRelative();x=torch.ones(1,18,64)
+    with pytest.raises(ValueError,match='aligned'):
+        a.add(x,x,x.bool(),torch.tensor([6]))
