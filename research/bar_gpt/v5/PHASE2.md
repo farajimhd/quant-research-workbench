@@ -929,3 +929,7 @@ For fragmented partial cache coverage, retain one original page query instead of
 multiplying a small monthly query into many tiny requests. Known counts are then
 cross-checked against the result. Complete cache hits and contiguous missing-prefix
 or suffix runs still prune; this fallback preserves both correctness and latency.
+The canonical campaign launcher now restores its own NORMAL memory/I/O policy
+before spawning a coordinator, preserving its CPU priority and64GiB reserve. This
+prevents a scheduled generator restart from silently reintroducing LOW I/O/memory
+priority; children inherit the verified policy. No training process is targeted.

@@ -149,6 +149,16 @@ def main(argv=None):
     root.mkdir(exist_ok=True)
     import msvcrt
     lease=(root/'controller.lock').open('a+b');lease.write(b'0');lease.flush();lease.seek(0);msvcrt.locking(lease.fileno(),msvcrt.LK_NBLCK,1)
+    # The canonical scheduled launcher is BELOW_NORMAL CPU priority. Keep that
+    # CPU policy while preventing LOW I/O/memory inheritance from starving the
+    # child coordinator's large receipt index and durable journal.
+    import psutil
+    owner=psutil.Process()
+    if 'run_phase2_build_campaign_v1.py' in ' '.join(owner.cmdline()):
+        from .run_phase2_memory_priority import set_memory_priority
+        policy=set_memory_priority(owner.pid,owner.create_time(),psutil.virtual_memory().available,
+            0,64*1024**3,apply=True,normalize_io=True,controller=True)
+        write_json(root/'coordinator-resource-policy.json',policy)
     stopped=False;child=None
     def stop(*_):
         nonlocal stopped;stopped=True
