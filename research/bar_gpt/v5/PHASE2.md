@@ -849,3 +849,25 @@ validation/startup/stale status. Panel/status expose base/max request budgets,
 reserved GiB, active dense retries and cumulative larger-budget attempts.
 Increasing CPU workers is a separate measured operating choice, never permission
 to relax source/geometry, RAM/disk reserves or training protection.
+
+## Coordinator memory residency
+
+Windows Task Scheduler priority7 can give the data coordinator LOW memory priority
+(2) alongside BELOW_NORMAL CPU priority. With multi-million-entry receipt indices,
+this can trim its resident working set far below its private committed memory and
+cause frequent page faults while workers wait for result bookkeeping. Inspect
+actual process memory priority, RSS/private memory and page-fault deltas before
+attributing a low publication rate to canonical queries. Sparse/short sessions
+also legitimately reduce MB/s; completed units and deferrals must remain visible.
+
+`python -B -m research.bar_gpt.v5.run_phase2_memory_priority --campaign
+D:/TradingML/runtimes/bar_gpt/phase2-ar-campaign-v1 --output
+D:/TradingML/runtimes/bar_gpt/phase2-memory-priority.json` reads the owned coordinator;
+add `--apply` to restore its NORMAL memory priority5. Requires fresh healthy progress,
+exact PID+creation+module identity, and available RAM covering existing64GiB reserve,
+all reserved query budgets, plus the coordinator's full private memory. CPU priority
+stays unchanged. It never changes training, workers, query budgets, journal seals,
+source selection, payloads, or OS-wide settings, and never locks/pins pages. The
+normal process-lifetime Windows policy still governs residency under real pressure.
+Readback confirms priority5 and unchanged CPU priority. Recheck after any separate
+coordinator restart; this operation does not mutate an immutable running snapshot.
