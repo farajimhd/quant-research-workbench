@@ -199,7 +199,7 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     if 'query_memory_gib_base' in p:
         groups.append(Text(f"Query RAM {p['query_memory_gib_base']:g}-{p['query_memory_gib_max']:g} GiB/request · reserved {p.get('reserved_query_gib',0):g} GiB · dense {p.get('active_dense_queries',0)}/2 · {p.get('dense_query_attempts',0):,} larger attempts",style='dim'))
     if p.get('campaign'):
-        groups.append(Text(f"Campaign total · current plan {p.get('campaign_plan_number','—')} · blocks stay within one session; context overlap only",style='bold cyan'))
+        groups.append(Text(f"Campaign total · current plan {p.get('campaign_plan_number','—')} · one session per block; overlap follows sealed plan",style='bold cyan'))
     if terminal and p.get('state')=='inventory_exhausted':
         groups.append(Text('No queued work in this plan. Campaign continuation requires the next sample plan.',style='bold yellow'))
     for name,c in capacities.items():
