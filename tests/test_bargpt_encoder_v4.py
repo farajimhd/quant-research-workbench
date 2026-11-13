@@ -74,3 +74,19 @@ def test_foreign_encoder_rejected(tmp_path):
     torch.save({'model': {'encoder.foreign': torch.zeros(1)}}, path)
     with pytest.raises(ValueError, match='architecture differs'):
         initialize_encoder(model, path)
+
+
+def test_transferred_training_keeps_random_control_and_rng(tmp_path):
+    from research.bar_gpt.v5.initialization_v4 import initialize_training
+    parent = MaskedAutoencoderV3(config())
+    model = MaskedAutoencoderV4(config())
+    original = {k: v.clone() for k, v in model.state_dict().items()}
+    path = tmp_path / 'last.pt'
+    torch.save(dict(model=parent.state_dict(), epoch=30), path)
+    rng = torch.get_rng_state().clone()
+    control = initialize_training(model, SimpleNamespace(resume=None, learning_guard=True,
+                                  encoder_checkpoint=path, output=tmp_path))
+    assert torch.equal(rng, torch.get_rng_state())
+    assert all(torch.equal(v, control.state_dict()[k]) for k, v in original.items())
+    assert all(torch.equal(v, model.encoder.state_dict()[k]) for k, v in parent.encoder.state_dict().items())
+    assert all(a.data_ptr() != b.data_ptr() for a, b in zip(model.parameters(), control.parameters()))

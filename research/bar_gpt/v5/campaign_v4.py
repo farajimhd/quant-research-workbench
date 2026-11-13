@@ -12,7 +12,7 @@ import math
 import shutil
 
 import torch
-from .initialization_v4 import initialize_for_run
+from .initialization_v4 import initialize_training
 
 from .data_v3 import close_loader
 from .encoder_v4 import MaskedAutoencoderV4
@@ -131,7 +131,9 @@ def train_campaign(args, manifest, stats, reporter):
             attention_dropout=args.attention_dropout,
         )
     ).cuda()
-    initialize_for_run(model, args)
+    # A transferred encoder is not an untrained control. Preserve the seeded
+    # random model before transfer for the unchanged learning-guard baseline.
+    protocol_untrained = initialize_training(model, args)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=args.learning_rate, weight_decay=0.01, fused=True
     )
@@ -177,7 +179,7 @@ def train_campaign(args, manifest, stats, reporter):
             contract["learning_guard"]["overfit_patience"] = overfit_patience
     phase, history, best, training_metrics = "train", [], None, None
     transition, best_epoch = None, None
-    masked_archive, protocol_untrained = None, None
+    masked_archive = None
     if args.resume:
         saved = torch.load(args.resume, map_location="cpu", weights_only=False)
         old_guard = saved["contract"].get("learning_guard", {})
@@ -450,6 +452,12 @@ def train_campaign(args, manifest, stats, reporter):
     # Initial state allows a failed/interrupted first epoch to restart without losing initialization.
     reporter.update(validation_protocol="all-visible-v1")
     if guarded and probe_baseline is None:
+        if protocol_untrained is None:
+            # A resume interrupted before the baseline still needs the seeded
+            # random control, without advancing the restored training RNG.
+            with torch.random.fork_rng():
+                torch.manual_seed(args.seed)
+                protocol_untrained = MaskedAutoencoderV4(model.config).cuda()
         save(
             "checkpoint_last.pt"
         )  # Resumable protocol migration before any evaluation/update.
@@ -466,7 +474,7 @@ def train_campaign(args, manifest, stats, reporter):
                 loss=probe_baseline,
                 probe_steps=args.guard_probe_steps,
                 architecture="column-encoder-small-mlp-v4",
-        validation_protocol="all-visible-v1",
+                validation_protocol="all-visible-v1",
                 validation_epoch=0,
                 split_hash=manifest["manifest_hash"],
             ),

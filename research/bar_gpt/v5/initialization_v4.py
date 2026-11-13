@@ -1,5 +1,6 @@
 """Explicit encoder-only transfer; never inherit the v3 decoder or optimizer."""
 from pathlib import Path
+from copy import deepcopy
 import torch
 from .shards.contract import file_hash, write_json
 
@@ -29,3 +30,10 @@ def initialize_for_run(model, args):
         raise ValueError('Choose the explicit v3 encoder checkpoint (planned epoch 50)')
     proof = initialize_encoder(model, args.encoder_checkpoint)
     write_json(args.output / 'encoder-initialization.json', proof)
+
+
+def initialize_training(model, args):
+    """Keep the seeded random guard control independent of transferred weights."""
+    control = deepcopy(model) if not args.resume and args.learning_guard else None
+    initialize_for_run(model, args)
+    return control

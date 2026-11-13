@@ -16,7 +16,8 @@ be reconciled explicitly in future; preprocessing remains version3 intentionally
 
 ## Initialization
 
-The planned parent is V3 epoch50. Choose its actual immutable path with
+The initial planned parent was V3 epoch50; the latest user instruction chooses
+the last durable checkpoint instead (epoch30 for the 2026-11-13 launch). Choose its immutable path with
 --encoder-checkpoint; no latest/best discovery silently changes the parent.
 The path can change before launch. Strict encoder keys/shapes/finiteness and
 before/after file SHA checks precede transfer. Only encoder weights transfer;
@@ -27,9 +28,11 @@ own full state and does not reinitialize from V3.
 ## Balanced data dependency
 
 The currently extracting source is phase1-coarse-supplement-v1-r2. Its raw
-result deliberately has training_ready=false. It must finish and receive the
-existing canonical/quote/split audits and a compatible published coarse member
-before training. Do not point the ordinary V3 loader directly at raw supplement
+result deliberately has training_ready=false. A gracefully stopped partial run
+may be released with run_release_partial_v4: every sealed publication receives
+hash/schema/cutoff audits, a separate immutable coarse member and a sealed
+supplement-snapshot.json. Unsealed work is excluded. The original corrected
+members and exact prior split membership remain intact. Do not point the ordinary V3 loader directly at raw supplement
 files or claim equal timeframe counts when finite inventory falls short.
 
 V4 defaults to D:/TradingML/runtimes/bar_gpt/phase1-v6-cohort-balanced-v4.
@@ -42,8 +45,13 @@ component. Existing member completion/seal checks apply. The split must name
 the exact cohort. Missing/incomplete releases fail before output creation or
 GPU initialization. No old-cohort fallback is permitted.
 
-Release creation and extraction completion remain external prerequisites;
-this implementation does not mark the still-running extraction released.
+Release creation remains an explicit prerequisite. A partial snapshot is not
+extraction completion or a claim of equal timeframe counts. The 2026-11-13
+release adds 521,583 training and 255,824 validation windows from 26,092 sealed
+publications. Total split counts are 186,575,722 and 47,750,007 respectively.
+The learning guard uses an independent seeded random model before encoder
+transfer; fresh decoder/optimizer state and the random-control baseline are
+not inherited from V3.
 
 Example after release and explicit checkpoint selection:
 
