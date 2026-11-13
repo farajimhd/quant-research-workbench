@@ -4,6 +4,8 @@ Bar values are never recomputed or split-adjusted here. Absolute session ranks
 prove consecutive origins even when older context pools have been trimmed.
 """
 from pathlib import Path
+from functools import lru_cache
+import os
 import time
 import numpy as np
 
@@ -13,6 +15,18 @@ from .continuation import trim_pools
 from ..shards.contract import digest, seed_for
 
 POLICY = 'overlapping-origins-unique-blocks-v1'
+
+
+@lru_cache(maxsize=32)
+def session_paths(root, ticker):
+    """Immutable parent directory metadata reused across chronological months."""
+    base=Path(root)/'shards'/digest(ticker)[:24]
+    try:
+        with os.scandir(base) as entries:
+            return tuple(sorted((p.name,Path(p.path)) for p in entries
+                                if len(p.name)==10 and p.is_dir(follow_symlinks=False)))
+    except FileNotFoundError:
+        return ()
 
 
 def ranks_for(receipt, blocks, pending):
@@ -108,11 +122,9 @@ def rebuild(readers, geometry, stride, seed):
 def compile_cached(unit, geometry, parents, stride, seed, gate, reporter=None):
     directories = {}
     for root, binding in parents:
-        base = root/'shards'/digest(unit['ticker'])[:24]
-        if not base.exists(): continue
-        for path in base.glob(unit['month']+'-*'):
-            if path.name.endswith('.partial') or not (path/'receipt.json').exists(): continue
-            directories.setdefault(path.name, []).append((path, binding))
+        for day,path in session_paths(str(root),unit['ticker']):
+            if day.startswith(unit['month']+'-'):
+                directories.setdefault(day, []).append((path, binding))
     for day, sources in sorted(directories.items()):
         began = time.monotonic()
         if reporter: reporter.emit(state='Read',detail='Verify and reblock '+day)

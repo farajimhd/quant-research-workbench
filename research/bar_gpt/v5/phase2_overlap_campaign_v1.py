@@ -25,7 +25,7 @@ def run(args):
     owner=psutil.Process()
     from .run_phase2_memory_priority import set_memory_priority
     policy=set_memory_priority(owner.pid,owner.create_time(),psutil.virtual_memory().available,
-                               0,64*1024**3,apply=True,normalize_io=True,controller=True)
+                               0,64*1024**3,apply=True,normalize_io=False,controller=True)
     write_json(root/'coordinator-resource-policy.json',policy)
     identity=dict(policy=POLICY,stride=args.overlap_stride,parents=[dict(root=str(p),binding=read(p/'plan.json')['hash']) for p in parents],
                   target_bytes=args.target_bytes,validation_bytes=args.validation_bytes)
@@ -50,6 +50,8 @@ def run(args):
             if args.prepare_only:return 0
             if stopped or (root/'STOP').exists():return 0
             if (active/'STOP').exists():raise InterruptedError('Preserve overlap plan STOP')
+            set_memory_priority(owner.pid,owner.create_time(),psutil.virtual_memory().available,
+                                0,64*1024**3,apply=True,normalize_io=True,controller=True)
             terminal=read(active/'result.json') if (active/'result.json').exists() else {}
             if terminal.get('state') not in ('complete','inventory_exhausted','capacity_reached'):
                 command=[sys.executable,'-B','-u','-m','research.bar_gpt.v5.phase2_ar_shards.run','--execute',

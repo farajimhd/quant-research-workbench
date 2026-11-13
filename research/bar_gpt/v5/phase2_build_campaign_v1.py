@@ -103,12 +103,17 @@ def prepare_plan(base, root, parents, revision, seed, *, overlap_stride=None):
         months=set()
         keys={digest(j['ticker'])[:24]:j['ticker'] for j in original['jobs']}
         for parent_root in parents:
-            for ticker_dir in (Path(parent_root)/'shards').iterdir():
-                ticker=keys.get(ticker_dir.name)
-                if ticker is None:raise ValueError('Published ticker absent from frozen universe')
-                for session in ticker_dir.iterdir():
-                    if len(session.name)==10 and session.name[:4]<'2026' and (session/'receipt.json').exists():
-                        months.add((ticker,session.name[:7]))
+            with os.scandir(Path(parent_root)/'shards') as tickers:
+                for ticker_dir in tickers:
+                    ticker=keys.get(ticker_dir.name)
+                    if ticker is None:raise ValueError('Published ticker absent from frozen universe')
+                    with os.scandir(ticker_dir.path) as sessions:
+                        for session in sessions:
+                            # Atomic publication directories are only planning
+                            # candidates. Avoid one extra filesystem lookup per
+                            # receipt; workers still require its seal and hashes.
+                            if len(session.name)==10 and session.name[:4]<'2026' and session.is_dir(follow_symlinks=False):
+                                months.add((ticker,session.name[:7]))
         index=pl.DataFrame(sorted(months),schema=['ticker','month'],orient='row')
         units=units.join(index,on=['ticker','month'],how='semi')
         overlap=dict(policy=POLICY,stride=overlap_stride,source='hash-verified immutable parent bar pools',
