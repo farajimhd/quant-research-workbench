@@ -754,3 +754,14 @@ def test_frozen_resume_normalizes_dtype_json_but_rejects_geometry_change(tmp_pat
     body['geometry']['history'][0]=65
     with pytest.raises(ValueError,match='contract changed'):
         source.freeze(tmp_path,parent,Geometry(),'test',seed=17)
+
+def test_research_follows_campaign_active_plan(tmp_path,monkeypatch):
+    from research.bar_gpt.v5.phase2_ar_shards import inspection
+    root=tmp_path/'campaign';root.mkdir();active=tmp_path/'phase2-ar-sampled-v2-overlap-0001';active.mkdir()
+    from research.bar_gpt.v5.phase2_ar_shards.contract import VERSION
+    plan=dict(version=VERSION);plan['hash']=digest(plan);(active/'plan.json').write_text(json.dumps(plan))
+    (root/'campaign.json').write_text(json.dumps(dict(active_root='D:/TradingML/runtimes/bar_gpt/'+active.name)))
+    monkeypatch.setattr(inspection,'ROOT',root)
+    assert inspection._root()==active
+    (root/'campaign.json').write_text(json.dumps(dict(active_root='D:/other/'+active.name)))
+    with pytest.raises(ValueError,match='Foreign'):inspection._root()

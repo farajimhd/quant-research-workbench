@@ -1,7 +1,7 @@
 """Read-only Research adapter for session-scoped 4096-origin shards."""
 
 import json
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import random
 import re
 
@@ -14,7 +14,23 @@ from ..quote_repair_v1 import verify_seal
 from .contract import CHANNELS, FRAMES, BLOCK, VERSION
 from .storage import ShardReader, read_receipt
 
-ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\phase2-ar-sampled-v2")
+ROOT = Path(r"\\DESKTOP-SAAI85T\Workstation-D\TradingML\runtimes\bar_gpt\phase2-ar-overlap-campaign-v1")
+
+
+def _root():
+    """Follow the campaign pointer; never fall back to a retired dataset."""
+    pointer = ROOT / "campaign.json"
+    if not pointer.exists():
+        return ROOT  # Explicit standalone root (also used by isolated tests).
+    selected = PureWindowsPath(json.loads(pointer.read_text())["active_root"])
+    if (selected.parent != PureWindowsPath('D:/TradingML/runtimes/bar_gpt')
+        and selected.parent != PureWindowsPath(str(ROOT.parent))):
+        raise ValueError("Foreign phase-two campaign root")
+    if not re.fullmatch(r'phase2-ar-sampled-v2-overlap-\d{4}', selected.name):
+        raise ValueError("Foreign phase-two campaign root")
+    active = ROOT.parent / selected.name
+    _plan(str(active))  # Seal and contract validation before reading its index.
+    return active
 
 
 @singleflight_cache(maxsize=2)
@@ -27,8 +43,8 @@ def _plan(root):
 
 
 def _catalog():
-    plan = _plan(str(ROOT))
-    path = ROOT / "research-catalog.json"
+    plan = _plan(str(_root()))
+    path = _root() / "research-catalog.json"
     value = json.loads(path.read_text()) if path.exists() else dict(binding=plan["hash"],streams=[])
     if path.exists():
         verify_seal(value, "hash")
@@ -38,10 +54,10 @@ def _catalog():
 
 
 def catalog(search="", year=0, offset=0, liquid=-1):
-    plan = _plan(str(ROOT))
+    plan = _plan(str(_root()))
     rows = [r for r in _catalog()["streams"] if search.upper() in r["ticker"].upper()
             and (not year or r["year"] == year) and (liquid == -1 or r["liquid"] == bool(liquid))]
-    progress = json.loads((ROOT / "progress.json").read_text())
+    progress = json.loads((_root() / "progress.json").read_text())
     return dict(streams=rows[offset:offset+100],total=len(rows),years=list(range(2019,2027)),
                 frames=list(FRAMES),plan_hash=plan["hash"],view_version=VERSION,
                 progress={k:progress.get(k) for k in ("state","bytes","units","updated")})
@@ -53,7 +69,7 @@ def _stream(key):
     entry = next((r for r in _catalog()["streams"] if r["stream"] == key),None)
     if entry is None:
         raise ValueError("No sealed blocks in that ticker/year")
-    plan = _plan(str(ROOT))
+    plan = _plan(str(_root()))
     job = next((j for j in plan["jobs"] if j["ticker"] == entry["ticker"]),None)
     if job is None or digest(job["ticker"])[:24] != key[:24]:
         raise ValueError("Research index has foreign ticker identity")
@@ -63,7 +79,7 @@ def _stream(key):
 def _receipts(key):
     plan,entry = _stream(key)
     rows=[]
-    for path in sorted((ROOT/"shards"/key[:24]).glob(f"{entry['year']}-*/receipt.json")):
+    for path in sorted((_root()/"shards"/key[:24]).glob(f"{entry['year']}-*/receipt.json")):
         receipt=read_receipt(path.parent,plan["hash"])
         if receipt["ticker"] != entry["ticker"] or receipt["session_date"] != path.parent.name:
             raise ValueError("Foreign session receipt")
@@ -125,7 +141,7 @@ def sample(stream="",unit=-1,block=0,decision=4095,frame=0,view=-1,
                 raw=record["values"][i].tolist(),valid=valid.tolist(),
                 values=[float(v) if ok else None for v,ok in zip(record["values"][i],valid)],
                 time_values=transformed.values[0,i,18:].tolist()))
-        revision=json.loads((ROOT/"provenance.json").read_text())["source_revision"]
+        revision=json.loads((_root()/"provenance.json").read_text())["source_revision"]
         return dict(stream=stream,ticker=entry["ticker"],year=entry["year"],liquid=entry["liquid"],
             unit=int(receipt["session_date"].replace("-","")),block=block,block_count=receipt["blocks"],
             decision=decision,decisions=cached.ends.tolist(),origin_us=int(cached.ends[decision]),
