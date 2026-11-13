@@ -82,7 +82,7 @@ def initialize(root, plan, settings, active, lock, stop, reserved, dense, dense_
 
 
 @contextmanager
-def query_admission(memory_gib=None):
+def query_admission(memory_gib=None, *, query=True):
     s = STATE
     initial=s['settings']['query_memory_gib']
     requested=initial if memory_gib is None else memory_gib
@@ -114,12 +114,13 @@ def query_admission(memory_gib=None):
         try:
             if s.get('telemetry'):
                 s['telemetry'].emit(query_memory_gib=requested,admission_limit=limit)
-                s['telemetry'].query(True)
+                if query:s['telemetry'].query(True)
         except Exception:pass
         yield
     finally:
         if admitted:
-            try:s['telemetry'].query(False)
+            try:
+                if query:s['telemetry'].query(False)
             except Exception:pass
             with s['lock']:
                 s['active'].value-=1
@@ -155,7 +156,14 @@ def _produce(unit):
         if a["provider_ticker"] == unit["ticker"]
     ]
     outputs = []
-    for session, compiled, timing in compile_sessions(
+    overlap=s['plan'].get('overlap')
+    if overlap:
+        from .overlap import compile_cached, POLICY
+        if overlap['policy']!=POLICY:raise ValueError('Unknown origin overlap policy')
+        generated=compile_cached(unit,geometry,s['prior_roots'],overlap['stride'],
+                                 s['plan']['seed'],query_admission,s.get('telemetry'))
+    else:
+        generated=compile_sessions(
         s["reader"],
         s["jobs"][unit["ticker"]],
         unit,
@@ -165,7 +173,8 @@ def _produce(unit):
         chunk_events=s["settings"]["chunk_events"],
         seed=s["plan"]["seed"],
         prior_roots=s.get('prior_roots',()),
-    ):
+        )
+    for session, compiled, timing in generated:
         directory = (
             s["root"] / "shards" / digest(unit["ticker"])[:24] / session["session"]
         )

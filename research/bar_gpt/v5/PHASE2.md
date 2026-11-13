@@ -1,5 +1,36 @@
 # Phase two: session shard generator and data contract
 
+## Explicit overlapping-origin extension (2026-11-13)
+
+The user now permits overlapping origins inside a session. This supersedes the
+earlier context-only overlap requirement for NEW plans; older plans and STOPs
+remain immutable. `--overlap-stride 256 --prior-root <completed-plan>` creates
+a separate campaign with sealed parent identities and a new sampling policy,
+`overlapping-origins-unique-blocks-v1`. The 4 TB byte ceiling includes all parents.
+Existing validation remains closed and unchanged.
+
+The extension uses verified parent shard pools as a persistent bar cache. It
+verifies receipt seals and full payload hashes, merges only byte-identical bars
+at shared clocks on the same session split basis, and maps parent origins into
+the merged pools. Absolute source-session ranks prove consecutive origins;
+missing runs are never joined. Every original 64-bar context must remain
+contiguous and byte-identical after mapping. Prices and sizes are not adjusted
+again and no new market values are synthesized. Unknown/corrupt input fails.
+
+New starts lie on a seeded 256-observed-origin grid. Any start already published
+by any parent is excluded, including unselected candidates. Every block still
+contains exactly 4096 consecutive observed 1s origins inside one NY session,
+five unique context pools and causal indices. No identical block is repeated.
+Counts now explicitly describe overlapping stored occurrences, not unique
+events. The existing 75/25 selection, publication hashes, RAM/disk reserves,
+dedicated CPU/I/O pools and read-only training protection remain in force.
+
+Only months with existing sealed parent session publications are planned; the
+full original universe remains the authority. This is a new window-sampling
+plan over already extracted bars, not a new canonical-source extraction pass.
+All source parents and the new root remain input-context shards, with
+`training_ready=false`; future target support still needs reader-side purging.
+
 ## Fixed ticker owners and persistent contexts (2026-11-10)
 
 Active generator source: **`700a25435`**; the viewer-only percentage revision is

@@ -39,7 +39,7 @@ def totals(roots):
     return result
 
 
-def prepare_plan(base, root, parents, revision, seed):
+def prepare_plan(base, root, parents, revision, seed, *, overlap_stride=None):
     """Copy SHA-verified frozen metadata, never requery or rewrite older shards."""
     import polars as pl
     from .phase2_ar_shards.inventory import verify_inventory
@@ -47,18 +47,22 @@ def prepare_plan(base, root, parents, revision, seed):
     base,root=Path(base),Path(root)
     original=read(base/'plan.json');verify_seal(original,'hash');verify_inventory(base,original)
     expected=[dict(root=str(Path(p).resolve()),binding=read(Path(p)/'plan.json')['hash']) for p in parents]
+    preparation=dict(base_hash=original['hash'],parents=expected,seed=seed)
+    if overlap_stride is not None:preparation['overlap_stride']=overlap_stride
     if (root/'plan.json').exists():
         plan=read(root/'plan.json');verify_seal(plan,'hash');verify_inventory(root,plan)
         if plan.get('continuation',{}).get('parents')!=expected or plan['seed']!=seed:
             raise ValueError('Existing continuation plan has another ancestry')
+        if plan.get('overlap',{}).get('stride')!=overlap_stride:
+            raise ValueError('Existing plan has another overlap policy')
         validate_parents(plan);return plan
     if root.exists() and any(root.iterdir()):
         # Only our sealed preparation marker may own interrupted metadata work.
         marker=read(root/'preparation.json')
-        if marker!=dict(base_hash=original['hash'],parents=expected,seed=seed):
+        if marker!=preparation:
             raise ValueError('Foreign incomplete continuation root')
     root.mkdir(parents=True,exist_ok=True)
-    write_json(root/'preparation.json',dict(base_hash=original['hash'],parents=expected,seed=seed))
+    write_json(root/'preparation.json',preparation)
     output=root/'inventory/plan';output.mkdir(parents=True,exist_ok=True)
     for part in original['partitions']:
         source=base/'inventory/plan'/part['name'];dest=output/part['name']
@@ -90,6 +94,26 @@ def prepare_plan(base, root, parents, revision, seed):
     ep=root/'event-bound-exclusions.parquet';excluded.write_parquet(ep,compression='zstd')
     units=(units.filter(pl.col('maximum_session_events')>=BLOCK).drop('maximum_session_events')
         .with_columns(pl.struct('ticker','month').hash(seed=seed).alias('random_order')).sort('random_order'))
+    overlap=None
+    if overlap_stride is not None:
+        from .phase2_ar_shards.overlap import POLICY
+        if not 1<=overlap_stride<BLOCK:raise ValueError('Invalid overlap stride')
+        # Enumerate existing publication directories only. Workers verify every
+        # used receipt and payload; this index does not certify their contents.
+        months=set()
+        keys={digest(j['ticker'])[:24]:j['ticker'] for j in original['jobs']}
+        for parent_root in parents:
+            for ticker_dir in (Path(parent_root)/'shards').iterdir():
+                ticker=keys.get(ticker_dir.name)
+                if ticker is None:raise ValueError('Published ticker absent from frozen universe')
+                for session in ticker_dir.iterdir():
+                    if len(session.name)==10 and session.name[:4]<'2026' and (session/'receipt.json').exists():
+                        months.add((ticker,session.name[:7]))
+        index=pl.DataFrame(sorted(months),schema=['ticker','month'],orient='row')
+        units=units.join(index,on=['ticker','month'],how='semi')
+        overlap=dict(policy=POLICY,stride=overlap_stride,source='hash-verified immutable parent bar pools',
+                     scope='all published parent session runs; no identical block starts',
+                     source_count_semantics='stored overlapping occurrences, not unique origins')
     path=root/'sample-units.parquet';units.write_parquet(path,compression='zstd')
     parent=Path(read(base/'provenance.json')['parent'])
     current,_=describe(parent,Geometry(tuple(original['geometry']['history']),original['geometry']['cutoff']))
@@ -99,6 +123,9 @@ def prepare_plan(base, root, parents, revision, seed):
             origin_policy='full frozen sessions minus previously published origin ranks',
             validation_units_closed=closed_validation,
             event_bound_exclusions=dict(name=ep.name,rows=len(excluded),sha256=file_hash(ep))))
+    if overlap:
+        plan['overlap']=overlap
+        plan['continuation'].update(version=overlap['policy'],origin_policy='overlapping session ranks; identical blocks excluded')
     if semantic_identity(plan)!=semantic_identity(original):raise ValueError('Continuation changes semantic contract')
     plan['hash']=digest(plan);validate_parents(plan)
     write_json(output/'manifest.json',dict(jobs=plan['jobs'],partitions=plan['partitions'],hash=plan['hash']))
@@ -141,10 +168,16 @@ def main(argv=None):
     parser.add_argument('--validation-bytes',type=int,default=250_000_000)
     parser.add_argument('--training-campaign',default='D:/TradingML/runtimes/bar_gpt/encoder-v2-zscore-all18-large-20261110')
     parser.add_argument('--prepare-only',action='store_true')
+    parser.add_argument('--overlap-stride',type=int)
+    parser.add_argument('--prior-root',type=Path,action='append',default=[])
     args=parser.parse_args(argv);root=args.output.resolve();base=args.base_root.resolve()
     authority=Path('D:/TradingML/runtimes/bar_gpt').resolve()
     if not root.is_relative_to(authority) or root==base or root.parent!=base.parent:
         raise ValueError('Campaign and immutable base must be sibling native runtime roots')
+    if args.overlap_stride is not None:
+        from .phase2_overlap_campaign_v1 import run
+        return run(args)
+    if args.prior_root:raise ValueError('Explicit additional parents require overlap campaign')
     if (root/'STOP').exists() or (base/'STOP').exists():raise InterruptedError('Preserve human STOP')
     root.mkdir(exist_ok=True)
     import msvcrt

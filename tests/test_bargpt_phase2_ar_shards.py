@@ -347,8 +347,8 @@ def test_canonical_reader_fetches_both_fine_and_coarse_with_five_outputs():
     from research.bar_gpt.v5.phase2_ar_shards import source
 
     reader = object.__new__(CanonicalReader)
-    reader.plan, reader.client = dict(authority=dict(rules={})), object()
     from types import SimpleNamespace
+    reader.plan, reader.client = dict(authority=dict(rules={})), SimpleNamespace(default_query_params={})
     reader.coarse_cache = SimpleNamespace(get=lambda sql, rows, fetch: (fetch(), False))
     page = [dict(source_date="2023-01-03", event_count=10)]
     table = pl.DataFrame({"resolution": list(FRAMES)})
