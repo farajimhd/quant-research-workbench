@@ -89,7 +89,7 @@ def chart(stream, unit, timeframe="1s", before_us=None, limit=4000):
     basis_end = clock(day,20)
     end = basis_end if before_us is None else min(int(before_us),basis_end)
     if end <= 0:raise ValueError("Invalid history cursor")
-    all_rows = bounds(str(inspection.ROOT),entry["ticker"])
+    all_rows = bounds(str(inspection._root()),entry["ticker"])
     candidates = [r for r in all_rows if clock(r["source_date"],4)<end]
     if not candidates:
         return dict(bars=[],has_more=False,next_before_us=None,timeframe=timeframe,source="market_sip_compact.events_YYYY",basis=str(day))
@@ -116,3 +116,4 @@ def chart(stream, unit, timeframe="1s", before_us=None, limit=4000):
         timeframe=timeframe,ticker=entry["ticker"],basis=str(day),source="market_sip_compact.events_YYYY",
         source_contract=plan["hash"],query_hash=digest(sql),time_basis="SIP availability; UTC clocks; NY sessions",
         price_basis="selected session; frozen split actions",window_start_us=start,window_end_us=end)
+
