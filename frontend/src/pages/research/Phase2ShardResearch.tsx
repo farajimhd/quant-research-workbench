@@ -91,6 +91,8 @@ export function Phase2ShardResearch() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [selected, setSelected] = useState(63);
+  const [chartOffset, setChartOffset] = useState(0);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [family, setFamily] = useState("all");
   const [truthFrame, setTruthFrame] = useState("1s");
   const truthSelection = useRef(0);
@@ -164,6 +166,7 @@ export function Phase2ShardResearch() {
       );
       if (request !== serial.current) return;
       setSample(result);
+      setChartOffset(0);
       if (truthRequest === truthSelection.current) setTruthFrame(frameCodes[result.frame]);
       setStream(result.stream);
       setUnit(result.unit);
@@ -459,14 +462,25 @@ export function Phase2ShardResearch() {
               <>
                 <p className="research-muted">
                   {frames[sample.frame]} · {clock(chartBars[0].end_us)} →{" "}
-                  {clock(chartBars[chartBars.length - 1].end_us)} · {chartBars.length.toLocaleString()} stored bars · 4,096 origins · context before {clock(sample.block_origin_start_us)}. Scroll horizontally to inspect the whole block.
+                  {clock(chartBars[chartBars.length - 1].end_us)} · {chartBars.length.toLocaleString()} stored bars · 4,096 origins · context before {clock(sample.block_origin_start_us)}. Overview covers the whole block; move the detail window to inspect candles.
                 </p>
+                <svg viewBox="0 0 1000 100" style={{width:"100%",height:100}} role="img" aria-label="Complete block trade-close overview">
+                  <polyline fill="none" stroke="var(--primary)" strokeWidth="1" points={(() => {
+                    const rows=chartBars.filter(b=>b.values[3]!==null); const prices=rows.map(b=>b.values[3] as number);
+                    const lo=Math.min(...prices), range=Math.max(1e-9,Math.max(...prices)-lo);
+                    return rows.map(b=>`${b.index/Math.max(1,chartBars.length-1)*1000},${95-((b.values[3] as number)-lo)/range*90}`).join(" ");
+                  })()} />
+                  <rect x={chartOffset/chartBars.length*1000} y={0} width={Math.min(128,chartBars.length)/chartBars.length*1000} height={100} fill="currentColor" opacity={0.12}/>
+                </svg>
+                <label>Detail bars {chartOffset+1}–{Math.min(chartOffset+128,chartBars.length)} of {chartBars.length}
+                  <input aria-label="Block chart position" type="range" min={0} max={Math.max(0,chartBars.length-128)} value={chartOffset} onChange={e=>setChartOffset(Number(e.target.value))} style={{width:"100%"}} />
+                </label>
                 <div style={{ overflowX: "auto", maxWidth: "100%" }}><ShardCandles
                   triplets
-                  bars={chartBars}
+                  bars={chartBars.slice(chartOffset,chartOffset+128).map((b,index)=>({...b,index}))}
                   family={family}
-                  selected={selected}
-                  onSelect={index => { setSelected(index); truthSelection.current++; setTruthFrame(frameCodes[sample.frame]); }}
+                  selected={selected-chartOffset}
+                  onSelect={index => { setSelected(index+chartOffset); truthSelection.current++; setTruthFrame(frameCodes[sample.frame]); }}
                 /></div>
               </>
             ) : (
@@ -476,7 +490,7 @@ export function Phase2ShardResearch() {
               </div>
             )}
           </section>
-          <details className="phase2-details"><summary>Values, masks and provenance</summary>
+          <details className="phase2-details" onToggle={e=>setDetailsOpen(e.currentTarget.open)}><summary>Values, masks and provenance</summary>{detailsOpen && <>
           <p className="research-muted">{sample.split === 0 ? "Training-era candidate" : sample.split === 1 ? "Validation-era candidate" : "Purged: context crosses split cutoff"} · {sample.liquid ? "Liquid" : "Less liquid"} · candidate status does not imply balanced-release inclusion.</p>
           {chosen && (
             <section
@@ -607,9 +621,10 @@ export function Phase2ShardResearch() {
               </table>
             </div>
           </section>
-          </details>
+          </>}</details>
         </>
       )}
     </div>
   );
 }
+
