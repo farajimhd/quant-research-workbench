@@ -37,6 +37,7 @@ def run(args):
     def stop(*_):
         nonlocal stopped;stopped=True
     handlers={sig:signal.signal(sig,stop) for sig in (signal.SIGINT,signal.SIGTERM)}
+    active = None
     try:
         for number in range(1,257):
             initial=totals(parents)
@@ -60,10 +61,19 @@ def run(args):
                     '--query-memory-gib',str(args.query_memory_gib),'--query-max-memory-gib',str(args.query_max_memory_gib),
                     '--target-bytes',str(args.target_bytes-initial['train_bytes']),'--validation-bytes','1',
                     '--training-campaign',args.training_campaign]
+                if args.engineering_proof:
+                    command.extend(['--engineering-proof',str(args.engineering_proof)])
                 with (active/'controller.stdout.log').open('ab') as out,(active/'controller.stderr.log').open('ab') as err:
                     child=subprocess.Popen(command,stdout=out,stderr=err,creationflags=subprocess.CREATE_NO_WINDOW)
                 write_json(root/'child.json',dict(pid=child.pid,created=psutil.Process(child.pid).create_time(),command=command,output=str(active)))
                 while child.poll() is None:
+                    # Generator-only priority; preserve the trainer's settings.
+                    process = psutil.Process(child.pid)
+                    for worker in [process] + process.children(recursive=True):
+                        try:
+                            worker.ionice(psutil.IOPRIO_LOW)
+                        except psutil.NoSuchProcess:
+                            pass
                     if (root/'STOP').exists():stopped=True
                     if stopped and not (active/'STOP').exists():(active/'STOP').write_text('OVERLAP_CAMPAIGN_STOP')
                     snapshot(root,parents,active,args,'draining' if stopped else 'running');time.sleep(2)
@@ -77,6 +87,10 @@ def run(args):
             parents.append(active)
         write_json(root/'result.json',snapshot(root,parents,None,args,'overlap_offsets_exhausted'))
         return 0
+    except Exception as error:
+        failed = snapshot(root,parents,active,args,'failed',f'{type(error).__name__}: {error}')
+        write_json(root/'result.json',failed)
+        raise
     finally:
         for sig,handler in handlers.items():signal.signal(sig,handler)
         lease.close()

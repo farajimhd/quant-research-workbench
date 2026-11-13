@@ -43,7 +43,26 @@ def ranks_for(receipt, blocks, pending):
         raise ValueError('Parent block rank evidence differs')
     ranks = (starts[:, None] + np.arange(BLOCK)).reshape(-1)
     if len(pending):
-        ranks = np.r_[ranks, np.arange(count-len(pending), count)]
+        end = count
+        if coverage and coverage['version'] == 'disjoint-session-origin-ranks-v1':
+            # uncovered() retains the tail of the LAST REMAINING run, which
+            # need not reach session end when an older block occupies the end.
+            excluded = coverage['excluded_ranges']
+            previous = 0
+            for lo, hi in excluded:
+                if not previous <= lo < hi <= count:
+                    raise ValueError('Malformed excluded session ranges')
+                previous = hi
+            for lo, hi in reversed(excluded):
+                if hi == end:
+                    end = lo
+                else:
+                    break
+            if any(lo < end and hi > end-len(pending) for lo, hi in excluded):
+                raise ValueError('Pending origins intersect excluded coverage')
+        if end < len(pending):
+            raise ValueError('Pending origins exceed remaining session run')
+        ranks = np.r_[ranks, np.arange(end-len(pending), end)]
     return ranks, starts
 
 

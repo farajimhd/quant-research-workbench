@@ -64,3 +64,24 @@ def test_nonconsecutive_parent_rank_runs_never_bridge(tmp_path):
     reader.receipt['origin_coverage']=dict(version=POLICY,block_starts=[0,6000,11000,15000])
     # Changed rank evidence conflicts with pending ranks/clock order: fail closed.
     with pytest.raises(ValueError):rebuild([reader],Geometry(),256,42)
+
+@pytest.mark.parametrize('excluded', [[[5687,9783]], [[5687,8000],[8000,9783]], [[6000,9000]]])
+def test_pending_rank_is_tail_of_last_remaining_run(excluded):
+    from research.bar_gpt.v5.phase2_ar_shards.overlap import ranks_for
+    from research.bar_gpt.v5.phase2_ar_shards.contract import ORIGIN
+    end=5687 if excluded[-1][1]==9783 else 9783
+    pending_count=1591 if end==5687 else 783
+    receipt=dict(sampling=dict(session_origins=9783),origin_coverage=dict(
+        version='disjoint-session-origin-ranks-v1',ranges=[[0,4096]],excluded_ranges=excluded))
+    ranks,starts=ranks_for(receipt,np.zeros((1,BLOCK),dtype=ORIGIN),np.zeros(pending_count,dtype=ORIGIN))
+    assert ranks[-pending_count:].tolist()==list(range(end-pending_count,end))
+    assert starts.tolist()==[0]
+
+
+def test_pending_rank_refuses_excluded_intersection():
+    from research.bar_gpt.v5.phase2_ar_shards.overlap import ranks_for
+    from research.bar_gpt.v5.phase2_ar_shards.contract import ORIGIN
+    receipt=dict(sampling=dict(session_origins=9783),origin_coverage=dict(
+        version='disjoint-session-origin-ranks-v1',ranges=[[0,4096]],excluded_ranges=[[6000,9000]]))
+    with pytest.raises(ValueError,match='intersect'):
+        ranks_for(receipt,np.zeros((1,BLOCK),dtype=ORIGIN),np.zeros(1591,dtype=ORIGIN))
