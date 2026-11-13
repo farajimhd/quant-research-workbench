@@ -141,12 +141,29 @@ def sample(stream="",unit=-1,block=0,decision=4095,frame=0,view=-1,
                 raw=record["values"][i].tolist(),valid=valid.tolist(),
                 values=[float(v) if ok else None for v,ok in zip(record["values"][i],valid)],
                 time_values=transformed.values[0,i,18:].tolist()))
+        # The block owns one compact pool per frame, including first-origin
+        # history and every subsequent completed bar, without repeated windows.
+        pool = cached.views[frame]
+        padded = np.zeros(((len(pool)+63)//64*64,), dtype=pool.dtype)
+        padded[:len(pool)] = pool
+        times = BarInputTransformV1()(torch.from_numpy(padded["values"].copy()).reshape(-1,64,18),
+            torch.from_numpy(padded["valid"].copy()).reshape(-1,64,18),
+            torch.from_numpy(padded["end_us"].copy()).reshape(-1,64),FRAMES[frame]).values[:,:,18:].reshape(-1,9)
+        block_bars=[]
+        for i,row in enumerate(pool):
+            mask=row["valid"].astype(bool)
+            block_bars.append(dict(index=i,end_us=int(row["end_us"]),padding=False,
+                context=bool(row["end_us"] < cached.ends[0]),
+                gap_us=int(row["end_us"]-pool[i-1]["end_us"]) if i else None,
+                raw=row["values"].tolist(),valid=mask.tolist(),
+                values=[float(v) if ok else None for v,ok in zip(row["values"],mask)],
+                time_values=times[i].tolist()))
         revision=json.loads((_root()/"provenance.json").read_text())["source_revision"]
         return dict(stream=stream,ticker=entry["ticker"],year=entry["year"],liquid=entry["liquid"],
             unit=int(receipt["session_date"].replace("-","")),block=block,block_count=receipt["blocks"],
             decision=decision,decisions=cached.ends.tolist(),origin_us=int(cached.ends[decision]),
             frame=frame,view=chosen,summaries=summaries,channels=list(CHANNELS),time_channels=list(TIME_CHANNELS),
-            bars=bars,split=cached.split,actions=[dict(r,effective_by_origin=bool(clock(r["execution_date"],4)<=cached.ends[decision])) for r in actions],
+            bars=bars,block_bars=block_bars,block_origin_start_us=int(cached.ends[0]),block_origin_end_us=int(cached.ends[-1]),split=cached.split,actions=[dict(r,effective_by_origin=bool(clock(r["execution_date"],4)<=cached.ends[decision])) for r in actions],
             receipt_hash=receipt["hash"],plan_hash=plan["hash"],producer_revision=revision,view_version=VERSION,
             price_basis=receipt["price_basis"],artifact_role="raw-ar-context-shards",training_ready=False)
     finally:

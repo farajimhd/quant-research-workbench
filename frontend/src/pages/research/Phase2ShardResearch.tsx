@@ -44,6 +44,9 @@ type Sample = Stream & {
   channels: string[];
   time_channels: string[];
   bars: Bar[];
+  block_bars: Bar[];
+  block_origin_start_us: number;
+  block_origin_end_us: number;
   split: number;
   actions: {
     execution_date: string;
@@ -164,7 +167,7 @@ export function Phase2ShardResearch() {
       if (truthRequest === truthSelection.current) setTruthFrame(frameCodes[result.frame]);
       setStream(result.stream);
       setUnit(result.unit);
-      setSelected(63);
+      setSelected(result.block_bars.length - 1);
       setBlockDraft(result.block);
     } catch (exception) {
       if (request === serial.current) setError((exception as Error).message);
@@ -196,8 +199,8 @@ export function Phase2ShardResearch() {
         ...overrides,
       });
   }
-  const chosen = sample?.bars[selected];
-  const chartBars = sample?.bars ?? [];
+  const chosen = sample?.block_bars[selected];
+  const chartBars = sample?.block_bars ?? [];
   const selectionMatches = sample?.stream === stream && sample?.unit === unit;
   return (
     <div
@@ -368,7 +371,7 @@ export function Phase2ShardResearch() {
           >
             <div className="research-controls">
               <h2>
-                Saved context · {frames[sample.frame]} · {sample.ticker} · {sample.unit}
+                Saved block · {frames[sample.frame]} · {sample.ticker} · {sample.unit}
               </h2>
               <label>
                 Block
@@ -439,31 +442,6 @@ export function Phase2ShardResearch() {
                 </select>
               </label>
               <label>
-                64-bar view
-                <select
-                  aria-label="64-bar view"
-                  value={sample.view ?? ""}
-                  disabled={busy || sample.view === null}
-                  onChange={(e) => inspect({ view: Number(e.target.value) })}
-                >
-                  {sample.view === null && (
-                    <option value="">History unavailable</option>
-                  )}
-                  {sample.summaries[sample.frame].views.map((row) => (
-                    <option
-                      key={row.view}
-                      value={row.view}
-                      disabled={!row.available}
-                    >
-                      #{row.view + 1} ·{" "}
-                      {row.available
-                        ? `ends at observed index ${row.last_index}`
-                        : "insufficient history"}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
                 Price series
                 <select
                   aria-label="Phase 2 price series"
@@ -480,16 +458,16 @@ export function Phase2ShardResearch() {
             {sample.bars.length ? (
               <>
                 <p className="research-muted">
-                  {frames[sample.frame]} · {clock(sample.bars[0].end_us)} →{" "}
-                  {clock(sample.bars[63].end_us)} · NY close times; gaps are preserved.
+                  {frames[sample.frame]} · {clock(chartBars[0].end_us)} →{" "}
+                  {clock(chartBars[chartBars.length - 1].end_us)} · {chartBars.length.toLocaleString()} stored bars · 4,096 origins · context before {clock(sample.block_origin_start_us)}. Scroll horizontally to inspect the whole block.
                 </p>
-                <ShardCandles
+                <div style={{ overflowX: "auto", maxWidth: "100%" }}><ShardCandles
                   triplets
                   bars={chartBars}
                   family={family}
                   selected={selected}
                   onSelect={index => { setSelected(index); truthSelection.current++; setTruthFrame(frameCodes[sample.frame]); }}
-                />
+                /></div>
               </>
             ) : (
               <div className="research-empty">
@@ -506,7 +484,7 @@ export function Phase2ShardResearch() {
               aria-label="Phase 2 bar details"
             >
               <div>
-                <h2>Bar {selected + 1} / 64</h2>
+                <h2>Bar {selected + 1} / {chartBars.length}</h2>
                 <p>{clock(chosen.end_us)}</p>
                 <p>
                   Gap:{" "}
@@ -606,7 +584,7 @@ export function Phase2ShardResearch() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sample.bars.map((bar) => (
+                  {chartBars.map((bar) => (
                     <tr key={bar.index}>
                       <td>
                         <button

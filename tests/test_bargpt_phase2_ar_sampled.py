@@ -284,6 +284,12 @@ def test_research_adapter_uses4096_origins_and_all_five_causal_views(tmp_path,mo
     assert inspection.units(entry['stream'])['units'][0]['unit']==20260102
     for frame in range(5):
         sample=inspection.sample(stream=entry['stream'],frame=frame)
+        assert len(sample['block_bars']) >= 64
+        assert sample['block_origin_start_us']==sample['decisions'][0]
+        assert sample['block_origin_end_us']==sample['decisions'][-1]
+        if frame==0:
+            assert len(sample['block_bars'])==4096+63
+            assert [b['end_us'] for b in sample['block_bars'][63:]]==sample['decisions']
         assert len(sample['decisions'])==4096 and len(sample['bars'])==64
         assert len(sample['channels'])==18 and len(sample['time_channels'])==9
         assert all(b['end_us']<=sample['origin_us'] for b in sample['bars'])
