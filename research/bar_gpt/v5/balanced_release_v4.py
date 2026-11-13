@@ -22,11 +22,21 @@ def require_release(dataset, split_manifest=None):
         raise ValueError('Balanced cohort identity differs')
     source = root.parent / 'phase1-coarse-supplement-v1-r2'
     result = source / 'result.json'
-    if not result.is_file() or file_hash(result) != body.get('supplement_result_sha256'):
+    snapshot = root / 'supplement-snapshot.json'
+    if body.get('supplement_snapshot_sha256'):
+        if file_hash(snapshot) != body['supplement_snapshot_sha256']:
+            raise ValueError('Partial supplement snapshot changed')
+        status = json.loads(snapshot.read_text())
+        if (status.get('hash') != digest({k:v for k,v in status.items() if k != 'hash'})
+            or status.get('state') != 'released_partial' or status.get('source') != str(source)
+            or status.get('source_binding') != json.loads((source/'contract.json').read_text())['binding']):
+            raise ValueError('Invalid partial supplement release')
+    elif not result.is_file() or file_hash(result) != body.get('supplement_result_sha256'):
         raise ValueError('Balanced release must bind the completed r2 extraction')
-    status = json.loads(result.read_text())
-    if status.get('failed') or status.get('state') not in {'complete', 'inventory_exhausted', 'quotas_reached', 'budget_reached'}:
-        raise ValueError('Coarse supplement is incomplete or failed')
+    else:
+        status = json.loads(result.read_text())
+        if status.get('failed') or status.get('state') not in {'complete', 'inventory_exhausted', 'quotas_reached', 'budget_reached'}:
+            raise ValueError('Coarse supplement is incomplete or failed')
     bindings = body.get('member_contracts', {})
     if len(components) < 3:
         raise ValueError('V4 requires corrected base, liquid supplement and new coarse component')
