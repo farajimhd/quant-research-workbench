@@ -70,6 +70,13 @@ def test_restart_does_not_label_prior_attempt_as_current_stop():
     assert 'restoring file ledger' in captured.get() and 'STOPPED WITH QUEUED WORK' not in captured.get()
 
 
+def test_cached_overlap_work_is_not_labelled_as_canonical_queries():
+    s=snapshot();s['progress'].update(source_mode='verified parent pools',active_cache_reads=8,active_queries=0)
+    console=Console(file=io.StringIO(),width=200,height=52,no_color=True)
+    with console.capture() as captured:console.print(render(s,200,52))
+    assert 'Verified cache reads 8' in captured.get() and 'Source queries' not in captured.get()
+
+
 @pytest.mark.parametrize("width,height", [(200,52),(100,36),(80,24)])
 def test_separate_capacity_states_fit_terminal(width,height):
     from research.bar_gpt.v5.phase2_ar_shards.run import capacity_status

@@ -192,7 +192,9 @@ def render(snapshot, width=180, height=50, timezone='America/Vancouver', page=No
     overview.add_row('Month plan status',ProgressBar(total=planned,completed=accounted,pulse=planned is None),f'{accounted:,} / {planned:,}' if planned is not None else 'awaiting plan counters')
     rate='no active transfer' if terminal else byte_label(snapshot['rate'])+'/s' if snapshot.get('rate') is not None else 'warming rate'
     summary=Text(f"Published {byte_label(p.get('bytes',0))}  ·  {p.get('units',0):,} sessions  ·  {p.get('selected_origins',0):,} selected origins  ·  {rate}")
-    activity=Text(f"CPU tasks {p.get('active_cpu',0)}/{cpus}  ·  I/O active {p.get('active_io',0)}/{ios}  ·  Source queries {p.get('active_queries',0)} / cap {p.get('query_limit','—')}  ·  Queued months {p.get('queued_units',0):,}",style='dim')
+    source=(f"Verified cache reads {p.get('active_cache_reads',0)}" if p.get('source_mode')=='verified parent pools'
+            else f"Source queries {p.get('active_queries',0)}")
+    activity=Text(f"CPU tasks {p.get('active_cpu',0)}/{cpus}  ·  I/O active {p.get('active_io',0)}/{ios}  ·  {source} / cap {p.get('query_limit','—')}  ·  Queued months {p.get('queued_units',0):,}",style='dim')
     groups=[heading,overview,summary,activity]
     if 'query_memory_gib_base' in p:
         groups.append(Text(f"Query RAM {p['query_memory_gib_base']:g}-{p['query_memory_gib_max']:g} GiB/request · reserved {p.get('reserved_query_gib',0):g} GiB · dense {p.get('active_dense_queries',0)}/2 · {p.get('dense_query_attempts',0):,} larger attempts",style='dim'))
