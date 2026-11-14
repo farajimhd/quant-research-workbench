@@ -68,6 +68,7 @@ def run(args):
                 with (active/'controller.stdout.log').open('ab') as out,(active/'controller.stderr.log').open('ab') as err:
                     child=subprocess.Popen(command,stdout=out,stderr=err,creationflags=subprocess.CREATE_NO_WINDOW)
                 write_json(root/'child.json',dict(pid=child.pid,created=psutil.Process(child.pid).create_time(),command=command,output=str(active)))
+                policy_owner = None
                 while child.poll() is None:
                     # Generator-only priority; preserve the trainer's settings.
                     process = psutil.Process(child.pid)
@@ -80,10 +81,11 @@ def run(args):
                     except (OSError,ValueError,KeyError,TypeError):
                         allowed = False
                     process.ionice(psutil.IOPRIO_NORMAL if allowed else psutil.IOPRIO_LOW)
-                    if allowed != normal_io or not (root/'publication-io-policy.json').exists():
+                    if allowed != normal_io or policy_owner != (process.pid,process.create_time()):
                         write_json(root/'publication-io-policy.json',dict(updated=time.time(),pid=process.pid,
                             created=process.create_time(),normal=allowed,trainer=trainer,
                             policy='live-training-input-wait-hysteresis-v1'))
+                    policy_owner = (process.pid,process.create_time())
                     normal_io = allowed
                     for worker in process.children(recursive=True):
                         try:
@@ -110,3 +112,4 @@ def run(args):
     finally:
         for sig,handler in handlers.items():signal.signal(sig,handler)
         lease.close()
+
