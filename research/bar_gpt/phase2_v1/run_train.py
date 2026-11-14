@@ -28,8 +28,10 @@ def arguments(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--mode', choices=('audit', 'profile', 'train'), default='audit')
     p.add_argument('--execute', action='store_true', help='Required for optimizer training')
-    p.add_argument('--dataset-root', type=Path, action='append', required=True,
+    data=p.add_mutually_exclusive_group(required=True)
+    data.add_argument('--dataset-root', type=Path, action='append',
                    help='Repeat for each explicitly selected completed immutable plan')
+    data.add_argument('--dataset-release',type=Path,help='Certified all-published-block certificate.json')
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--teacher-checkpoint', type=Path)
     p.add_argument('--teacher-sha256')
@@ -125,7 +127,7 @@ def main(argv=None):
         raise ValueError('Resume requires a checkpoint in the same existing run output')
     torch.set_num_threads(a.threads)
     random.seed(a.seed);np.random.seed(a.seed);torch.manual_seed(a.seed)
-    units,dataset=load_units(a.dataset_root)
+    units,dataset=load_units(a.dataset_root or (),a.dataset_release)
     teacher=proof=None
     if a.teacher_checkpoint:teacher,proof=load_teacher(a.teacher_checkpoint,a.teacher_sha256,a.device)
     config=Config()

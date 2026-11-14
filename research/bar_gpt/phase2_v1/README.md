@@ -1,5 +1,26 @@
 # Phase-two v1: frozen-tokenizer latent forecasting
 
+## All-published dataset release (subsequent user decision)
+
+The user authorized using **all saved candidate blocks at their natural
+distribution**, dropping the75/25 selection rule. The original selected-block
+manifests remain immutable. `release.py` creates a separate
+`bargpt-phase2-all-published-v1` certificate and per-root Parquet block/unit indices.
+Use `--dataset-release <certificate.json>` instead of legacy `--dataset-root`.
+Every included block still uses the same session/quote/split/index/target rules.
+The release binds every publication through complete sealed ledger-part SHA,
+journal sequence and publication count/byte/classification reconciliation.
+Fresh payload SHA/content/quote/causal checks are stratified samples. The certificate
+explicitly records `all_payload_hashes_recomputed=false` and
+`all_physical_files_restat=false`; it is not an exhaustive4TB physical rehash or
+an assertion that every stored origin satisfies the model's longer warmup.
+The training reader still verifies touched receipts/payloads and eligibility.
+
+Certification never opens SQLite, changes source roots, regenerates bars,
+rebalances tickers or starts training. Its CLI runs at low CPU/I/O priority,
+requires64GiB available RAM and preserves150GiB disk headroom. Per-root metadata
+time and concurrency are bounded. A partial audit never publishes a certificate.
+
 Design agreed November 14, 2026. Model version: `bargpt-phase2-latent-v1`.
 This is distinct from the existing `bargpt-phase2-ar-sampled-v2` **shard format**.
 No extractor, source bars, active training job or shard is changed by this model.

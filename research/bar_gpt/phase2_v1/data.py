@@ -34,10 +34,15 @@ class Unit:
     path: Path
     binding: str
     blocks: tuple  # (ordinal, split, liquid, selection id)
+    receipt_hash: str | None = None
 
 
-def load_units(roots):
+def load_units(roots=(), release=None):
     """Pin explicit immutable selected-block exports, never scan all shard files."""
+    if release:
+        if roots:raise ValueError('Choose a certified release or legacy selected roots, not both')
+        from .release import load_released_units
+        return load_released_units(release)
     units, identities, seen, bindings = [], [], set(), set()
     for raw in roots:
         root = Path(raw).resolve()
@@ -140,6 +145,8 @@ def plan_block(reader: ShardReader, index: int):
 def checked_unit(unit):
     reader = ShardReader(unit.path, unit.binding)
     receipt = reader.receipt
+    if unit.receipt_hash is not None and receipt['hash']!=unit.receipt_hash:
+        raise ValueError('Receipt differs from the certified all-block inventory')
     if not receipt.get('price_basis') or not receipt.get('session_date'):
         raise ValueError('Latent v1 requires the explicit immutable session split basis')
     split = int(receipt['session_date'][:4] == '2026')
