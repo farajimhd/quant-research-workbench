@@ -206,18 +206,41 @@ def sample_audit(root,table,binding):
     return reports
 
 
-def certify(roots,output,*,workers=4,seconds=240):
+def completed_report(output,number,root):
+    """Reuse only a completed, SHA-pinned pass with unchanged source metadata."""
+    path=output/f'root-{number:02d}.json'
+    proof=json.loads(path.with_suffix('.proof.json').read_text())
+    if file_hash(path)!=proof['sha256']:raise ValueError('Completed audit report changed')
+    r=json.loads(path.read_text())
+    if Path(r['root']).resolve()!=root:raise ValueError('Resume root/order changed')
+    terminal(root)
+    for name,key in [('plan.json','plan_sha256'),('result.json','result_sha256'),('ledger-file-v1/HEAD.json','ledger_head_sha256')]:
+        if file_hash(root/name)!=r[key]:raise ValueError('Source changed since completed metadata audit')
+    table=part(output,r['units']);index=part(output,r['index'])
+    if (table.height!=r['unit_inventory'] or table['blocks'].sum()!=r['candidate_blocks']
+            or table['bytes'].sum()!=r['bytes'] or index.height!=r['candidate_blocks']):
+        raise ValueError('Completed audit index reconciliation changed')
+    print(json.dumps(dict(root=root.name,reused_completed_metadata_audit=True)),flush=True)
+    return r,table
+
+
+def certify(roots,output,*,workers=4,seconds=240,resume=False):
     output=Path(output).resolve()
-    if output.exists():raise FileExistsError('Use a new immutable certification output')
-    output.mkdir(parents=True)
+    if output.exists() and (not resume or (output/'certificate.json').exists()):
+        raise FileExistsError('Use a new output, or explicitly resume an incomplete audit')
+    output.mkdir(parents=True,exist_ok=resume)
     roots=[Path(r).resolve() for r in roots]
     if len(set(roots))!=len(roots):raise ValueError('Duplicate certification root')
     reports=[];tables=[];bindings={}
     for i,root in enumerate(roots):
-        report,table=collect(root,output,i,workers=workers,seconds=seconds)
+        if resume and (output/f'root-{i:02d}.json').exists():
+            report,table=completed_report(output,i,root)
+        else:
+            report,table=collect(root,output,i,workers=workers,seconds=seconds)
+            path=output/f'root-{i:02d}.json';write_json(path,report)
+            write_json(path.with_suffix('.proof.json'),dict(sha256=file_hash(path)))
         if report['binding'] in bindings.values():raise ValueError('Duplicate immutable plan')
         bindings[str(root)]=report['binding'];reports.append(report);tables.append(table)
-        write_json(output/f'root-{i:02d}.json',report)
     for r in reports:
         for p in r['ancestry']:
             if bindings.get(str(Path(p['root']).resolve()))!=p['binding']:
@@ -269,13 +292,14 @@ def main(argv=None):
     p.add_argument('--output',type=Path,required=True)
     p.add_argument('--workers',type=int,default=4)
     p.add_argument('--seconds-per-root',type=int,default=240)
+    p.add_argument('--resume',action='store_true',help='Reuse only SHA-proven completed root audits')
     a=p.parse_args(argv)
-    if not 1<=a.workers<=4 or not 1<=a.seconds_per_root<=300:p.error('Bounded workers/time required')
+    if not 1<=a.workers<=4 or not 1<=a.seconds_per_root<=600:p.error('Bounded workers/time required')
     if not a.output.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):p.error('Use the runtime root')
     if psutil.virtual_memory().available<64*1024**3:raise MemoryError('64GiB RAM reserve required')
     if os.name=='nt':
         own=psutil.Process();own.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS);own.ionice(psutil.IOPRIO_LOW)
-    cert=certify(a.root,a.output,workers=a.workers,seconds=a.seconds_per_root)
+    cert=certify(a.root,a.output,workers=a.workers,seconds=a.seconds_per_root,resume=a.resume)
     print(json.dumps(dict(certificate=str(a.output/'certificate.json'),hash=cert['hash'],bytes=cert['bytes'],
                           blocks=cert['blocks'],distribution=cert['distribution'])),flush=True)
 

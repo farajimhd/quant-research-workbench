@@ -71,3 +71,27 @@ def test_journal_mutation_is_detected_before_release(tmp_path):
     out=tmp_path/'release'
     with pytest.raises(ValueError,match='SHA'):certify([unit.root],out,workers=1)
     assert not (out/'certificate.json').exists()
+
+
+def test_completed_root_resume_is_pinned_and_never_repeats_the_ledger_pass(tmp_path,monkeypatch):
+    unit=dataset(tmp_path/'source');out=tmp_path/'release'
+    import research.bar_gpt.phase2_v1.release as module
+    audit=module.sample_audit
+    def interrupt(*args):raise TimeoutError('fixture interruption after completed root audit')
+    monkeypatch.setattr(module,'sample_audit',interrupt)
+    with pytest.raises(TimeoutError):certify([unit.root],out,workers=1)
+    assert (out/'root-00.proof.json').exists() and not (out/'certificate.json').exists()
+    monkeypatch.setattr(module,'sample_audit',audit)
+    def no_repeat(*args,**kw):raise AssertionError('Completed ledger was needlessly rescanned')
+    monkeypatch.setattr(module,'collect',no_repeat)
+    assert certify([unit.root],out,workers=1,resume=True)['blocks']==1
+
+
+def test_resume_rejects_changed_source_head(tmp_path,monkeypatch):
+    unit=dataset(tmp_path/'source');out=tmp_path/'release'
+    import research.bar_gpt.phase2_v1.release as module
+    def interrupt(*args):raise TimeoutError('fixture')
+    monkeypatch.setattr(module,'sample_audit',interrupt)
+    with pytest.raises(TimeoutError):certify([unit.root],out,workers=1)
+    with (unit.root/'ledger-file-v1/HEAD.json').open('a') as f:f.write(' ')
+    with pytest.raises(ValueError,match='Source changed'):certify([unit.root],out,workers=1,resume=True)

@@ -20,6 +20,10 @@ Certification never opens SQLite, changes source roots, regenerates bars,
 rebalances tickers or starts training. Its CLI runs at low CPU/I/O priority,
 requires64GiB available RAM and preserves150GiB disk headroom. Per-root metadata
 time and concurrency are bounded. A partial audit never publishes a certificate.
+`--resume` can reuse completed root reports only after report/index SHA and exact
+source HEAD/plan/result revalidation. Incomplete root passes are repeated; no
+unchecked prefix is promoted. The CLI permits up to ten minutes per metadata
+root pass, with progress counters; it never rereads the entire4TB payload corpus.
 
 Design agreed November 14, 2026. Model version: `bargpt-phase2-latent-v1`.
 This is distinct from the existing `bargpt-phase2-ar-sampled-v2` **shard format**.
