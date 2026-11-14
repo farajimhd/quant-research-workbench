@@ -72,7 +72,8 @@ class SessionTokens:
         if self.device.type == 'cuda' and required + 512*1024**2 > torch.cuda.mem_get_info(self.device)[0]:
             raise MemoryError('Insufficient device headroom for tokenizer session')
         self.identity = digest(dict(receipt=reader.receipt['hash'], teacher=teacher_sha,
-                                    transform=TRANSFORM, basis=reader.price_basis, precision=precision))
+                                    transform=TRANSFORM, basis=reader.price_basis, precision=precision,
+                                    tiles=token_batch,algorithm='fixed-pool-endpoint-tiles-v1'))
         self.transform = BarInputTransformV1().to(self.device)
         self.pools, self.bank, self.refs, self.ready = [], [], [], []
         for f in range(5):
@@ -95,10 +96,14 @@ class SessionTokens:
         ends = np.unique(np.asarray(endpoints, dtype=np.int64))
         if len(ends) and (ends[0] < 63 or ends[-1] >= len(self.ready[frame])):
             raise ValueError('Tokenizer window outside immutable pool')
-        todo = ends[~self.ready[frame][ends]]
         values, valid, clocks = self.pools[frame]
-        for start in range(0, len(todo), self.token_batch):
-            selected = todo[start:start + self.token_batch]
+        # Fixed pool-relative tiles keep each window's batch shape/order identical
+        # across miss sets, prior blocks and resumes. This avoids GEMM roundoff
+        # changing a frozen target when the cache starts at a different cursor.
+        for tile in np.unique((ends - 63) // self.token_batch):
+            start = 63 + int(tile) * self.token_batch
+            selected = np.arange(start,min(start+self.token_batch,len(self.ready[frame])))
+            if self.ready[frame][selected].all():continue
             ids = torch.as_tensor(selected.copy(), device=self.device)
             gather = ids[:, None] - torch.arange(63, -1, -1, device=self.device)
             raw, evidence = values[gather], valid[gather].bool()

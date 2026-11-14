@@ -136,6 +136,13 @@ def main(argv=None):
     implementation=digest({str(p.relative_to(Path(__file__).resolve().parents[1])):file_hash(p)
                            for p in sources})
     contract=dict(design=config.manifest(),dataset=dataset,teacher=proof,implementation=implementation,
+                  tokenizer=dict(tile_batch=a.token_batch,precision=a.precision,
+                                 algorithm='fixed-pool-endpoint-tiles-v1'),
+                  numerics=dict(torch=str(torch.__version__),cuda=torch.version.cuda,
+                                threads=a.threads,matmul=torch.get_float32_matmul_precision(),
+                                tf32=bool(torch.backends.cuda.matmul.allow_tf32),
+                                deterministic=torch.are_deterministic_algorithms_enabled(),
+                                device_name=torch.cuda.get_device_name() if a.device=='cuda' else 'cpu'),
                   optimization=dict(batch=a.batch_size,precision=a.precision,device=a.device,
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,

@@ -159,6 +159,20 @@ def test_memory_budget_and_frozen_teacher_required(tmp_path):
     with pytest.raises(ValueError,match='frozen'):SessionTokens(r,teacher,'x')
 
 
+def test_real_v4_cache_tiles_are_exact_across_different_miss_orders(tmp_path):
+    reader=checked_unit(session(tmp_path))
+    model=MaskedAutoencoderV4(EncoderConfig(width=512,layers=1,heads=8,feedforward=64))
+    teacher=model.encoder.requires_grad_(False).eval()
+    a=SessionTokens(reader,teacher,'pinned',token_batch=64)
+    b=SessionTokens(reader,teacher,'pinned',token_batch=64)
+    ends=np.array([63,64,126,127,128])
+    a.ensure(0,ends[:1]);a.ensure(0,ends[3:]);a.ensure(0,ends[1:3])
+    b.ensure(0,ends[::-1])
+    assert a.encoded_windows==b.encoded_windows==128
+    assert torch.equal(a.bank[0][ends],b.bank[0][ends])
+    assert torch.equal(a.refs[0][ends],b.refs[0][ends])
+
+
 def test_normalization_matches_exact_v4_preparation():
     rows=bars(np.arange(1,65)*1_000_000+clock('2023-01-03',4))
     values=torch.tensor(rows['values'].copy())[None].repeat(2,1,1)

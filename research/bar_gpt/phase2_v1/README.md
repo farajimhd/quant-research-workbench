@@ -74,7 +74,12 @@ Transfer shared values/masks/UTC clocks/indices to the requested device once per
 session under an explicit memory budget. Batch unique 64-bar endpoints through
 the teacher; cache its embeddings and local references for that immutable session.
 Cache identity binds receipt/window, frame, share basis, tokenizer SHA and
-preprocessing contract. Reuse unchanged coarse tokens until their closes change;
+preprocessing contract. Encoding uses fixed pool-relative endpoint tiles, anchored
+at the first complete64-bar window. Tile size and precision are checkpoint-bound:
+Float32 GEMM can otherwise vary with batch shape after a cache miss or resume.
+Tiles may precompute unused/future endpoints, but those vectors never enter inputs
+unless the causal plan explicitly selects their completed windows. Reuse unchanged
+coarse tokens until their closes change;
 all eight 1s windows advance at the next observed origin. Actual timestamps govern
 gaps and rollovers. No per-origin ClickHouse or disk queries, and no teacher
 gradient graph. Training batches consecutive eligible origins in parallel.
