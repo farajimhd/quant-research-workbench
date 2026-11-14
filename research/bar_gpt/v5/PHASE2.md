@@ -1,5 +1,12 @@
 # Phase two: session shard generator and data contract
 
+**Phase-two model v1 design and implementation (November14):**
+[Frozen-V4 latent forecasting](../phase2_v1/README.md) records the subsequently
+agreed 8/4/2/1/1 token layout,20% historical-token masking and single future64-bar
+latent target. Its reader burns in existing blocks and excludes the final64
+origins; this does not change the shard format or regenerate source bars.
+Earlier unresolved-model notes below describe the earlier planning state.
+
 ## Explicit overlapping-origin extension (2026-11-13)
 
 The user now permits overlapping origins inside a session. This supersedes the
