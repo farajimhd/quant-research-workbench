@@ -23,6 +23,7 @@ from .model import Forecaster, future_loss
 from .tokenizer import load_teacher, SessionTokens
 from .train import train, lease, autocast
 from .metrics import CONTRACT as RECONSTRUCTION_CONTRACT, DecodedMetrics
+from .teacher_selection import select_training_teacher
 
 
 def arguments(argv=None):
@@ -66,8 +67,8 @@ def arguments(argv=None):
         p.error('Resource limits and schedule must be finite positive values')
     if not np.isfinite([a.learning_rate,a.min_learning_rate]).all():p.error('Nonfinite schedule')
     if a.mode == 'train' and not a.execute:p.error('Training requires --execute')
-    if a.mode != 'audit' and (not a.teacher_checkpoint or not a.teacher_sha256):
-        p.error('Profile/train requires an explicit V4 checkpoint and SHA256')
+    if a.mode == 'profile' and (not a.teacher_checkpoint or not a.teacher_sha256):
+        p.error('Profile requires an explicit V4 checkpoint and SHA256')
     if bool(a.teacher_checkpoint) != bool(a.teacher_sha256):p.error('Supply both teacher path and SHA256')
     if a.resume and a.mode != 'train':p.error('Resume is only meaningful for training')
     if a.mode != 'train' and a.wandb_mode != 'disabled':p.error('Audit/profile never creates a W&B run')
@@ -139,9 +140,16 @@ def main(argv=None):
         raise ValueError('Resume requires a checkpoint in the same existing run output')
     torch.set_num_threads(a.threads)
     random.seed(a.seed);np.random.seed(a.seed);torch.manual_seed(a.seed)
-    units,dataset=load_units(a.dataset_root or (),a.dataset_release)
     teacher=proof=None
-    if a.teacher_checkpoint:teacher,proof=load_teacher(a.teacher_checkpoint,a.teacher_sha256,a.device)
+    selection=None
+    if a.mode=='train':
+        a.teacher_checkpoint,a.teacher_sha256,selection=select_training_teacher(
+            a.teacher_checkpoint,a.teacher_sha256)
+    if a.teacher_checkpoint:
+        teacher,proof=load_teacher(a.teacher_checkpoint,a.teacher_sha256,a.device,
+                                  required_epoch=50 if a.mode=='train' else None)
+        if selection is not None:proof['selection']=selection
+    units,dataset=load_units(a.dataset_root or (),a.dataset_release)
     config=Config()
     sources=list(Path(__file__).parent.glob('*.py'))
     shared=Path(__file__).resolve().parents[1]/'v5'

@@ -13,10 +13,17 @@ from .config import FRAME_IDS
 from ..v5.phase2_ar_shards.contract import FRAMES
 
 
-def load_teacher(path, sha256, device='cpu'):
+def load_teacher(path, sha256, device='cpu', *, required_epoch=None):
     if not re.fullmatch('[0-9a-f]{64}', sha256) or file_hash(path) != sha256:
         raise ValueError('Explicit V4 checkpoint SHA256 must match')
     saved = torch.load(path, map_location='cpu', weights_only=False)
+    if required_epoch is not None:
+        history = saved.get('history',[])
+        if (saved.get('epoch') != required_epoch or saved.get('phase') != 'train' or not history
+                or history[-1].get('epoch') != required_epoch
+                or history[-1].get('training',{}).get('complete_pass') is not True
+                or history[-1].get('validation',{}).get('complete_pass') is not True):
+            raise ValueError('Teacher checkpoint does not contain the required fully completed epoch')
     contract = saved['contract']
     if (contract.get('architecture') != 'column-encoder-small-mlp-v4'
             or contract.get('preprocessing') != TRANSFORM

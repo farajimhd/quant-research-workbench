@@ -177,3 +177,78 @@ def test_real_profile_launcher_includes_decoded_metrics_and_keeps_shards(tmp_pat
     assert r['contract']['validation']['every_updates']==0
     assert r['contract']['validation']['reconstruction']['version']=='phase2-v1-target-conditioned-decoded-v1'
     assert before=={str(p):file_hash(p) for p in root.rglob('*') if p.is_file()}
+
+
+def final_teacher(root):
+    root.mkdir()
+    config=EncoderConfig(width=512,layers=1,heads=8,feedforward=64)
+    model=MaskedAutoencoderV4(config)
+    history=[dict(epoch=50,training=dict(complete_pass=True),validation=dict(complete_pass=True))]
+    write_json(root/'progress.json',dict(state='complete',epoch=50,epochs=50))
+    write_json(root/'results.json',dict(history=history))
+    path=root/'checkpoint_epoch_050.pt'
+    torch.save(dict(epoch=50,phase='train',history=history,model=model.state_dict(),
+                    contract=dict(architecture='column-encoder-small-mlp-v4',preprocessing=TRANSFORM,
+                                  reference_policy=REFERENCE_POLICY,model=asdict(config))),path)
+    return path
+
+
+def test_final_epoch50_policy_selects_same_encoder_decoder_and_sha(tmp_path):
+    from research.bar_gpt.phase2_v1.teacher_selection import select_training_teacher
+    path=final_teacher(tmp_path/'v4')
+    selected,sha,proof=select_training_teacher(root=path.parent)
+    assert selected==path and sha==file_hash(path) and proof['epoch']==50 and proof['fallback'] is False
+    teacher,pin=load_teacher(path,sha,required_epoch=50)
+    assert pin['epoch']==50 and not teacher.reconstruction_decoder.training
+    assert select_training_teacher(path,sha,root=path.parent)[1]==sha
+    with pytest.raises(ValueError,match='best/latest'):
+        select_training_teacher(path.parent/'checkpoint_best.pt',root=path.parent)
+    with pytest.raises(ValueError,match='SHA256'):
+        select_training_teacher(path,'0'*64,root=path.parent)
+    (path.parent/'STOP').write_text('human STOP')
+    with pytest.raises(ValueError,match='STOP'):select_training_teacher(root=path.parent)
+    assert (path.parent/'STOP').read_text()=='human STOP'
+
+
+@pytest.mark.parametrize('failure',['running','epoch49','partial_validation','partial_training','checkpoint_epoch49','checkpoint_validation_phase'])
+def test_final_teacher_cannot_fall_back_or_trust_filename_only(tmp_path,failure):
+    import json
+    from research.bar_gpt.phase2_v1.teacher_selection import select_training_teacher
+    path=final_teacher(tmp_path/'v4');root=path.parent
+    if failure in ('running','epoch49'):
+        p=json.loads((root/'progress.json').read_text())
+        if failure=='running':p['state']='running'
+        else:p['epoch']=49
+        write_json(root/'progress.json',p)
+    elif failure.startswith('partial'):
+        p=json.loads((root/'results.json').read_text())
+        p['history'][-1]['validation' if failure=='partial_validation' else 'training']['complete_pass']=False
+        write_json(root/'results.json',p)
+    else:
+        value=torch.load(path,weights_only=False)
+        if failure=='checkpoint_epoch49':value['epoch']=49
+        else:value['phase']='validation'
+        torch.save(value,path)
+    if failure.startswith('checkpoint'):
+        selected,sha,_=select_training_teacher(root=root)
+        with pytest.raises(ValueError,match='fully completed epoch'):load_teacher(selected,sha,required_epoch=50)
+    else:
+        with pytest.raises(ValueError,match='no fallback'):select_training_teacher(root=root)
+
+
+def test_training_launcher_resolves_selected_teacher_before_dataset_load(tmp_path,monkeypatch):
+    from research.bar_gpt.phase2_v1 import run_train
+    path=final_teacher(tmp_path/'v4');calls=[]
+    from research.bar_gpt.phase2_v1.teacher_selection import select_training_teacher
+    monkeypatch.setattr(run_train,'select_training_teacher',lambda p,s:select_training_teacher(p,s,root=path.parent))
+    def checked_load(p,s,device,*,required_epoch):
+        assert p==path and s==file_hash(path) and required_epoch==50
+        calls.append('epoch50');return load_teacher(p,s,device,required_epoch=required_epoch)
+    monkeypatch.setattr(run_train,'load_teacher',checked_load)
+    def dataset(*a):
+        assert calls==['epoch50']
+        raise RuntimeError('fixture reached dataset only after teacher passed')
+    monkeypatch.setattr(run_train,'load_units',dataset)
+    with pytest.raises(RuntimeError,match='reached dataset'):
+        main(['--mode','train','--execute','--dataset-root','fixture','--output',str(tmp_path/'new-run')])
+    assert not (tmp_path/'new-run').exists()

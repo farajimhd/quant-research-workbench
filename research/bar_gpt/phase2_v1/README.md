@@ -37,6 +37,21 @@ the exact V4 local-reference preprocessing and nine UTC features. One real
 64-bar window produces one 512-dimensional embedding. Source missingness stays
 distinct from artificial masking. Never refit normalization or update the teacher.
 
+**Selected training teacher: completed epoch50**, as explicitly chosen by the
+user. Phase-two training resolves only
+`D:/TradingML/runtimes/bar_gpt/encoder-v4-mlp-balanced-20261113/checkpoint_epoch_050.pt`.
+The launcher requires V4 terminal `complete` with all50 epochs, full training and
+validation evidence for epoch50, no STOP, and matching completed epoch/phase and
+history inside the checkpoint itself. It computes and records the immutable
+file SHA in the phase-two teacher/run/checkpoint contract. Encoder and decoder
+are loaded strictly from `encoder.*` and `decoder.*` in **that same file**.
+`best`, `last`, earlier epochs and other V4 runs are rejected for training; there
+is no fallback while epoch50 is unfinished. Optional explicit teacher path/SHA
+must match this selection. Omitting both lets training resolve and SHA-pin the
+selected final file once complete. This does not wait, launch training, or change
+V4 automatically. Explicit older checkpoints remain allowed for bounded
+audit/profile compatibility tests only, not phase-two training.
+
 At origin i, use eight disjoint historical 1s windows ending at i, i-64, ...,
 i-448. The ninth 1s window contains origins i+1 through i+64 and is **only the
 target**. The target and its actual future clocks/references never enter inputs.
