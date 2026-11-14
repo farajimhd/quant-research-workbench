@@ -314,6 +314,18 @@ def ordered_units(root, plan, only=(), pilot_units=()):
     return result
 
 
+def pop_publication(staged, groups, active, io_workers):
+    """At most two queued/running publications per lane; retain lane FIFO."""
+    counts = [0] * io_workers
+    for key, _, _ in active.values():
+        counts[groups[key]['slot'] % io_workers] += 1
+    for index, item in enumerate(staged):
+        if counts[groups[item[0]]['slot'] % io_workers] < 2:
+            del staged[index]
+            return item
+    return None
+
+
 def main(argv=None):
     args = arguments(argv)
     geometry = Geometry(tuple(map(int, args.history_bars.split(","))))
@@ -516,9 +528,9 @@ def main(argv=None):
             while queued_count() or cpus or ios or staged:
                 if (root / "STOP").exists():
                     stop.set()
-                busy = set(cpu_slots.values())
+                busy = set(cpu_slots.values()) | {g["slot"] for g in groups.values()}
                 for slot, queue in enumerate(queues):
-                    if slot in busy or len(staged) >= args.io_workers * 2 or stop.is_set():
+                    if slot in busy or stop.is_set():
                         continue
                     while queue:
                         if args.max_months and counters["admitted_months_this_run"] >= args.max_months:
@@ -540,7 +552,10 @@ def main(argv=None):
                         counters["admitted_months_this_run"] += 1
                         break
                 while staged and len(ios) < args.io_workers * 2:
-                    key, unit, result = staged.popleft()
+                    item = pop_publication(staged, groups, ios, args.io_workers)
+                    if item is None:
+                        break
+                    key, unit, result = item
                     split = int(unit["split"])
                     try:
                         if result.get("recovered"):

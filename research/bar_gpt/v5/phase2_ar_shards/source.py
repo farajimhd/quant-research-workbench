@@ -115,8 +115,10 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
                if prior["code"].get(k) != current["code"].get(k)}
     allowed = {"phase2_ar_shards/" + k for k in ("source.py", "sampling.py", "run.py")}
     kind = proof.get("kind")
-    if kind == 'overlap-pending-ranks-v1':
+    if kind in ('overlap-pending-ranks-v1', 'overlap-fair-publication-v1'):
         allowed = {'phase2_ar_shards/source.py', 'phase2_ar_shards/overlap.py'}
+        if kind == 'overlap-fair-publication-v1':
+            allowed.add('phase2_ar_shards/run.py')
     if kind=='adaptive-query-memory-v1':
         allowed={'phase2_ar_shards/'+name for name in ('source.py','run.py','telemetry.py','query_memory.py')}
     if kind=='source-eligibility-cache-v1':
@@ -129,7 +131,7 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
     if kind in ("ticker-affinity-context-v1", "coordinator-capacity-v1"):
         allowed |= {"phase2_ar_shards/"+k for k in ("assignment.py", "bar_cache.py")}
     if (not changed or not changed <= allowed
-        or kind not in ("exact-short-session-preflight-v1", 'adaptive-query-memory-v1', 'source-eligibility-cache-v1', 'overlap-pending-ranks-v1', *ledger_kinds)
+        or kind not in ("exact-short-session-preflight-v1", 'adaptive-query-memory-v1', 'source-eligibility-cache-v1', 'overlap-pending-ranks-v1', 'overlap-fair-publication-v1', *ledger_kinds)
         or proof.get("plan_hash") != prior["hash"]
         or proof.get("from_code") != prior["code"]
         or proof.get("to_code") != current["code"]):
@@ -146,10 +148,12 @@ def verify_engineering_revision(prior, current, proof_path, root=None):
         or audit.get("counts_parity_cases", 0) < 12
         or audit.get("complete_output_parity_cases", 0) < 2):
         raise ValueError("Engineering revision lacks exact native parity evidence")
-    if kind == 'overlap-pending-ranks-v1' and not all(audit.get(key) is True for key in (
+    if kind in ('overlap-pending-ranks-v1', 'overlap-fair-publication-v1') and not all(audit.get(key) is True for key in (
         'failed_session_exact_context_verified', 'pending_rank_regressions_passed',
         'published_outputs_unchanged', 'parent_receipts_unchanged')):
         raise ValueError('Overlap recovery lacks rank and immutable-output evidence')
+    if kind == 'overlap-fair-publication-v1' and audit.get('bounded_lane_fifo_tests_passed') is not True:
+        raise ValueError('Fair publication lacks bounded FIFO proof')
     if kind=='adaptive-query-memory-v1' and not all(audit.get(key) is True for key in (
         'weighted_admission_tests_passed','client_limits_restored','identical_sql_retry_verified',
         'unchanged_payload_selection_and_cache_binding','training_guards_preserved')):
