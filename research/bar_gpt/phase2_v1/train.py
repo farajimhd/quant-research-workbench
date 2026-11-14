@@ -16,6 +16,7 @@ from ..v5.shards.contract import digest, file_hash, write_json
 from .data import checked_unit, plan_block
 from .model import Forecaster, future_loss
 from .tokenizer import SessionTokens
+from .metrics import DecodedMetrics
 
 
 @contextmanager
@@ -134,7 +135,8 @@ class Metrics:
         self.count = state['count']; self.sums.copy_(state['sums']); self.moments.copy_(state['moments'])
 
 
-def batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), report=None):
+def batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), report=None,
+            reconstruction=False):
     """Stable chronological session/block/origin traversal; no random sample dropping."""
     for ui, unit in enumerate(units):
         if ui < cursor[0] or not any(b[1] == split for b in unit.blocks):continue
@@ -155,7 +157,8 @@ def batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), repor
             for start in range(begin, len(plan.origins), args.batch_size):
                 stop = min(start+args.batch_size, len(plan.origins))
                 token, meta, target = session.batch(plan, start, stop)
-                yield token, meta, target, (ui, bi, stop), plan.origins[start:stop], liquid
+                row = (token, meta, target, (ui, bi, stop), plan.origins[start:stop], liquid)
+                yield row + (session.reconstruction(plan,start,stop),) if reconstruction else row
         del session
 
 
@@ -163,18 +166,25 @@ def batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), repor
 def evaluate(model, units, teacher, teacher_sha, args, mean, reporter, step):
     state = rng_state()
     metrics = Metrics(args.device)
+    decoded = DecodedMetrics(args.device)
+    decoder = teacher.reconstruction_decoder
+    if decoder.training or any(p.requires_grad for p in decoder.parameters()):
+        raise ValueError('Validation requires the frozen same-checkpoint decoder')
+    was_training = model.training
     model.eval()
     try:
-        for tokens, metadata, target, _, _, _ in batches(units, 1, teacher, teacher_sha, args):
+        for tokens, metadata, target, _, _, _, evidence in batches(
+                units, 1, teacher, teacher_sha, args, reconstruction=True):
             if (args.output / 'STOP').exists():return None
             with autocast(args):_, predicted = model(tokens, metadata)
             if not torch.isfinite(predicted).all():raise FloatingPointError('Nonfinite validation prediction')
             metrics.add(predicted, target, tokens[:, 7])
+            decoded.add(decoder, predicted, target, evidence)
             reporter.update(stage='validation', done=metrics.count, step=step)
-        return metrics.result(mean)
+        return dict(metrics.result(mean), **decoded.result())
     finally:
         restore_rng(state)
-        model.train()
+        model.train(was_training)
 
 
 def autocast(args):
@@ -187,6 +197,8 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
     scheduler = EpochCosine(args.learning_rate, args.min_learning_rate, args.epochs, args.warmup_updates)
     epoch = step = stale = 0
     cursor, phase, best, history = (0, 0, 0), 'train', math.inf, []
+    interval_history, last_validation_step = [], -1
+    validation_every = getattr(args,'validation_every',0)
     metrics = Metrics(args.device)
     if args.resume:
         saved = load_checkpoint(args.resume, contract)
@@ -194,13 +206,31 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
         scheduler.load_state_dict(saved['scheduler'])
         epoch, step, cursor, phase = saved['epoch'], saved['step'], tuple(saved['cursor']), saved['phase']
         best, history, stale = saved['best'], saved['history'], saved['stale']
+        interval_history = saved.get('interval_history',[])
+        last_validation_step = saved.get('last_validation_step',-1)
         metrics.restore(saved['training_metrics']);restore_rng(saved['rng'])
 
     def checkpoint(name):
         save_checkpoint(args.output / name, dict(contract=contract, model=model.state_dict(),
             optimizer=optimizer.state_dict(), scheduler=scheduler.state_dict(), epoch=epoch,
             step=step, cursor=cursor, phase=phase, best=best, stale=stale, history=history,
+            interval_history=interval_history,last_validation_step=last_validation_step,
             training_metrics=metrics.state(), rng=rng_state()))
+
+    def interval_validation():
+        nonlocal phase, last_validation_step, reported_time, reported_count
+        validation = evaluate(model, units, teacher, teacher_sha, args,
+                              metrics.moments[2]/metrics.count, reporter, step)
+        if validation is None:
+            checkpoint('checkpoint_last.pt');return False
+        interval_history.append(dict(epoch=epoch+1,step=step,validation=validation))
+        reporter.log(dict({f'validation_{k}':v for k,v in validation.items()},
+                          validation_is_epoch_end=False),step)
+        write_json(args.output/'interval-results.json',interval_history)
+        last_validation_step=step;phase='train'
+        checkpoint('checkpoint_last.pt')
+        reported_time,reported_count=time.perf_counter(),metrics.count
+        return True
 
     reported_time,reported_count = time.perf_counter(),metrics.count
     if not args.resume:checkpoint('checkpoint_last.pt')
@@ -208,6 +238,7 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
         while epoch < args.epochs:
             scheduler.epoch = epoch
             model.train()
+            if phase == 'interval_validation' and not interval_validation():return 'stopped'
             if phase == 'train':
                 def report(value):
                     with (args.output / 'eligibility.jsonl').open('a') as out:
@@ -234,6 +265,9 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
                                         samples_per_second=(metrics.count-reported_count)/max(.001,now-reported_time))
                         reported_time,reported_count=now,metrics.count
                     if step % args.checkpoint_every == 0:checkpoint('checkpoint_last.pt')
+                    if validation_every and step % validation_every == 0 and step != last_validation_step:
+                        phase='interval_validation';checkpoint('checkpoint_last.pt')
+                        if not interval_validation():return 'stopped'
                 if not metrics.count:raise ValueError('Training selection has no eligible origins')
                 phase = 'validation'
                 checkpoint('checkpoint_last.pt')  # durable before a potentially long validation
@@ -245,7 +279,8 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
             improved = validation['mse'] < best
             best = min(best, validation['mse']);stale = 0 if improved else stale+1
             history.append(dict(epoch=epoch+1, train=training, validation=validation, step=step))
-            reporter.log({f'validation_{k}':v for k,v in validation.items()}, step)
+            reporter.log(dict({f'validation_{k}':v for k,v in validation.items()},
+                              validation_is_epoch_end=True),step)
             write_json(args.output/'results.json', history)
             epoch += 1;cursor = (0, 0, 0);phase = 'train';metrics = Metrics(args.device)
             reported_time,reported_count=time.perf_counter(),0

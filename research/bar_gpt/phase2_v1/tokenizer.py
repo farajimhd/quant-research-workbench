@@ -4,6 +4,7 @@ import re
 import numpy as np
 import torch
 from ..v5.encoder_v3 import ColumnEncoderV3, EncoderConfig
+from ..v5.encoder_v4 import ColumnDecoderV4
 from ..v5.pretraining_v1 import PRICES, ACTIVITY
 from ..v5.pretraining_v3 import local_references, REFERENCE_POLICY, TRANSFORM
 from ..v5.transforms_v1 import BarInputTransformV1
@@ -30,11 +31,18 @@ def load_teacher(path, sha256, device='cpu'):
     if not all(torch.isfinite(v).all() for v in state.values()):
         raise ValueError('Nonfinite teacher weights')
     encoder.load_state_dict(state, strict=True)
+    decoder = ColumnDecoderV4(config)
+    decoder.load_state_dict({k.removeprefix('decoder.'):v for k,v in saved['model'].items()
+                             if k.startswith('decoder.')}, strict=True)
+    if not all(torch.isfinite(v).all() for v in decoder.state_dict().values()):
+        raise ValueError('Nonfinite teacher decoder weights')
+    encoder.reconstruction_decoder = decoder
     if file_hash(path) != sha256:
         raise ValueError('Checkpoint changed during teacher loading')
     encoder.requires_grad_(False).eval().to(device)
     return encoder, dict(sha256=sha256, epoch=saved['epoch'], config=contract['model'],
-                         preprocessing=TRANSFORM, reference_policy=REFERENCE_POLICY)
+                         preprocessing=TRANSFORM, reference_policy=REFERENCE_POLICY,
+                         decoder='same-checkpoint frozen V4; validation only')
 
 
 def normalize(values, valid):
@@ -152,3 +160,21 @@ class SessionTokens:
             raise ValueError('Requested uncached future target')
         target = self.bank[0][torch.as_tensor(targets.copy(), device=self.device)]
         return token, metadata, target.detach()
+
+    @torch.no_grad()
+    def reconstruction(self, plan, start, stop):
+        """Target-only evaluation evidence; never returned by the input batch API.
+
+        Recompute exact Float64 references from raw target bars, rather than the
+        Float32 log references cached for historical input metadata.
+        """
+        ids = torch.as_tensor(plan.targets[start:stop].copy(), device=self.device)
+        gather = ids[:, None] - torch.arange(63, -1, -1, device=self.device)
+        values, valid, clocks = self.pools[0]
+        raw, mask, ends = values[gather], valid[gather].bool(), clocks[gather]
+        reference, stats = local_references(raw, mask)
+        scaled, _ = normalize(raw, mask)
+        transformed = self.transform(scaled, mask, ends, FRAMES[0])
+        return dict(raw=raw.transpose(1,2).contiguous(), valid=mask.transpose(1,2).contiguous(),
+                    reference=reference, stats=stats, time=transformed.values[...,18:],
+                    time_valid=transformed.valid[...,18:])

@@ -58,9 +58,15 @@ class Teacher(nn.Module):
     def __init__(self):
         super().__init__();self.map=nn.Linear(18,512,bias=False)
         with torch.no_grad():self.map.weight.fill_(.01)
+        self.reconstruction_decoder = ZeroDecoder()
         self.requires_grad_(False).eval()
     def encode_full(self,market,valid,time,time_valid):
         return self.map(market.mean(1)) + time.mean((1,2))[:,None]*.001
+
+
+class ZeroDecoder(nn.Module):
+    def forward(self,embedding,ids,time,time_valid):
+        return embedding.new_zeros((len(embedding),18,64))
 
 
 def small(plan,n=3):

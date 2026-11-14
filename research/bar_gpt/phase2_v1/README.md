@@ -167,6 +167,57 @@ progress, full-validation metrics and per-block rejection/eligible counts.
 Validation additionally reports the current epoch's TRAINING-only mean-target
 baseline. No target references or validation statistics are model inputs.
 
+### Decoded validation diagnostics (target-reference-conditioned)
+
+The SHA-pinned V4 checkpoint supplies **both** the frozen encoder and frozen
+small MLP decoder. At validation only, decode all 18 feature IDs from (a) the
+predicted 512-vector and (b) the actual future-target 512-vector. Both use the
+actual next-64-observed-1s window's UTC features and exact Float64 local price and
+per-quantity references. These target-only values never enter phase-two input
+metadata, its encoder, or its latent-only optimization loss. The second branch
+is the V4 reconstruction baseline; neither branch is an independent absolute
+price forecast. Phase three consumes learned embeddings, not this decoder.
+
+Errors compare inverse-transformed outputs directly with original raw target
+bars on the shard session's common split basis. Use the shared V4 inverse:
+prices = reference * exp(output/100), quantities = expm1(output+log1p(reference)).
+No clipping, rounding, synthetic bars, sampling or source-invalid targets enter
+the metric population. Counts retain overlap between rolling target windows.
+Only **1s** is a reconstruction target; input 10s/1m/1h/daily views do not acquire
+invented target metrics.
+
+W&B/local metric keys (existing latent metrics remain unchanged):
+
+- `validation_decoded_raw_mae/1s/<channel>` and `_raw_rmse/1s/<channel>`:
+  price USD/share, quantities as stored, counts observed events/bar.
+- The same metrics under `validation_decoder_baseline_*` use actual target latents.
+- Both branches expose source-valid counts, nonfinite/overflow counts and each
+  channel's `horizon_01` through `horizon_64` MAE/RMSE/counts/overflows. Horizons
+  are observed bars, not wall-clock seconds.
+- Price channels only: `validation_decoded_price_mape_pct`,
+  `_price_median_ape_pct`, `_price_p90_ape_pct` and `_by_price_band`, plus the
+  corresponding decoder-baseline metrics. Compute relative errors **after** the
+  inverse in real units against positive raw truth. Shared V4 price bands and
+  bounded histogram quantiles apply (approximate median/P90; bin resolution is
+  recorded). Empty/overflow-affected aggregates are `null`, not zero.
+
+`--validation-every N` enables **full** validation every N optimizer updates;
+default `0` retains epoch-end-only validation until throughput is profiled. All
+metrics use the current optimizer step and existing run identity; no backfill or
+fabricated earlier values. Epoch-end validation always remains enabled. Periodic
+validations are diagnostics and do not advance the epoch/scheduler or patience;
+epoch-end latent MSE still controls checkpoint-best and the learning guard.
+Validation restores Python/NumPy/Torch/CUDA RNG and the prior model train/eval
+mode. Cursor, pending interval-validation phase, last completed validation step
+and interval history are checkpointed for deterministic boundary recovery.
+`interval-results.json` retains periodic results separately from epoch history.
+
+The validation policy and shared inverse/decoder/price-metric source hashes are
+bound into the run contract. This implementation does not silently upgrade an
+older checkpoint's contract or modify any running phase-one job. The bounded
+CPU/CUDA profile path includes decoded diagnostics after its compute timing;
+it is not a full validation throughput claim.
+
 Write a `STOP` in the run output to drain at an update boundary and checkpoint.
 No launcher clears STOP. An intentional patience stop also writes STOP. A hard
 interrupt retains the last committed checkpoint; it does not publish an in-flight

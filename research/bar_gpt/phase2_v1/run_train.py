@@ -22,6 +22,7 @@ from .data import load_units, checked_unit, plan_block
 from .model import Forecaster, future_loss
 from .tokenizer import load_teacher, SessionTokens
 from .train import train, lease, autocast
+from .metrics import CONTRACT as RECONSTRUCTION_CONTRACT, DecodedMetrics
 
 
 def arguments(argv=None):
@@ -50,6 +51,8 @@ def arguments(argv=None):
     p.add_argument('--warmup-updates', type=int, default=1000)
     p.add_argument('--patience', type=int, default=8)
     p.add_argument('--checkpoint-every', type=int, default=1000)
+    p.add_argument('--validation-every', type=int, default=0,
+                   help='Full diagnostic validation every N optimizer updates; 0=end-of-epoch only')
     p.add_argument('--log-every', type=int, default=10)
     p.add_argument('--seed', type=int, default=20261114)
     p.add_argument('--resume', type=Path)
@@ -58,7 +61,8 @@ def arguments(argv=None):
     a = p.parse_args(argv)
     positive = ('batch_size', 'token_batch', 'cache_mib', 'threads', 'max_blocks',
                 'profile_origins', 'profile_steps', 'epochs', 'patience', 'checkpoint_every', 'log_every')
-    if any(getattr(a,k)<1 for k in positive) or not 0 < a.min_learning_rate <= a.learning_rate or a.warmup_updates < 0:
+    if (any(getattr(a,k)<1 for k in positive) or not 0 < a.min_learning_rate <= a.learning_rate
+            or a.warmup_updates < 0 or a.validation_every < 0):
         p.error('Resource limits and schedule must be finite positive values')
     if not np.isfinite([a.learning_rate,a.min_learning_rate]).all():p.error('Nonfinite schedule')
     if a.mode == 'train' and not a.execute:p.error('Training requires --execute')
@@ -109,6 +113,14 @@ def bounded_check(units, teacher, proof, args):
                                          samples_per_second=n*args.profile_steps/seconds,
                                          loss=float(loss.detach()), device=args.device,
                                          note='bounded repeated-batch compute, not corpus throughput'))
+                    model.eval()
+                    with torch.no_grad():
+                        with autocast(args):_,predicted=model(tokens,metadata)
+                        decoded=DecodedMetrics(args.device)
+                        decoded.add(teacher.reconstruction_decoder,predicted,target,
+                                    session.reconstruction(small,0,n))
+                    report['reconstruction']=decoded.result()
+                    model.train()
             reports.append(report);seen+=1
             if seen>=args.max_blocks:break
         if seen>=args.max_blocks:break
@@ -134,10 +146,14 @@ def main(argv=None):
     sources=list(Path(__file__).parent.glob('*.py'))
     shared=Path(__file__).resolve().parents[1]/'v5'
     sources += [shared/name for name in ('encoder_v3.py','pretraining_v3.py','transforms_v1.py',
+                                        'encoder_v4.py','native_validation_v3.py','price_relative_v3.py',
                                         'phase2_ar_shards/storage.py','phase2_ar_shards/contract.py')]
     implementation=digest({str(p.relative_to(Path(__file__).resolve().parents[1])):file_hash(p)
                            for p in sources})
     contract=dict(design=config.manifest(),dataset=dataset,teacher=proof,implementation=implementation,
+                  validation=dict(reconstruction=RECONSTRUCTION_CONTRACT,
+                                  every_updates=a.validation_every,epoch_end=True,
+                                  interval_guard='diagnostic only; epoch-end latent MSE controls patience'),
                   tokenizer=dict(tile_batch=a.token_batch,precision=a.precision,
                                  algorithm='fixed-pool-endpoint-tiles-v1'),
                   numerics=dict(torch=str(torch.__version__),cuda=torch.version.cuda,
