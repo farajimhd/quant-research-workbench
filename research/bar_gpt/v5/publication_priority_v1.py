@@ -33,3 +33,19 @@ def live_trainer(output, status):
         except (psutil.Error, OSError, ValueError, IndexError, KeyError):
             continue
     return None
+
+def worker_low_priority(worker):
+    """A disappearing Windows worker may deny access before PID removal."""
+    try:
+        worker.ionice(psutil.IOPRIO_LOW)
+        return None
+    except psutil.NoSuchProcess:
+        return None
+    except psutil.AccessDenied:
+        try:
+            worker.wait(timeout=.25)
+            return None
+        except psutil.NoSuchProcess:
+            return None
+        except (psutil.TimeoutExpired, psutil.AccessDenied):
+            return dict(pid=worker.pid, reason='live worker priority access denied')

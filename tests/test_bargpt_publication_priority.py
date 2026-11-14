@@ -22,3 +22,23 @@ def test_priority_uncertainty_validation_and_resource_pressure_back_off():
     for wait in [float('nan'),float('inf'),-1]:
         assert not prefer_normal(dict(base,metrics=dict(loader_wait_pct=wait)),101,120,live=True)
     assert not prefer_normal({},101,120,live=True)
+
+
+def test_exiting_worker_access_denial_does_not_fail_data_controller():
+    import psutil
+    from research.bar_gpt.v5.publication_priority_v1 import worker_low_priority
+    class Worker:
+        pid=10
+        def ionice(self,value):raise psutil.AccessDenied(self.pid)
+        def wait(self,timeout):return 0
+    assert worker_low_priority(Worker()) is None
+
+
+def test_live_worker_priority_denial_is_visible_for_conservative_backoff():
+    import psutil
+    from research.bar_gpt.v5.publication_priority_v1 import worker_low_priority
+    class Worker:
+        pid=11
+        def ionice(self,value):raise psutil.AccessDenied(self.pid)
+        def wait(self,timeout):raise psutil.TimeoutExpired(timeout,self.pid)
+    assert worker_low_priority(Worker())==dict(pid=11,reason='live worker priority access denied')

@@ -39,7 +39,7 @@ def run(args):
     handlers={sig:signal.signal(sig,stop) for sig in (signal.SIGINT,signal.SIGTERM)}
     active = None
     normal_io = False
-    from .publication_priority_v1 import prefer_normal, live_trainer
+    from .publication_priority_v1 import prefer_normal, live_trainer, worker_low_priority
     try:
         for number in range(1,257):
             initial=totals(parents)
@@ -80,18 +80,21 @@ def run(args):
                                                 live=trainer is not None,was_normal=normal_io)
                     except (OSError,ValueError,KeyError,TypeError):
                         allowed = False
-                    process.ionice(psutil.IOPRIO_NORMAL if allowed else psutil.IOPRIO_LOW)
+                    denials = [value for worker in process.children(recursive=True)
+                               if (value := worker_low_priority(worker)) is not None]
+                    allowed = allowed and not denials
+                    try:
+                        process.ionice(psutil.IOPRIO_NORMAL if allowed else psutil.IOPRIO_LOW)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        if child.poll() is not None:
+                            continue
+                        raise
                     if allowed != normal_io or policy_owner != (process.pid,process.create_time()):
                         write_json(root/'publication-io-policy.json',dict(updated=time.time(),pid=process.pid,
                             created=process.create_time(),normal=allowed,trainer=trainer,
-                            policy='live-training-input-wait-hysteresis-v1'))
+                            policy='live-training-input-wait-hysteresis-v1',worker_priority_denials=denials))
                     policy_owner = (process.pid,process.create_time())
                     normal_io = allowed
-                    for worker in process.children(recursive=True):
-                        try:
-                            worker.ionice(psutil.IOPRIO_LOW)
-                        except psutil.NoSuchProcess:
-                            pass
                     if (root/'STOP').exists():stopped=True
                     if stopped and not (active/'STOP').exists():(active/'STOP').write_text('OVERLAP_CAMPAIGN_STOP')
                     snapshot(root,parents,active,args,'draining' if stopped else 'running');time.sleep(2)
