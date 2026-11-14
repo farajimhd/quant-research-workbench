@@ -13,7 +13,7 @@ from torch.nn import functional as F
 from ..v5.campaign_v4 import EpochCosine
 from ..v5.checkpoint_transition_v1 import state_hash
 from ..v5.shards.contract import digest, file_hash, write_json
-from .data import checked_unit, plan_block
+from .data import checked_unit, plan_block, unit_readers
 from .model import Forecaster, future_loss
 from .tokenizer import SessionTokens
 from .metrics import DecodedMetrics
@@ -135,12 +135,12 @@ class Metrics:
         self.count = state['count']; self.sums.copy_(state['sums']); self.moments.copy_(state['moments'])
 
 
-def batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), report=None,
+def source_batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), report=None,
             reconstruction=False):
     """Stable chronological session/block/origin traversal; no random sample dropping."""
-    for ui, unit in enumerate(units):
-        if ui < cursor[0] or not any(b[1] == split for b in unit.blocks):continue
-        reader, session = checked_unit(unit), None
+    for ui,unit,reader in unit_readers(units,split,cursor[0],workers=getattr(args,'io_workers',0),
+                                     prefetch_mib=getattr(args,'prefetch_mib',2048)):
+        session=None
         for bi, (ordinal, s, liquid, selection) in enumerate(unit.blocks):
             if s != split or (ui == cursor[0] and bi < cursor[1]):continue
             plan = plan_block(reader, ordinal)
@@ -160,6 +160,42 @@ def batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), repor
                 row = (token, meta, target, (ui, bi, stop), plan.origins[start:stop], liquid)
                 yield row + (session.reconstruction(plan,start,stop),) if reconstruction else row
         del session
+
+
+def batches(units,split,teacher,teacher_sha,args,*,cursor=(0,0,0),report=None,reconstruction=False):
+    """Pack consecutive examples; each example stays inside its own source block.
+
+    The cursor records the exact consumed source suffix, including a partially
+    consumed unit when a packed optimizer batch crosses a publication boundary.
+    """
+    source=source_batches(units,split,teacher,teacher_sha,args,cursor=cursor,report=report,
+                          reconstruction=reconstruction)
+    if not getattr(args,'pack_batches',True):
+        yield from source;return
+    chunks=[];count=0;last=None
+    def packed():
+        token,meta,target=(torch.cat([c[i] for c in chunks]) for i in range(3))
+        origins=np.concatenate([c[3] for c in chunks]);liquid=np.concatenate([c[4] for c in chunks])
+        row=(token,meta,target,last,origins,liquid)
+        if reconstruction:
+            row+=(dict((k,torch.cat([c[5][k] for c in chunks])) for k in chunks[0][5]),)
+        return row
+    try:
+        for row in source:
+            token,meta,target,next_cursor,origins,liquid=row[:6];start=0
+            while start<len(target):
+                take=min(args.batch_size-count,len(target)-start);end=start+take
+                part=[token[start:end],meta[start:end],target[start:end],origins[start:end],
+                      np.full(take,liquid,dtype=np.int8)]
+                if reconstruction:part.append({k:v[start:end] for k,v in row[6].items()})
+                chunks.append(part);count+=take
+                last=(*next_cursor[:2],next_cursor[2]-len(target)+end)
+                start=end
+                if count==args.batch_size:
+                    yield packed();chunks=[];count=0
+        if count:yield packed()
+    finally:
+        source.close()
 
 
 @torch.no_grad()

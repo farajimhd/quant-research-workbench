@@ -258,7 +258,7 @@ it is not a full validation throughput claim.
 `python -B -m research.bar_gpt.phase2_v1.benchmark --dataset-release <certificate.json>
 --output D:/TradingML/runtimes/bar_gpt/<new-profile> --device cpu` compares1/2/4
 I/O threads on up to4 certified sample publications, checking hashes and causal
-eligibility. This does not yet add a parallel pool to the training loader.
+eligibility. The training loader's separate bounded pool is described below.
 Three interleaved worker trials after explicit warmup measure warm OS cache;
 concurrent load can still affect them. These are not a corpus speed
 qualification. CPU-only profiles use no model GPU work. `--device cuda` additionally
@@ -270,6 +270,34 @@ is substituted. Disposable model/optimizer updates do not create a training run.
 These cache-only compute timings cannot establish epoch duration or full validation
 cost. Final batch/precision/cache/loader choices and the nonzero validation interval
 remain pending final end-to-end qualification after V4 releases the GPU.
+
+### Compact index, prefetch and packed optimizer batches
+
+The all-published reader verifies every sealed index/inventory part SHA and source
+HEAD/plan/result binding, then retains compact Polars groups. It does not eagerly
+construct/resolve1.58million payload paths. Unit paths/tuples materialize only on
+use. Unsafe lexical paths are rejected at index load; resolved filesystem
+containment is checked before opening each used receipt, including symlink escapes.
+Split-aware iteration skips train metadata during validation without changing
+global unit indices or checkpoint cursors. Raw files retain per-use hashes and
+causal/geometry checks.
+
+`--io-workers` (default4, range0..8) prefetches verified session pools on CPU only,
+in source order. `--prefetch-mib` (default2048) bounds aggregate sealed payload
+sizes conservatively, including current/in-flight readers and contiguous copies;
+an oversized unit fails explicitly instead of skipping/truncating. Zero workers
+provides the serial comparison. No CUDA operations execute in reader threads.
+
+Consecutive eligible examples are packed across source blocks/publications to
+fill the configured optimizer batch. Context/targets stay inside each example's
+original session/block; raw bars are never concatenated across session boundaries.
+No example is dropped, duplicated or reordered. Only the epoch's final optimizer
+batch may be short. The checkpoint cursor points to the exact consumed position
+even if a batch stops partway into another publication. Pending read-ahead is
+recomputed on resume, never treated as trained. Target-only validation evidence
+is packed with exactly the same examples. `--no-pack-batches` provides the old
+per-block minibatch boundary for runtime comparisons. Packing/prefetch settings
+are recorded in the run contract and cannot silently change on resume.
 
 Write a `STOP` in the run output to drain at an update boundary and checkpoint.
 No launcher clears STOP. An intentional patience stop also writes STOP. A hard

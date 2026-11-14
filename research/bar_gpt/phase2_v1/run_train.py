@@ -46,6 +46,10 @@ def arguments(argv=None):
     p.add_argument('--token-batch', type=int, default=256)
     p.add_argument('--cache-mib', type=int, default=512)
     p.add_argument('--threads', type=int, default=1)
+    p.add_argument('--io-workers',type=int,default=4)
+    p.add_argument('--prefetch-mib',type=int,default=2048)
+    p.add_argument('--no-pack-batches',dest='pack_batches',action='store_false',
+                   help='Profile baseline only: end every minibatch at a block boundary')
     p.add_argument('--max-blocks', type=int, default=4, help='Audit/profile only; never limits training')
     p.add_argument('--profile-origins', type=int, default=16)
     p.add_argument('--profile-steps', type=int, default=3)
@@ -73,6 +77,7 @@ def arguments(argv=None):
     if not np.isfinite([a.learning_rate,a.min_learning_rate]).all():p.error('Nonfinite schedule')
     if not np.isfinite(a.feature_drop_rate) or not 0<=a.feature_drop_rate<1:
         p.error('Feature drop rate must be finite in [0,1)')
+    if not 0<=a.io_workers<=8 or a.prefetch_mib<1:p.error('Invalid bounded CPU I/O pool')
     if a.mode == 'train' and not a.execute:p.error('Training requires --execute')
     if a.mode == 'train' and a.wandb_mode != 'online':p.error('Phase-two training requires online W&B')
     if a.mode == 'profile' and (not a.teacher_checkpoint or not a.teacher_sha256):
@@ -180,6 +185,7 @@ def main(argv=None):
                                 deterministic=torch.are_deterministic_algorithms_enabled(),
                                 device_name=torch.cuda.get_device_name() if a.device=='cuda' else 'cpu'),
                   optimization=dict(batch=a.batch_size,precision=a.precision,device=a.device,
+                      batch_packing=a.pack_batches,io_workers=a.io_workers,prefetch_mib=a.prefetch_mib,
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,
                       patience=a.patience,order='root/session/block/eligible-origin chronological',

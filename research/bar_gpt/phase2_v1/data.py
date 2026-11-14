@@ -1,5 +1,7 @@
 """Read-only selected sessions and vectorized block-local causal eligibility."""
 from dataclasses import dataclass
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path, PurePosixPath
 import numpy as np
@@ -143,7 +145,10 @@ def plan_block(reader: ShardReader, index: int):
 
 
 def checked_unit(unit):
-    reader = ShardReader(unit.path, unit.binding)
+    resolved=unit.path.resolve()
+    if not resolved.is_relative_to(unit.root.resolve()):
+        raise ValueError('Selection escapes its dataset root')
+    reader = ShardReader(resolved, unit.binding)
     receipt = reader.receipt
     if unit.receipt_hash is not None and receipt['hash']!=unit.receipt_hash:
         raise ValueError('Receipt differs from the certified all-block inventory')
@@ -157,3 +162,35 @@ def checked_unit(unit):
                 or receipt['splits'][ordinal] != s or receipt['liquid'] != liquid):
             raise ValueError('Selection disagrees with the sealed session receipt')
     return reader
+
+
+def unit_readers(units,split,start=0,*,workers=0,prefetch_mib=2048):
+    """Ordered bounded CPU-only verified prefetch; never create CUDA tensors here."""
+    if not 0<=workers<=8 or prefetch_mib<1:raise ValueError('Invalid I/O prefetch limits')
+    indexed=units.iter_from(split,start) if hasattr(units,'iter_from') else (
+        (i,u) for i,u in enumerate(units) if i>=start and any(b[1]==split for b in u.blocks))
+    def load(item):
+        i,u=item;reader=checked_unit(u)
+        # mmap parts plus possible contiguous view copies are bounded by2x the
+        # sealed payload size. Queue occupancy is bounded by the worker count.
+        if 2*reader.receipt['bytes']*max(1,workers+1)>prefetch_mib*1024**2:
+            raise MemoryError('Session exceeds explicit aggregate CPU prefetch budget')
+        for f in range(5):reader.view(f)
+        reader.array('origins.npy')
+        return i,u,reader
+    if not workers:
+        for item in indexed:yield load(item)
+        return
+    pending=deque()
+    with ThreadPoolExecutor(max_workers=workers,thread_name_prefix='phase2-read') as pool:
+        try:
+            for _ in range(workers):
+                item=next(indexed,None)
+                if item is None:break
+                pending.append(pool.submit(load,item))
+            while pending:
+                yield pending.popleft().result()
+                item=next(indexed,None)
+                if item is not None:pending.append(pool.submit(load,item))
+        finally:
+            for future in pending:future.cancel()

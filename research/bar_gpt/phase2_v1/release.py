@@ -13,6 +13,8 @@ if __package__ in (None,''):
     __package__='research.bar_gpt.phase2_v1'
 
 import argparse
+from bisect import bisect_right
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
@@ -265,11 +267,42 @@ def certify(roots,output,*,workers=4,seconds=240,resume=False):
     return certificate
 
 
+class ReleasedUnits(Sequence):
+    """Compact sealed index; materialize paths/tuples only for units being read."""
+    def __init__(self,groups):
+        self.groups=groups;self.ends=[];total=0
+        for root,binding,table in groups:
+            total+=table.height;self.ends.append(total)
+
+    def __len__(self):return self.ends[-1] if self.ends else 0
+
+    def __getitem__(self,index):
+        if isinstance(index,slice):return [self[i] for i in range(*index.indices(len(self)))]
+        if index<0:index+=len(self)
+        if not 0<=index<len(self):raise IndexError(index)
+        group=bisect_right(self.ends,index);offset=self.ends[group-1] if group else 0
+        root,binding,table=self.groups[group];row=table.row(index-offset,named=True)
+        # Lexical safety was checked vectorially at load; real filesystem
+        # containment is checked immediately BEFORE opening each used unit.
+        relative=row['path'].replace('\\','/')
+        return Unit(root,root.joinpath(*relative.split('/')),binding,
+                    tuple(zip(row['ordinal'],row['split'],row['liquid'],row['selection'])),
+                    row['receipt_hash'])
+
+    def iter_from(self,split,start=0):
+        offset=0
+        for root,binding,table in self.groups:
+            indices=table.with_row_index('_index').filter(
+                (pl.col('_index')+offset>=start)&(pl.col('unit_split')==split))['_index']
+            for i in indices:yield offset+int(i),self[offset+int(i)]
+            offset+=table.height
+
+
 def load_released_units(path):
     path=Path(path).resolve();cert=sealed(path)
     if cert.get('version')!=VERSION or cert.get('input_context_certified') is not True:
         raise ValueError('Unknown all-published certification policy')
-    units=[];count=0
+    groups=[];count=0
     for r in cert['roots']:
         root=Path(r['root']).resolve();terminal(root)
         for name,key in [('plan.json','plan_sha256'),('result.json','result_sha256'),('ledger-file-v1/HEAD.json','ledger_head_sha256')]:
@@ -277,13 +310,18 @@ def load_released_units(path):
         table=part(path.parent,r['index']);inventory=part(path.parent,r['units'])
         if table.height!=r['candidate_blocks'] or inventory.height!=r['unit_inventory']:
             raise ValueError('Certified coverage changed')
-        seals=dict(inventory.select('path','receipt_hash').iter_rows())
-        for key,g in table.sort('path','ordinal').group_by('path',maintain_order=True):
-            relative=key[0];units.append(Unit(root,beneath(root,relative),r['binding'],
-                tuple(g.select('ordinal','split','liquid','selection').iter_rows()),seals[relative]))
+        if table['path'].str.contains(r'(^[\\/]|(^|[\\/])\.\.([\\/]|$)|:)').any():
+            raise ValueError('Unsafe certified payload path')
+        grouped=table.sort('path','ordinal').group_by('path',maintain_order=True).agg(
+            pl.col('ordinal'),pl.col('split'),pl.col('liquid'),pl.col('selection'))
+        grouped=grouped.join(inventory.select('path','receipt_hash',pl.col('split').alias('unit_split')),
+                             on='path',how='left',validate='1:1',maintain_order='left')
+        if grouped.height!=inventory.height or grouped['receipt_hash'].null_count():
+            raise ValueError('Certified index/unit inventory differs')
+        groups.append((root,r['binding'],grouped))
         count+=table.height
     if count!=cert['blocks']:raise ValueError('Certified block count differs')
-    return units,dict(policy=VERSION,certificate=str(path),hash=cert['hash'],blocks=count,bytes=cert['bytes'])
+    return ReleasedUnits(groups),dict(policy=VERSION,certificate=str(path),hash=cert['hash'],blocks=count,bytes=cert['bytes'])
 
 
 def main(argv=None):
