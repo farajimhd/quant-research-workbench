@@ -7,7 +7,7 @@ from concurrent.futures import (
     wait,
     FIRST_COMPLETED,
 )
-from contextlib import contextmanager, ExitStack
+from contextlib import contextmanager, ExitStack, nullcontext
 from collections import deque
 import ctypes
 import json
@@ -225,7 +225,9 @@ def _publication(root, plan, unit, result, reserve_disk_gib, observer=None):
     if psutil.disk_usage(str(root)).free < reserve_disk_gib * 1024**3 + needed:
         raise OSError("Publication would consume disk reserve")
     began = time.monotonic()
-    with payload_io():
+    # Overlap jobs already run at LOW process I/O priority. Avoid an extra
+    # VERY_LOW thread override that can starve durable writes behind training.
+    with nullcontext() if plan.get("overlap") else payload_io():
         receipt = publish(
             root,
             unit["ticker"],
@@ -804,3 +806,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
