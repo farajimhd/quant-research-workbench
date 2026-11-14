@@ -32,7 +32,9 @@ class Config:
                     history=HISTORY, frames=FRAMES, window=64, target=64,
                     target_support='strictly future observed 1s bars inside the same block',
                     order='timeframe-major oldest-to-newest', metadata=METADATA,
-                    augmentation='fresh batch-shared 20% of 512 coordinates physically removed before encoder; no mask tokens',
+                    augmentation=dict(axis='512 latent coordinates',fraction=self.mask_rate,
+                                      draw='fresh random subset shared by each batch',packed=True,
+                                      evaluation_fraction=0,production_fraction=0),
                     objective='future frozen embedding MSE only',
                     normalization='exact V4 local-reference policy',
                     teacher='immutable SHA-pinned V4 encoder; eval; no gradients')

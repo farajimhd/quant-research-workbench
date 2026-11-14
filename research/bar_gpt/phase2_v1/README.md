@@ -259,7 +259,8 @@ it is not a full validation throughput claim.
 --output D:/TradingML/runtimes/bar_gpt/<new-profile> --device cpu` compares1/2/4
 I/O threads on up to4 certified sample publications, checking hashes and causal
 eligibility. This does not yet add a parallel pool to the training loader.
-Sequential worker trials are affected by OS cache/load and are not a corpus speed
+Three interleaved worker trials after explicit warmup measure warm OS cache;
+concurrent load can still affect them. These are not a corpus speed
 qualification. CPU-only profiles use no model GPU work. `--device cuda` additionally
 profiles128/256/512 tokenizer chunks and FP32/BF16 batches256..4096 using repeated
 real embeddings, bounded to120seconds of compute by default. GPU profiling refuses

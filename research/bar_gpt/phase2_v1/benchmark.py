@@ -64,11 +64,14 @@ def preload(unit):
 
 def profile_io(units):
     trials=[]
-    for workers in (1,2,4):
+    # Explicit warmup and interleaved orders avoid crediting cache warming to
+    # the larger worker count. This still measures warm samples, not cold4TB I/O.
+    for unit in units:preload(unit)
+    for repeat,workers in enumerate((1,2,4,4,1,2,2,4,1)):
         began=time.perf_counter()
         with ThreadPoolExecutor(max_workers=workers) as pool:rows=list(pool.map(preload,units))
         seconds=time.perf_counter()-began;size=sum(r['bytes'] for r in rows)
-        trials.append(dict(io_workers=workers,seconds=seconds,bytes=size,
+        trials.append(dict(io_workers=workers,repeat=repeat//3,seconds=seconds,bytes=size,
                            mib_per_second=size/2**20/seconds,rows=rows))
     return trials
 
@@ -145,7 +148,7 @@ def main(argv=None):
         own=psutil.Process();own.nice(psutil.BELOW_NORMAL_PRIORITY_CLASS);own.ionice(psutil.IOPRIO_LOW)
     units,sha=sample_units(a.dataset_release)
     result=dict(certificate_hash=sha,io=profile_io(units),
-                io_scope='four certified samples; sequential worker trials; OS cache and concurrent load affect rates',
+                io_scope='up to four certified samples; explicit warmup and three interleaved trials per worker count; warm OS cache, not corpus speed',
                 gpu=profile_gpu(units[0],a.seconds) if a.device=='cuda' else dict(state='not_requested',gpu_work=False))
     write_json(a.output/'result.json',result);print(json.dumps(result),flush=True)
 

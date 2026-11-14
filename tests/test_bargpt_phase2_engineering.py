@@ -53,6 +53,7 @@ def test_production_uses_all_coordinates_and_drop_rate_is_configurable():
     assert torch.equal(state,other) and seen==[512,512]
     baseline=Forecaster(Config(layers=1,feedforward=64,mask_rate=0))
     assert not baseline.draw_mask('cpu').any()
+    assert baseline.config.manifest()['augmentation']['fraction']==0
     base=['--dataset-root','fixture','--output','D:/TradingML/runtimes/fixture']
     assert arguments(base+['--feature-drop-rate','0']).feature_drop_rate==0
     for rate in ('1','-0.1','nan'):
@@ -85,7 +86,7 @@ def test_cpu_benchmark_uses_sealed_samples_and_checks_all_used_hashes(tmp_path):
     units,sha=benchmark.sample_units(release/'certificate.json')
     assert sha==cert['hash'] and len(units)==1
     rows=benchmark.profile_io(units)
-    assert [r['io_workers'] for r in rows]==[1,2,4]
+    assert [r['io_workers'] for r in rows]==[1,2,4,4,1,2,2,4,1]
     assert all(r['rows'][0]['eligible_origins']==193 for r in rows)
     file=u.path/'origins.npy'
     with file.open('ab') as stream:stream.write(b'corrupt')
