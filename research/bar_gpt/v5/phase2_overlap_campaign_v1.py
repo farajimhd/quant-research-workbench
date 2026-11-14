@@ -38,6 +38,8 @@ def run(args):
         nonlocal stopped;stopped=True
     handlers={sig:signal.signal(sig,stop) for sig in (signal.SIGINT,signal.SIGTERM)}
     active = None
+    normal_io = False
+    from .publication_priority_v1 import prefer_normal, live_trainer
     try:
         for number in range(1,257):
             initial=totals(parents)
@@ -69,7 +71,21 @@ def run(args):
                 while child.poll() is None:
                     # Generator-only priority; preserve the trainer's settings.
                     process = psutil.Process(child.pid)
-                    for worker in [process] + process.children(recursive=True):
+                    trainer = None
+                    try:
+                        status = read(Path(args.training_campaign)/'progress.json')
+                        trainer = live_trainer(args.training_campaign,status)
+                        allowed = prefer_normal(status,time.time(),psutil.virtual_memory().available/1024**3,
+                                                live=trainer is not None,was_normal=normal_io)
+                    except (OSError,ValueError,KeyError,TypeError):
+                        allowed = False
+                    process.ionice(psutil.IOPRIO_NORMAL if allowed else psutil.IOPRIO_LOW)
+                    if allowed != normal_io or not (root/'publication-io-policy.json').exists():
+                        write_json(root/'publication-io-policy.json',dict(updated=time.time(),pid=process.pid,
+                            created=process.create_time(),normal=allowed,trainer=trainer,
+                            policy='live-training-input-wait-hysteresis-v1'))
+                    normal_io = allowed
+                    for worker in process.children(recursive=True):
                         try:
                             worker.ionice(psutil.IOPRIO_LOW)
                         except psutil.NoSuchProcess:
