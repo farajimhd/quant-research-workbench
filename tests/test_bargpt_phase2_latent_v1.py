@@ -230,7 +230,8 @@ def selection_root(root):
     pl.DataFrame(rows,schema=['path','ordinal','split','liquid','selection'],orient='row').write_parquet(root/'selected.parquet')
     s=dict(binding=plan['hash'],path='selected.parquet',sha256=file_hash(root/'selected.parquet'),blocks=4,
            input_context_only=True,future_target_purge_required=True)
-    s['hash']=digest(s);write_json(root/'selection.json',s);write_json(root/'result.json',dict(state='complete'))
+    s['hash']=digest(s);write_json(root/'selection.json',s)
+    write_json(root/'result.json',dict(state='complete',binding=plan['hash'],selection=s,selected_blocks=4))
     return root
 
 
@@ -242,6 +243,25 @@ def test_index_validates_selected_parquet_seal_exposure_and_completion(tmp_path)
     with pytest.raises(ValueError,match='Unsafe'):beneath(root,'D:\\foreign')
     write_json(root/'result.json',dict(state='running'))
     with pytest.raises(ValueError,match='terminal'):load_units([root])
+
+
+@pytest.mark.parametrize('state',['inventory_exhausted','capacity_reached'])
+def test_clean_terminal_aliases_still_require_exact_final_selection(tmp_path,state):
+    root=selection_root(tmp_path/'data');result=json.loads((root/'result.json').read_text())
+    result['state']=state;write_json(root/'result.json',result)
+    assert len(load_units([root])[0])==2
+    result['selected_blocks']=999;write_json(root/'result.json',result)
+    with pytest.raises(ValueError,match='certify'):load_units([root])
+
+
+def test_empty_selected_export_is_not_silently_ignored(tmp_path):
+    root=selection_root(tmp_path/'data');s=json.loads((root/'selection.json').read_text())
+    pl.DataFrame(schema={'path':pl.String,'ordinal':pl.Int64,'split':pl.Int64,
+                         'liquid':pl.Int64,'selection':pl.Int64}).write_parquet(root/'selected.parquet')
+    s.pop('hash');s.update(blocks=0,sha256=file_hash(root/'selected.parquet'));s['hash']=digest(s)
+    write_json(root/'selection.json',s)
+    write_json(root/'result.json',dict(state='capacity_reached',binding=s['binding'],selection=s,selected_blocks=0))
+    with pytest.raises(ValueError,match='no released selected blocks'):load_units([root])
 
 
 class Reporter:
@@ -303,7 +323,8 @@ def test_actual_launcher_audits_selected_shards_without_modifying_them(tmp_path)
     selection=dict(binding=plan['hash'],path='selection.parquet',sha256=file_hash(root/'selection.parquet'),
                    blocks=4,input_context_only=True,future_target_purge_required=True)
     selection['hash']=digest(selection);write_json(root/'selection.json',selection)
-    write_json(root/'result.json',dict(state='complete',failure=None))
+    write_json(root/'result.json',dict(state='complete',failure=None,binding=plan['hash'],
+                                     selection=selection,selected_blocks=4))
     receipt=root/rows[0][0]/'receipt.json';before=file_hash(receipt)
     output=tmp_path/'audit'
     result=main(['--dataset-root',str(root),'--output',str(output),'--max-blocks','1'])

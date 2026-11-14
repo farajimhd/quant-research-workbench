@@ -45,14 +45,22 @@ def load_units(roots):
             raise ValueError('Duplicate dataset root')
         seen.add(str(root))
         terminal = json.loads((root / 'result.json').read_text())
-        if terminal.get('state') != 'complete' or terminal.get('failure'):
+        terminal_states={'complete','inventory_exhausted','capacity_reached'}
+        if terminal.get('state') not in terminal_states or terminal.get('failure'):
             raise ValueError('Dataset root must be terminal complete, not a partial campaign')
+        if (root/'progress.json').exists():
+            live=json.loads((root/'progress.json').read_text())
+            if live.get('state') not in terminal_states or live.get('failure'):
+                raise ValueError('Dataset progress is still active or failed')
         plan, selection = sealed(root / 'plan.json'), sealed(root / 'selection.json')
         if plan['hash'] in bindings:
             raise ValueError('Duplicate immutable plan through a different dataset path')
         bindings.add(plan['hash'])
         if selection['binding'] != plan['hash']:
             raise ValueError('Selection belongs to another plan')
+        if (terminal.get('binding')!=plan['hash'] or terminal.get('selection')!=selection
+                or terminal.get('selected_blocks')!=selection['blocks']):
+            raise ValueError('Final result does not certify this exact selected-block export')
         if (selection.get('input_context_only') is not True
                 or selection.get('future_target_purge_required') is not True):
             raise ValueError('Unknown selected-block input/target contract')
@@ -60,6 +68,8 @@ def load_units(roots):
         if path.name != selection['path'] or file_hash(path) != selection['sha256']:
             raise ValueError('Selected-block export changed')
         table = pl.read_parquet(path)
+        if not table.height:
+            raise ValueError('Root has no released selected blocks; candidate bytes are not a balanced training selection')
         if (table.columns != ['path', 'ordinal', 'split', 'liquid', 'selection']
                 or table.height != selection['blocks']
                 or table.select(pl.any_horizontal(pl.all().is_null()).any()).item()

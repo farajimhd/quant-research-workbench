@@ -100,7 +100,10 @@ requires a separate resource-safe launch; CPU real-shard checks are allowed.
 
 Use module `research.bar_gpt.phase2_v1.run_train` or execute `run_train.py` directly.
 Audit is the default; it writes only to its new runtime output, never to shards.
-Dataset roots must have terminal complete results and sealed selected-block exports.
+Dataset roots must have clean terminal results (`complete`, `inventory_exhausted`
+or `capacity_reached`) certifying the exact sealed selected-block export. A failed,
+live, partially stopped or empty selected root is rejected. Stored candidate bytes
+alone do not certify balanced training exposure; no empty root is silently ignored.
 Repeat `--dataset-root` for every completed parent/continuation to be included.
 The loader verifies the original 75/25 selected-block counts, selection SHA/seal,
 receipt bindings, session year, full payload SHA and causal indices. It does not
