@@ -89,7 +89,7 @@ def run(args):
                         if child.poll() is not None:
                             continue
                         raise
-                    if allowed != normal_io or policy_owner != (process.pid,process.create_time()):
+                    if allowed != normal_io or policy_owner != (process.pid,process.create_time()) or denials:
                         write_json(root/'publication-io-policy.json',dict(updated=time.time(),pid=process.pid,
                             created=process.create_time(),normal=allowed,trainer=trainer,
                             policy='live-training-input-wait-hysteresis-v1',worker_priority_denials=denials))
@@ -115,4 +115,5 @@ def run(args):
     finally:
         for sig,handler in handlers.items():signal.signal(sig,handler)
         lease.close()
+
 
