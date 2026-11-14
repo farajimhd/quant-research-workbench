@@ -192,17 +192,22 @@ def test_normalization_matches_exact_v4_preparation():
     assert torch.equal(refs[:,1:],prepared.native_stats.log1p().float())
 
 
-def test_mask_ratio_whole_vectors_and_eval_uses_all():
+def test_mask_ratio_coordinates_shared_per_batch_and_eval_uses_all():
     m=Forecaster(Config(layers=1,feedforward=64))
-    torch.manual_seed(3);mask=m.encoder.draw_mask(2000,'cpu')
-    assert set(mask.sum(1).tolist())=={3,4}
+    torch.manual_seed(3);mask=torch.stack([m.draw_mask('cpu') for _ in range(2000)])
+    assert set(mask.sum(1).tolist())=={102,103}
     assert abs(float(mask.float().mean())-.2)<.005
     x=torch.randn(2,16,512);meta=torch.zeros(2,16,9)
-    m.eval();a=m(x,meta)[1];b=m(x,meta,torch.zeros(2,16,dtype=torch.bool))[1]
+    assert not torch.equal(mask[0],mask[1])
+    m.eval();a=m(x,meta)[1];b=m(x,meta,torch.zeros(512,dtype=torch.bool))[1]
     assert torch.equal(a,b)
-    changed=x.clone();changed[:,0]+=900
-    hide=torch.zeros(2,16,dtype=torch.bool);hide[:,0]=True
+    changed=x.clone();changed[:,:,0]+=900
+    hide=torch.zeros(512,dtype=torch.bool);hide[0]=True
     assert torch.equal(m(x,meta,hide)[1],m(changed,meta,hide)[1])
+    seen=[]
+    hook=m.encoder.register_forward_pre_hook(lambda module,args:seen.append(tuple(args[0].shape)))
+    m.train();m(x,meta);m(x,meta);hook.remove()
+    assert all(shape[:2]==(2,16) and shape[2] in (409,410) for shape in seen)
 
 
 def test_only_future_target_loss_and_encoder_gradient():

@@ -16,7 +16,7 @@ import time
 import numpy as np
 import torch
 from ..v5.shards.contract import digest, write_json, file_hash
-from ..v5.reporting_v1 import Reporter
+from research.mlops.env import discover_env_files, load_env_files
 from .config import Config
 from .data import load_units, checked_unit, plan_block
 from .model import Forecaster, future_loss
@@ -24,6 +24,7 @@ from .tokenizer import load_teacher, SessionTokens
 from .train import train, lease, autocast
 from .metrics import CONTRACT as RECONSTRUCTION_CONTRACT, DecodedMetrics
 from .teacher_selection import select_training_teacher
+from .reporting import PROJECT, online_reporter, require_online_credentials
 
 
 def arguments(argv=None):
@@ -40,6 +41,8 @@ def arguments(argv=None):
     p.add_argument('--device', default='cpu', choices=('cpu', 'cuda'))
     p.add_argument('--precision', choices=('fp32', 'bf16'), default='fp32')
     p.add_argument('--batch-size', type=int, default=256)
+    p.add_argument('--feature-drop-rate',type=float,default=.2,
+                   help='Training-only latent coordinate drop rate; 0 enables the no-drop ablation')
     p.add_argument('--token-batch', type=int, default=256)
     p.add_argument('--cache-mib', type=int, default=512)
     p.add_argument('--threads', type=int, default=1)
@@ -58,15 +61,20 @@ def arguments(argv=None):
     p.add_argument('--seed', type=int, default=20261114)
     p.add_argument('--resume', type=Path)
     p.add_argument('--source-revision', default='', help='Required in native immutable snapshots without Git')
-    p.add_argument('--wandb-mode', choices=('disabled', 'online', 'offline'), default='disabled')
+    p.add_argument('--wandb-mode', choices=('disabled', 'online', 'offline'), default=None,
+                   help='Training requires online; audit/profile use disabled')
     a = p.parse_args(argv)
+    if a.wandb_mode is None:a.wandb_mode='online' if a.mode=='train' else 'disabled'
     positive = ('batch_size', 'token_batch', 'cache_mib', 'threads', 'max_blocks',
                 'profile_origins', 'profile_steps', 'epochs', 'patience', 'checkpoint_every', 'log_every')
     if (any(getattr(a,k)<1 for k in positive) or not 0 < a.min_learning_rate <= a.learning_rate
             or a.warmup_updates < 0 or a.validation_every < 0):
         p.error('Resource limits and schedule must be finite positive values')
     if not np.isfinite([a.learning_rate,a.min_learning_rate]).all():p.error('Nonfinite schedule')
+    if not np.isfinite(a.feature_drop_rate) or not 0<=a.feature_drop_rate<1:
+        p.error('Feature drop rate must be finite in [0,1)')
     if a.mode == 'train' and not a.execute:p.error('Training requires --execute')
+    if a.mode == 'train' and a.wandb_mode != 'online':p.error('Phase-two training requires online W&B')
     if a.mode == 'profile' and (not a.teacher_checkpoint or not a.teacher_sha256):
         p.error('Profile requires an explicit V4 checkpoint and SHA256')
     if bool(a.teacher_checkpoint) != bool(a.teacher_sha256):p.error('Supply both teacher path and SHA256')
@@ -80,7 +88,7 @@ def arguments(argv=None):
 
 def bounded_check(units, teacher, proof, args):
     reports, measured, seen = [], [], 0
-    model = Forecaster().to(args.device) if args.mode == 'profile' else None
+    model = Forecaster(Config(mask_rate=args.feature_drop_rate)).to(args.device) if args.mode == 'profile' else None
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate) if model else None
     for unit in units:
         reader, session = checked_unit(unit), None
@@ -143,6 +151,8 @@ def main(argv=None):
     teacher=proof=None
     selection=None
     if a.mode=='train':
+        load_env_files(discover_env_files(Path(__file__).resolve().parents[3]))
+        require_online_credentials()
         a.teacher_checkpoint,a.teacher_sha256,selection=select_training_teacher(
             a.teacher_checkpoint,a.teacher_sha256)
     if a.teacher_checkpoint:
@@ -150,7 +160,7 @@ def main(argv=None):
                                   required_epoch=50 if a.mode=='train' else None)
         if selection is not None:proof['selection']=selection
     units,dataset=load_units(a.dataset_root or (),a.dataset_release)
-    config=Config()
+    config=Config(mask_rate=a.feature_drop_rate)
     sources=list(Path(__file__).parent.glob('*.py'))
     shared=Path(__file__).resolve().parents[1]/'v5'
     sources += [shared/name for name in ('encoder_v3.py','pretraining_v3.py','transforms_v1.py',
@@ -173,7 +183,7 @@ def main(argv=None):
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,
                       patience=a.patience,order='root/session/block/eligible-origin chronological',
-                      masking='.2 whole historical tokens; future target only'))
+                      masking='fresh batch-shared coordinates removed before encoder; rate from design.model.mask_rate; future target only'))
     # JSON-normalize tuples so checkpoint/reporting identities are platform stable.
     contract=json.loads(json.dumps(contract))
     a.output.mkdir(parents=True,exist_ok=bool(a.resume))
@@ -187,9 +197,10 @@ def main(argv=None):
                       learning_rate=a.learning_rate,min_learning_rate=a.min_learning_rate,
                       warmup_updates=a.warmup_updates,resume=str(a.resume) if a.resume else None,
                       output=str(a.output),checkpoint=str(a.teacher_checkpoint),
+                      phase2_version=config.manifest()['version'],wandb_project=PROJECT,
                       source_revision=a.source_revision or source_revision())
         if not a.resume:write_json(a.output/'manifest.json',manifest)
-        reporter=Reporter(a.output,manifest,mode=a.wandb_mode,project='bargpt-phase2-latent-v1')
+        reporter=online_reporter(a.output,manifest)
         try:
             model=Forecaster(config).to(a.device)
             state=train(model,teacher,proof['sha256'],units,contract,a,reporter)

@@ -1,6 +1,7 @@
 """Joint intra/inter-frame attention with a small latent-only readout."""
 import torch
 from torch import nn
+from torch.nn import functional as F
 from .config import Config, FRAME_IDS, METADATA, POSITIONS
 
 
@@ -11,10 +12,9 @@ class LatentEncoder(nn.Module):
         self.frame = nn.Embedding(5, 512)
         self.position = nn.Embedding(8, 512)
         self.metadata = nn.Linear(METADATA, 512)
+        self.coordinates = nn.Linear(512, 512)
         self.summary = nn.Parameter(torch.empty(1, 1, 512))
-        self.mask = nn.Parameter(torch.empty(1, 1, 512))
         nn.init.normal_(self.summary, std=.02)
-        nn.init.normal_(self.mask, std=.02)
         self.register_buffer('frames', torch.tensor(FRAME_IDS), persistent=False)
         self.register_buffer('positions', torch.tensor(POSITIONS), persistent=False)
         self.layers = nn.ModuleList([
@@ -24,24 +24,20 @@ class LatentEncoder(nn.Module):
             for _ in range(config.layers)])
         self.norm = nn.LayerNorm(512)
 
-    def draw_mask(self, batch, device):
-        """Exactly three/four whole tokens per sample at the default .2 rate."""
-        expected = 16 * self.config.mask_rate
-        count = int(expected) + (torch.rand(batch, device=device) < expected % 1).long()
-        ranks = torch.rand(batch, 16, device=device).argsort(1).argsort(1)
-        return ranks < count[:, None]
-
-    def forward(self, tokens, metadata, mask=None):
-        if tokens.ndim != 3 or tokens.shape[1:] != (16, 512):
-            raise ValueError('Expected [batch,16,512] historical embeddings')
+    def forward(self, tokens, metadata, feature_ids=None):
+        if feature_ids is None:
+            feature_ids=torch.arange(512,device=tokens.device)
+        if tokens.ndim != 3 or tokens.shape[1] != 16 or tokens.shape[2] != len(feature_ids):
+            raise ValueError('Expected [batch,16,retained_coordinates]')
+        if (feature_ids.ndim != 1 or feature_ids.dtype != torch.int64
+                or not 1 <= len(feature_ids) <= 512):
+            raise ValueError('Retained coordinate IDs must be a nonempty int64 vector')
         if metadata.shape != (*tokens.shape[:2], METADATA):
             raise ValueError('Expected nine causal metadata values per token')
-        if mask is None:
-            mask = self.draw_mask(len(tokens), tokens.device) if self.training else torch.zeros(
-                tokens.shape[:2], dtype=torch.bool, device=tokens.device)
-        if mask.shape != tokens.shape[:2] or mask.dtype != torch.bool:
-            raise ValueError('Mask must be bool [batch,16]')
-        hidden = torch.where(mask[..., None], self.mask, tokens)
+        # Only retained input columns and the matching learned projection weights
+        # enter the encoder. No zero placeholders or learned mask tokens.
+        hidden = F.linear(tokens, self.coordinates.weight.index_select(1,feature_ids),
+                          self.coordinates.bias)
         hidden = hidden + self.frame(self.frames) + self.position(self.positions)
         hidden = hidden + self.metadata(metadata)
         hidden = torch.cat((self.summary.expand(len(tokens), -1, -1), hidden), 1)
@@ -58,9 +54,32 @@ class Forecaster(nn.Module):
         self.predictor = nn.Sequential(nn.Linear(512, config.predictor_width),
                                        nn.GELU(), nn.Linear(config.predictor_width, 512))
 
+    def draw_mask(self, device):
+        """Fresh shared coordinates each batch; expected102.4 of512 at default20%."""
+        expected=512*self.config.mask_rate
+        if not expected:return torch.zeros(512,dtype=torch.bool,device=device)
+        count=int(expected)+int(torch.rand(()) < expected%1)
+        mask=torch.zeros(512,dtype=torch.bool,device=device)
+        mask[torch.randperm(512,device=device)[:count]]=True
+        return mask
+
     def forward(self, tokens, metadata, mask=None):
-        state = self.encoder(tokens, metadata, mask)
+        if tokens.ndim != 3 or tokens.shape[1:] != (16,512):
+            raise ValueError('Expected [batch,16,512] historical embeddings')
+        if mask is None:
+            mask=self.draw_mask(tokens.device) if self.training else torch.zeros(
+                512,dtype=torch.bool,device=tokens.device)
+        if mask.shape != (512,) or mask.dtype != torch.bool:
+            raise ValueError('Coordinate mask must be bool[512], shared by the batch')
+        ids=(~mask).nonzero().flatten()
+        state = self.encoder(tokens.index_select(2,ids), metadata, ids)
         return state, self.predictor(state)
+
+    @torch.no_grad()
+    def encode_context(self,tokens,metadata):
+        """Production/phase-three extraction always uses every latent coordinate."""
+        if self.training:raise ValueError('Production embedding extraction requires eval mode')
+        return self.encoder(tokens,metadata)
 
 
 def future_loss(predicted, target):

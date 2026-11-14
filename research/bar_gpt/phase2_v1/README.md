@@ -79,9 +79,23 @@ Initial trainable model: 512-wide, six pre-norm Transformer layers, eight heads,
 512->256->512 MLP prediction head. Joint attention covers within- and cross-frame
 tokens. Q/K/V and feedforwards mix latent dimensions; dimensions are not candles.
 
-During training mask whole historical token contents at 20% on average (three or
-four of 16, randomized without bias). Retain metadata; masked content is replaced
-by a learned mask vector. Evaluation uses all 16. The only optimized loss is mean
+During training drop **20% of the512 latent feature coordinates**, not whole
+historical tokens. Each batch draws a fresh uniform random subset of102 or103
+coordinates; all samples and all16 windows share that batch's coordinate IDs.
+Physically gather only the409/410 retained coordinates before the encoder. A
+learned coordinate projection uses only the matching columns of its512x512
+weight matrix to produce the512-wide internal hidden state. No masked values,
+zero placeholders or learned mask vectors enter the encoder. Metadata stays
+unchanged. This saves work in the input projection only; attention still has16
+historical tokens plus the summary token, so a20% overall speedup is not assumed.
+The revised trainable model has19,453,184 parameters (including the projection).
+
+`--feature-drop-rate` controls this training-only augmentation;20% is provisional,
+and0 enables a no-drop ablation. No claim of a representation benefit has been
+made without that comparison. Validation and production always use all512
+coordinates in all16 windows. `Forecaster.encode_context` requires eval mode and
+provides the complete512-dimensional representation for phase three. The
+future-target embedding always retains all512 coordinates. The optimized loss is mean
 squared error against the detached future V4 embedding. Historical masked tokens
 are not reconstruction targets. Later supervised/RL stages can use the summary.
 This is rolling causal forecasting, not recursive feeding of predicted tokens.
@@ -173,8 +187,14 @@ Defaults: FP32, one CPU thread,256-window tokenizer chunks,512MiB session cache;
 CUDA/BF16 is explicit and needs profiling before a heavy launch. There is no
 background GPU process or scheduled task created by importing/implementing this.
 
-W&B is disabled by default. `--wandb-mode online` creates a **new** run under
-`bargpt-phase2-latent-v1` named from the new output. Exact same-run resume uses
+W&B is **mandatory online for training**, in the shared new **`bargpt-phase2`**
+project for phase-two versions. The launcher records `phase2_version` in the run
+configuration and names a new run from its new output directory. Online is the
+training default; disabled/offline training is rejected. Missing credentials or
+initialization failures stop training, with no silent local-only fallback.
+Secrets are discovered through the shared environment loader, never copied into
+code or manifests. Audit/profile remain W&B-disabled and create no training run.
+Exact same-run resume uses
 `--resume <same-output/checkpoint_last.pt>`, restoring its run ID/global step.
 Native snapshots without Git must pass `--source-revision <committed SHA>`.
 `progress.json`, `metrics.jsonl`, `results.json` and `eligibility.jsonl` retain
@@ -232,6 +252,23 @@ bound into the run contract. This implementation does not silently upgrade an
 older checkpoint's contract or modify any running phase-one job. The bounded
 CPU/CUDA profile path includes decoded diagnostics after its compute timing;
 it is not a full validation throughput claim.
+
+### Bounded engineering profile
+
+`python -B -m research.bar_gpt.phase2_v1.benchmark --dataset-release <certificate.json>
+--output D:/TradingML/runtimes/bar_gpt/<new-profile> --device cpu` compares1/2/4
+I/O threads on up to4 certified sample publications, checking hashes and causal
+eligibility. This does not yet add a parallel pool to the training loader.
+Sequential worker trials are affected by OS cache/load and are not a corpus speed
+qualification. CPU-only profiles use no model GPU work. `--device cuda` additionally
+profiles128/256/512 tokenizer chunks and FP32/BF16 batches256..4096 using repeated
+real embeddings, bounded to120seconds of compute by default. GPU profiling refuses
+actual live Python encoder/phase-two training processes (PID+creation), checks GPU
+headroom, and requires the completed selected epoch50 teacher. No earlier teacher
+is substituted. Disposable model/optimizer updates do not create a training run.
+These cache-only compute timings cannot establish epoch duration or full validation
+cost. Final batch/precision/cache/loader choices and the nonzero validation interval
+remain pending final end-to-end qualification after V4 releases the GPU.
 
 Write a `STOP` in the run output to drain at an update boundary and checkpoint.
 No launcher clears STOP. An intentional patience stop also writes STOP. A hard

@@ -238,6 +238,7 @@ def test_final_teacher_cannot_fall_back_or_trust_filename_only(tmp_path,failure)
 
 def test_training_launcher_resolves_selected_teacher_before_dataset_load(tmp_path,monkeypatch):
     from research.bar_gpt.phase2_v1 import run_train
+    monkeypatch.setattr(run_train,'require_online_credentials',lambda:None)
     path=final_teacher(tmp_path/'v4');calls=[]
     from research.bar_gpt.phase2_v1.teacher_selection import select_training_teacher
     monkeypatch.setattr(run_train,'select_training_teacher',lambda p,s:select_training_teacher(p,s,root=path.parent))
@@ -252,3 +253,28 @@ def test_training_launcher_resolves_selected_teacher_before_dataset_load(tmp_pat
     with pytest.raises(RuntimeError,match='reached dataset'):
         main(['--mode','train','--execute','--dataset-root','fixture','--output',str(tmp_path/'new-run')])
     assert not (tmp_path/'new-run').exists()
+
+
+def test_online_project_is_mandatory_only_for_training(tmp_path,monkeypatch):
+    from research.bar_gpt.phase2_v1 import reporting
+    base=['--dataset-root','fixture','--output',str(tmp_path/'out')]
+    assert arguments(base).wandb_mode=='disabled'
+    assert arguments(base+['--mode','train','--execute']).wandb_mode=='online'
+    for mode in ('disabled','offline'):
+        with pytest.raises(SystemExit):arguments(base+['--mode','train','--execute','--wandb-mode',mode])
+    monkeypatch.delenv('WANDB_API_KEY',raising=False)
+    with pytest.raises(RuntimeError,match='WANDB_API_KEY'):reporting.require_online_credentials()
+    seen=[]
+    class FakeReporter:
+        def __init__(self,root,manifest,*,mode,project):
+            seen.append((root,manifest,mode,project));self.run=object()
+    monkeypatch.setattr(reporting,'Reporter',FakeReporter)
+    manifest=dict(phase2_version='bargpt-phase2-latent-v1',resume='same-output/checkpoint_last.pt')
+    reporting.online_reporter(tmp_path,manifest)
+    assert seen==[(tmp_path,manifest,'online','bargpt-phase2')]
+    class Disabled(FakeReporter):
+        def __init__(self,*a,**kw):super().__init__(*a,**kw);self.run=None
+        def finish(self,*a):seen.append('finished')
+    monkeypatch.setattr(reporting,'Reporter',Disabled)
+    with pytest.raises(RuntimeError,match='no silent'):reporting.online_reporter(tmp_path,manifest)
+    assert seen[-1]=='finished'
