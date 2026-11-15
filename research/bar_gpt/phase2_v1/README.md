@@ -375,6 +375,15 @@ bounds before transfer. Unique window embeddings remain stored once. A full
 `[origins,17,512]` tensor is never retained. Training gathers only its minibatch.
 Captured updates obtain the same sorted retained-coordinate IDs directly from
 the original random permutation, preserving RNG without a GPU `nonzero` readback.
+Optional `--teacher-replay` pre-captures one private frozen-encoder CUDA graph per
+publication worker before any preparation begins. Only the original full fixed
+tokenizer tile and exact input layout use replay; partial tiles keep the checked
+eager path. Each stream owns distinct input/output buffers, returned embeddings
+are independent clones, and the pool drains all streams before releasing its
+lease. No concurrent capture, shared mutable graph buffers, teacher weight change,
+normalization change or target change is allowed. The default16GiB graph budget
+is an upper bound, not a VRAM reservation. Enable only after actual embedding and
+model/AdamW/RNG parity plus interleaved throughput qualification on the workstation.
 Canonical price/activity index buffers stay on the device. CUDA UTC fields use
 a shared read-only lookup (under 2 MiB per teacher/device), generated through the
 original checked transform. Only whole-second positive ordered clocks inside

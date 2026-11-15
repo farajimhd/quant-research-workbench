@@ -6,6 +6,7 @@ import json
 import math
 import os
 import sys
+import subprocess
 from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
@@ -59,6 +60,21 @@ class Observer:
     def __init__(self,root,setup=None):
         self.root,self.setup=Path(root),Path(setup) if setup else None
         self.cached={};self.history=[];self.history_stamp=None;self.samples=deque(maxlen=90)
+        self.gpu={};self.gpu_checked=-math.inf
+
+    def gpu_capacity(self,now):
+        if now-self.gpu_checked>=20:
+            self.gpu_checked=now
+            try:
+                result=subprocess.run(['nvidia-smi','--query-gpu=memory.total,memory.used,memory.free',
+                    '--format=csv,noheader,nounits','--id=0'],capture_output=True,text=True,timeout=2,
+                    creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
+                if result.returncode:raise ValueError('GPU query failed')
+                total,used,free=map(float,result.stdout.strip().splitlines()[0].split(','))
+                if not 0<=used<=total or not 0<=free<=total:raise ValueError('Invalid device memory')
+                self.gpu=dict(gpu_total=total/1024,gpu_used=used/1024,gpu_free=free/1024,gpu_updated=now)
+            except (OSError,ValueError,subprocess.SubprocessError):pass
+        return self.gpu if now-self.gpu.get('gpu_updated',-math.inf)<60 else {}
 
     def read(self,now=None):
         now=time.time() if now is None else now
@@ -100,8 +116,10 @@ class Observer:
         except (OSError,UnicodeError):last={}
         resources={};owner='not verified';config={}
         try:
+            if str(self.root).startswith(chr(92)*2):
+                raise ValueError('Remote data requires running viewer on training host')
             resources=dict(ram=psutil.virtual_memory().available/2**30,
-                           disk=psutil.disk_usage(str(self.root)).free/2**30)
+                           disk=psutil.disk_usage(str(self.root)).free/2**30,**self.gpu_capacity(now))
             if self.setup:
                 ledger=read_json(self.setup/'child.json');proc=psutil.Process(ledger['pid'])
                 if abs(proc.create_time()-ledger['created'])>.01:raise ValueError('Reused process ID')
@@ -234,8 +252,11 @@ def render(s,width=110,height=32):
         rows.append(decoded)
     resources=table(['Resource','Current','Resource','Current'])
     resources.add_row('GPU utilization',number(p.get('gpu_util'))+'%','GPU power',number(p.get('gpu_power_w'))+' W')
-    resources.add_row('GPU memory',number(memory,1)+' GiB','Free RAM',number(res.get('ram'),1)+' GiB')
+    resources.add_row('VRAM used / total' if res.get('gpu_total') else 'Reported GPU memory',
+        f"{number(res.get('gpu_used'),1)} / {number(res.get('gpu_total'),1)} GiB" if res.get('gpu_total') else number(memory,1)+' GiB',
+        'Free RAM',number(res.get('ram'),1)+' GiB')
     resources.add_row('Free disk',number(res.get('disk'),1)+' GiB','Checkpoint',number(proof.get('step')))
+    if not compact:resources.add_row('Free VRAM',number(res.get('gpu_free'),1)+' GiB','Scope','device 0 · global')
     rows.append(resources)
     line(f"{s['owner']} · {cp}"+(' · Ctrl+C closes viewer' if compact else ' · reserves RAM64 / disk150 GiB'),'dim')
     if not compact:

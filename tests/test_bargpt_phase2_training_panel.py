@@ -104,6 +104,17 @@ def test_missing_snapshot_and_empty_history_render_without_false_completion(tmp_
     assert '0/10 complete' not in output
 
 
+def test_gpu_memory_usage_capacity_and_free_are_distinct_and_cached(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    calls=[]
+    def query(*a,**kw):calls.append(a);return SimpleNamespace(returncode=0,stdout='98304, 24576, 73728\n')
+    monkeypatch.setattr(panel.subprocess,'run',query)
+    fixture(tmp_path);o=panel.Observer(tmp_path);s=o.read(now=1002);o.read(now=1004)
+    assert len(calls)==1 and s['resources']['gpu_total']==96 and s['resources']['gpu_used']==24
+    assert s['resources']['gpu_free']==72
+    assert '24.0 / 96.0 GiB' in text(s)
+
+
 def test_redirected_real_entrypoint_has_no_ansi_or_source_writes(tmp_path,capsys,monkeypatch):
     fixture(tmp_path);before={p.name:p.read_bytes() for p in tmp_path.iterdir()}
     monkeypatch.setenv('NO_COLOR','1')

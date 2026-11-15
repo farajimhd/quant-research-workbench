@@ -206,8 +206,9 @@ class SessionTokens:
             time=torch.cat((scaled,time),dim=-1)[...,18:]
             time_valid=torch.cat((evidence,time_valid),dim=-1)[...,18:]
             with self.autocast():
-                encoded = self.teacher.encode_full(scaled, evidence,
-                                                  time,time_valid)
+                replay=getattr(self.teacher,'_phase2_replay',None)
+                encoded = (replay.encode if replay is not None else self.teacher.encode_full)(
+                    scaled,evidence,time,time_valid)
             # normalize checks source evidence/references; preserve the original
             # Float32-overflow guard formerly provided by the per-window transform.
             if not (torch.isfinite(scaled).all() & torch.isfinite(encoded).all()):

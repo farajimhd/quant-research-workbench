@@ -54,6 +54,8 @@ def publication_batches(units,split,teacher,teacher_sha,args,*,cursor=(0,0,0),
         row=next(inputs,None)
         if row is not None:pending.append(pool.submit(prepare,row))
 
+    replay=getattr(teacher,'_phase2_replay',None)
+    if replay is not None:replay.begin()
     try:
         for _ in range(workers):submit()
         while pending:
@@ -82,4 +84,7 @@ def publication_batches(units,split,teacher,teacher_sha,args,*,cursor=(0,0,0),
             # Even unconsumed failures must remain visible at STOP/early close.
             for future in pending:
                 if not future.cancelled() and future.exception() is not None:raise future.exception()
-        finally:inputs.close()
+        finally:
+            try:inputs.close()
+            finally:
+                if replay is not None:replay.end()
