@@ -209,7 +209,7 @@ def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordin
     output.write_text(json.dumps(results, indent=2))
 
 
-def sequential_pilot(dataset,certificate,output,steps=2000,*,name='stable',resume=None):
+def sequential_pilot(dataset,certificate,output,steps=2000,*,name='stable',resume=None,center=True):
     """Fresh stable student through real chronological publication/block/origin loader.
 
     This bounded pilot is explicitly not a resumed/full training campaign.
@@ -226,8 +226,9 @@ def sequential_pilot(dataset,certificate,output,steps=2000,*,name='stable',resum
         raise ValueError('Frozen dataset changed')
     data=torch.load(dataset,map_location='cuda',weights_only=False)
     xm,ym=data['train_x'].float().mean(0),data['train_y'].float().mean(0)
+    if not center: xm.zero_();ym.zero_()
     dx,dy=data['dev_x'].float()-xm,data['dev_y'].float()-ym
-    mean=torch.zeros_like(ym)
+    mean=data['train_y'].float().mean(0)-ym
     units,release=load_units(release=certificate)
     path,sha,_=select_training_teacher()
     teacher,proof=load_teacher(path,sha,'cuda',required_epoch=50)
@@ -251,7 +252,7 @@ def sequential_pilot(dataset,certificate,output,steps=2000,*,name='stable',resum
         token_batch=2048,prepare_workers=4,io_workers=4,prefetch_mib=8192,pack_batches=True)
     source=device_batches(batches(units,0,teacher,sha,args,cursor=cursor),'cuda',True)
     result=dict(release=release,teacher=proof,steps=steps,history=[],batch_size=512,
-        objective='all future coordinates',model=name,initial=score(model,dx,dy,mean),
+        objective='all future coordinates',model=name,centering=center,initial=score(model,dx,dy,mean),
         parent=str(resume) if resume else None,initial_step=begin)
     start=time.perf_counter();origins=0
     try:
