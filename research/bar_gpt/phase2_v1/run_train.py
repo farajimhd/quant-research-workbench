@@ -59,16 +59,16 @@ def arguments(argv=None):
     p.add_argument('--max-blocks', type=int, default=4, help='Audit/profile only; never limits training')
     p.add_argument('--profile-origins', type=int, default=16)
     p.add_argument('--profile-steps', type=int, default=3)
-    p.add_argument('--epochs', type=int, default=10,help='Number of validation-aligned logical epochs')
+    p.add_argument('--epochs', type=int, default=10,help='Number of complete training-dataset passes')
     p.add_argument('--learning-rate', type=float, default=3e-4)
     p.add_argument('--min-learning-rate', type=float, default=5e-5)
     p.add_argument('--warmup-updates', type=int, default=2000)
     p.add_argument('--lr-restart-decay',type=float,default=.9,
-                   help='Multiply each new logical epoch peak/floor by this factor')
+                   help='Multiply each new FULL DATASET PASS peak/floor by this factor')
     p.add_argument('--patience', type=int, default=8)
     p.add_argument('--checkpoint-every', type=int, default=1000)
     p.add_argument('--validation-every', type=int, default=150000,
-                   help='Optimizer updates per logical epoch/cosine cycle/full validation;0=legacy full-pass epochs')
+                   help='Full validation and LR-update frequency in optimizer updates; never the epoch length;0=legacy full-pass mode')
     p.add_argument('--log-every', type=int, default=10)
     p.add_argument('--seed', type=int, default=20261114)
     p.add_argument('--resume', type=Path)
@@ -192,7 +192,7 @@ def main(argv=None):
     contract=dict(design=config.manifest(),dataset=dataset,teacher=proof,implementation=implementation,
                   validation=dict(reconstruction=RECONSTRUCTION_CONTRACT,
                                   every_updates=a.validation_every,epoch_end=True,
-                                  interval_guard='one full validation per logical epoch; latent MSE controls patience'),
+                                  interval_guard='full validation every N updates and pass end; latent MSE controls patience'),
                   schedule=schedule_manifest(a),
                   tokenizer=dict(tile_batch=a.token_batch,precision=a.precision,
                                  algorithm='fixed-pool-endpoint-tiles-v1'),

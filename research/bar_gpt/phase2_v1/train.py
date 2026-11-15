@@ -61,7 +61,7 @@ def save_checkpoint(path, state):
     if any(not torch.isfinite(v).all() for v in tensors):
         raise FloatingPointError('Refusing nonfinite model/optimizer checkpoint')
     path = Path(path)
-    if path.name.startswith('checkpoint_epoch_') and path.exists():
+    if path.name.startswith(('checkpoint_epoch_','checkpoint_pass_')) and path.exists():
         existing=torch.load(path,map_location='cpu',weights_only=False)
         if state_hash(existing)!=state_hash(state):
             raise FileExistsError('Immutable epoch checkpoint collision')
@@ -248,6 +248,9 @@ def optimizer_for(model,args):
 
 
 def train(model, teacher, teacher_sha, units, contract, args, reporter):
+    if getattr(args,'validation_every',0)>0:
+        from .full_pass import train_full_pass
+        return train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter)
     optimizer = optimizer_for(model,args)
     validation_every=getattr(args,'validation_every',0)
     logical_epochs=validation_every>0

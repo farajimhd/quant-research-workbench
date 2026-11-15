@@ -184,7 +184,7 @@ full-corpus throughput measurement. CPU is the safe default; CUDA is explicit.
 
 Full training additionally requires `--mode train --execute`, a pinned V4
 checkpoint/SHA, and a new runtime output. Audit/profile bounds never truncate
-training or validation. Initial schedule defaults are **10 logical epochs**, batch256,
+training or validation. Initial schedule defaults are **10 full dataset passes**, batch256,
 AdamW3e-4, weight decay.01, initial cosine floor5e-5,2000-update one-time warmup, norm clip1,
 and patience8 validation non-improvements. These are phase-two defaults awaiting
 the launch decision, not inherited optimizer state or changes to phase one.
@@ -241,37 +241,40 @@ W&B/local metric keys (existing latent metrics remain unchanged):
   bounded histogram quantiles apply (approximate median/P90; bin resolution is
   recorded). Empty/overflow-affected aggregates are `null`, not zero.
 
-`--validation-every N` is the single authority for **both** logical epoch length
-and full-validation/cosine restart frequency; default **150,000 optimizer updates**.
-Each logical epoch ends with exactly one full validation. `--epochs 10` therefore
-means at most1,500,000 updates, not ten passes over the4TB dataset. Data continues
-from its exact consumed cursor across logical epochs. It wraps to data start only
-after a full data pass is exhausted; a data wrap does not restart LR or trigger an
-extra validation. Progress/history expose `data_pass` separately from logical epoch.
+`--epochs 10` means **ten complete traversals of every eligible training origin**
+in the frozen release. `--validation-every N` (default150000 updates) controls
+full validation and LR-update frequency only; it never defines an epoch length
+or the total update budget. The exact consumed cursor continues after validation.
+The cursor wraps, epoch advances and LR restarts only when the full training
+selection is exhausted. Validation also runs at a pass end between intervals;
+an interval coinciding with EOF is evaluated once, without an extra update.
 
-During a cycle the LR follows an update-based cosine. With initial peak3e-4,
-floor5e-5, and `--lr-restart-decay .9`, zero-based cycle c has peak
-`3e-4 * .9**c` and floor `5e-5 * .9**c`. Thus the nominal start/peak values are
-3e-4,2.7e-4,2.43e-4,... . Scale the floor too, so the cosine shape remains valid
-when restart peaks eventually fall below the original floor. The initial2000
-updates linearly warm from the initial floor to the initial peak; this startup
-warmup does not change the nominal peak used for the .9 restart rule, and is never
-repeated at later epochs or on resume. Warmup must be shorter than the cycle.
-Validation never advances the LR update clock. The next cycle starts only after
-its boundary validation completes. Eight logical-epoch non-improvements in latent
-MSE still control the existing patience guard; model/optimizer/moments/RNG are
-preserved across LR restarts.
+Within each full pass, LR follows a cosine positioned by the completed frozen
+training-block prefix divided by all frozen training blocks. This denominator
+comes from the authenticated compact index, not a sampled eligible-origin count
+or an estimated throughput. Partial current blocks do not advance that prefix;
+source eligibility/order is unchanged. LR is held between full validations,
+apart from the original once-only2000-update startup warmup. At full-pass start c,
+peak is `3e-4 * .9**c` and floor `5e-5 * .9**c`; validation does not restart either.
+The original AdamW moments, RNG and global update count continue across passes.
+Patience8 remains measured on full-validation non-improvements.
 
-All metrics use the current optimizer step and existing run identity; there is
-no backfill. Validation restores Python/NumPy/Torch/CUDA RNG and prior train/eval
-mode. Checkpoints preserve consumed cursor, pending validation, last completed
-validation step, data-pass count, scheduler counter and history. A crash after
-the final optimizer update but before the validation-phase checkpoint resumes
-validation before taking another update. `results.json` records every logical
-epoch's validation, nominal peak/floor and last update LR. No duplicate periodic
-validation or separate interval-results file is generated. Explicit
-`--validation-every 0` retains the old full-pass/epoch-cosine mode for comparison;
-it is not the new validation-aligned configuration.
+Checkpoints bind full-pass epoch, consumed cursor, validation phase, last validated
+step, scheduler position and all scientific state. A crash after a validation-due
+update resumes validation before another update. `results.json` retains all
+validation events with full-pass labels. Old mislabeled validation-cycle history
+is retained unchanged under an explicit transition proof; it is not counted as
+completed dataset passes. Ordinary resume never silently accepts that old policy.
+An audited independent checkpoint migration corrects only the schedule contract,
+scheduler state and epoch labels, preserving the immutable original checkpoint.
+
+Frequent recovery saves replace `checkpoint_last.pt`; validation replaces one
+`checkpoint_validation_last.pt`, and improvements replace `checkpoint_best.pt`.
+Only FULL PASS ends create immutable `checkpoint_pass_NNN.pt` files. Existing
+historical `checkpoint_epoch_NNN.pt` cycle evidence remains untouched. Thus a
+multi-month ten-pass run does not accumulate one large file per validation.
+Explicit `--validation-every 0` retains legacy full-pass/epoch-cosine behavior for
+comparison, without interval validation.
 
 The validation policy and shared inverse/decoder/price-metric source hashes are
 bound into the run contract. This implementation does not silently upgrade an
@@ -391,5 +394,5 @@ cursors, Python/NumPy/Torch/CUDA RNG, optimizer, scheduler, history and metrics.
 Every save is fsynced, CPU-reloaded and independently SHA-read back; epoch files
 are immutable. No optimizer/scheduler/RNG state from V4 is trained or changed.
 Periodic recovery saves overwrite one `checkpoint_last.pt`; improvements
-overwrite one `checkpoint_best.pt`. Numbered epoch files are saved only after
+overwrite one `checkpoint_best.pt`. Numbered full-pass files are saved only after
 full validation, so frequent recovery saves do not accumulate checkpoint files.

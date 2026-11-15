@@ -124,7 +124,8 @@ def test_interval_validation_resume_exact_and_no_extra_guard_counts(tmp_path):
     full=tmp_path/'full';full.mkdir();m,t=fresh()
     assert train(m,t,'pinned',units,contract,args(full),Reporter())=='complete'
     expected=load_checkpoint(full/'checkpoint_last.pt',contract)
-    assert expected['interval_history']==[] and len(expected['history'])==1 and expected['step']==2
+    assert expected['interval_history']==[] and len(expected['history'])==2 and expected['step']==4
+    assert expected['epoch']==1 and sum(h['train']['origins'] for h in expected['history'])==193
     resumed=tmp_path/'resume';resumed.mkdir();m,t=fresh()
     assert train(m,t,'pinned',units,contract,args(resumed),StopValidation(resumed))=='stopped'
     partial=load_checkpoint(resumed/'checkpoint_last.pt',contract)
