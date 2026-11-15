@@ -64,8 +64,11 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                 if not due:
                     source=device_batches(batches(units,0,teacher,teacher_sha,args,
                         cursor=cursor,report=report),args.device,getattr(args,'gpu_prefetch',False))
+                    timing=dict(source_wait=0.,compute_guard=0.,optimizer_metrics=0.,reporting=0.,checkpoint=0.)
+                    timing_steps=0;timing_started=fetch_mark=time.perf_counter()
                     try:
                         for tokens,meta,target,next_cursor,origins,liquid in source:
+                            received=time.perf_counter();timing['source_wait']+=received-fetch_mark
                             if (args.output/'STOP').exists():
                                 checkpoint('checkpoint_last.pt');return 'stopped'
                             optimizer.param_groups[0]['lr']=scheduler.value()
@@ -80,9 +83,11 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                                 if not torch.isfinite(loss):raise FloatingPointError('Nonfinite future loss')
                                 loss.backward()
                                 norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)
+                            computed=time.perf_counter();timing['compute_guard']+=computed-received
                             optimizer.step();step+=1;scheduler.updates+=1;cursor=next_cursor
                             if captured is not None and len(target)==args.batch_size:metrics.count+=len(target)
                             else:metrics.add(predicted,target,tokens[:,7])
+                            optimized=time.perf_counter();timing['optimizer_metrics']+=optimized-computed
                             if step%args.log_every==0:
                                 reporter.log(dict(train_loss=float(loss.detach()),gradient_norm=float(norm),
                                     learning_rate=optimizer.param_groups[0]['lr'],full_pass=epoch+1),step)
@@ -96,7 +101,16 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                                     learning_rate=optimizer.param_groups[0]['lr'],
                                     samples_per_second=(metrics.count-reported_count)/max(.001,now-reported_time))
                                 reported_time,reported_count=now,metrics.count
+                            reported=time.perf_counter();timing['reporting']+=reported-optimized
                             if step%args.checkpoint_every==0:checkpoint('checkpoint_last.pt')
+                            checkpointed=time.perf_counter();timing['checkpoint']+=checkpointed-reported
+                            timing_steps+=1
+                            if timing_steps>=100:
+                                reporter.update(pipeline_timing=dict(
+                                    steps=timing_steps,seconds=checkpointed-timing_started,
+                                    ms_per_update={k:1000*v/timing_steps for k,v in timing.items()}))
+                                timing=dict.fromkeys(timing,0.);timing_steps=0;timing_started=time.perf_counter()
+                            fetch_mark=time.perf_counter()
                             if step%args.validation_every==0:due=True;break
                         else:exhausted=True
                     finally:source.close();source=None
