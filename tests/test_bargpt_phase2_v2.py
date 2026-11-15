@@ -130,3 +130,23 @@ def test_metric_reset_preserves_capture_addresses_and_all_values():
     assert torch.count_nonzero(m.sums)==0 and torch.count_nonzero(m.moments)==0
     m.add(p,t,t);other=Metrics('cpu');other.add(p,t,t)
     assert torch.equal(m.sums,other.sums) and torch.equal(m.moments,other.moments)
+
+def test_deferred_checks_keep_exact_values_and_reject_before_publication(tmp_path):
+    from research.bar_gpt.phase2_v2.tokenizer import normalize
+    from tests.test_bargpt_phase2_latent_v1 import bars
+    from research.bar_gpt.v5.shards.sql import clock
+    raw=bars(np.arange(1,65)*1_000_000+clock('2023-01-03',4))
+    values=torch.tensor(raw['values'].copy())[None];valid=torch.ones_like(values,dtype=torch.bool)
+    checks=[];a=normalize(values,valid);b=normalize(values,valid,_checks=checks)
+    for x,y in zip(a,b):assert torch.equal(x,y)
+    assert all(bool(v[0]) for v in checks)
+    bad=values.clone();bad[0,0,0]=0;checks=[]
+    normalize(bad,valid,_checks=checks)
+    assert not all(bool(v[0]) for v in checks)
+    with pytest.raises(ValueError):normalize(bad,valid)
+    reader=checked_unit(session(tmp_path));plan=small(plan_block(reader,0));teacher=Teacher()
+    original=teacher.encode_full
+    teacher.encode_full=lambda *args,**kwargs:original(*args,**kwargs)*torch.nan
+    prepared=SessionTokens(reader,teacher,'same')
+    with pytest.raises(FloatingPointError,match='Nonfinite'):prepared.prepare(plan)
+    assert prepared.validation_checks is None

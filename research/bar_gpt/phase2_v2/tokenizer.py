@@ -52,14 +52,17 @@ def load_teacher(path, sha256, device='cpu', *, required_epoch=None):
                          decoder='same-checkpoint frozen V4; validation only')
 
 
-def normalize(values, valid, *, _indices=None):
+def normalize(values, valid, *, _indices=None, _checks=None):
     """The same Float64 formulas and shared reference authority as V4, on device."""
     price_ids,activity_ids=(PRICES,ACTIVITY) if _indices is None else _indices[1:]
-    if (not torch.isfinite(values).all() or ((values[..., price_ids] <= 0) & valid[..., price_ids]).any()
-            or ((values[..., activity_ids] < 0) & valid[..., activity_ids]).any()):
-        raise ValueError('Invalid observed market evidence')
+    source_ok=(torch.isfinite(values).all() &
+        ~((values[...,price_ids]<=0)&valid[...,price_ids]).any() &
+        ~((values[...,activity_ids]<0)&valid[...,activity_ids]).any())
+    if _checks is None:
+        if not source_ok:raise ValueError('Invalid observed market evidence')
+    else:_checks.append((source_ok,ValueError,'Invalid observed market evidence'))
     price, quantity = local_references(values, valid,
-        _indices=None if _indices is None else (_indices[0],_indices[2]))
+        _indices=None if _indices is None else (_indices[0],_indices[2]),_checks=_checks)
     scaled = torch.where(valid, values, 0).double()
     prices = torch.where(valid[..., price_ids], scaled[..., price_ids], price)
     scaled[..., price_ids] = 100 * torch.log(prices / price)
@@ -116,6 +119,7 @@ class SessionTokens:
         self.clock_bank = torch.cat([p[2] for p in self.pools])
         self.cpu_clock_bank=np.concatenate(cpu_clocks)
         self.index_cache=None
+        self.validation_checks=None
 
     def batch_indices(self,plan,start,stop,current):
         """Cache ONE compact causal index map, never per-origin embeddings.
@@ -199,7 +203,7 @@ class SessionTokens:
             ids = torch.as_tensor(selected.copy(), device=self.device)
             gather = ids[:, None] - torch.arange(63, -1, -1, device=self.device)
             raw, evidence = values[gather], valid[gather].bool()
-            scaled, references = normalize(raw, evidence,_indices=self.reference_indices)
+            scaled, references = normalize(raw, evidence,_indices=self.reference_indices,_checks=self.validation_checks)
             time,time_valid = self.window_time(frame,gather)
             # Preserve the original transform's column-view strides as well as
             # values: reduction/GEMM dispatch may depend on input layout.
@@ -210,17 +214,28 @@ class SessionTokens:
                                                   time,time_valid)
             # normalize checks source evidence/references; preserve the original
             # Float32-overflow guard formerly provided by the per-window transform.
-            if not (torch.isfinite(scaled).all() & torch.isfinite(encoded).all()):
-                raise FloatingPointError('Nonfinite scaled input or frozen teacher embedding')
+            encoded_ok=torch.isfinite(scaled).all() & torch.isfinite(encoded).all()
+            if self.validation_checks is None:
+                if not encoded_ok:raise FloatingPointError('Nonfinite scaled input or frozen teacher embedding')
+            else:self.validation_checks.append((encoded_ok,FloatingPointError,'Nonfinite scaled input or frozen teacher embedding'))
             self.bank[frame][ids] = encoded.float()
             self.refs[frame][ids] = references
             self.ready[frame][selected] = True
             self.encoded_windows += len(selected)
 
     def prepare(self, plan):
-        for f, ends in enumerate(plan.endpoints):
-            self.ensure(f, ends.reshape(-1))
-        self.ensure(0, plan.targets)
+        # All original predicates remain mandatory. Flush BEFORE this prepared
+        # session can be returned to the ordered consumer / any optimizer update.
+        self.validation_checks=[]
+        try:
+            for f, ends in enumerate(plan.endpoints):self.ensure(f, ends.reshape(-1))
+            self.ensure(0, plan.targets)
+            checks=self.validation_checks
+            if checks and not torch.stack([v[0] for v in checks]).all():
+                statuses=torch.stack([v[0] for v in checks]).cpu().tolist()
+                for valid,(_,error,message) in zip(statuses,checks):
+                    if not valid:raise error(message)
+        finally:self.validation_checks=None
 
     def batch(self, plan, start, stop):
         """No target values/clocks/references contribute to input metadata."""
