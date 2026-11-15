@@ -52,8 +52,6 @@ def arguments(argv=None):
     p.add_argument('--gpu-prefetch',action='store_true',help='Overlap frozen preparation on one bounded CUDA stream')
     p.add_argument('--prepare-workers',type=int,default=0,help='Ordered publication preparation pool,0=serial,maximum8')
     p.add_argument('--cuda-step-replay',action='store_true',help='Capture BF16 forward/backward/clip; optimizer/RNG remain live')
-    p.add_argument('--teacher-replay',action='store_true',help='Private per-worker frozen encoder graphs for fixed full tokenizer tiles')
-    p.add_argument('--teacher-replay-mib',type=int,default=16384)
     p.add_argument('--optimizer-backend',choices=('auto','fused'),default='auto')
     p.add_argument('--attention-layout',choices=('torch','batch-first-sdpa'),default='batch-first-sdpa')
     p.add_argument('--no-pack-batches',dest='pack_batches',action='store_false',
@@ -94,9 +92,6 @@ def arguments(argv=None):
     if not 0<=a.prepare_workers<=8:p.error('Invalid publication preparation pool')
     if a.cuda_step_replay and (a.device!='cuda' or a.precision!='bf16' or a.mode!='train'):
         p.error('Captured training step requires CUDA/BF16 train mode')
-    if a.teacher_replay and (a.device!='cuda' or a.precision!='bf16' or a.mode!='train' or not a.prepare_workers):
-        p.error('Frozen encoder replay requires CUDA/BF16 training with publication workers')
-    if a.teacher_replay_mib<1:p.error('Frozen encoder graph budget must be positive')
     if a.device!='cuda' and (a.gpu_prefetch or a.optimizer_backend=='fused'):
         p.error('GPU prefetch/fused optimizer require CUDA')
     if a.mode == 'train' and not a.execute:p.error('Training requires --execute')
@@ -210,7 +205,6 @@ def main(argv=None):
                       batch_packing=a.pack_batches,io_workers=a.io_workers,prefetch_mib=a.prefetch_mib,
                       gpu_prefetch=a.gpu_prefetch,optimizer_backend=a.optimizer_backend,
                       prepare_workers=a.prepare_workers,cuda_step_replay=a.cuda_step_replay,
-                      teacher_replay=a.teacher_replay,teacher_replay_mib=a.teacher_replay_mib,
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,
                       patience=a.patience,order='root/session/block/eligible-origin chronological',

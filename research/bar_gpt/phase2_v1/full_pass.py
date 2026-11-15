@@ -43,10 +43,6 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
         epoch+=1;cursor=(0,0,0);exhausted=False;scheduler.next_pass()
         checkpoint(f'checkpoint_pass_{epoch:03d}.pt');checkpoint('checkpoint_last.pt')
 
-    if getattr(args,'teacher_replay',False):
-        from .teacher_replay import TeacherReplay
-        teacher._phase2_replay=TeacherReplay(teacher,args.token_batch,args.prepare_workers,
-                                            memory_mib=args.teacher_replay_mib)
     captured=None
     if getattr(args,'cuda_step_replay',False):
         from .cuda_step import CudaStep
