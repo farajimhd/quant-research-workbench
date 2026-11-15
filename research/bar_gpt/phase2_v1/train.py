@@ -140,6 +140,11 @@ class Metrics:
 def source_batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), report=None,
             reconstruction=False):
     """Stable chronological session/block/origin traversal; no random sample dropping."""
+    if getattr(args,'prepare_workers',0):
+        from .publication_pipeline import publication_batches
+        yield from publication_batches(units,split,teacher,teacher_sha,args,cursor=cursor,
+                                        report=report,reconstruction=reconstruction)
+        return
     for ui,unit,reader in unit_readers(units,split,cursor[0],workers=getattr(args,'io_workers',0),
                                      prefetch_mib=getattr(args,'prefetch_mib',2048)):
         session=None
@@ -276,6 +281,10 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
             training_metrics=metrics.state(), rng=rng_state()))
 
     reported_time,reported_count = time.perf_counter(),metrics.count
+    captured=None
+    if getattr(args,'cuda_step_replay',False):
+        from .cuda_step import CudaStep
+        captured=CudaStep(model,args.batch_size)
     if not args.resume:checkpoint('checkpoint_last.pt')
     source=None
     try:
@@ -298,13 +307,18 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
                     if (args.output / 'STOP').exists():
                         checkpoint('checkpoint_last.pt');return 'stopped'
                     optimizer.param_groups[0]['lr'] = scheduler.value()
-                    optimizer.zero_grad(set_to_none=True)
-                    with autocast(args):
-                        _, predicted = model(tokens, meta)
-                        loss = future_loss(predicted, target)
-                    if not torch.isfinite(loss):raise FloatingPointError('Nonfinite future loss')
-                    loss.backward()
-                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1., error_if_nonfinite=True)
+                    if captured is not None and len(target)==args.batch_size:
+                        predicted,loss,norm=captured(tokens,meta,target)
+                        if not torch.isfinite(loss) or not torch.isfinite(norm):
+                            raise FloatingPointError('Nonfinite captured loss or gradient norm')
+                    else:
+                        optimizer.zero_grad(set_to_none=True)
+                        with autocast(args):
+                            _, predicted = model(tokens, meta)
+                            loss = future_loss(predicted, target)
+                        if not torch.isfinite(loss):raise FloatingPointError('Nonfinite future loss')
+                        loss.backward()
+                        norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1., error_if_nonfinite=True)
                     optimizer.step();scheduler.updates += 1;step += 1;cursor = next_cursor
                     metrics.add(predicted, target, tokens[:, 7])
                     if step % args.log_every == 0:

@@ -339,7 +339,25 @@ consumed cursor remains authoritative for resume. CPU operation rejects the flag
 `--optimizer-backend fused` selects native CUDA fused AdamW with unchanged
 learning rate/betas/epsilon/weight decay; `auto` retains PyTorch's default. It is
 recorded in the run contract. The nonfinite-gradient check still occurs before
-every update. No CUDA graphs or clock approximations are enabled.
+every update. No frozen-tokenizer CUDA graphs or clock approximations are enabled.
+
+`--prepare-workers N` optionally prepares up to eight publications concurrently
+on distinct CUDA streams (or CPU threads). Results are consumed strictly in the
+original publication/block/origin order. Complete immutable pools and original
+teacher tiles are retained; unconsumed lookahead never counts as training.
+The aggregate read budget includes reader workers plus prepared/active units,
+and GPU admission reserves `(N+1)*cache_mib + 1024 MiB`. Queue occupancy is bounded
+by N, worker errors propagate even on early close, and all workers/streams drain.
+This is separate from the CPU-only `--io-workers` pool.
+
+`--cuda-step-replay` optionally captures only BF16 training forward, backward
+and gradient clipping for each possible retained-coordinate count (409/410 at
+20% removal). Augmentation RNG remains on the main thread. The caller checks
+the loss and preclip gradient norm before every ordinary fused-AdamW update;
+optimizer/LR scheduling, metrics, validation and checkpoints remain outside the
+capture. Warmup never updates weights or optimizer and preserves RNG. Buffers
+have an 8 GiB budget. Partial batches use the ordinary eager update. Validation
+still uses all 512 coordinates and the unchanged frozen decoder.
 
 The tokenizer caches the shared transform's UTC fields once per immutable
 publication/frame pool. It still resets each window's relative positions and
