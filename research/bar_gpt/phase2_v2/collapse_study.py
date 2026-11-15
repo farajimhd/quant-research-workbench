@@ -16,10 +16,11 @@ from ..v5.encoder_v3 import AttentionBlock
 
 
 class NarrowForecaster(Forecaster):
-    def __init__(self, *, stable=False, coordinate_readout=False):
+    def __init__(self, *, stable=False, coordinate_readout=False, content_skip=False):
         nn.Module.__init__(self)
         self.coordinate_readout = coordinate_readout
         self.stable = stable
+        self.content_skip = content_skip
         self.identity = nn.Embedding(512, 16)
         self.layers = nn.ModuleList([AttentionBlock(16, 1, 64, 0., 'sdpa', 0.) for _ in range(6)])
         self.norm = nn.LayerNorm(16, elementwise_affine=not stable)
@@ -36,6 +37,9 @@ class NarrowForecaster(Forecaster):
         if self.coordinate_readout:
             # Output-only coordinate-aware aggregation; no added input tokens.
             values = self.scalar(x).squeeze(-1)
+            if self.content_skip:
+                # Preserve observed coordinate content at OUTPUT, not future values.
+                values = values + tokens[:,7].index_select(1,ids).to(values.dtype)
             state = values.new_zeros((len(x), 512)).scatter(1, ids.expand(len(x), -1), values)
         else:
             state = self.readout(x).mean(1)
@@ -47,6 +51,7 @@ def make_model(name):
     if name == 'narrow': return NarrowForecaster()
     if name == 'stable': return NarrowForecaster(stable=True)
     if name == 'coordinate': return NarrowForecaster(stable=True, coordinate_readout=True)
+    if name == 'content': return NarrowForecaster(stable=True, coordinate_readout=True,content_skip=True)
     raise ValueError(name)
 
 
@@ -125,7 +130,7 @@ def score(model, x, y, train_mean):
     return result
 
 
-def run(dataset, output, steps=1200):
+def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordinate'), all_targets=False):
     from ..v5.shards.contract import file_hash
     if output.exists(): raise FileExistsError(output)
     if dataset.with_suffix('.sha256').read_text().strip()!=file_hash(dataset):
@@ -133,8 +138,9 @@ def run(dataset, output, steps=1200):
     data = torch.load(dataset, map_location='cuda', weights_only=False)
     x, y, dx, dy = (data[k].float() for k in ('train_x', 'train_y', 'dev_x', 'dev_y'))
     mean = y.mean(0)
-    results = dict(dataset=str(dataset), evidence=data['evidence'], steps=steps, arms=[])
-    for name in ('original', 'narrow', 'stable', 'coordinate'):
+    results = dict(dataset=str(dataset), evidence=data['evidence'], steps=steps,
+        objective='all future coordinates' if all_targets else '320 dropped future coordinates', arms=[])
+    for name in arms:
         torch.manual_seed(41)
         model = make_model(name).cuda()
         opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=.01, fused=True)
@@ -149,7 +155,7 @@ def run(dataset, output, steps=1200):
             opt.zero_grad(set_to_none=True)
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 _, pred = model.forward_visible(x[batch], None, ids)
-                loss = future_loss(pred, y[batch], ids)
+                loss = (pred.float()-y[batch]).square().mean() if all_targets else future_loss(pred, y[batch], ids)
             loss.backward()
             norm = nn.utils.clip_grad_norm_(model.parameters(), 1., error_if_nonfinite=True)
             if not torch.isfinite(loss): raise FloatingPointError(name)
@@ -161,6 +167,8 @@ def run(dataset, output, steps=1200):
             train=score(model,x,y,mean),dev=score(model,dx,dy,mean),history=history)
         results['arms'].append(arm)
         output.with_suffix('.progress.json').write_text(json.dumps(results, indent=2))
+        torch.save(dict(model=model.state_dict(),name=name,all_targets=all_targets,
+            dataset_sha256=file_hash(dataset),steps=steps),output.with_name(output.stem+'-'+name+'.pt'))
         print(json.dumps(arm), flush=True)
         del model,opt
         torch.cuda.empty_cache()
@@ -173,7 +181,10 @@ if __name__ == '__main__':
     parser.add_argument('--extract',type=Path,help='Certified release to extract before studying')
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--steps',type=int,default=1200)
+    parser.add_argument('--arms',nargs='+',choices=('original','narrow','stable','coordinate','content'),
+        default=('original','narrow','stable','coordinate'))
+    parser.add_argument('--all-targets',action='store_true',help='Explicit experimental future-loss change')
     args=parser.parse_args()
     if not 1 <= args.steps <= 5000: parser.error('Bounded study requires 1..5000 updates')
     if args.extract: extract(args.extract,args.dataset)
-    run(args.dataset,args.output,args.steps)
+    run(args.dataset,args.output,args.steps,args.arms,args.all_targets)
