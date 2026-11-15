@@ -41,18 +41,21 @@ class LocalReferencePolicy:
             )
 
 
-def local_references(values, valid):
+def local_references(values, valid, *, _indices=None):
     """Vectorized source-valid medians, independent of augmentation RNG/masks."""
-    closes = torch.where(valid[..., CLOSES], values[..., CLOSES], torch.nan)
+    # Internal callers may supply device-resident CANONICAL index buffers to
+    # avoid repeatedly copying Python index lists. Default execution is intact.
+    closes_ids,activity_ids=(CLOSES,ACTIVITY) if _indices is None else _indices
+    closes = torch.where(valid[..., closes_ids], values[..., closes_ids], torch.nan)
     price = torch.nanquantile(closes.flatten(1).double(), 0.5, dim=1)[:, None, None]
     if not torch.isfinite(price).all() or not (price > 0).all():
         raise ValueError("Each raw window requires an observed positive closing price")
-    activity = torch.where(valid[..., ACTIVITY], values[..., ACTIVITY], torch.nan)
+    activity = torch.where(valid[..., activity_ids], values[..., activity_ids], torch.nan)
     # Same interpolated Float64 median; each 64-value feature is contiguous.
     quantity = torch.nanquantile(
         activity.transpose(1, 2).contiguous().double(), 0.5, dim=-1
     )
-    quantity = torch.where(valid[..., ACTIVITY].any(dim=1), quantity, 0)
+    quantity = torch.where(valid[..., activity_ids].any(dim=1), quantity, 0)
     if not torch.isfinite(quantity).all():
         raise ValueError("Invalid local quantity reference")
     return price, quantity

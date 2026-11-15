@@ -372,6 +372,12 @@ bounds before transfer. Unique window embeddings remain stored once. A full
 `[origins,17,512]` tensor is never retained. Training gathers only its minibatch.
 Captured updates obtain the same sorted retained-coordinate IDs directly from
 the original random permutation, preserving RNG without a GPU `nonzero` readback.
+Canonical price/activity index buffers stay on the device. CUDA UTC fields use
+a shared read-only lookup (under 2 MiB per teacher/device), generated through the
+original checked transform. Only whole-second positive ordered clocks inside
+the table domain use it; other supported clocks use the original checked path.
+Actual gaps, window positions and first-gap masks remain window-specific.
+These tables are not model parameters and are not included in checkpoints.
 Any engineering revision still changes the implementation fingerprint: an old
 checkpoint must be explicitly prepared and full-state/hash/parity verified
 before resume, never accepted through a compatibility bypass. Preserve its
@@ -384,3 +390,6 @@ optimizer state. Checkpoints retain exact root/session/block/eligible-origin
 cursors, Python/NumPy/Torch/CUDA RNG, optimizer, scheduler, history and metrics.
 Every save is fsynced, CPU-reloaded and independently SHA-read back; epoch files
 are immutable. No optimizer/scheduler/RNG state from V4 is trained or changed.
+Periodic recovery saves overwrite one `checkpoint_last.pt`; improvements
+overwrite one `checkpoint_best.pt`. Numbered epoch files are saved only after
+full validation, so frequent recovery saves do not accumulate checkpoint files.

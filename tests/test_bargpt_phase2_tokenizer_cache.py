@@ -21,6 +21,7 @@ def one_thread():
 def test_cached_clock_fields_exact_at_tile_gap_year_and_window_boundaries(device):
     if device=='cuda' and not torch.cuda.is_available():pytest.skip('Native CUDA qualification')
     s=SessionTokens.__new__(SessionTokens);s.device=torch.device(device)
+    s.teacher=Teacher().to(device)
     s.transform=BarInputTransformV1().to(device);s.time_cache={};s.pools=[]
     for frame in FRAMES:
         # Includes nonuniform gaps, partial last tiles, ISO year/week boundaries.
@@ -38,6 +39,53 @@ def test_cached_clock_fields_exact_at_tile_gap_year_and_window_boundaries(device
         assert torch.equal(mask,expected.valid[...,18:])
         assert torch.equal(values,s.window_time(f,gather)[0])
         assert not mask[:,0,4].any() and not values[:,0,4].any()
+
+
+@pytest.mark.parametrize('offset',[123,2_200_000_000_000_000])
+def test_cuda_calendar_outside_table_domain_falls_back_exactly(offset):
+    if not torch.cuda.is_available():pytest.skip('Native CUDA qualification')
+    s=SessionTokens.__new__(SessionTokens);s.device=torch.device('cuda')
+    s.teacher=Teacher().to('cuda');s.transform=BarInputTransformV1().to('cuda')
+    s.time_cache={}
+    clocks=1_609_286_400_000_000+offset+torch.arange(129,device='cuda')*1_000_000
+    s.pools=[(None,None,clocks)]
+    gather=torch.tensor([63,128],device='cuda')[:,None]-torch.arange(63,-1,-1,device='cuda')
+    raw=torch.zeros((2,64,18),device='cuda');mask=torch.zeros_like(raw,dtype=torch.bool)
+    expected=s.transform(raw,mask,clocks[gather],FRAMES[0])
+    actual,valid=s.window_time(0,gather)
+    assert torch.equal(actual,expected.values[...,18:])
+    assert torch.equal(valid,expected.valid[...,18:])
+
+
+def test_cuda_calendar_cache_is_bounded_rng_neutral_and_not_checkpointed():
+    if not torch.cuda.is_available():pytest.skip('Native CUDA qualification')
+    from research.bar_gpt.phase2_v1.clock_cache import cached_clock_pool
+    teacher=Teacher().cuda();transform=BarInputTransformV1().cuda()
+    keys=set(teacher.state_dict());cpu=torch.get_rng_state();gpu=torch.cuda.get_rng_state()
+    clocks=1_609_286_400_000_000+torch.arange(129,device='cuda')*1_000_000
+    cached_clock_pool(teacher,transform,clocks,0)
+    assert set(teacher.state_dict())==keys
+    assert torch.equal(cpu,torch.get_rng_state()) and torch.equal(gpu,torch.cuda.get_rng_state())
+    table=next(iter(teacher._phase2_clock_tables.values()))
+    assert sum(v.numel()*v.element_size() for v in (table.clock,table.days,table.frames))<2*1024**2
+    for bad in (clocks.flip(0),clocks*0):
+        with pytest.raises(ValueError,match='positive and strictly ordered'):
+            cached_clock_pool(teacher,transform,bad,0)
+
+
+@pytest.mark.parametrize('device',['cpu','cuda'])
+def test_device_reference_indices_preserve_exact_shared_formulas(device):
+    if device=='cuda' and not torch.cuda.is_available():pytest.skip('Native CUDA qualification')
+    from research.bar_gpt.v5.pretraining_v3 import local_references,CLOSES
+    from research.bar_gpt.v5.pretraining_v1 import PRICES,ACTIVITY
+    raw=torch.arange(4*64*18,device=device,dtype=torch.float64).reshape(4,64,18)+1
+    valid=torch.ones_like(raw,dtype=torch.bool);valid[0,:10,4:12]=False
+    valid[1,:,ACTIVITY]=False
+    ids=torch.tensor(list(CLOSES)+list(PRICES)+list(ACTIVITY),device=device).split(
+        (len(CLOSES),len(PRICES),len(ACTIVITY)))
+    assert all(torch.equal(a,b) for a,b in zip(normalize(raw,valid),normalize(raw,valid,_indices=ids)))
+    assert all(torch.equal(a,b) for a,b in zip(local_references(raw,valid),
+        local_references(raw,valid,_indices=(ids[0],ids[2]))))
 
 
 def old_batch(s,p,start,stop):

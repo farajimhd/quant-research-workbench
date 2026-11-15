@@ -6,7 +6,7 @@ import torch
 from ..v5.encoder_v3 import ColumnEncoderV3, EncoderConfig
 from ..v5.encoder_v4 import ColumnDecoderV4
 from ..v5.pretraining_v1 import PRICES, ACTIVITY
-from ..v5.pretraining_v3 import local_references, REFERENCE_POLICY, TRANSFORM
+from ..v5.pretraining_v3 import local_references, REFERENCE_POLICY, TRANSFORM, CLOSES
 from ..v5.transforms_v1 import BarInputTransformV1
 from ..v5.shards.contract import digest, file_hash
 from .config import FRAME_IDS
@@ -52,16 +52,18 @@ def load_teacher(path, sha256, device='cpu', *, required_epoch=None):
                          decoder='same-checkpoint frozen V4; validation only')
 
 
-def normalize(values, valid):
+def normalize(values, valid, *, _indices=None):
     """The same Float64 formulas and shared reference authority as V4, on device."""
-    if (not torch.isfinite(values).all() or ((values[..., PRICES] <= 0) & valid[..., PRICES]).any()
-            or ((values[..., ACTIVITY] < 0) & valid[..., ACTIVITY]).any()):
+    price_ids,activity_ids=(PRICES,ACTIVITY) if _indices is None else _indices[1:]
+    if (not torch.isfinite(values).all() or ((values[..., price_ids] <= 0) & valid[..., price_ids]).any()
+            or ((values[..., activity_ids] < 0) & valid[..., activity_ids]).any()):
         raise ValueError('Invalid observed market evidence')
-    price, quantity = local_references(values, valid)
+    price, quantity = local_references(values, valid,
+        _indices=None if _indices is None else (_indices[0],_indices[2]))
     scaled = torch.where(valid, values, 0).double()
-    prices = torch.where(valid[..., PRICES], scaled[..., PRICES], price)
-    scaled[..., PRICES] = 100 * torch.log(prices / price)
-    scaled[..., ACTIVITY] = torch.log1p(scaled[..., ACTIVITY]) - torch.log1p(quantity[:, None])
+    prices = torch.where(valid[..., price_ids], scaled[..., price_ids], price)
+    scaled[..., price_ids] = 100 * torch.log(prices / price)
+    scaled[..., activity_ids] = torch.log1p(scaled[..., activity_ids]) - torch.log1p(quantity[:, None])
     return torch.where(valid, scaled, 0).float(), torch.cat(
         (torch.log(price[:, 0]), torch.log1p(quantity)), dim=1).float()
 
@@ -91,6 +93,8 @@ class SessionTokens:
                                     transform=TRANSFORM, basis=reader.price_basis, precision=precision,
                                     tiles=token_batch,algorithm='fixed-pool-endpoint-tiles-v1'))
         self.transform = BarInputTransformV1().to(self.device)
+        self.reference_indices=torch.tensor(list(CLOSES)+list(PRICES)+list(ACTIVITY),
+            dtype=torch.int64,device=self.device).split((len(CLOSES),len(PRICES),len(ACTIVITY)))
         self.offsets = np.cumsum([0] + counts[:-1], dtype=np.int64)
         self.token_bank = torch.empty((sum(counts),512),device=self.device,dtype=torch.float32)
         self.reference_bank = torch.empty((sum(counts),7),device=self.device,dtype=torch.float32)
@@ -152,6 +156,13 @@ class SessionTokens:
         """
         if frame not in self.time_cache:
             clocks=self.pools[frame][2];n=len(clocks)
+            fast=None
+            if self.device.type=='cuda' and hasattr(self,'teacher'):
+                from .clock_cache import cached_clock_pool
+                fast=cached_clock_pool(self.teacher,self.transform,clocks,frame)
+            if fast is not None:
+                self.time_cache[frame]=fast
+                return self.window_time(frame,gather)
             padded=torch.zeros(((n+63)//64)*64,device=self.device,dtype=torch.int64)
             padded[:n]=clocks
             shape=(len(padded)//64,64,18)
@@ -188,7 +199,7 @@ class SessionTokens:
             ids = torch.as_tensor(selected.copy(), device=self.device)
             gather = ids[:, None] - torch.arange(63, -1, -1, device=self.device)
             raw, evidence = values[gather], valid[gather].bool()
-            scaled, references = normalize(raw, evidence)
+            scaled, references = normalize(raw, evidence,_indices=self.reference_indices)
             time,time_valid = self.window_time(frame,gather)
             # Preserve the original transform's column-view strides as well as
             # values: reduction/GEMM dispatch may depend on input layout.
@@ -247,8 +258,9 @@ class SessionTokens:
         gather = ids[:, None] - torch.arange(63, -1, -1, device=self.device)
         values, valid, clocks = self.pools[0]
         raw, mask, ends = values[gather], valid[gather].bool(), clocks[gather]
-        reference, stats = local_references(raw, mask)
-        scaled, _ = normalize(raw, mask)
+        reference, stats = local_references(raw, mask,
+            _indices=(self.reference_indices[0],self.reference_indices[2]))
+        scaled, _ = normalize(raw, mask,_indices=self.reference_indices)
         transformed = self.transform(scaled, mask, ends, FRAMES[0])
         return dict(raw=raw.transpose(1,2).contiguous(), valid=mask.transpose(1,2).contiguous(),
                     reference=reference, stats=stats, time=transformed.values[...,18:],
