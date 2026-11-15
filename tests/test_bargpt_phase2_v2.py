@@ -150,3 +150,11 @@ def test_deferred_checks_keep_exact_values_and_reject_before_publication(tmp_pat
     prepared=SessionTokens(reader,teacher,'same')
     with pytest.raises(FloatingPointError,match='Nonfinite'):prepared.prepare(plan)
     assert prepared.validation_checks is None
+
+def test_cpu_clock_checks_match_exact_gpu_predicates_on_boundary_inputs():
+    from research.bar_gpt.phase2_v2.clock_cache import clock_domain,ClockTables
+    from research.bar_gpt.v5.transforms_v1 import DAY_US
+    for values in ([1_000_000,2_000_000],[0,1_000_000],[-1,0],[1_000_001,2_000_000],[2_000_000,1_000_000],[ClockTables.DAYS*DAY_US,ClockTables.DAYS*DAY_US+1_000_000]):
+        c=torch.tensor(values,dtype=torch.int64)
+        expected=(bool((c>0).all() & (torch.diff(c)>0).all()),bool(((c%1_000_000)==0).all() & ((c//DAY_US)<ClockTables.DAYS).all()))
+        assert clock_domain(np.array(values,dtype=np.int64))==expected

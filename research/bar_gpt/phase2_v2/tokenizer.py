@@ -105,12 +105,22 @@ class SessionTokens:
         self.time_cache = {}
         self.pools, self.bank, self.refs, self.ready = [], [], [], []
         cpu_clocks=[]
+        self.cpu_frame_clocks=[]
         for f in range(5):
             raw = reader.view(f)  # verifies immutable file SHA and dtype once
             if (np.any(np.diff(raw['end_us']) <= 0) or not np.isin(raw['valid'], (0, 1)).all()):
                 raise ValueError('Invalid ordered pool/masks')
-            self.pools.append(tuple(torch.from_numpy(np.array(raw[k], copy=True)).to(self.device)
-                                    for k in ('values', 'valid', 'end_us')))
+            def transfer(name):
+                array=raw[name]
+                if self.device.type!='cuda':return torch.from_numpy(np.array(array,copy=True)).to(self.device)
+                # One pinned copy, not numpy-copy + pinned-copy. CUDA's pinned
+                # allocator retains the staging allocation until DMA completes.
+                dtype=torch.from_numpy(np.empty(0,dtype=array.dtype)).dtype
+                host=torch.empty(array.shape,dtype=dtype,pin_memory=True)
+                np.copyto(host.numpy(),array)
+                return host.to(self.device,non_blocking=True)
+            self.pools.append(tuple(transfer(k) for k in ('values','valid','end_us')))
+            self.cpu_frame_clocks.append(raw['end_us'])
             cpu_clocks.append(raw['end_us'])
             self.bank.append(banks[f])
             self.refs.append(references[f])
@@ -163,7 +173,8 @@ class SessionTokens:
             fast=None
             if self.device.type=='cuda' and hasattr(self,'teacher'):
                 from .clock_cache import cached_clock_pool
-                fast=cached_clock_pool(self.teacher,self.transform,clocks,frame)
+                fast=cached_clock_pool(self.teacher,self.transform,clocks,frame,
+                    _cpu_clocks=self.cpu_frame_clocks[frame])
             if fast is not None:
                 self.time_cache[frame]=fast
                 return self.window_time(frame,gather)
