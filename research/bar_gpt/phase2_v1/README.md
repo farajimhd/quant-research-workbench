@@ -339,9 +339,19 @@ consumed cursor remains authoritative for resume. CPU operation rejects the flag
 `--optimizer-backend fused` selects native CUDA fused AdamW with unchanged
 learning rate/betas/epsilon/weight decay; `auto` retains PyTorch's default. It is
 recorded in the run contract. The nonfinite-gradient check still occurs before
-every update. No CUDA graphs or custom clock-cache approximation are enabled.
-These candidates require measured end-to-end improvement and fixed-input/state
-qualification; kernel reordering may introduce normal Float32/BF16 roundoff.
+every update. No CUDA graphs or clock approximations are enabled.
+
+The tokenizer caches the shared transform's UTC fields once per immutable
+publication/frame pool. It still resets each window's relative positions and
+first-gap validity, and restores gaps across cache-tile boundaries from the
+actual UTC clocks. The original fixed teacher tiles and normalization stay
+unchanged. Packed token/reference banks replace per-frame minibatch transfers
+with one bounded pinned index transfer; token order, targets and causal checks
+are unchanged. The extra banks/cache are included in the device-cache budget.
+Any engineering revision still changes the implementation fingerprint: an old
+checkpoint must be explicitly prepared and full-state/hash/parity verified
+before resume, never accepted through a compatibility bypass. Preserve its
+immutable parent and original W&B ID/name/step when preparing that entry.
 
 Write a `STOP` in the run output to drain at an update boundary and checkpoint.
 No launcher clears STOP. An intentional patience stop also writes STOP. A hard

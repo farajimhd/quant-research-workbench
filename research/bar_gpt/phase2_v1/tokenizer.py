@@ -81,7 +81,8 @@ class SessionTokens:
         self.teacher, self.device = teacher, torch.device(device)
         self.precision, self.token_batch = precision, token_batch
         counts = [v['rows'] for v in reader.receipt['views']]
-        required = sum(n * (18*4 + 18 + 8 + 512*4 + 7*4 + 1) for n in counts)
+        # Include the packed clock bank and lazy per-bar UTC feature cache.
+        required = sum(n * (18*4 + 18 + 8 + 512*4 + 7*4 + 1 + 8 + 9*5) for n in counts)
         if required > memory_mib * 1024**2:
             raise MemoryError('Session pools/token bank exceed explicit device-cache budget')
         if self.device.type == 'cuda' and required + 512*1024**2 > torch.cuda.mem_get_info(self.device)[0]:
@@ -90,6 +91,11 @@ class SessionTokens:
                                     transform=TRANSFORM, basis=reader.price_basis, precision=precision,
                                     tiles=token_batch,algorithm='fixed-pool-endpoint-tiles-v1'))
         self.transform = BarInputTransformV1().to(self.device)
+        self.offsets = np.cumsum([0] + counts[:-1], dtype=np.int64)
+        self.token_bank = torch.empty((sum(counts),512),device=self.device,dtype=torch.float32)
+        self.reference_bank = torch.empty((sum(counts),7),device=self.device,dtype=torch.float32)
+        banks, references = self.token_bank.split(counts), self.reference_bank.split(counts)
+        self.time_cache = {}
         self.pools, self.bank, self.refs, self.ready = [], [], [], []
         for f in range(5):
             raw = reader.view(f)  # verifies immutable file SHA and dtype once
@@ -97,10 +103,38 @@ class SessionTokens:
                 raise ValueError('Invalid ordered pool/masks')
             self.pools.append(tuple(torch.from_numpy(np.array(raw[k], copy=True)).to(self.device)
                                     for k in ('values', 'valid', 'end_us')))
-            self.bank.append(torch.empty((len(raw), 512), device=self.device, dtype=torch.float32))
-            self.refs.append(torch.empty((len(raw), 7), device=self.device, dtype=torch.float32))
+            self.bank.append(banks[f])
+            self.refs.append(references[f])
             self.ready.append(np.zeros(len(raw), dtype=bool))
         self.encoded_windows = 0
+        self.clock_bank = torch.cat([p[2] for p in self.pools])
+
+    def window_time(self, frame, gather):
+        """Reuse exact shared-transform UTC fields; window position/gap stay local.
+
+        Pool clocks have already passed the immutable reader and ordering checks.
+        The shared transform validates them once in contiguous 64-bar tiles.
+        Only window-independent clock fields are reused. Tile-boundary gaps are
+        restored from actual adjacent clocks; every requested window resets its
+        first gap and relative positions exactly as the original transform does.
+        """
+        if frame not in self.time_cache:
+            clocks=self.pools[frame][2];n=len(clocks)
+            padded=torch.zeros(((n+63)//64)*64,device=self.device,dtype=torch.int64)
+            padded[:n]=clocks
+            shape=(len(padded)//64,64,18)
+            zero=torch.zeros(shape,device=self.device,dtype=torch.float32)
+            absent=torch.zeros(shape,device=self.device,dtype=torch.bool)
+            made=self.transform(zero,absent,padded.reshape(-1,64),FRAMES[frame])
+            values=made.values[...,18:].reshape(-1,9)[:n].clone()
+            valid=made.valid[...,18:].reshape(-1,9)[:n].clone()
+            values[1:,4]=torch.log1p(torch.diff(clocks).double()/FRAMES[frame])
+            valid[:,4]=True
+            self.time_cache[frame]=(values,valid)
+        values,valid=(v[gather].clone() for v in self.time_cache[frame])
+        values[...,0]=torch.arange(64,device=self.device,dtype=torch.float32)/63
+        values[:,0,4]=0;valid[:,0,4]=False
+        return values,valid
 
     def autocast(self):
         return torch.autocast('cuda', dtype=torch.bfloat16) if (
@@ -123,13 +157,18 @@ class SessionTokens:
             gather = ids[:, None] - torch.arange(63, -1, -1, device=self.device)
             raw, evidence = values[gather], valid[gather].bool()
             scaled, references = normalize(raw, evidence)
-            transformed = self.transform(scaled, evidence, clocks[gather], FRAMES[frame])
+            time,time_valid = self.window_time(frame,gather)
+            # Preserve the original transform's column-view strides as well as
+            # values: reduction/GEMM dispatch may depend on input layout.
+            time=torch.cat((scaled,time),dim=-1)[...,18:]
+            time_valid=torch.cat((evidence,time_valid),dim=-1)[...,18:]
             with self.autocast():
                 encoded = self.teacher.encode_full(scaled, evidence,
-                                                  transformed.values[..., 18:],
-                                                  transformed.valid[..., 18:])
-            if not torch.isfinite(encoded).all():
-                raise FloatingPointError('Nonfinite frozen teacher embedding')
+                                                  time,time_valid)
+            # normalize checks source evidence/references; preserve the original
+            # Float32-overflow guard formerly provided by the per-window transform.
+            if not (torch.isfinite(scaled).all() & torch.isfinite(encoded).all()):
+                raise FloatingPointError('Nonfinite scaled input or frozen teacher embedding')
             self.bank[frame][ids] = encoded.float()
             self.refs[frame][ids] = references
             self.ready[frame][selected] = True
@@ -142,30 +181,30 @@ class SessionTokens:
 
     def batch(self, plan, start, stop):
         """No target values/clocks/references contribute to input metadata."""
-        tokens, refs, starts, ends = [], [], [], []
+        selected_frames = []
         for f, selected in enumerate(plan.endpoints):
             selected = selected[start:stop]
             if not self.ready[f][selected].all():
                 raise ValueError('Requested uncached historical embeddings')
-            ids = torch.as_tensor(selected.copy(), device=self.device)
-            tokens.append(self.bank[f][ids])
-            refs.append(self.refs[f][ids])
-            starts.append(self.pools[f][2][ids - 63])
-            ends.append(self.pools[f][2][ids])
-        token = torch.cat(tokens, 1)
-        reference = torch.cat(refs, 1)
+            selected_frames.append(selected + self.offsets[f])
+        targets=plan.targets[start:stop]
+        if not self.ready[0][targets].all():
+            raise ValueError('Requested uncached future target')
+        # One bounded transfer replaces a separate blocking transfer per frame.
+        indices=torch.from_numpy(np.concatenate(selected_frames+[targets[:,None]],axis=1))
+        indices=(indices.pin_memory().to(self.device,non_blocking=True)
+                 if self.device.type=='cuda' else indices.to(self.device))
+        ids=indices[:,:16]
+        token,reference=self.token_bank[ids],self.reference_bank[ids]
         origin = torch.as_tensor(plan.origin_us[start:stop].copy(), device=self.device)
-        age_start = origin[:, None] - torch.cat(starts, 1)
-        age_end = origin[:, None] - torch.cat(ends, 1)
+        age_start = origin[:, None] - self.clock_bank[ids - 63]
+        age_end = origin[:, None] - self.clock_bank[ids]
         if (age_start < 0).any() or (age_end < 0).any():
             raise ValueError('Lookahead in model input')
         metadata = torch.cat((torch.log1p(age_start.double()/1e6)[..., None],
                               torch.log1p(age_end.double()/1e6)[..., None],
                               reference - reference[:, 7:8]), -1).float()
-        targets = plan.targets[start:stop]
-        if not self.ready[0][targets].all():
-            raise ValueError('Requested uncached future target')
-        target = self.bank[0][torch.as_tensor(targets.copy(), device=self.device)]
+        target = self.token_bank[indices[:,16]]
         return token, metadata, target.detach()
 
     @torch.no_grad()
