@@ -40,3 +40,12 @@ def test_coordinate_readout_mixed_precision_scatter():
         state,pred=model.forward_visible(torch.randn(2,16,512),None,torch.arange(192))
     assert state.dtype==pred.dtype==torch.bfloat16
     assert not state[:,192:].any()
+
+
+def test_content_readout_cancels_coordinate_only_offsets():
+    model=make_model('content')
+    x=torch.zeros(3,16,512)
+    for ids in (torch.arange(192),torch.arange(512)):
+        with torch.autocast('cpu',dtype=torch.bfloat16):
+            state,pred=model.forward_visible(x,None,ids)
+        assert state.shape==(3,512) and not state.any()

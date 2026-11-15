@@ -22,6 +22,7 @@ class NarrowForecaster(Forecaster):
         self.stable = stable
         self.content_skip = content_skip
         self.identity = nn.Embedding(512, 16)
+        if content_skip: nn.init.normal_(self.identity.weight,std=.02)
         self.layers = nn.ModuleList([AttentionBlock(16, 1, 64, 0., 'sdpa', 0.) for _ in range(6)])
         self.norm = nn.LayerNorm(16, elementwise_affine=not stable)
         self.readout = nn.Sequential(nn.Linear(16, 512), nn.GELU())
@@ -29,7 +30,11 @@ class NarrowForecaster(Forecaster):
         self.predictor = nn.Sequential(nn.Linear(512, 256), nn.GELU(), nn.Linear(256, 512))
 
     def forward_visible(self, tokens, metadata, ids):
-        x = tokens.index_select(2, ids).transpose(1, 2) + self.identity(ids)
+        content=tokens.index_select(2, ids).transpose(1, 2)
+        x = content + self.identity(ids)
+        if self.content_skip:
+            # Paired zero-content baseline cancels coordinate-only pooled offsets.
+            x=torch.cat((x,self.identity(ids).expand(1,-1,-1)),0)
         for layer in self.layers:
             updated = layer(x)
             x = x + .1 * (updated - x) if self.stable else updated
@@ -39,8 +44,8 @@ class NarrowForecaster(Forecaster):
             values = self.scalar(x).squeeze(-1)
             if self.content_skip:
                 # Preserve observed coordinate content at OUTPUT, not future values.
-                values = values + tokens[:,7].index_select(1,ids).to(values.dtype)
-            state = values.new_zeros((len(x), 512)).scatter(1, ids.expand(len(x), -1), values)
+                values=(values[:-1]-values[-1:]+content[:,:,7].to(values.dtype))*(512/len(ids))
+            state = values.new_zeros((len(values), 512)).scatter(1, ids.expand(len(values), -1), values)
         else:
             state = self.readout(x).mean(1)
         return state, self.predictor(state)
@@ -130,16 +135,22 @@ def score(model, x, y, train_mean):
     return result
 
 
-def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordinate'), all_targets=False):
+def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordinate'), all_targets=False, center=False):
     from ..v5.shards.contract import file_hash
     if output.exists(): raise FileExistsError(output)
     if dataset.with_suffix('.sha256').read_text().strip()!=file_hash(dataset):
         raise ValueError('Frozen study dataset changed')
     data = torch.load(dataset, map_location='cuda', weights_only=False)
     x, y, dx, dy = (data[k].float() for k in ('train_x', 'train_y', 'dev_x', 'dev_y'))
+    normalization=None
+    if center:
+        xm,ym=x.mean(0),y.mean(0)
+        normalization=dict(input_mean=xm.cpu(),target_mean=ym.cpu())
+        x=x-xm;dx=dx-xm;y=y-ym;dy=dy-ym
     mean = y.mean(0)
     results = dict(dataset=str(dataset), evidence=data['evidence'], steps=steps,
-        objective='all future coordinates' if all_targets else '320 dropped future coordinates', arms=[])
+        objective='all future coordinates' if all_targets else '320 dropped future coordinates',
+        centering='training examples only' if center else None,arms=[])
     for name in arms:
         torch.manual_seed(41)
         model = make_model(name).cuda()
@@ -168,7 +179,8 @@ def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordin
         results['arms'].append(arm)
         output.with_suffix('.progress.json').write_text(json.dumps(results, indent=2))
         torch.save(dict(model=model.state_dict(),name=name,all_targets=all_targets,
-            dataset_sha256=file_hash(dataset),steps=steps),output.with_name(output.stem+'-'+name+'.pt'))
+            normalization=normalization,dataset_sha256=file_hash(dataset),steps=steps),
+            output.with_name(output.stem+'-'+name+'.pt'))
         print(json.dumps(arm), flush=True)
         del model,opt
         torch.cuda.empty_cache()
@@ -184,7 +196,8 @@ if __name__ == '__main__':
     parser.add_argument('--arms',nargs='+',choices=('original','narrow','stable','coordinate','content'),
         default=('original','narrow','stable','coordinate'))
     parser.add_argument('--all-targets',action='store_true',help='Explicit experimental future-loss change')
+    parser.add_argument('--center',action='store_true',help='Training-only mean centering experiment')
     args=parser.parse_args()
     if not 1 <= args.steps <= 5000: parser.error('Bounded study requires 1..5000 updates')
     if args.extract: extract(args.extract,args.dataset)
-    run(args.dataset,args.output,args.steps,args.arms,args.all_targets)
+    run(args.dataset,args.output,args.steps,args.arms,args.all_targets,args.center)
