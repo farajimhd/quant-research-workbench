@@ -130,6 +130,10 @@ class Metrics:
             result['training_mean_mse'] = float((tt-2*m*t+m.square()).mean())
         return result
 
+    def reset(self):
+        """Keep addresses stable for captured accumulation across validations."""
+        self.count=0;self.sums.zero_();self.moments.zero_()
+
     def state(self):
         return dict(count=self.count, sums=self.sums.cpu(), moments=self.moments.cpu())
 

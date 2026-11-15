@@ -46,7 +46,8 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
     captured=None
     if getattr(args,'cuda_step_replay',False):
         from .cuda_step import CudaStep
-        captured=CudaStep(model,args.batch_size)
+        captured=CudaStep(model,args.batch_size,metrics=metrics,
+            attention_backend=getattr(args,'student_attention_backend','default'))
     if not args.resume:checkpoint('checkpoint_last.pt')
     source=None;reported_time=time.perf_counter();reported_count=metrics.count
     try:
@@ -80,7 +81,8 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                                 loss.backward()
                                 norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)
                             optimizer.step();step+=1;scheduler.updates+=1;cursor=next_cursor
-                            metrics.add(predicted,target,tokens[:,7])
+                            if captured is not None and len(target)==args.batch_size:metrics.count+=len(target)
+                            else:metrics.add(predicted,target,tokens[:,7])
                             if step%args.log_every==0:
                                 reporter.log(dict(train_loss=float(loss.detach()),gradient_norm=float(norm),
                                     learning_rate=optimizer.param_groups[0]['lr'],full_pass=epoch+1),step)
@@ -119,7 +121,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                 validation_is_epoch_end=exhausted,full_pass=epoch+1,validation_index=len(history)),step)
             write_json(args.output/'results.json',history)
             scheduler.validation(1. if exhausted else progress.fraction(cursor))
-            last_validation_step=step;phase='train';metrics=Metrics(args.device)
+            last_validation_step=step;phase='train';metrics.reset()
             reported_time,reported_count=time.perf_counter(),0
             checkpoint('checkpoint_validation_last.pt');checkpoint('checkpoint_last.pt')
             if improved:checkpoint('checkpoint_best.pt')

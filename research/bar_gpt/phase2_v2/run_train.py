@@ -52,6 +52,8 @@ def arguments(argv=None):
     p.add_argument('--gpu-prefetch',action='store_true',help='Overlap frozen preparation on one bounded CUDA stream')
     p.add_argument('--prepare-workers',type=int,default=0,help='Ordered publication preparation pool,0=serial,maximum8')
     p.add_argument('--cuda-step-replay',action='store_true',help='Capture BF16 forward/backward/clip; optimizer/RNG remain live')
+    p.add_argument('--student-attention-backend',choices=('default','cudnn'),default='default',
+                   help='CUDA replay backend; exact approved architecture/precision unchanged')
     p.add_argument('--optimizer-backend',choices=('auto','fused'),default='auto')
     p.add_argument('--attention-layout',choices=('torch','batch-first-sdpa'),default='batch-first-sdpa')
     p.add_argument('--no-pack-batches',dest='pack_batches',action='store_false',
@@ -90,6 +92,8 @@ def arguments(argv=None):
         p.error('Approved V2 removes exactly320 of512 coordinate tokens')
     if not 0<=a.io_workers<=8 or a.prefetch_mib<1:p.error('Invalid bounded CPU I/O pool')
     if not 0<=a.prepare_workers<=8:p.error('Invalid publication preparation pool')
+    if a.student_attention_backend!='default' and not a.cuda_step_replay:
+        p.error('Explicit student backend requires CUDA replay')
     if a.cuda_step_replay and (a.device!='cuda' or a.precision!='bf16' or a.mode!='train'):
         p.error('Captured training step requires CUDA/BF16 train mode')
     if a.device!='cuda' and (a.gpu_prefetch or a.optimizer_backend=='fused'):
@@ -205,6 +209,7 @@ def main(argv=None):
                       batch_packing=a.pack_batches,io_workers=a.io_workers,prefetch_mib=a.prefetch_mib,
                       gpu_prefetch=a.gpu_prefetch,optimizer_backend=a.optimizer_backend,
                       prepare_workers=a.prepare_workers,cuda_step_replay=a.cuda_step_replay,
+                      student_attention_backend=a.student_attention_backend,
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,
                       patience=a.patience,order='root/session/block/eligible-origin chronological',

@@ -100,3 +100,33 @@ def test_cli_fixed_design_and_no_v1_resume_compatibility(tmp_path):
         else:
             with pytest.raises(SystemExit):arguments(base+extra)
     with pytest.raises(ValueError):Config(width=512)
+
+def test_execution_bridge_preserves_all_state_and_rejects_scientific_changes():
+    from research.bar_gpt.phase2_v2.engineering_resume import prepare_state,prepare_identity
+    from research.bar_gpt.v5.wandb_identity_v1 import signature
+    from research.bar_gpt.v5.checkpoint_transition_v1 import state_hash
+    old={'design':Config().manifest(),'implementation':'a'*64,'optimization':{'batch':1024},'dataset':{'hash':'frozen'},'schedule':{'epochs':10}}
+    new=copy.deepcopy(old);new['implementation']='b'*64;new['optimization']['student_attention_backend']='cudnn'
+    parent=dict(contract=old,model={'w':torch.randn(3)},optimizer={'moment':torch.ones(3)},rng={'torch':torch.get_rng_state()},cursor=(3,4,5),step=12,history=[{'value':.1}])
+    before=state_hash(parent);prepared=prepare_state(parent,new)
+    assert state_hash(parent)==before
+    prepared['contract']=old;assert state_hash(prepared)==before
+    a=dict(model=old,batch_size=1024,seed=1);b=dict(model=new,batch_size=1024,seed=1)
+    identity=dict(id='fixed',name='same',signature=signature(a),root='root',project='bargpt-phase2')
+    updated=prepare_identity(identity,a,b)
+    assert updated['id']==identity['id'] and updated['name']==identity['name'] and updated['signature']==signature(b)
+    for key,value in [('dataset',{'hash':'changed'}),('schedule',{'epochs':1})]:
+        bad=copy.deepcopy(new);bad[key]=value
+        with pytest.raises(ValueError):prepare_state(parent,bad)
+    bad=copy.deepcopy(new);bad['optimization']['batch']=2048
+    with pytest.raises(ValueError):prepare_state(parent,bad)
+    with pytest.raises(ValueError):prepare_identity(identity,a,dict(b,seed=2))
+
+def test_metric_reset_preserves_capture_addresses_and_all_values():
+    from research.bar_gpt.phase2_v2.train import Metrics
+    m=Metrics('cpu');sums=m.sums;moments=m.moments
+    p=torch.randn(8,512);t=torch.randn(8,512);m.add(p,t,t)
+    m.reset();assert m.count==0 and m.sums is sums and m.moments is moments
+    assert torch.count_nonzero(m.sums)==0 and torch.count_nonzero(m.moments)==0
+    m.add(p,t,t);other=Metrics('cpu');other.add(p,t,t)
+    assert torch.equal(m.sums,other.sums) and torch.equal(m.moments,other.moments)
