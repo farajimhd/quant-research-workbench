@@ -56,13 +56,23 @@ class Forecaster(nn.Module):
         self.predictor = nn.Sequential(nn.Linear(512, config.predictor_width),
                                        nn.GELU(), nn.Linear(config.predictor_width, 512))
 
+    def _coordinate_draw(self,device):
+        expected=512*self.config.mask_rate
+        count=int(expected)+int(torch.rand(()) < expected%1)
+        return torch.randperm(512,device=device),count
+
+    def draw_feature_ids(self,device):
+        """Same random subset/order, without a GPU nonzero/count readback."""
+        if not self.config.mask_rate:return torch.arange(512,device=device)
+        permutation,count=self._coordinate_draw(device)
+        return permutation[count:].sort().values
+
     def draw_mask(self, device):
         """Fresh shared coordinates each batch; expected102.4 of512 at default20%."""
-        expected=512*self.config.mask_rate
-        if not expected:return torch.zeros(512,dtype=torch.bool,device=device)
-        count=int(expected)+int(torch.rand(()) < expected%1)
+        if not self.config.mask_rate:return torch.zeros(512,dtype=torch.bool,device=device)
+        permutation,count=self._coordinate_draw(device)
         mask=torch.zeros(512,dtype=torch.bool,device=device)
-        mask[torch.randperm(512,device=device)[:count]]=True
+        mask[permutation[:count]]=True
         return mask
 
     def forward(self, tokens, metadata, mask=None):

@@ -309,7 +309,7 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
                     optimizer.param_groups[0]['lr'] = scheduler.value()
                     if captured is not None and len(target)==args.batch_size:
                         predicted,loss,norm=captured(tokens,meta,target)
-                        if not torch.isfinite(loss) or not torch.isfinite(norm):
+                        if not (torch.isfinite(loss) & torch.isfinite(norm)):
                             raise FloatingPointError('Nonfinite captured loss or gradient norm')
                     else:
                         optimizer.zero_grad(set_to_none=True)

@@ -53,7 +53,7 @@ class CudaStep:
     def __call__(self,tokens,metadata,target):
         if len(target)!=self.batch_size:raise ValueError('Captured-step batch geometry changed')
         # Original augmentation draw/order, on the main training thread.
-        ids=(~self.model.draw_mask(tokens.device)).nonzero().flatten()
+        ids=self.model.draw_feature_ids(tokens.device)
         graph,buffers,result,gradients=self.graphs[len(ids)]
         for destination,value in zip(buffers,(tokens,metadata,target,ids)):destination.copy_(value)
         for parameter,gradient in zip(self.model.parameters(),gradients):parameter.grad=gradient

@@ -82,7 +82,7 @@ class SessionTokens:
         self.precision, self.token_batch = precision, token_batch
         counts = [v['rows'] for v in reader.receipt['views']]
         # Include the packed clock bank and lazy per-bar UTC feature cache.
-        required = sum(n * (18*4 + 18 + 8 + 512*4 + 7*4 + 1 + 8 + 9*5) for n in counts)
+        required = sum(n * (18*4 + 18 + 8 + 512*4 + 7*4 + 1 + 8 + 9*5) for n in counts)+1024**2
         if required > memory_mib * 1024**2:
             raise MemoryError('Session pools/token bank exceed explicit device-cache budget')
         if self.device.type == 'cuda' and required + 512*1024**2 > torch.cuda.mem_get_info(self.device)[0]:
@@ -97,17 +97,49 @@ class SessionTokens:
         banks, references = self.token_bank.split(counts), self.reference_bank.split(counts)
         self.time_cache = {}
         self.pools, self.bank, self.refs, self.ready = [], [], [], []
+        cpu_clocks=[]
         for f in range(5):
             raw = reader.view(f)  # verifies immutable file SHA and dtype once
             if (np.any(np.diff(raw['end_us']) <= 0) or not np.isin(raw['valid'], (0, 1)).all()):
                 raise ValueError('Invalid ordered pool/masks')
             self.pools.append(tuple(torch.from_numpy(np.array(raw[k], copy=True)).to(self.device)
                                     for k in ('values', 'valid', 'end_us')))
+            cpu_clocks.append(raw['end_us'])
             self.bank.append(banks[f])
             self.refs.append(references[f])
             self.ready.append(np.zeros(len(raw), dtype=bool))
         self.encoded_windows = 0
         self.clock_bank = torch.cat([p[2] for p in self.pools])
+        self.cpu_clock_bank=np.concatenate(cpu_clocks)
+        self.index_cache=None
+
+    def batch_indices(self,plan,start,stop,current):
+        """Cache ONE compact causal index map, never per-origin embeddings.
+
+        Recompare the requested slice so a caller cannot mutate a BlockPlan and
+        silently reuse a stale mapping. All integer clocks/indices are checked
+        on CPU before transfer; GPU metadata still uses the original formulas.
+        """
+        cache=self.index_cache
+        if (cache is None or cache[0] is not plan or len(cache[1])!=len(plan.origins)
+                or not np.array_equal(cache[1][start:stop],current)):
+            indices=np.concatenate([v+self.offsets[f] for f,v in enumerate(plan.endpoints)]+
+                [plan.targets[:,None],plan.origin_us[:,None]],axis=1)
+            if indices.nbytes>1024**2:raise MemoryError('Block index map exceeds its reserved budget')
+            for f,ends in enumerate(plan.endpoints):
+                if np.any(ends<63) or np.any(ends>=len(self.ready[f])):
+                    raise ValueError('Historical index outside its immutable timeframe pool')
+            if np.any(plan.targets<0) or np.any(plan.targets>=len(self.ready[0])):
+                raise ValueError('Future target outside its immutable pool')
+            ids=indices[:,:16];origin=indices[:,17,None]
+            if (np.any(self.cpu_clock_bank[ids]>origin)
+                    or np.any(self.cpu_clock_bank[ids-63]>origin)):
+                raise ValueError('Lookahead in model input')
+            tensor=torch.from_numpy(indices)
+            tensor=(tensor.pin_memory().to(self.device,non_blocking=True)
+                    if self.device.type=='cuda' else tensor.to(self.device))
+            self.index_cache=(plan,indices,tensor)
+        return self.index_cache[2][start:stop]
 
     def window_time(self, frame, gather):
         """Reuse exact shared-transform UTC fields; window position/gap stay local.
@@ -191,16 +223,13 @@ class SessionTokens:
         if not self.ready[0][targets].all():
             raise ValueError('Requested uncached future target')
         # One bounded transfer replaces a separate blocking transfer per frame.
-        indices=torch.from_numpy(np.concatenate(selected_frames+[targets[:,None]],axis=1))
-        indices=(indices.pin_memory().to(self.device,non_blocking=True)
-                 if self.device.type=='cuda' else indices.to(self.device))
+        current=np.concatenate(selected_frames+[targets[:,None],plan.origin_us[start:stop,None]],axis=1)
+        indices=self.batch_indices(plan,start,stop,current)
         ids=indices[:,:16]
         token,reference=self.token_bank[ids],self.reference_bank[ids]
-        origin = torch.as_tensor(plan.origin_us[start:stop].copy(), device=self.device)
+        origin = indices[:,17]
         age_start = origin[:, None] - self.clock_bank[ids - 63]
         age_end = origin[:, None] - self.clock_bank[ids]
-        if (age_start < 0).any() or (age_end < 0).any():
-            raise ValueError('Lookahead in model input')
         metadata = torch.cat((torch.log1p(age_start.double()/1e6)[..., None],
                               torch.log1p(age_end.double()/1e6)[..., None],
                               reference - reference[:, 7:8]), -1).float()

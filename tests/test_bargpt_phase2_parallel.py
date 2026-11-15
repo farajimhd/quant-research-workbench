@@ -91,6 +91,22 @@ def test_cli_execution_flags_are_bounded_and_explicit():
     assert a.cuda_step_replay and a.prepare_workers==4
 
 
+@pytest.mark.parametrize('device',['cpu','cuda'])
+def test_coordinate_ids_match_original_mask_and_exact_rng(device):
+    if device=='cuda' and not torch.cuda.is_available():pytest.skip('Native CUDA qualification')
+    m=Forecaster(Config(layers=1,feedforward=64))
+    for _ in range(8):
+        cpu=torch.get_rng_state();gpu=torch.cuda.get_rng_state_all() if device=='cuda' else []
+        mask=m.draw_mask(device);after_cpu=torch.get_rng_state()
+        after_gpu=torch.cuda.get_rng_state_all() if device=='cuda' else []
+        torch.set_rng_state(cpu)
+        if gpu:torch.cuda.set_rng_state_all(gpu)
+        ids=m.draw_feature_ids(device)
+        assert torch.equal(ids,(~mask).nonzero().flatten())
+        assert torch.equal(after_cpu,torch.get_rng_state())
+        assert all(torch.equal(a,b) for a,b in zip(after_gpu,torch.cuda.get_rng_state_all())) if gpu else True
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='Native CUDA qualification')
 def test_cuda_replay_exact_mask_rng_gradients_optimizer_and_repeat_updates():
     torch.manual_seed(19);a=Forecaster(Config(layers=1,feedforward=64)).cuda()

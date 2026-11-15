@@ -366,6 +366,12 @@ actual UTC clocks. The original fixed teacher tiles and normalization stay
 unchanged. Packed token/reference banks replace per-frame minibatch transfers
 with one bounded pinned index transfer; token order, targets and causal checks
 are unchanged. The extra banks/cache are included in the device-cache budget.
+Only one compact block index map is cached (at most1MiB); requested slices are
+rechecked against the current plan, and exact integer CPU clocks enforce causal
+bounds before transfer. Unique window embeddings remain stored once. A full
+`[origins,17,512]` tensor is never retained. Training gathers only its minibatch.
+Captured updates obtain the same sorted retained-coordinate IDs directly from
+the original random permutation, preserving RNG without a GPU `nonzero` readback.
 Any engineering revision still changes the implementation fingerprint: an old
 checkpoint must be explicitly prepared and full-state/hash/parity verified
 before resume, never accepted through a compatibility bypass. Preserve its

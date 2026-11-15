@@ -85,3 +85,14 @@ def test_clock_cache_rejects_invalid_clock_and_uncached_targets(tmp_path):
     with pytest.raises(ValueError,match='uncached'):s.batch(p,0,1)
     s.pools[0][2][0]=-1
     with pytest.raises(ValueError):s.window_time(0,torch.arange(64)[None,:])
+
+
+def test_compact_index_cache_reused_but_changed_plan_cannot_bypass_causality(tmp_path):
+    reader=checked_unit(session(tmp_path));s=SessionTokens(reader,Teacher(),'pinned')
+    p=plan_block(reader,0);s.prepare(p);s.batch(p,0,8)
+    cached=s.index_cache[2]
+    assert cached.shape==(len(p.origins),18) and cached.numel()*cached.element_size()<1024**2
+    s.batch(p,8,16)
+    assert s.index_cache[2] is cached
+    p.endpoints[0][0,-1]+=1
+    with pytest.raises(ValueError,match='Lookahead'):s.batch(p,0,8)
