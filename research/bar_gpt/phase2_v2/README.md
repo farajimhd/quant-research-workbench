@@ -119,3 +119,42 @@ Ten focused tests pass on both machines, including negative source predicates, c
 boundaries, exact source/target parity and full recovery. Actual GPU integration completed
 two small full passes/two decoded validations and checkpoint reloads,2945validation origins.
 Generated profiles,parents and ledgers are under native runtime, never the repository.
+
+## Major production bottleneck: eligibility journal (subsequent correction)
+
+The earlier benchmark loop omitted the production eligibility-report callback.
+It therefore did NOT reproduce the whole production input path. Production stage
+telemetry measured about51.5ms/update waiting for input versus27.2ms compute/finite
+guard,.36ms optimizer/metric-count dispatch and.08ms reporting in one100-update window.
+A3-minute live window fell to18.83k/s despite faster benchmark loops; this regression
+was retained and investigated rather than called a deployment success.
+
+The concrete missing cost was reopening/closing the growing eligibility.jsonl for
+EVERY source-block record on the next-batch prefetch thread. A5.5MB copy measured
+156.7-159.5ms/append with reopen versus.010-.015ms with a held line-buffered handle.
+The exact Windows filter/component causing the open/share overhead was not isolated;
+do not attribute it to antivirus without further evidence. It was not W&B latency.
+
+Full production-equivalent comparison INCLUDED identical callback records,original
+journal size,original source cursor/model/AdamW/RNG and131072origins per trial:
+reopen11.576-11.674seconds /11228-11322origins/s versuspersistent5.938-5.946seconds /
+22044-22075origins/s. Both wrote54records and ended at the SAME cursor. Journal wall
+time fell8.96-8.99seconds to.007-.010seconds. Input wait fell8.13-8.15seconds to.38seconds.
+This~1.95x result is on matched work,not a corpus-wide speed promise.
+
+Full-pass training now opens one UTF8,line-buffered append handle. Every newline
+flushes immediately,so records are not omitted or deferred until shutdown. Source
+workers drain before the handle closes. Tests verify exactly one open per training
+invocation and closure on normal completion,interruption and resume,with exact
+checkpoint/RNG/cursor recovery. Source/data/model/loss/scheduler contracts unchanged.
+
+Additional checks ruled out debug CUDA environment overrides and a one-core affinity
+mask. A live disk sample showedD:~.3ms read latency andempty queue. Frozen-tokenizer
+forward graph replay on existing2048 and1..16tile shapes was byte-exact on samples but
+~.7percent slower in controlled full-pipeline trials; it was REJECTED and is not active.
+No extra teacher graphs or graph workers are deployed. Code retains eval/no_grad,
+asynchronous pinned copies,four publication streams and one next-batch future.
+
+Current authoritative native setup after this fix:
+D:/TradingML/runtimes/bar_gpt/phase2-v2-journal-fix-20261115/OPERATIONS.md.
+See its live-check.json for final sustained actual-training timing and progress.
