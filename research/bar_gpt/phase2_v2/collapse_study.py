@@ -35,7 +35,8 @@ class NarrowForecaster(Forecaster):
         x = self.norm(x)
         if self.coordinate_readout:
             # Output-only coordinate-aware aggregation; no added input tokens.
-            state = x.new_zeros((len(x), 512)).scatter(1, ids.expand(len(x), -1), self.scalar(x).squeeze(-1))
+            values = self.scalar(x).squeeze(-1)
+            state = values.new_zeros((len(x), 512)).scatter(1, ids.expand(len(x), -1), values)
         else:
             state = self.readout(x).mean(1)
         return state, self.predictor(state)
@@ -154,11 +155,12 @@ def run(dataset, output, steps=1200):
             if not torch.isfinite(loss): raise FloatingPointError(name)
             opt.step()
             if (step+1) % 300 == 0:
-                history.append(dict(step=step+1, loss=float(loss), dev=score(model, dx, dy, mean)))
+                history.append(dict(step=step+1, loss=float(loss.detach()), dev=score(model, dx, dy, mean)))
         torch.cuda.synchronize()
         arm = dict(name=name, seconds=time.perf_counter()-start, initial=initial,
             train=score(model,x,y,mean),dev=score(model,dx,dy,mean),history=history)
         results['arms'].append(arm)
+        output.with_suffix('.progress.json').write_text(json.dumps(results, indent=2))
         print(json.dumps(arm), flush=True)
         del model,opt
         torch.cuda.empty_cache()

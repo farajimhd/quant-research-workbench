@@ -32,3 +32,11 @@ def test_coordinate_identity_and_context_affect_output():
     a=model.forward_visible(x,None,ids)[1]
     b=model.forward_visible(x.flip(0),None,ids)[1]
     assert not torch.allclose(a,b)
+
+
+def test_coordinate_readout_mixed_precision_scatter():
+    model=make_model('coordinate')
+    with torch.autocast('cpu',dtype=torch.bfloat16):
+        state,pred=model.forward_visible(torch.randn(2,16,512),None,torch.arange(192))
+    assert state.dtype==pred.dtype==torch.bfloat16
+    assert not state[:,192:].any()
