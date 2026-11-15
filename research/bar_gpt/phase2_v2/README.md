@@ -54,3 +54,68 @@ reached full-coordinate MSE.004096 versus.325151 initial and.024628 mean baselin
 LR1e-3 then3e-4; full training retains approved3e-4 peak. GPU integration completed an
 actual small dataset pass,2945-origin decoded validation and checkpoint reload with no
 teacher gradients. No guarantee of generalization or corpus speed from these probes.
+
+## End-to-end execution and profile2026-11-15
+
+Current qualified execution additionally supports `--student-attention-backend cudnn`
+with CUDA replay. Architecture, parameter shapes, fixed teacher, batch1024, masking,
+loss, data selection, chronology and schedule are unchanged. This changes the SDPA
+implementation, not attention semantics. It is numerically equivalent BF16, NOT
+bitwise replay:64same-input updates had relative loss delta.000127673 and maximum
+weight delta.000538; independent FP32 math-attention reference checks passed all7layers.
+A stricter experimental absolute-output test failed and remains in runtime evidence.
+Do not reinterpret that raw failed report as exact parity.
+
+The original full-pipeline64-update CUDA trace showed2035preparation-thread stream
+synchronizations plus64main finite guards. Frozen-tokenizer streams used about43percent
+of summed kernel time; main student/metrics about57percent. These are overlapping
+streams, not additive wall percentages. Original per1024 GPU kernel totals:~23ms frozen
+preparation and~30.6ms student/metrics, of which~3.2ms metrics. Student input192x16 is
+widened to192x64, and nonlinear readout materializes192x512 before pooling. Smaller
+parameter count therefore does not imply less activation/reduction work thanV1.
+
+Execution order:
+1. Four CPU I/O workers verify immutable receipts/hashes/arrays.16-publication warm-cache
+   sample:3.77ms CPU work per1024eligible origins; causal planning.436ms per1024.
+2. Four publication-preparation workers own separate CUDA streams. Pool arrays now
+   use one pinned host allocation/copy and asynchronous H2D; no additional numpy-copy
+   plus pinned-copy. CPU clock eligibility uses the exact immutable source clocks,
+   eliminating repeated GPU-to-CPU domain-check readbacks. Lookup values still come
+   from the validated shared UTC transform tables; out-of-domain fallback unchanged.
+3. Frozen V4epoch50 remains eval/requires_gradFalse, under no_grad. Same Float64 local
+   references, BF16 encoder and fixed2048 endpoint tiles. All original predicates are
+   accumulated and checked BEFORE publication readiness. No unchecked session can
+   reach an optimizer update. Direct normalize/ensure calls retain immediate checks.
+4. One next-batch preparation future gathers cached endpoints and packs consecutive
+   eligible origins. CUDA event waits and allocator stream records protect ownership.
+5. Training draws fresh192IDs, replays student forward/maskedloss/backward/clip, checks
+   finite loss+norm BEFORE fused AdamW, advances exact source cursor and scheduler.
+6. Identical Float64 metric arithmetic is captured in the graph; count changes only
+   after accepted optimizer updates. Reset zeros the same buffers across validations.
+   Capture warmup restores metrics/RNG, and partial batches retain eager metric logic.
+7. Logs every10updates,rolling recovery every1000,full validation/LR update150000 and
+   complete-pass boundaries. Full validation decoder/reference conditioning unchanged.
+
+Interleaved262144-origin trials at one fixed parent/cursor: original18.93-19.01k/s;
+coalesced checks/captured metrics20.97-21.16k/s;plus cuDNN22.34-22.43k/s. Producer wait
+fell2.15-2.26s to.40s over256updates. A second fixed-parent comparison of asynchronous
+pool/CPU-clock checks gave21.19-21.28k/s before and21.94-22.09k/s after. Do not multiply
+or extrapolate these workload-specific gains. A first resumed180s live window sustained
+22.24k/s versus20.02k/s pre-change; latest final live result is in the operational setup.
+
+Cache scope is explicit: a16-publication schedule audit found zero duplicate endpoint
+encodes WITHIN each publication. It encoded124629fixed-tile windows for76720requested
+unique endpoints. Extra tile windows preserve existing frozen-target numerical geometry;
+not all are necessarily later consumed. Cross-publication redundancy is not globally
+eliminated. Do not silently reduce tiles/change teacher batch shapes or claim zero waste.
+
+Qualified source transitions use engineering_resume.py: only implementation hash and
+explicit student backend may change; model/AdamW/scheduler/RNG/cursor/history/metrics
+must be preserved. An independent checkpoint and same-ID/name W&B signature bridge
+are sealed, originals retained. Batch, dataset, teacher, losses and schedule changes fail
+closed. Reporting's ordinary signature and lease checks remain intact.
+
+Ten focused tests pass on both machines, including negative source predicates, clock
+boundaries, exact source/target parity and full recovery. Actual GPU integration completed
+two small full passes/two decoded validations and checkpoint reloads,2945validation origins.
+Generated profiles,parents and ledgers are under native runtime, never the repository.
