@@ -17,7 +17,9 @@ from ..v5.shards.contract import write_json,digest
 
 
 def real_examples(certificate,limit=4,origins=32):
-    units,_=sample_units(certificate,limit)
+    units,_=sample_units(certificate,32)
+    units=[u for u in units if u.blocks[0][1]==0][:limit]
+    if not units:raise ValueError('No certified training samples')
     path,sha,selection=select_training_teacher()
     teacher,proof=load_teacher(path,sha,'cuda',required_epoch=50)
     rows=[];evidence=[]
@@ -28,7 +30,7 @@ def real_examples(certificate,limit=4,origins=32):
         session=SessionTokens(reader,teacher,sha,device='cuda',precision='bf16',memory_mib=1024,token_batch=2048)
         session.prepare(small);x,meta,y=session.batch(small,0,n)
         rows.append((x.clone(),meta.clone(),y.clone()))
-        evidence.append(dict(path=str(unit.path),origins=n,block=unit.blocks[0][0],
+        evidence.append(dict(path=str(unit.path),origins=n,block=unit.blocks[0][0],split=0,
             first=int(plan.origin_us[0]),last=int(plan.origin_us[n-1]),receipt=reader.receipt['hash']))
         del session
     return tuple(torch.cat([r[i] for r in rows]) for i in range(3)),dict(teacher=proof,samples=evidence),teacher,units
@@ -47,7 +49,7 @@ def update(model,opt,x,meta,y,captured=None):
 
 def benchmark(examples):
     trials=[];x,meta,y=examples
-    for batch in (128,256,512,1024):
+    for batch in (512,1024,2048,4096):
         for capture in (False,True):
             torch.manual_seed(23);model=Forecaster().cuda().train()
             opt=torch.optim.AdamW(model.parameters(),lr=3e-4,weight_decay=.01,fused=True)
