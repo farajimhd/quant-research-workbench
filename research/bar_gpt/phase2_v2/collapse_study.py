@@ -187,7 +187,7 @@ def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordin
     output.write_text(json.dumps(results, indent=2))
 
 
-def sequential_pilot(dataset,certificate,output,steps=2000):
+def sequential_pilot(dataset,certificate,output,steps=2000,*,name='stable',resume=None):
     """Fresh stable student through real chronological publication/block/origin loader.
 
     This bounded pilot is explicitly not a resumed/full training campaign.
@@ -196,7 +196,7 @@ def sequential_pilot(dataset,certificate,output,steps=2000):
     from .data import load_units
     from .tokenizer import load_teacher
     from .teacher_selection import select_training_teacher
-    from .train import batches, rng_state
+    from .train import batches, rng_state,restore_rng
     from .device_pipeline import device_batches
     from ..v5.shards.contract import file_hash
     if output.exists(): raise FileExistsError(output)
@@ -210,16 +210,30 @@ def sequential_pilot(dataset,certificate,output,steps=2000):
     path,sha,_=select_training_teacher()
     teacher,proof=load_teacher(path,sha,'cuda',required_epoch=50)
     torch.manual_seed(41)
-    model=make_model('stable').cuda()
+    model=make_model(name).cuda()
     opt=torch.optim.AdamW(model.parameters(),lr=3e-4,weight_decay=.01,fused=True)
+    cursor=(0,0,0);begin=0
+    if resume:
+        saved=torch.load(resume,map_location='cuda',weights_only=False)
+        if saved.get('name','stable')!=name or saved['release']!=release or saved['teacher']!=proof:
+            raise ValueError('Pilot resume scientific identity changed')
+        if not torch.equal(saved['input_mean'],xm) or not torch.equal(saved['target_mean'],ym):
+            raise ValueError('Pilot centering changed')
+        model.load_state_dict(saved['model']);opt.load_state_dict(saved['optimizer'])
+        cursor=tuple(saved['cursor']);begin=saved['step']
+        # Restore CPU RNG tensors to CPU after map_location cuda.
+        saved['rng']['torch']=saved['rng']['torch'].cpu()
+        saved['rng']['cuda']=[s.cpu() for s in saved['rng']['cuda']]
+        restore_rng(saved['rng'])
     args=SimpleNamespace(device='cuda',precision='bf16',batch_size=512,cache_mib=1024,
         token_batch=2048,prepare_workers=4,io_workers=4,prefetch_mib=8192,pack_batches=True)
-    source=device_batches(batches(units,0,teacher,sha,args),'cuda',True)
+    source=device_batches(batches(units,0,teacher,sha,args,cursor=cursor),'cuda',True)
     result=dict(release=release,teacher=proof,steps=steps,history=[],batch_size=512,
-        objective='all future coordinates',model='fresh stable width16',initial=score(model,dx,dy,mean))
+        objective='all future coordinates',model=name,initial=score(model,dx,dy,mean),
+        parent=str(resume) if resume else None,initial_step=begin)
     start=time.perf_counter();origins=0
     try:
-        for step in range(steps):
+        for step in range(begin,steps):
             tokens,meta,target,cursor,_,_=next(source)
             opt.zero_grad(set_to_none=True)
             with torch.autocast('cuda',dtype=torch.bfloat16):
@@ -237,7 +251,7 @@ def sequential_pilot(dataset,certificate,output,steps=2000):
     finally: source.close()
     result.update(origins=origins,seconds=time.perf_counter()-start,final=score(model,dx,dy,mean))
     torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),
-        input_mean=xm.cpu(),target_mean=ym.cpu(),cursor=cursor,step=steps,release=release,
+        input_mean=xm.cpu(),target_mean=ym.cpu(),cursor=cursor,step=steps,release=release,name=name,
         teacher=proof),output.with_suffix('.pt'))
     output.write_text(json.dumps(result,indent=2))
 
