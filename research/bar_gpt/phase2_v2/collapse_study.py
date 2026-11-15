@@ -334,6 +334,46 @@ def audit_baseline(certificate,checkpoint,output,limit=24):
     output.write_text(json.dumps(result,indent=2))
 
 
+@torch.no_grad()
+def full_baseline_validation(certificate,checkpoint,output,seconds=180):
+    """Bounded all-eligible2026 latent readback; explicitly records incomplete scope."""
+    from types import SimpleNamespace
+    from .data import load_units
+    from .tokenizer import load_teacher
+    from .teacher_selection import select_training_teacher
+    from .train import batches,Metrics
+    from .device_pipeline import device_batches
+    from ..v5.shards.contract import file_hash
+    if output.exists():raise FileExistsError(output)
+    before=file_hash(checkpoint)
+    saved=torch.load(checkpoint,map_location='cuda',weights_only=False)
+    if saved['name']!='baseline' or saved['input_mean'].any() or saved['target_mean'].any():
+        raise ValueError('Expected unmasked raw-input baseline')
+    model=make_model('baseline').cuda().eval();model.load_state_dict(saved['model'])
+    units,release=load_units(release=certificate)
+    if release!=saved['release']:raise ValueError('Release changed')
+    path,sha,_=select_training_teacher();teacher,proof=load_teacher(path,sha,'cuda',required_epoch=50)
+    if proof!=saved['teacher']:raise ValueError('Teacher changed')
+    args=SimpleNamespace(device='cuda',precision='bf16',batch_size=1024,cache_mib=1024,
+        token_batch=2048,prepare_workers=4,io_workers=4,prefetch_mib=8192,pack_batches=True)
+    mean=torch.load(checkpoint.parent/'examples.pt',map_location='cuda',weights_only=False)['train_y'].float().mean(0)
+    metrics=Metrics('cuda');start=time.perf_counter();complete=True
+    source=device_batches(batches(units,1,teacher,sha,args),'cuda',True)
+    try:
+        for x,meta,y,cursor,_,_ in source:
+            with torch.autocast('cuda',dtype=torch.bfloat16):_,pred=model(x,None)
+            if not torch.isfinite(pred).all():raise FloatingPointError('Nonfinite validation')
+            metrics.add(pred,y,x[:,7])
+            if metrics.count%51200==0:print(json.dumps(dict(origins=metrics.count,seconds=time.perf_counter()-start)),flush=True)
+            if time.perf_counter()-start>seconds:complete=False;break
+    finally:source.close()
+    if file_hash(checkpoint)!=before:raise ValueError('Checkpoint changed')
+    output.write_text(json.dumps(dict(checkpoint=str(checkpoint),sha256=before,
+        complete=complete,seconds=time.perf_counter()-start,latent=metrics.result(mean),
+        mean_scope='same frozen training-only192-example mean; not refit on validation',
+        release=release,teacher=proof),indent=2))
+
+
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',type=Path,required=True)
