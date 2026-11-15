@@ -50,13 +50,15 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
             attention_backend=getattr(args,'student_attention_backend','default'))
     if not args.resume:checkpoint('checkpoint_last.pt')
     source=None;reported_time=time.perf_counter();reported_count=metrics.count
+    # Keep append ownership across the run. Reopening this growing journal per
+    # block forces Windows sharing/scanning work onto the input-prefetch path.
+    journal=(args.output/'eligibility.jsonl').open('a',encoding='utf-8',buffering=1)
     try:
         while epoch<args.epochs:
             model.train()
             if phase=='train':
                 def report(value):
-                    with (args.output/'eligibility.jsonl').open('a') as stream:
-                        stream.write(json.dumps(dict(epoch=epoch+1,**value))+'\n')
+                    journal.write(json.dumps(dict(epoch=epoch+1,**value))+'\n')
                 # Recover a crash after an interval's final update, BEFORE taking
                 # another update. Never replay a validation already committed.
                 due=step>last_validation_step and step>0 and step%args.validation_every==0
@@ -148,4 +150,6 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
         return 'complete'
     except KeyboardInterrupt:return 'interrupted_preserved_last_checkpoint'
     finally:
-        if source is not None:source.close()
+        try:
+            if source is not None:source.close()
+        finally:journal.close()

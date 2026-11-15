@@ -64,6 +64,13 @@ def test_copied_data_and_tokenizer_match_v1_exactly(tmp_path):
 
 def test_full_pass_recovery_exact_model_optimizer_rng_and_validation(tmp_path,monkeypatch):
     from research.bar_gpt.phase2_v2 import train as module
+    from pathlib import Path
+    original_open=Path.open;opened=[]
+    def track(path,*args,**kwargs):
+        stream=original_open(path,*args,**kwargs)
+        if path.name=='eligibility.jsonl':opened.append(stream)
+        return stream
+    monkeypatch.setattr(Path,'open',track)
     units=[session(tmp_path/'train'),session(tmp_path/'val','2026-01-05')]
     def args(root,resume=None):
         a=options(root,resume);a.epochs=2;a.validation_every=3;a.warmup_updates=0
@@ -74,6 +81,7 @@ def test_full_pass_recovery_exact_model_optimizer_rng_and_validation(tmp_path,mo
     contract={'test':'v2-full-pass'};full=tmp_path/'full';full.mkdir();m,t=fresh()
     assert train(m,t,'teacher',units,contract,args(full),Reporter())=='complete'
     expected=load_checkpoint(full/'checkpoint_last.pt',contract)
+    assert len(opened)==1 and opened[0].closed
     assert expected['epoch']==2 and expected['step']==8
     assert sum(h['train']['origins'] for h in expected['history'])==386
     assert [h['step'] for h in expected['history']]==[3,4,6,8]
@@ -90,6 +98,7 @@ def test_full_pass_recovery_exact_model_optimizer_rng_and_validation(tmp_path,mo
     actual=load_checkpoint(root/'checkpoint_last.pt',contract)
     from research.bar_gpt.v5.checkpoint_transition_v1 import state_hash
     assert state_hash(actual)==state_hash(expected)
+    assert len(opened)==3 and all(stream.closed for stream in opened)
 
 def test_cli_fixed_design_and_no_v1_resume_compatibility(tmp_path):
     base=['--dataset-root','unused','--output',str(tmp_path/'run')]
