@@ -51,7 +51,25 @@ class NarrowForecaster(Forecaster):
         return state, self.predictor(state)
 
 
+class UnmaskedBaseline(Forecaster):
+    """User baseline: 16 tokens of512, one block, existing latest1s row readout."""
+    def __init__(self):
+        nn.Module.__init__(self)
+        self.attention=AttentionBlock(512,8,2048,0.,'sdpa',0.)
+        self.predictor=nn.Sequential(nn.Linear(512,256),nn.GELU(),nn.Linear(256,512))
+
+    def draw_feature_ids(self,device):
+        return torch.arange(512,device=device)
+
+    def forward_visible(self,tokens,metadata,ids):
+        if tokens.shape[1:]!=(16,512) or ids.shape!=(512,):
+            raise ValueError('Unmasked baseline requires16 complete512-wide context tokens')
+        state=self.attention(tokens)[:,7]
+        return state,self.predictor(state)
+
+
 def make_model(name):
+    if name == 'baseline': return UnmaskedBaseline()
     if name == 'original': return Forecaster()
     if name == 'narrow': return NarrowForecaster()
     if name == 'stable': return NarrowForecaster(stable=True)
@@ -122,6 +140,7 @@ def score(model, x, y, train_mean):
     result = {}
     for name, ids in [('full', torch.arange(512, device=x.device)),
                       ('fixed_mask', torch.arange(192, device=x.device))]:
+        if name=='fixed_mask' and isinstance(model,UnmaskedBaseline): continue
         state, p = model.forward_visible(x, None, ids)
         _, zero = model.forward_visible(torch.zeros_like(x), None, ids)
         _, shuffled = model.forward_visible(x.flip(0), None, ids)
@@ -152,6 +171,8 @@ def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordin
         objective='all future coordinates' if all_targets else '320 dropped future coordinates',
         centering='training examples only' if center else None,arms=[])
     for name in arms:
+        if name=='baseline' and not all_targets:
+            raise ValueError('Unmasked baseline requires explicit --all-targets')
         torch.manual_seed(41)
         model = make_model(name).cuda()
         opt = torch.optim.AdamW(model.parameters(), lr=3e-4, weight_decay=.01, fused=True)
@@ -162,7 +183,8 @@ def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordin
         generator = torch.Generator(device='cuda').manual_seed(613)
         for step in range(steps):
             batch = torch.randint(len(x), (min(64, len(x)),), device='cuda', generator=generator)
-            ids = torch.randperm(512, device='cuda', generator=generator)[:192].sort().values
+            draw = torch.randperm(512, device='cuda', generator=generator)
+            ids = torch.arange(512,device='cuda') if name=='baseline' else draw[:192].sort().values
             opt.zero_grad(set_to_none=True)
             with torch.autocast('cuda', dtype=torch.bfloat16):
                 _, pred = model.forward_visible(x[batch], None, ids)
@@ -262,7 +284,7 @@ if __name__ == '__main__':
     parser.add_argument('--extract',type=Path,help='Certified release to extract before studying')
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--steps',type=int,default=1200)
-    parser.add_argument('--arms',nargs='+',choices=('original','narrow','stable','coordinate','content'),
+    parser.add_argument('--arms',nargs='+',choices=('original','narrow','stable','coordinate','content','baseline'),
         default=('original','narrow','stable','coordinate'))
     parser.add_argument('--all-targets',action='store_true',help='Explicit experimental future-loss change')
     parser.add_argument('--center',action='store_true',help='Training-only mean centering experiment')

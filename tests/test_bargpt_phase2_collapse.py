@@ -49,3 +49,14 @@ def test_content_readout_cancels_coordinate_only_offsets():
         with torch.autocast('cpu',dtype=torch.bfloat16):
             state,pred=model.forward_visible(x,None,ids)
         assert state.shape==(3,512) and not state.any()
+
+
+def test_user_unmasked_baseline_attends_sixteen_complete_tokens():
+    model=make_model('baseline')
+    x=torch.randn(2,16,512)
+    ids=model.draw_feature_ids('cpu')
+    assert torch.equal(ids,torch.arange(512))
+    state,pred=model.forward_visible(x,None,ids)
+    assert state.shape==pred.shape==(2,512)
+    pred.square().mean().backward()
+    assert model.attention.self_attn.in_proj_weight.grad.abs().sum()>0
