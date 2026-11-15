@@ -158,3 +158,73 @@ asynchronous pinned copies,four publication streams and one next-batch future.
 Current authoritative native setup after this fix:
 D:/TradingML/runtimes/bar_gpt/phase2-v2-journal-fix-20261115/OPERATIONS.md.
 See its live-check.json for final sustained actual-training timing and progress.
+# Stopped V2 and bounded collapse experiments (2026-11-15)
+
+The original `phase2-coordinate-mae-v2-20261115` run was deliberately stopped at
+step 198002. Its user STOP remains, its scheduled task is disabled, and an
+independent checkpoint copy with full-state/file hashes is retained under native
+`D:/TradingML/runtimes/bar_gpt/phase2-v2-collapse-fix-20261115`. Do not resume it
+as an engineering recovery. The experimental models below are not changes to
+the original strict V2 contract and have not been promoted to full training.
+
+`collapse_study.py` provides fresh-weight, fixed-example comparisons, causal
+sequential-loader pilots, a decoded sampled audit, and bounded complete latent
+validation. Original shards, eligibility, frozen V4 epoch50, tokenizer tile2048,
+and the next64 observed1s target remain unchanged. All new source was tested,
+committed/pushed and independently SHA-verified before native execution.
+
+The initial test uses 192 fitting examples from48 distinct 2019–2024 sessions,
+and48 development examples from12 distinct2025 sessions. Four origins are spread
+within each session, with economic session duplicates excluded. The2026 split is
+not used for fitting or centering. The complete latent validation subsequently
+contains708600 eligible origins, matching the original target variance and
+persistence error exactly. Sampled decoded errors are separate, target-reference
+conditioned diagnostics and must not be described as full raw validation.
+
+Experimental architectures:
+
+- `narrow`: six16-wide blocks, one16-wide head, FF64, then per-coordinate
+  Linear16-to512/GELU followed by token mean, and the existing512-to256-to512 head.
+- `stable`: narrow, with0.1 whole-block residual updates and nonaffine final norm.
+- `content`: stable, small coordinate-ID initialization, a coordinate-aware
+  scalar readout scattered into512 original-coordinate positions, paired
+  zero-content offset cancellation, and a latest1s content residual. Retained
+  coordinates use inverted keep scaling. This is an explicitly different output
+  readout, not simply removal of head concatenation.
+- User `baseline`: all16 complete512-wide tokens, no masking or added tokens,
+  one Transformer block (width512,8 heads,FF2048), existing latest1s row7 readout,
+  and a lightweight512-to256-to512 future prediction head. No centering is used
+  in this raw-input baseline.
+
+Separate arms explicitly test the original dropped320-coordinate future loss
+and loss over all512 future coordinates. Centering, when enabled, is frozen from
+the fitting examples only and inverted before comparison with raw V4 latents.
+The latter objective/readout changes require a new scientific experiment, not
+the old same-run engineering compatibility bridge.
+
+Head narrowing alone did not resolve collapse. A centered/stabilized mean-pool
+model beat a mean on small shuffled examples but failed the actual sequential
+loader even after10000 updates. This is why small-sample overfit alone is not a
+promotion gate. The content readout and user baseline both learned from the same
+first2560000 chronological origins (5000 updates, batch512):
+
+| Candidate | Complete2026 latent MSE | Pilot origins/s |
+|---|---:|---:|
+| Stopped original V2, validation step150000 |0.04254970| not a matched speed trial |
+| User unmasked16-token baseline |0.04148569|43691|
+| Content-preserving width16 candidate |0.03811667|25906|
+
+The previously recorded stronger training-mean control on the same complete
+validation set is0.04140539. The new tiny-example training mean is weaker
+(0.04393020); do not use it alone to overstate improvement. The content candidate
+beats the stronger control by about7.9%; the user baseline is slightly worse than
+that control despite being noncollapsed and faster. These are short pilots, not
+long-run convergence guarantees. Rates include the actual loader/tokenizer and
+periodic development probes, but exclude launch and final checkpoint/full
+validation costs. They are not a sustained full-campaign throughput guarantee.
+
+Native evidence: `study.json`, `centered-masked-control.json`,
+`centered-all-targets.json`, `sequential-extended.json`, `sequential-content.json`,
+`sequential-baseline.json`, `baseline-2026-audit.json`, `baseline-full-2026.json`,
+`content-full-2026.json`, and `stop-audit.json` in the setup above. Experimental
+weights are independent of the stopped parent; no W&B history was overwritten.
