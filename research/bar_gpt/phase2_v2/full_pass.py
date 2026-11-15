@@ -10,6 +10,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
     from .train import (optimizer_for,Metrics,load_checkpoint,save_checkpoint,restore_rng,rng_state,
                         device_batches,batches,autocast,future_loss,evaluate,write_json)
     optimizer=optimizer_for(model,args)
+    loss_function=getattr(model,'training_loss',future_loss)
     scheduler=FullPassCosine(args.learning_rate,args.min_learning_rate,args.validation_every,
                              args.warmup_updates,getattr(args,'lr_restart_decay',.9))
     progress=PassProgress(units)
@@ -81,7 +82,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                             else:
                                 optimizer.zero_grad(set_to_none=True)
                                 with autocast(args):
-                                    predicted,ids=model.training_prediction(tokens,meta);loss=future_loss(predicted,target,ids)
+                                    predicted,ids=model.training_prediction(tokens,meta);loss=loss_function(predicted,target,ids)
                                 if not torch.isfinite(loss):raise FloatingPointError('Nonfinite future loss')
                                 loss.backward()
                                 norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)

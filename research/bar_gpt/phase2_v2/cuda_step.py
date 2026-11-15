@@ -17,7 +17,8 @@ class CudaStep:
         # CPU metrics.state() may alias on CPU; this class only admits CUDA.
         backend=lambda:sdpa_kernel(SDPBackend.CUDNN_ATTENTION) if attention_backend=='cudnn' else nullcontext()
         device=next(model.parameters()).device
-        keeps=[192]
+        keeps=[512 if model.config.mask_rate==0 else 192]
+        loss_function=getattr(model,'training_loss',future_loss)
         cpu_rng=torch.get_rng_state();cuda_rng=torch.cuda.get_rng_state_all()
         initial=torch.cuda.memory_allocated(device)
         stream=torch.cuda.Stream(device=device)
@@ -31,9 +32,9 @@ class CudaStep:
 
                 def run():
                     with torch.autocast('cuda',dtype=torch.bfloat16,cache_enabled=False):
-                        state=model.encoder(x.index_select(2,ids),meta,ids)
+                        state=model.encoder(x if keep==512 else x.index_select(2,ids),meta,ids)
                         predicted=model.predictor(state)
-                        loss=future_loss(predicted,target,ids)
+                        loss=loss_function(predicted,target,ids)
                     loss.backward()
                     if metrics is not None:metrics.add(predicted,target,x[:,7])
                     # The caller checks loss AND this preclip norm before ANY update.

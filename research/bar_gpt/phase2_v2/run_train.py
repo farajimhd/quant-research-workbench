@@ -28,7 +28,7 @@ from .reporting import PROJECT, online_reporter, require_online_credentials
 from .schedule import schedule_manifest
 
 
-def arguments(argv=None):
+def arguments(argv=None, *, expected_feature_drop=320/512):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--mode', choices=('audit', 'profile', 'train'), default='audit')
     p.add_argument('--execute', action='store_true', help='Required for optimizer training')
@@ -42,7 +42,7 @@ def arguments(argv=None):
     p.add_argument('--device', default='cpu', choices=('cpu', 'cuda'))
     p.add_argument('--precision', choices=('fp32', 'bf16'), default='fp32')
     p.add_argument('--batch-size', type=int, default=256)
-    p.add_argument('--feature-drop-rate',type=float,default=320/512,
+    p.add_argument('--feature-drop-rate',type=float,default=expected_feature_drop,
                    help='V2 fixed320/512 coordinate-token masking')
     p.add_argument('--token-batch', type=int, default=256)
     p.add_argument('--cache-mib', type=int, default=512)
@@ -88,8 +88,8 @@ def arguments(argv=None):
     if not np.isfinite(a.lr_restart_decay) or not 0<a.lr_restart_decay<=1:p.error('Restart decay must be in (0,1]')
     if a.validation_every and a.warmup_updates>=a.validation_every:
         p.error('One-time warmup must be shorter than the validation-aligned cycle')
-    if not np.isfinite(a.feature_drop_rate) or a.feature_drop_rate != 320/512:
-        p.error('Approved V2 removes exactly320 of512 coordinate tokens')
+    if not np.isfinite(a.feature_drop_rate) or a.feature_drop_rate != expected_feature_drop:
+        p.error(f'Selected design requires feature-drop-rate={expected_feature_drop}')
     if not 0<=a.io_workers<=8 or a.prefetch_mib<1:p.error('Invalid bounded CPU I/O pool')
     if not 0<=a.prepare_workers<=8:p.error('Invalid publication preparation pool')
     if a.student_attention_backend!='default' and not a.cuda_step_replay:
@@ -111,9 +111,9 @@ def arguments(argv=None):
     return a
 
 
-def bounded_check(units, teacher, proof, args):
+def bounded_check(units, teacher, proof, args, *, model_type=Forecaster, model_config=Config):
     reports, measured, seen = [], [], 0
-    model = Forecaster(Config(mask_rate=args.feature_drop_rate,attention_layout=args.attention_layout)).to(args.device) if args.mode == 'profile' else None
+    model = model_type(model_config(mask_rate=args.feature_drop_rate,attention_layout=args.attention_layout)).to(args.device) if args.mode == 'profile' else None
     optimizer = optimizer_for(model,args) if model else None
     for unit in units:
         reader, session = checked_unit(unit), None
@@ -138,7 +138,9 @@ def bounded_check(units, teacher, proof, args):
                     began=time.perf_counter()
                     for _ in range(args.profile_steps):
                         optimizer.zero_grad(set_to_none=True)
-                        with autocast(args):predicted,ids=model.training_prediction(tokens,metadata);loss=future_loss(predicted,target,ids)
+                        with autocast(args):
+                            predicted,ids=model.training_prediction(tokens,metadata)
+                            loss=getattr(model,'training_loss',future_loss)(predicted,target,ids)
                         loss.backward();torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)
                         optimizer.step()
                     if args.device == 'cuda':torch.cuda.synchronize()
@@ -164,8 +166,8 @@ def bounded_check(units, teacher, proof, args):
                 scope='bounded selected-block sample; not full-corpus eligibility certification')
 
 
-def main(argv=None):
-    a=arguments(argv)
+def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_config=Config, version_sources=()):
+    a=argument_parser(argv)
     if (a.output/'STOP').exists():raise ValueError('Human STOP is present; it is never cleared by this launcher')
     if a.output.exists() and not a.resume:
         raise FileExistsError('Use a new output, or explicit --resume with exact contract')
@@ -185,8 +187,9 @@ def main(argv=None):
                                   required_epoch=50 if a.mode=='train' else None)
         if selection is not None:proof['selection']=selection
     units,dataset=load_units(a.dataset_root or (),a.dataset_release)
-    config=Config(mask_rate=a.feature_drop_rate,attention_layout=a.attention_layout)
+    config=model_config(mask_rate=a.feature_drop_rate,attention_layout=a.attention_layout)
     sources=list(Path(__file__).parent.glob('*.py'))
+    sources+=list(version_sources)
     shared=Path(__file__).resolve().parents[1]/'v5'
     sources += [shared/name for name in ('encoder_v3.py','pretraining_v3.py','transforms_v1.py',
                                         'encoder_v4.py','native_validation_v3.py','price_relative_v3.py',
@@ -213,13 +216,14 @@ def main(argv=None):
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,
                       patience=a.patience,order='root/session/block/eligible-origin chronological',
-                      masking='fresh batch-shared coordinates removed before encoder; rate from design.model.mask_rate; future target only'))
+                      masking=('none; all16x512 context content; loss all512 future coordinates' if config.mask_rate==0 else
+                          'fresh batch-shared coordinates removed before encoder; rate from design.model.mask_rate; future target only')))
     # JSON-normalize tuples so checkpoint/reporting identities are platform stable.
     contract=json.loads(json.dumps(contract))
     a.output.mkdir(parents=True,exist_ok=bool(a.resume))
     with lease(a.output):
         if a.mode!='train':
-            result=bounded_check(units,teacher,proof,a)
+            result=bounded_check(units,teacher,proof,a,model_type=model_type,model_config=model_config)
             result['contract']=contract;write_json(a.output/'result.json',result)
             print(json.dumps(result));return result
         manifest=dict(mode='train',model=contract,dataset=dataset['hash'],seed=a.seed,
@@ -232,7 +236,7 @@ def main(argv=None):
         if not a.resume:write_json(a.output/'manifest.json',manifest)
         reporter=online_reporter(a.output,manifest)
         try:
-            model=Forecaster(config).to(a.device)
+            model=model_type(config).to(a.device)
             state=train(model,teacher,proof['sha256'],units,contract,a,reporter)
             reporter.finish(state)
             return dict(state=state)

@@ -28,8 +28,9 @@ def active_trainers():
             if not (p.info['name'] or '').lower().startswith('python'):continue
             cmd=p.info['cmdline'] or []
             encoder=any('run_encoder_v' in a for a in cmd)
-            phase2=any(any('research.bar_gpt.'+v+'.run_train' in a for v in ('phase2_v1','phase2_v2')) or
-                       any(a.replace('\\','/').endswith(v+'/run_train.py') for v in ('phase2_v1','phase2_v2')) for a in cmd)
+            versions=('phase2_v1','phase2_v2','phase2_unmasked_v1')
+            phase2=any(any('research.bar_gpt.'+v+'.run_train' in a for v in versions) or
+                       any(a.replace('\\','/').endswith(v+'/run_train.py') for v in versions) for a in cmd)
             if p.pid!=os.getpid() and (encoder or (phase2 and '--mode' in cmd and
                     cmd[cmd.index('--mode')+1]=='train')):
                 found.append(dict(pid=p.pid,created=p.info['create_time']))
