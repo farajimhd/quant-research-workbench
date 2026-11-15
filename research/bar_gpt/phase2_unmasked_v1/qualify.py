@@ -9,6 +9,7 @@ from .model import Forecaster,future_loss
 from ..phase2_v2.cuda_step import CudaStep
 from ..phase2_v2.benchmark import active_trainers
 from ..v5.shards.contract import file_hash
+from ..v5.checkpoint_transition_v1 import state_hash
 
 
 def main(argv=None):
@@ -27,7 +28,7 @@ def main(argv=None):
     meta=torch.zeros(1024,16,9,device='cuda')
     trials=[];parity=None
     for repeat in range(3):
-        outcomes={}
+        outcomes={};states={}
         for capture in ((False,True) if repeat%2==0 else (True,False)):
             torch.manual_seed(71);model=Forecaster().cuda().train()
             opt=torch.optim.AdamW(model.parameters(),lr=3e-4,weight_decay=.01,fused=True)
@@ -49,16 +50,20 @@ def main(argv=None):
             torch.cuda.synchronize();seconds=time.perf_counter()-start
             trials.append(dict(repeat=repeat,capture=capture,seconds=seconds,origins_per_second=48*1024/seconds,loss=float(loss)))
             outcomes[capture]={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
+            states[capture]=dict(optimizer=state_hash(opt.state_dict()),
+                rng=state_hash(dict(cpu=torch.get_rng_state(),cuda=torch.cuda.get_rng_state_all())))
             del graph,opt,model
             torch.cuda.empty_cache()
         differences=[(outcomes[False][k]-outcomes[True][k]).abs().max().item() for k in outcomes[False]]
         maximum=max(differences)
         if maximum>2e-5:raise AssertionError(f'Capture/eager parameter divergence {maximum}')
+        if states[False]!=states[True]:raise AssertionError('Capture/eager optimizer or RNG diverged')
         parity=max(parity or 0.,maximum)
     eager=statistics.median(t['origins_per_second'] for t in trials if not t['capture'])
     captured=statistics.median(t['origins_per_second'] for t in trials if t['capture'])
     result=dict(passed=True,batch_size=1024,precision='bf16',backend='cudnn',trials=trials,
         examples_sha256=file_hash(a.examples),maximum_parameter_difference=parity,
+        optimizer_and_rng_exact=True,
         eager_origins_per_second=eager,captured_origins_per_second=captured,speedup=captured/eager,
         scope='same-input student compute/optimizer only; live full pipeline must be checked separately')
     a.output.write_text(json.dumps(result,indent=2));print(json.dumps(result),flush=True)

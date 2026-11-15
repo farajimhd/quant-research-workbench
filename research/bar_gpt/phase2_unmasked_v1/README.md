@@ -35,7 +35,7 @@ validation/best checkpoints,and immutable complete-pass checkpoints are retained
 
 Native launch uses `run_train.py --mode train --execute --dataset-release
 <certificate.json> --output <new runtime directory> --device cuda --precision
-bf16 --batch-size1024` with the retained explicit resource/schedule arguments.
+bf16 --batch-size 1024` with the retained explicit resource/schedule arguments.
 `qualify.py` compares same-input eager versus captured student updates at the
 same batch/backend/precision. It is not a corpus-speed measurement; verify
 the actual running pipeline and remote W&B identity after launch.
