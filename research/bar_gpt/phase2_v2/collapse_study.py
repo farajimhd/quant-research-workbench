@@ -347,9 +347,9 @@ def full_baseline_validation(certificate,checkpoint,output,seconds=180):
     if output.exists():raise FileExistsError(output)
     before=file_hash(checkpoint)
     saved=torch.load(checkpoint,map_location='cuda',weights_only=False)
-    if saved['name']!='baseline' or saved['input_mean'].any() or saved['target_mean'].any():
-        raise ValueError('Expected unmasked raw-input baseline')
-    model=make_model('baseline').cuda().eval();model.load_state_dict(saved['model'])
+    if saved['name'] not in ('baseline','content','stable'):
+        raise ValueError('Unknown sequential candidate')
+    model=make_model(saved['name']).cuda().eval();model.load_state_dict(saved['model'])
     units,release=load_units(release=certificate)
     if release!=saved['release']:raise ValueError('Release changed')
     path,sha,_=select_training_teacher();teacher,proof=load_teacher(path,sha,'cuda',required_epoch=50)
@@ -361,7 +361,9 @@ def full_baseline_validation(certificate,checkpoint,output,seconds=180):
     source=device_batches(batches(units,1,teacher,sha,args),'cuda',True)
     try:
         for x,meta,y,cursor,_,_ in source:
-            with torch.autocast('cuda',dtype=torch.bfloat16):_,pred=model(x,None)
+            with torch.autocast('cuda',dtype=torch.bfloat16):
+                _,pred=model(x-saved['input_mean'],None)
+                pred=pred.float()+saved['target_mean']
             if not torch.isfinite(pred).all():raise FloatingPointError('Nonfinite validation')
             metrics.add(pred,y,x[:,7])
             if metrics.count%51200==0:print(json.dumps(dict(origins=metrics.count,seconds=time.perf_counter()-start)),flush=True)
