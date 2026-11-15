@@ -105,18 +105,20 @@ def score(model,x,meta,y):
 def overfit(examples,seconds=180):
     x,meta,y=examples;torch.manual_seed(31);model=Forecaster().cuda()
     opt=torch.optim.AdamW(model.parameters(),lr=1e-3,weight_decay=.01,fused=True)
+    graph=CudaStep(model,len(y))
     initial=score(model,x,meta,y);mean=float((y-y.mean(0)).square().mean())
     history=[];start=time.perf_counter();steps=0
-    while steps<2500 and time.perf_counter()-start<seconds:
-        loss=update(model,opt,x,meta,y);steps+=1
-        if steps%100==0:
+    while steps<15000 and time.perf_counter()-start<seconds:
+        opt.param_groups[0]['lr']=1e-3 if steps<2000 else (3e-4 if steps<7000 else 1e-4)
+        loss=update(model,opt,x,meta,y,graph);steps+=1
+        if steps%500==0:
             value=score(model,x,meta,y);history.append(dict(step=steps,masked_loss=loss,full_mse=value))
-            if value<initial*.05 and value<mean*.5:break
+            if value<initial*.2 and value<mean*.2:break
     final=score(model,x,meta,y)
     result=dict(initial_mse=initial,final_mse=final,training_mean_mse=mean,steps=steps,
         seconds=time.perf_counter()-start,reduction_pct=100*(1-final/initial),history=history,
-        passed=final<initial*.2 and final<mean,scope='repeated small actual-shard training set, not generalization')
-    del opt,model;gc.collect();torch.cuda.empty_cache();return result
+        passed=final<initial*.2 and final<mean*.2,scope='repeated small actual-shard training set, not generalization')
+    del graph,opt,model;gc.collect();torch.cuda.empty_cache();return result
 
 
 def main(argv=None):

@@ -40,3 +40,17 @@ Use python -B -m research.bar_gpt.phase2_v2.run_train with explicit --dataset-re
 Run with PYTHONDONTWRITEBYTECODE=1. Default architecture is fixed to approved values.
 Execution batch/cache/workers/validation interval are qualified on native hardware before
 launch. Qualification artifacts belong in native runtime, never source.
+
+## Native qualification2026-11-15
+Six focused tests passed on laptop and native CPU, including real shard causal/index
+parity and exact interrupted model/AdamW/scheduler/RNG/cursor recovery. Native CUDA
+capture matched ordinary four-update model/optimizer/RNG state exactly. Batch sweep
+512/1024/2048/4096 selected1024: cached compute34863 origins/s with capture versus32995
+without (5.66percent), not whole-corpus throughput. First40 training-publication pipeline
+trials were about20k origins/s including preparation;8 prep workers gave no repeatable
+improvement over4. Keep4prep/4IO. Real128-example/four-training-block masked overfit
+reached full-coordinate MSE.004096 versus.325151 initial and.024628 mean baseline after
+6000updates; these disposable weights do NOT initialize full training. Qualification-only
+LR1e-3 then3e-4; full training retains approved3e-4 peak. GPU integration completed an
+actual small dataset pass,2945-origin decoded validation and checkpoint reload with no
+teacher gradients. No guarantee of generalization or corpus speed from these probes.
