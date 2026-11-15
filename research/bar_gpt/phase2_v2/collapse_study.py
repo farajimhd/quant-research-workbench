@@ -279,6 +279,61 @@ def sequential_pilot(dataset,certificate,output,steps=2000,*,name='stable',resum
     output.write_text(json.dumps(result,indent=2))
 
 
+@torch.no_grad()
+def audit_baseline(certificate,checkpoint,output,limit=24):
+    """Once-only, spread2026 held-out audit of the preselected raw-input baseline."""
+    import polars as pl
+    from dataclasses import replace
+    from .data import load_units,checked_unit,plan_block
+    from .tokenizer import load_teacher,SessionTokens
+    from .teacher_selection import select_training_teacher
+    from .metrics import DecodedMetrics
+    from ..v5.shards.contract import file_hash
+    if output.exists(): raise FileExistsError(output)
+    before=file_hash(checkpoint)
+    saved=torch.load(checkpoint,map_location='cuda',weights_only=False)
+    if saved['name']!='baseline' or saved['input_mean'].any() or saved['target_mean'].any():
+        raise ValueError('Expected preselected unmasked raw-input baseline')
+    model=make_model('baseline').cuda().eval();model.load_state_dict(saved['model'])
+    units,release=load_units(release=certificate)
+    if release!=saved['release']:raise ValueError('Release changed')
+    path,sha,_=select_training_teacher()
+    teacher,proof=load_teacher(path,sha,'cuda',required_epoch=50)
+    if proof!=saved['teacher']:raise ValueError('Teacher changed')
+    rows=[];offset=0
+    for root,binding,table in units.groups:
+        rows.append(table.with_row_index('i',offset).filter(pl.col('unit_split')==1).select('i','path'))
+        offset+=table.height
+    candidates=pl.concat(rows).unique('path',maintain_order=True)
+    selected=candidates.sample(n=min(candidates.height,256),shuffle=True,seed=2213)
+    xs=[];ys=[];samples=[];seen=set();decoded=DecodedMetrics('cuda')
+    for row in selected.iter_rows(named=True):
+        unit=units[int(row['i'])];key=tuple(unit.path.parts[-2:])
+        if key in seen:continue
+        reader=checked_unit(unit)
+        plan=next((p for b in unit.blocks if len((p:=plan_block(reader,b[0])).origins)>=193),None)
+        if plan is None:continue
+        indices=torch.linspace(0,len(plan.origins)-1,4).long().numpy()
+        small=replace(plan,origins=plan.origins[indices],endpoints=tuple(e[indices] for e in plan.endpoints),
+            targets=plan.targets[indices],origin_us=plan.origin_us[indices])
+        session=SessionTokens(reader,teacher,sha,device='cuda',precision='bf16',memory_mib=2048,token_batch=2048)
+        session.prepare(small);x,meta,y=session.batch(small,0,4)
+        with torch.autocast('cuda',dtype=torch.bfloat16):_,pred=model(x,None)
+        decoded.add(teacher.reconstruction_decoder,pred,y,session.reconstruction(small,0,4))
+        xs.append(x);ys.append(y);seen.add(key)
+        samples.append(dict(path=str(unit.path),receipt=reader.receipt['hash'],origins=small.origin_us.tolist()))
+        del session
+        if len(samples)==limit:break
+    if len(samples)!=limit:raise ValueError('Insufficient held-out sessions')
+    # Training mean is the same frozen training-only baseline used throughout.
+    train_mean=torch.load(checkpoint.parent/'examples.pt',map_location='cuda',weights_only=False)['train_y'].float().mean(0)
+    result=dict(checkpoint=str(checkpoint),sha256=before,release=release,teacher=proof,
+        samples=samples,origins=4*limit,scope='sampled2026 only, not full validation',
+        latent=score(model,torch.cat(xs),torch.cat(ys),train_mean),decoded=decoded.result())
+    if file_hash(checkpoint)!=before:raise ValueError('Checkpoint changed during audit')
+    output.write_text(json.dumps(result,indent=2))
+
+
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',type=Path,required=True)
