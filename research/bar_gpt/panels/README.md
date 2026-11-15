@@ -21,7 +21,11 @@ best validation MSE, baselines, patience, target-referenced decoded price errors
 and GPU/RAM/disk resources. Unknown values are dashes, never invented zeros.
 The latest checkpoint proof supplies its recorded step, not a fresh full hash audit.
 W&B is linked from the local identity; the observer never authenticates to W&B
-or claims that local status proves remote uploads. Telemetry comes from progress.
+or claims that local status proves remote uploads. Utilization/power telemetry
+comes from progress; VRAM used/total/free comes from a bounded device0
+`nvidia-smi` query every20seconds and expires after60seconds. It creates no CUDA
+context. A viewer reading a UNC path refuses local process/resource verification
+instead of displaying the laptop's hardware as the workstation's capacity.
 
 Reads: progress JSON, changed validation results, at most64KiB of metric tail,
 latest checkpoint proof, reporting identity, explicit owner ledger and manifest.
