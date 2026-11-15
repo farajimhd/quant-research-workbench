@@ -187,6 +187,61 @@ def run(dataset, output, steps=1200, arms=('original','narrow','stable','coordin
     output.write_text(json.dumps(results, indent=2))
 
 
+def sequential_pilot(dataset,certificate,output,steps=2000):
+    """Fresh stable student through real chronological publication/block/origin loader.
+
+    This bounded pilot is explicitly not a resumed/full training campaign.
+    """
+    from types import SimpleNamespace
+    from .data import load_units
+    from .tokenizer import load_teacher
+    from .teacher_selection import select_training_teacher
+    from .train import batches, rng_state
+    from .device_pipeline import device_batches
+    from ..v5.shards.contract import file_hash
+    if output.exists(): raise FileExistsError(output)
+    if file_hash(dataset)!=dataset.with_suffix('.sha256').read_text().strip():
+        raise ValueError('Frozen dataset changed')
+    data=torch.load(dataset,map_location='cuda',weights_only=False)
+    xm,ym=data['train_x'].float().mean(0),data['train_y'].float().mean(0)
+    dx,dy=data['dev_x'].float()-xm,data['dev_y'].float()-ym
+    mean=torch.zeros_like(ym)
+    units,release=load_units(release=certificate)
+    path,sha,_=select_training_teacher()
+    teacher,proof=load_teacher(path,sha,'cuda',required_epoch=50)
+    torch.manual_seed(41)
+    model=make_model('stable').cuda()
+    opt=torch.optim.AdamW(model.parameters(),lr=3e-4,weight_decay=.01,fused=True)
+    args=SimpleNamespace(device='cuda',precision='bf16',batch_size=512,cache_mib=1024,
+        token_batch=2048,prepare_workers=4,io_workers=4,prefetch_mib=8192,pack_batches=True)
+    source=device_batches(batches(units,0,teacher,sha,args),'cuda',True)
+    result=dict(release=release,teacher=proof,steps=steps,history=[],batch_size=512,
+        objective='all future coordinates',model='fresh stable width16',initial=score(model,dx,dy,mean))
+    start=time.perf_counter();origins=0
+    try:
+        for step in range(steps):
+            tokens,meta,target,cursor,_,_=next(source)
+            opt.zero_grad(set_to_none=True)
+            with torch.autocast('cuda',dtype=torch.bfloat16):
+                pred,ids=model.training_prediction(tokens.float()-xm,None)
+                loss=(pred.float()-(target.float()-ym)).square().mean()
+            loss.backward();norm=nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)
+            if not torch.isfinite(loss): raise FloatingPointError('Sequential pilot')
+            opt.step();origins+=len(target)
+            if (step+1)%500==0:
+                row=dict(step=step+1,origins=origins,loss=float(loss.detach()),cursor=cursor,
+                    dev=score(model,dx,dy,mean),elapsed=time.perf_counter()-start)
+                result['history'].append(row)
+                output.with_suffix('.progress.json').write_text(json.dumps(result,indent=2))
+                print(json.dumps(row),flush=True)
+    finally: source.close()
+    result.update(origins=origins,seconds=time.perf_counter()-start,final=score(model,dx,dy,mean))
+    torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),
+        input_mean=xm.cpu(),target_mean=ym.cpu(),cursor=cursor,step=steps,release=release,
+        teacher=proof),output.with_suffix('.pt'))
+    output.write_text(json.dumps(result,indent=2))
+
+
 if __name__ == '__main__':
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',type=Path,required=True)
@@ -197,7 +252,9 @@ if __name__ == '__main__':
         default=('original','narrow','stable','coordinate'))
     parser.add_argument('--all-targets',action='store_true',help='Explicit experimental future-loss change')
     parser.add_argument('--center',action='store_true',help='Training-only mean centering experiment')
+    parser.add_argument('--sequential-pilot',type=Path,help='Actual released loader; fresh stable model and explicit full-future loss')
     args=parser.parse_args()
     if not 1 <= args.steps <= 5000: parser.error('Bounded study requires 1..5000 updates')
     if args.extract: extract(args.extract,args.dataset)
-    run(args.dataset,args.output,args.steps,args.arms,args.all_targets,args.center)
+    if args.sequential_pilot: sequential_pilot(args.dataset,args.sequential_pilot,args.output,args.steps)
+    else: run(args.dataset,args.output,args.steps,args.arms,args.all_targets,args.center)
