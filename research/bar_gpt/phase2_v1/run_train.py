@@ -25,6 +25,7 @@ from .train import train, lease, autocast, optimizer_for
 from .metrics import CONTRACT as RECONSTRUCTION_CONTRACT, DecodedMetrics
 from .teacher_selection import select_training_teacher
 from .reporting import PROJECT, online_reporter, require_online_credentials
+from .schedule import schedule_manifest
 
 
 def arguments(argv=None):
@@ -56,14 +57,16 @@ def arguments(argv=None):
     p.add_argument('--max-blocks', type=int, default=4, help='Audit/profile only; never limits training')
     p.add_argument('--profile-origins', type=int, default=16)
     p.add_argument('--profile-steps', type=int, default=3)
-    p.add_argument('--epochs', type=int, default=10)
+    p.add_argument('--epochs', type=int, default=10,help='Number of validation-aligned logical epochs')
     p.add_argument('--learning-rate', type=float, default=3e-4)
     p.add_argument('--min-learning-rate', type=float, default=5e-5)
-    p.add_argument('--warmup-updates', type=int, default=1000)
+    p.add_argument('--warmup-updates', type=int, default=2000)
+    p.add_argument('--lr-restart-decay',type=float,default=.9,
+                   help='Multiply each new logical epoch peak/floor by this factor')
     p.add_argument('--patience', type=int, default=8)
     p.add_argument('--checkpoint-every', type=int, default=1000)
-    p.add_argument('--validation-every', type=int, default=0,
-                   help='Full diagnostic validation every N optimizer updates; 0=end-of-epoch only')
+    p.add_argument('--validation-every', type=int, default=150000,
+                   help='Optimizer updates per logical epoch/cosine cycle/full validation;0=legacy full-pass epochs')
     p.add_argument('--log-every', type=int, default=10)
     p.add_argument('--seed', type=int, default=20261114)
     p.add_argument('--resume', type=Path)
@@ -78,6 +81,9 @@ def arguments(argv=None):
             or a.warmup_updates < 0 or a.validation_every < 0):
         p.error('Resource limits and schedule must be finite positive values')
     if not np.isfinite([a.learning_rate,a.min_learning_rate]).all():p.error('Nonfinite schedule')
+    if not np.isfinite(a.lr_restart_decay) or not 0<a.lr_restart_decay<=1:p.error('Restart decay must be in (0,1]')
+    if a.validation_every and a.warmup_updates>=a.validation_every:
+        p.error('One-time warmup must be shorter than the validation-aligned cycle')
     if not np.isfinite(a.feature_drop_rate) or not 0<=a.feature_drop_rate<1:
         p.error('Feature drop rate must be finite in [0,1)')
     if not 0<=a.io_workers<=8 or a.prefetch_mib<1:p.error('Invalid bounded CPU I/O pool')
@@ -181,7 +187,8 @@ def main(argv=None):
     contract=dict(design=config.manifest(),dataset=dataset,teacher=proof,implementation=implementation,
                   validation=dict(reconstruction=RECONSTRUCTION_CONTRACT,
                                   every_updates=a.validation_every,epoch_end=True,
-                                  interval_guard='diagnostic only; epoch-end latent MSE controls patience'),
+                                  interval_guard='one full validation per logical epoch; latent MSE controls patience'),
+                  schedule=schedule_manifest(a),
                   tokenizer=dict(tile_batch=a.token_batch,precision=a.precision,
                                  algorithm='fixed-pool-endpoint-tiles-v1'),
                   numerics=dict(torch=str(torch.__version__),cuda=torch.version.cuda,

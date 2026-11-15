@@ -120,15 +120,15 @@ def test_interval_validation_resume_exact_and_no_extra_guard_counts(tmp_path):
         random.seed(8);np.random.seed(8);torch.manual_seed(8)
         return Forecaster(Config(layers=1,feedforward=64)),Teacher()
     def args(root,resume=None):
-        a=options(root,resume);a.epochs=1;a.validation_every=2;return a
+        a=options(root,resume);a.epochs=1;a.validation_every=2;a.warmup_updates=0;return a
     full=tmp_path/'full';full.mkdir();m,t=fresh()
     assert train(m,t,'pinned',units,contract,args(full),Reporter())=='complete'
     expected=load_checkpoint(full/'checkpoint_last.pt',contract)
-    assert len(expected['interval_history'])==2 and len(expected['history'])==1
+    assert expected['interval_history']==[] and len(expected['history'])==1 and expected['step']==2
     resumed=tmp_path/'resume';resumed.mkdir();m,t=fresh()
     assert train(m,t,'pinned',units,contract,args(resumed),StopValidation(resumed))=='stopped'
     partial=load_checkpoint(resumed/'checkpoint_last.pt',contract)
-    assert partial['phase']=='interval_validation' and partial['step']==2
+    assert partial['phase']=='validation' and partial['step']==2
     (resumed/'STOP').unlink()  # exact fixture-owned STOP only
     m,t=fresh()
     assert train(m,t,'pinned',units,contract,args(resumed,resumed/'checkpoint_last.pt'),Reporter())=='complete'
@@ -143,8 +143,8 @@ def test_interval_validation_resume_exact_and_no_extra_guard_counts(tmp_path):
 
 def test_validation_interval_cli_defaults_and_rejection(tmp_path):
     base=['--dataset-root','unused','--output',str(tmp_path/'out')]
-    assert arguments(base).validation_every==0
-    assert arguments(base+['--validation-every','1000']).validation_every==1000
+    assert arguments(base).validation_every==150000
+    assert arguments(base+['--validation-every','1000','--warmup-updates','0']).validation_every==1000
     with pytest.raises(SystemExit):arguments(base+['--validation-every','-1'])
 
 
@@ -174,7 +174,7 @@ def test_real_profile_launcher_includes_decoded_metrics_and_keeps_shards(tmp_pat
             '--cache-mib','128','--device','cpu'])
     assert r['passed'] and r['blocks'][0]['reconstruction']['decoded_origins']==2
     assert r['blocks'][0]['reconstruction']['decoded_raw_counts/1s/trade_close']==128
-    assert r['contract']['validation']['every_updates']==0
+    assert r['contract']['validation']['every_updates']==150000
     assert r['contract']['validation']['reconstruction']['version']=='phase2-v1-target-conditioned-decoded-v1'
     assert before=={str(p):file_hash(p) for p in root.rglob('*') if p.is_file()}
 

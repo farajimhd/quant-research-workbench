@@ -184,8 +184,8 @@ full-corpus throughput measurement. CPU is the safe default; CUDA is explicit.
 
 Full training additionally requires `--mode train --execute`, a pinned V4
 checkpoint/SHA, and a new runtime output. Audit/profile bounds never truncate
-training or validation. Initial schedule defaults are **10 epochs**, batch256,
-AdamW3e-4, weight decay.01, epoch-cosine floor5e-5,1000-update warmup, norm clip1,
+training or validation. Initial schedule defaults are **10 logical epochs**, batch256,
+AdamW3e-4, weight decay.01, initial cosine floor5e-5,2000-update one-time warmup, norm clip1,
 and patience8 validation non-improvements. These are phase-two defaults awaiting
 the launch decision, not inherited optimizer state or changes to phase one.
 Defaults: FP32, one CPU thread,256-window tokenizer chunks,512MiB session cache;
@@ -241,16 +241,37 @@ W&B/local metric keys (existing latent metrics remain unchanged):
   bounded histogram quantiles apply (approximate median/P90; bin resolution is
   recorded). Empty/overflow-affected aggregates are `null`, not zero.
 
-`--validation-every N` enables **full** validation every N optimizer updates;
-default `0` retains epoch-end-only validation until throughput is profiled. All
-metrics use the current optimizer step and existing run identity; no backfill or
-fabricated earlier values. Epoch-end validation always remains enabled. Periodic
-validations are diagnostics and do not advance the epoch/scheduler or patience;
-epoch-end latent MSE still controls checkpoint-best and the learning guard.
-Validation restores Python/NumPy/Torch/CUDA RNG and the prior model train/eval
-mode. Cursor, pending interval-validation phase, last completed validation step
-and interval history are checkpointed for deterministic boundary recovery.
-`interval-results.json` retains periodic results separately from epoch history.
+`--validation-every N` is the single authority for **both** logical epoch length
+and full-validation/cosine restart frequency; default **150,000 optimizer updates**.
+Each logical epoch ends with exactly one full validation. `--epochs 10` therefore
+means at most1,500,000 updates, not ten passes over the4TB dataset. Data continues
+from its exact consumed cursor across logical epochs. It wraps to data start only
+after a full data pass is exhausted; a data wrap does not restart LR or trigger an
+extra validation. Progress/history expose `data_pass` separately from logical epoch.
+
+During a cycle the LR follows an update-based cosine. With initial peak3e-4,
+floor5e-5, and `--lr-restart-decay .9`, zero-based cycle c has peak
+`3e-4 * .9**c` and floor `5e-5 * .9**c`. Thus the nominal start/peak values are
+3e-4,2.7e-4,2.43e-4,... . Scale the floor too, so the cosine shape remains valid
+when restart peaks eventually fall below the original floor. The initial2000
+updates linearly warm from the initial floor to the initial peak; this startup
+warmup does not change the nominal peak used for the .9 restart rule, and is never
+repeated at later epochs or on resume. Warmup must be shorter than the cycle.
+Validation never advances the LR update clock. The next cycle starts only after
+its boundary validation completes. Eight logical-epoch non-improvements in latent
+MSE still control the existing patience guard; model/optimizer/moments/RNG are
+preserved across LR restarts.
+
+All metrics use the current optimizer step and existing run identity; there is
+no backfill. Validation restores Python/NumPy/Torch/CUDA RNG and prior train/eval
+mode. Checkpoints preserve consumed cursor, pending validation, last completed
+validation step, data-pass count, scheduler counter and history. A crash after
+the final optimizer update but before the validation-phase checkpoint resumes
+validation before taking another update. `results.json` records every logical
+epoch's validation, nominal peak/floor and last update LR. No duplicate periodic
+validation or separate interval-results file is generated. Explicit
+`--validation-every 0` retains the old full-pass/epoch-cosine mode for comparison;
+it is not the new validation-aligned configuration.
 
 The validation policy and shared inverse/decoder/price-metric source hashes are
 bound into the run contract. This implementation does not silently upgrade an
@@ -273,8 +294,10 @@ actual live Python encoder/phase-two training processes (PID+creation), checks G
 headroom, and requires the completed selected epoch50 teacher. No earlier teacher
 is substituted. Disposable model/optimizer updates do not create a training run.
 These cache-only compute timings cannot establish epoch duration or full validation
-cost. Final batch/precision/cache/loader choices and the nonzero validation interval
-remain pending final end-to-end qualification after V4 releases the GPU.
+cost. Native profile evidence and proposed runtime settings are retained under
+`D:/TradingML/runtimes/bar_gpt/phase2-extra-opt-final-20261114`. The interval now
+defaults to150,000updates; hardware timing remains an estimate, not a wall-clock
+scheduler. Implementing this schedule does not launch a training run.
 
 ### Compact index, prefetch and packed optimizer batches
 
