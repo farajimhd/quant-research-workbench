@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import psutil
 
 from rich.console import Console,Group
+from rich import box
 from rich.live import Live
 from rich.measure import Measurement
 from rich.table import Table
@@ -206,8 +207,10 @@ def render(s,width=110,height=32):
     memory=p.get('gpu_memory_mib');memory=memory/1024 if isinstance(memory,(float,int)) else None
     cp=(f'{lag:,} updates behind' if lag>=0 else 'heartbeat catching up') if proof else 'proof unavailable'
     def table(headers):
-        t=Table(box=None,expand=True,padding=(0,1),collapse_padding=True,header_style='bold dim')
-        for title in headers:t.add_column(title,overflow='ellipsis',no_wrap=True)
+        t=Table(box=None if short else box.SIMPLE_HEAD,expand=False,padding=(0,1),
+                collapse_padding=True,header_style='bold dim',show_edge=False)
+        for i,title in enumerate(headers):
+            t.add_column(title,overflow='ellipsis',no_wrap=True,max_width=26 if i or title.startswith('Decoded') else 20)
         return t
     if short:
         t=table(['Metric','Latest'])
@@ -234,10 +237,10 @@ def render(s,width=110,height=32):
     resources.add_row('GPU memory',number(memory,1)+' GiB','Free RAM',number(res.get('ram'),1)+' GiB')
     resources.add_row('Free disk',number(res.get('disk'),1)+' GiB','Checkpoint',number(proof.get('step')))
     rows.append(resources)
-    line(f"{s['owner']} · {cp} · reserves RAM64 / disk150 GiB",'dim')
+    line(f"{s['owner']} · {cp}"+(' · Ctrl+C closes viewer' if compact else ' · reserves RAM64 / disk150 GiB'),'dim')
     if not compact:
         c=s['config'];line(f"Batch {c.get('batch','—')} {c.get('precision','—')} · prepare {c.get('prepare_workers','—')} / I/O {c.get('io_workers','—')} · W&B linked (remote uploads not polled)",'dim')
-    line('Read-only · Ctrl+C closes this panel only · pass bars count frozen block traversal','dim')
+    if not compact:line('Read-only · Ctrl+C closes this panel only · pass bars count frozen block traversal','dim')
     return Group(*rows)
 
 
@@ -285,6 +288,7 @@ def main(argv=None):
             target=artifact_path(args.capture)
             console.save_text(str(target.with_suffix('.txt')),clear=False)
             console.save_svg(str(target.with_suffix('.svg')),title='BarGPT Phase 2 Training',clear=False)
+            console.export_text(clear=True);console.record=False
     if args.json:print(json.dumps(s));return 0
     if args.once or not console.is_terminal:
         console.print(render(s,console.width,console.height));capture();heartbeat(s)
