@@ -78,6 +78,11 @@ Initial trainable model: 512-wide, six pre-norm Transformer layers, eight heads,
 2048-wide feedforwards, a learned summary token, final LayerNorm, and a small
 512->256->512 MLP prediction head. Joint attention covers within- and cross-frame
 tokens. Q/K/V and feedforwards mix latent dimensions; dimensions are not candles.
+The default `--attention-layout batch-first-sdpa` reuses the shared direct SDPA
+block, retaining the same parameters/equations while avoiding MultiheadAttention
+sequence-first transpose/copy overhead. `--attention-layout torch` retains the
+original implementation for qualification. Backend changes are contract-bound;
+floating-point training trajectories are not claimed bit-identical across kernels.
 
 During training drop **20% of the512 latent feature coordinates**, not whole
 historical tokens. Each batch draws a fresh uniform random subset of102 or103
@@ -298,6 +303,22 @@ recomputed on resume, never treated as trained. Target-only validation evidence
 is packed with exactly the same examples. `--no-pack-batches` provides the old
 per-block minibatch boundary for runtime comparisons. Packing/prefetch settings
 are recorded in the run contract and cannot silently change on resume.
+
+`--gpu-prefetch` enables one bounded preparation worker on a separate CUDA stream.
+It prepares only frozen teacher embeddings and metadata; random coordinate masks,
+gradients, nonfinite checks, clipping and updates stay on the training thread.
+CUDA events and allocator stream records protect every returned tensor, including
+target-only validation evidence. The next-batch queue is bounded to one future.
+Worker exceptions propagate, including failures discovered during early close;
+STOP/interrupt joins the worker and discards only untrained read-ahead. The exact
+consumed cursor remains authoritative for resume. CPU operation rejects the flag.
+
+`--optimizer-backend fused` selects native CUDA fused AdamW with unchanged
+learning rate/betas/epsilon/weight decay; `auto` retains PyTorch's default. It is
+recorded in the run contract. The nonfinite-gradient check still occurs before
+every update. No CUDA graphs or custom clock-cache approximation are enabled.
+These candidates require measured end-to-end improvement and fixed-input/state
+qualification; kernel reordering may introduce normal Float32/BF16 roundoff.
 
 Write a `STOP` in the run output to drain at an update boundary and checkpoint.
 No launcher clears STOP. An intentional patience stop also writes STOP. A hard

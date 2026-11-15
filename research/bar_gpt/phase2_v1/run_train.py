@@ -21,7 +21,7 @@ from .config import Config
 from .data import load_units, checked_unit, plan_block
 from .model import Forecaster, future_loss
 from .tokenizer import load_teacher, SessionTokens
-from .train import train, lease, autocast
+from .train import train, lease, autocast, optimizer_for
 from .metrics import CONTRACT as RECONSTRUCTION_CONTRACT, DecodedMetrics
 from .teacher_selection import select_training_teacher
 from .reporting import PROJECT, online_reporter, require_online_credentials
@@ -48,6 +48,9 @@ def arguments(argv=None):
     p.add_argument('--threads', type=int, default=1)
     p.add_argument('--io-workers',type=int,default=4)
     p.add_argument('--prefetch-mib',type=int,default=2048)
+    p.add_argument('--gpu-prefetch',action='store_true',help='Overlap frozen preparation on one bounded CUDA stream')
+    p.add_argument('--optimizer-backend',choices=('auto','fused'),default='auto')
+    p.add_argument('--attention-layout',choices=('torch','batch-first-sdpa'),default='batch-first-sdpa')
     p.add_argument('--no-pack-batches',dest='pack_batches',action='store_false',
                    help='Profile baseline only: end every minibatch at a block boundary')
     p.add_argument('--max-blocks', type=int, default=4, help='Audit/profile only; never limits training')
@@ -78,6 +81,8 @@ def arguments(argv=None):
     if not np.isfinite(a.feature_drop_rate) or not 0<=a.feature_drop_rate<1:
         p.error('Feature drop rate must be finite in [0,1)')
     if not 0<=a.io_workers<=8 or a.prefetch_mib<1:p.error('Invalid bounded CPU I/O pool')
+    if a.device!='cuda' and (a.gpu_prefetch or a.optimizer_backend=='fused'):
+        p.error('GPU prefetch/fused optimizer require CUDA')
     if a.mode == 'train' and not a.execute:p.error('Training requires --execute')
     if a.mode == 'train' and a.wandb_mode != 'online':p.error('Phase-two training requires online W&B')
     if a.mode == 'profile' and (not a.teacher_checkpoint or not a.teacher_sha256):
@@ -93,8 +98,8 @@ def arguments(argv=None):
 
 def bounded_check(units, teacher, proof, args):
     reports, measured, seen = [], [], 0
-    model = Forecaster(Config(mask_rate=args.feature_drop_rate)).to(args.device) if args.mode == 'profile' else None
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate) if model else None
+    model = Forecaster(Config(mask_rate=args.feature_drop_rate,attention_layout=args.attention_layout)).to(args.device) if args.mode == 'profile' else None
+    optimizer = optimizer_for(model,args) if model else None
     for unit in units:
         reader, session = checked_unit(unit), None
         for ordinal,s,liquid,selection in unit.blocks:
@@ -165,7 +170,7 @@ def main(argv=None):
                                   required_epoch=50 if a.mode=='train' else None)
         if selection is not None:proof['selection']=selection
     units,dataset=load_units(a.dataset_root or (),a.dataset_release)
-    config=Config(mask_rate=a.feature_drop_rate)
+    config=Config(mask_rate=a.feature_drop_rate,attention_layout=a.attention_layout)
     sources=list(Path(__file__).parent.glob('*.py'))
     shared=Path(__file__).resolve().parents[1]/'v5'
     sources += [shared/name for name in ('encoder_v3.py','pretraining_v3.py','transforms_v1.py',
@@ -186,6 +191,7 @@ def main(argv=None):
                                 device_name=torch.cuda.get_device_name() if a.device=='cuda' else 'cpu'),
                   optimization=dict(batch=a.batch_size,precision=a.precision,device=a.device,
                       batch_packing=a.pack_batches,io_workers=a.io_workers,prefetch_mib=a.prefetch_mib,
+                      gpu_prefetch=a.gpu_prefetch,optimizer_backend=a.optimizer_backend,
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,
                       patience=a.patience,order='root/session/block/eligible-origin chronological',

@@ -3,6 +3,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from .config import Config, FRAME_IDS, METADATA, POSITIONS
+from ..v5.encoder_v3 import AttentionBlock
 
 
 class LatentEncoder(nn.Module):
@@ -18,9 +19,10 @@ class LatentEncoder(nn.Module):
         self.register_buffer('frames', torch.tensor(FRAME_IDS), persistent=False)
         self.register_buffer('positions', torch.tensor(POSITIONS), persistent=False)
         self.layers = nn.ModuleList([
-            nn.TransformerEncoderLayer(512, config.heads, config.feedforward,
-                                       config.dropout, activation='gelu',
-                                       batch_first=True, norm_first=True)
+            AttentionBlock(512,config.heads,config.feedforward,config.dropout,'sdpa',config.dropout)
+            if config.attention_layout=='batch-first-sdpa' else
+            nn.TransformerEncoderLayer(512,config.heads,config.feedforward,config.dropout,
+                                       activation='gelu',batch_first=True,norm_first=True)
             for _ in range(config.layers)])
         self.norm = nn.LayerNorm(512)
 

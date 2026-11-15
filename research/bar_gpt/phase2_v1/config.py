@@ -19,12 +19,14 @@ class Config:
     predictor_width: int = 256
     mask_rate: float = .2
     dropout: float = 0.
+    attention_layout: str = 'batch-first-sdpa'
 
     def __post_init__(self):
         if (self.width != 512 or self.layers < 1 or self.heads < 1
                 or self.width % self.heads or self.feedforward < 1
                 or self.predictor_width < 1 or not 0 <= self.mask_rate < 1
-                or not 0 <= self.dropout < 1):
+                or not 0 <= self.dropout < 1
+                or self.attention_layout not in ('torch','batch-first-sdpa')):
             raise ValueError('Invalid latent-v1 architecture')
 
     def manifest(self):

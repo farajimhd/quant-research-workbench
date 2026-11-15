@@ -17,6 +17,7 @@ from .data import checked_unit, plan_block, unit_readers
 from .model import Forecaster, future_loss
 from .tokenizer import SessionTokens
 from .metrics import DecodedMetrics
+from .device_pipeline import device_batches
 
 
 @contextmanager
@@ -208,9 +209,10 @@ def evaluate(model, units, teacher, teacher_sha, args, mean, reporter, step):
         raise ValueError('Validation requires the frozen same-checkpoint decoder')
     was_training = model.training
     model.eval()
+    source=device_batches(batches(units,1,teacher,teacher_sha,args,reconstruction=True),
+                           args.device,getattr(args,'gpu_prefetch',False))
     try:
-        for tokens, metadata, target, _, _, _, evidence in batches(
-                units, 1, teacher, teacher_sha, args, reconstruction=True):
+        for tokens, metadata, target, _, _, _, evidence in source:
             if (args.output / 'STOP').exists():return None
             with autocast(args):_, predicted = model(tokens, metadata)
             if not torch.isfinite(predicted).all():raise FloatingPointError('Nonfinite validation prediction')
@@ -219,8 +221,10 @@ def evaluate(model, units, teacher, teacher_sha, args, mean, reporter, step):
             reporter.update(stage='validation', done=metrics.count, step=step)
         return dict(metrics.result(mean), **decoded.result())
     finally:
-        restore_rng(state)
-        model.train(was_training)
+        try:source.close()
+        finally:
+            restore_rng(state)
+            model.train(was_training)
 
 
 def autocast(args):
@@ -228,8 +232,17 @@ def autocast(args):
         str(args.device).startswith('cuda') and args.precision == 'bf16') else nullcontext()
 
 
+def optimizer_for(model,args):
+    backend=getattr(args,'optimizer_backend','auto')
+    if backend not in ('auto','fused'):raise ValueError('Unknown optimizer backend')
+    if backend=='fused' and not str(args.device).startswith('cuda'):
+        raise ValueError('Fused phase-two optimizer requires CUDA')
+    return torch.optim.AdamW(model.parameters(),lr=args.learning_rate,weight_decay=.01,
+                            **({'fused':True} if backend=='fused' else {}))
+
+
 def train(model, teacher, teacher_sha, units, contract, args, reporter):
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, weight_decay=.01)
+    optimizer = optimizer_for(model,args)
     scheduler = EpochCosine(args.learning_rate, args.min_learning_rate, args.epochs, args.warmup_updates)
     epoch = step = stale = 0
     cursor, phase, best, history = (0, 0, 0), 'train', math.inf, []
@@ -270,6 +283,7 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
 
     reported_time,reported_count = time.perf_counter(),metrics.count
     if not args.resume:checkpoint('checkpoint_last.pt')
+    source=None
     try:
         while epoch < args.epochs:
             scheduler.epoch = epoch
@@ -279,8 +293,9 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
                 def report(value):
                     with (args.output / 'eligibility.jsonl').open('a') as out:
                         out.write(json.dumps(dict(epoch=epoch+1, **value))+'\n')
-                for tokens, meta, target, next_cursor, origins, liquid in batches(
-                        units, 0, teacher, teacher_sha, args, cursor=cursor, report=report):
+                source=device_batches(batches(units,0,teacher,teacher_sha,args,cursor=cursor,report=report),
+                                       args.device,getattr(args,'gpu_prefetch',False))
+                for tokens, meta, target, next_cursor, origins, liquid in source:
                     if (args.output / 'STOP').exists():
                         checkpoint('checkpoint_last.pt');return 'stopped'
                     optimizer.param_groups[0]['lr'] = scheduler.value()
@@ -305,6 +320,7 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
                         phase='interval_validation';checkpoint('checkpoint_last.pt')
                         if not interval_validation():return 'stopped'
                 if not metrics.count:raise ValueError('Training selection has no eligible origins')
+                source.close();source=None
                 phase = 'validation'
                 checkpoint('checkpoint_last.pt')  # durable before a potentially long validation
             mean = metrics.moments[2]/metrics.count
@@ -332,3 +348,5 @@ def train(model, teacher, teacher_sha, units, contract, args, reporter):
         # An interrupt may arrive during an optimizer operation; preserve the last
         # already committed full-state checkpoint instead of publishing torn state.
         return 'interrupted_preserved_last_checkpoint'
+    finally:
+        if source is not None:source.close()
