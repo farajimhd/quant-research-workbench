@@ -42,7 +42,10 @@ def render(p,width=120,height=35):
         bar('Validation',p.get('validation_done',0),p.get('validation_total'),
             f'{number(p.get("validation_done"))}/{number(p.get("validation_total"))}')
     rows.append(bars)
-    rows.append(Text(f'Step {p.get("step",0):,} · {number(p.get("samples_per_second"))} windows/s · 16 bars + 1 reference token',style='dim'))
+    rate=(f'recent {number(p["recent_samples_per_second"])}/s · ' if p.get('recent_samples_per_second') is not None else '')
+    scope='profile' if p.get('mode')=='profile' else 'epoch avg'
+    rows.append(Text(f'Step {p.get("step",0):,} · {rate}{scope} {number(p.get("samples_per_second"))} windows/s',
+                     style='dim',no_wrap=True,overflow='ellipsis'))
     train=p.get('train',{});val=p.get('validation',{});families=val.get('masked_families',[None]*3)
     metrics=Table('Objective','Profile' if p.get('mode')=='profile' else 'Train','Masked val',box=box.SIMPLE_HEAD if height<34 else box.HORIZONTALS,
                   show_lines=height>=34,padding=(0,1),expand=False)

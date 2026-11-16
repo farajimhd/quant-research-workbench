@@ -1,6 +1,7 @@
 """Bounded loader, CUDA transfer, masked evaluation and full-state checkpoints."""
 from dataclasses import fields,replace
 from contextlib import nullcontext
+from collections import deque
 from pathlib import Path
 import json,time,math
 import numpy as np
@@ -14,6 +15,13 @@ from ..v5.price_relative_v3 import PriceRelative
 from ..phase2_v2.train import rng_state,restore_rng,save_checkpoint,load_checkpoint
 
 FRAME_NAMES=('100ms','1s','10s','1m','1h','daily')
+
+
+def report(reporter,metrics,step):
+    if reporter is not None:
+        # finish()/resume may have committed the last training step already.
+        # Retain its actual optimizer step without writing to a closed SDK row.
+        reporter.log(dict(metrics,optimizer_step=step),step=max(step,reporter.step))
 
 
 def loader(manifest,stats,config,args,split,epoch=0,full=False,native=False):
@@ -139,6 +147,9 @@ def train(model,manifest,stats,contract,args,status):
         if identity is None:write_json(identity_path,dict(id=reporter.id,name=reporter.name,url=reporter.url))
     try:
         if not args.resume:checkpoint('checkpoint_last.pt')
+        if args.resume:
+            status(state='running',stage=phase,epoch=epoch+1,step=step,
+                   epoch_done=epoch_origins,origins=origins)
         replay=None
         while epoch<args.epochs:
             if phase=='train':
@@ -156,7 +167,8 @@ def train(model,manifest,stats,contract,args,status):
                     # Deterministic replay preserves the worker lane ordering and augmentation seeds.
                     import itertools
                     device=DeviceBatches(itertools.islice(source,cursor,None),args.device)
-                    started=time.perf_counter();seen=0
+                    started=time.perf_counter();seen=0;initial_wait=device.wait_seconds
+                    recent=deque([(started,0)])
                     while True:
                         if (args.output/'STOP').exists():checkpoint('checkpoint_last.pt');return 'stopped'
                         try:b=device.pop()
@@ -177,19 +189,27 @@ def train(model,manifest,stats,contract,args,status):
                         if not (torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('V5 nonfinite loss/gradient')
                         optimizer.step();step+=1;cursor+=1;origins+=len(b.target);seen+=len(b.target);epoch_origins+=len(b.target)
                         if step%args.log_every==0:
+                            now=time.perf_counter();recent.append((now,seen))
+                            while len(recent)>2 and now-recent[1][0]>=60:recent.popleft()
+                            recent_rate=(seen-recent[0][1])/max(.001,now-recent[0][0])
                             metrics=dict(loss=float(value.detach()),price_loss=float(terms[0].detach()),activity_loss=float(terms[1].detach()),reference_loss=float(terms[2].detach()),
-                                gradient_norm=float(norm),learning_rate=lr)
+                                gradient_norm=float(norm),learning_rate=lr,
+                                recent_samples_per_second=recent_rate,
+                                loader_wait_seconds=device.wait_seconds-initial_wait)
                             with (args.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,**metrics))+'\n')
                             status(state='running',stage='training',step=step,epoch=epoch+1,epoch_done=epoch_origins,origins=origins,
                                 samples_per_second=seen/max(.001,time.perf_counter()-started),
-                                loader_wait_seconds=device.wait_seconds,train=metrics)
-                            if reporter:reporter.log(metrics,step=step)
+                                recent_samples_per_second=recent_rate,
+                                loader_wait_seconds=device.wait_seconds-initial_wait,train=metrics)
+                            report(reporter,metrics,step)
                         if step%getattr(args,'checkpoint_every',1000)==0:checkpoint('checkpoint_last.pt')
                         if args.train_steps and cursor>=args.train_steps:break
                     phase='validation';checkpoint('checkpoint_last.pt')
                 finally:
                     if device:device.close()
                     close_loader(source)
+            status(state='validating',stage='validation',epoch=epoch+1,step=step,
+                   epoch_done=epoch_origins,origins=origins,validation_done=0)
             source=loader(manifest,stats,model.config,args,'validation',epoch,full=True,native=True)
             try:validation=evaluate(model,source,args,stats,status,step,limit=args.validation_steps)
             finally:close_loader(source)
@@ -198,7 +218,7 @@ def train(model,manifest,stats,contract,args,status):
             history.append(dict(epoch=epoch+1,step=step,validation=validation,
                                 complete_training_pass=not bool(args.train_steps)))
             write_json(args.output/'results.json',history)
-            if reporter:reporter.log({'validation/'+k:v for k,v in validation.items() if isinstance(v,(float,int))},step=step)
+            report(reporter,{'validation/'+k:v for k,v in validation.items() if isinstance(v,(float,int))},step)
             epoch+=1;cursor=0;epoch_origins=0;phase='train';checkpoint('checkpoint_last.pt')
             if improved:checkpoint('checkpoint_best.pt')
             status(epoch=epoch,validation=validation,validation_done=validation['origins'])

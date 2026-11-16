@@ -126,6 +126,12 @@ precedes every optimizer update. `--prepare-threads 1|2` independently controls
 threads inside each CPU preparation worker, is recorded in the resume contract,
 and does not change worker lanes or augmentation seeds. Qualify it on the native
 loader before choosing it; more CPU threads are not assumed faster.
+Telemetry distinguishes a trailing roughly60-second training rate from the
+cumulative epoch average. Loader wait excludes the initial worker-startup wait;
+resume during validation reports the restored epoch and step immediately.
+W&B logs retain `optimizer_step`. If resume has already committed that SDK row,
+validation uses the next open reporting row; optimizer/scheduler state is not
+advanced to make room for telemetry.
 
 Profile compute-only repeated real batches separately from actual-loader wall
 time. Compare fresh V4/V5 models with matched512/6layer/zero-dropout dimensions,

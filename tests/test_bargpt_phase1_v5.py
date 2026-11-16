@@ -75,6 +75,16 @@ def test_two_prepare_threads_preserve_batches_and_rng():
     finally:torch.set_num_threads(old)
 
 
+def test_resumed_validation_keeps_optimizer_step_on_next_open_reporting_row():
+    from research.bar_gpt.phase1_v5.engine import report
+    calls=[]
+    reporter=SimpleNamespace(step=101,log=lambda metrics,**kwargs:calls.append((metrics,kwargs)))
+    report(reporter,{'validation/masked_objective':.2},100)
+    assert calls==[({'validation/masked_objective':.2,'optimizer_step':100},{'step':101})]
+    report(reporter,{'loss':.1},110)
+    assert calls[-1]==({'loss':.1,'optimizer_step':110},{'step':110})
+
+
 def test_training_only_calibration_and_sparse_evidence():
     with pytest.raises(ValueError,match='training-only'):
         fit_stats([(*raw(),{'split':'validation'})],'x')
