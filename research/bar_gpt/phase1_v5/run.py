@@ -42,6 +42,8 @@ def arguments(argv=None):
     p.add_argument('--shard-prefetch',type=int,default=16)
     p.add_argument('--shard-prefetch-mib',type=int,default=64)
     p.add_argument('--threads',type=int,default=1)
+    p.add_argument('--prepare-threads',type=int,choices=(1,2),default=1,
+                   help='CPU threads per loader worker; worker count and sample ordering are unchanged')
     p.add_argument('--seed',type=int,default=17)
     p.add_argument('--steps',type=int,default=24)
     p.add_argument('--warmup',type=int,default=4)
@@ -141,6 +143,7 @@ def main(argv=None):
                 validation_steps=a.validation_steps,cuda_graph=a.cuda_graph,source_revision=a.source_revision,
                 checkpoint_every=a.checkpoint_every,torch_version=str(torch.__version__),cuda=torch.version.cuda,
                 deterministic=a.deterministic,cublas_workspace=os.environ.get('CUBLAS_WORKSPACE_CONFIG'))
+            contract['prepare_threads']=a.prepare_threads
             status(epoch_total=manifest['counts']['train'],validation_total=manifest['counts']['validation'],
                 encoder_width=config.width,embedding_width=config.embedding_width,
                 gpu_total_mib=torch.cuda.get_device_properties(0).total_memory/2**20 if a.device=='cuda' else None)

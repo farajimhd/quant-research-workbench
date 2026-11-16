@@ -120,6 +120,12 @@ host allocation may synchronize the device and must not run during capture.
 One captured training step is retained across validation and epoch boundaries.
 It rebinds graph-owned gradients after any eager partial batch; a new epoch must
 not recapture backward while the preceding graph's gradient buffers still exist.
+Next-batch loading and asynchronous transfer are requested before the current
+GPU finite check, so they can overlap current computation. The finite check still
+precedes every optimizer update. `--prepare-threads 1|2` independently controls
+threads inside each CPU preparation worker, is recorded in the resume contract,
+and does not change worker lanes or augmentation seeds. Qualify it on the native
+loader before choosing it; more CPU threads are not assumed faster.
 
 Profile compute-only repeated real batches separately from actual-loader wall
 time. Compare fresh V4/V5 models with matched512/6layer/zero-dropout dimensions,

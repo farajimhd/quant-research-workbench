@@ -21,6 +21,7 @@ def loader(manifest,stats,config,args,split,epoch=0,full=False,native=False):
     stream=Stream(manifest,split,stats,args.batch_size,seed=args.seed,epoch=epoch,
         config=config,full=full,native=native,telemetry=str(args.output/'workers'/split))
     stream.shard_prefetch=args.shard_prefetch;stream.shard_prefetch_bytes=args.shard_prefetch_mib*2**20
+    stream.prepare_threads=getattr(args,'prepare_threads',1)
     return make_loader(stream,args.workers,args.prefetch,ordered=True)
 
 
@@ -169,15 +170,19 @@ def train(model,manifest,stats,contract,args,status):
                             optimizer.zero_grad(set_to_none=True)
                             with autocast(args):_,p,r=model.from_batch(b);value,terms=loss(p,r,b,stats_device)
                             value.backward();norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)
+                        # Request/transfer the next independent batch while the
+                        # current GPU step is still running. The finite check
+                        # still completes BEFORE applying this optimizer update.
+                        device.advance()
                         if not (torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('V5 nonfinite loss/gradient')
                         optimizer.step();step+=1;cursor+=1;origins+=len(b.target);seen+=len(b.target);epoch_origins+=len(b.target)
-                        device.advance()
                         if step%args.log_every==0:
                             metrics=dict(loss=float(value.detach()),price_loss=float(terms[0].detach()),activity_loss=float(terms[1].detach()),reference_loss=float(terms[2].detach()),
                                 gradient_norm=float(norm),learning_rate=lr)
                             with (args.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,**metrics))+'\n')
                             status(state='running',stage='training',step=step,epoch=epoch+1,epoch_done=epoch_origins,origins=origins,
-                                samples_per_second=seen/max(.001,time.perf_counter()-started),train=metrics)
+                                samples_per_second=seen/max(.001,time.perf_counter()-started),
+                                loader_wait_seconds=device.wait_seconds,train=metrics)
                             if reporter:reporter.log(metrics,step=step)
                         if step%getattr(args,'checkpoint_every',1000)==0:checkpoint('checkpoint_last.pt')
                         if args.train_steps and cursor>=args.train_steps:break

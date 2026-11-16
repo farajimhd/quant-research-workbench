@@ -57,6 +57,24 @@ def test_references_normalization_and_inverse_match_source():
     assert torch.equal(b.native_reference,torch.cat((price.reshape(-1,1),quantity),1))
 
 
+def test_two_prepare_threads_preserve_batches_and_rng():
+    from dataclasses import fields
+    v,m,c,f=raw(37)
+    f=torch.tensor([100_000,1_000_000,10_000_000,60_000_000,3_600_000_000,86_400_000_000]*7)[:37]
+    m[::2,:,6:12]=False
+    old=torch.get_num_threads();s=stats();config=Config(width=128,embedding_width=256,feedforward=512)
+    try:
+        for full in (False,True):
+            results=[]
+            for count in (1,2):
+                torch.set_num_threads(count);g=torch.Generator().manual_seed(71)
+                results.append((prepare(v,m,c,f,s,g,config,full=full,native=full),g.get_state()))
+            for field in fields(results[0][0]):
+                assert torch.equal(getattr(results[0][0],field.name),getattr(results[1][0],field.name)),field.name
+            assert torch.equal(results[0][1],results[1][1])
+    finally:torch.set_num_threads(old)
+
+
 def test_training_only_calibration_and_sparse_evidence():
     with pytest.raises(ValueError,match='training-only'):
         fit_stats([(*raw(),{'split':'validation'})],'x')
