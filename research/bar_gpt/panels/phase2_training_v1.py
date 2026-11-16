@@ -233,7 +233,7 @@ def render(s,width=110,height=32):
         t=Table(box=None if short else box.SIMPLE_HEAD,expand=False,padding=(0,1),
                 collapse_padding=True,header_style='bold dim',show_edge=False)
         for i,title in enumerate(headers):
-            t.add_column(title,overflow='ellipsis',no_wrap=True,max_width=26 if i or title.startswith('Decoded') else 20)
+            t.add_column(title,overflow='ellipsis',no_wrap=True,max_width=26 if i or title.startswith(('Decoded','Forecast')) else 20)
         return t
     if short:
         t=table(['Metric','Latest'])

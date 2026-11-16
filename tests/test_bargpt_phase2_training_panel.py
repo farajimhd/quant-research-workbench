@@ -146,7 +146,7 @@ def test_direct_bar_run_has_forecast_loss_labels_and_predicted_reference_metrics
     (tmp_path/'results.json').write_text(json.dumps(h))
     s=snapshot(tmp_path);out=text(s)
     assert 'Bars + refs MSE' in out and 'Normalized bars' in out and 'Reference changes' in out
-    assert 'Forecast close MAE' in out and 'Predicted refs' in out and '0.1234' in out
+    assert 'Forecast close MAE ($)' in out and 'Predicted refs' in out and '0.1234' in out
     assert 'Latent MSE' not in out and 'Target-referenced' not in out
     assert all(len(line)<=80 for line in text(s,80,24).splitlines())
 
