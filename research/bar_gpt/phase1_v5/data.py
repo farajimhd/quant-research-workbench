@@ -40,7 +40,7 @@ def prepare(raw,valid,clocks,frames,stats,generator,config,*,full=False,native=F
     if clocks.shape!=raw.shape[:2] or frames.shape!=(len(raw),):raise ValueError('Bad source clocks/frame shape')
     scaled,time,time_valid,refs,ref_valid,actual_reference=normalize_raw(raw,valid,clocks,frames)
     b=len(raw)
-    if full:visible_ids=hidden_ids=torch.arange(64).expand(b,-1)
+    if full:visible_ids=hidden_ids=torch.arange(64).expand(b,-1).clone()
     else:
         order=torch.rand(b,64,generator=generator).argsort(1)
         visible_ids=order[:,:config.visible_bars].sort(1).values

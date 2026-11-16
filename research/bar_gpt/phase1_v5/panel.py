@@ -59,7 +59,7 @@ def render(p,width=120,height=35):
             table.add_row(name+' B'+str(trial['batch']),number(trial['windows_per_second']),
                           'actual loader' if trial['kind']=='actual_loader' else 'compute only')
         rows.append(table)
-    elif not short and p.get('mode')!='profile':
+    elif not short and (p.get('mode')!='profile' or bool(val)):
         raw=val.get('full_raw_mae',{})
         table=Table('Raw close MAE ($)','Trade','Bid','Ask',box=box.SIMPLE_HEAD if height<34 else box.HORIZONTALS,
                     show_lines=height>=34,padding=(0,1))

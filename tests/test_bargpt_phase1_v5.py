@@ -139,6 +139,13 @@ def test_loader_hook_preserves_real_source_path(tmp_path):
     try:
         batches=list(source);assert len(batches)==2 and batches[0].visible.shape==(4,16,27)
     finally:close_loader(source)
+    full_stream=Stream({'splits':{'train':[entry]}},'train',stats(),4,
+        config=Config(layers=1,feedforward=64),full=True,native=True)
+    source=make_loader(full_stream,0,1)
+    try:
+        full=next(iter(source));assert full.positions.is_contiguous() and full.positions.shape==(4,64)
+        assert full.native_reference.shape==(4,7)
+    finally:close_loader(source)
 
 
 def test_training_resume_preserves_model_optimizer_rng(tmp_path,monkeypatch):
