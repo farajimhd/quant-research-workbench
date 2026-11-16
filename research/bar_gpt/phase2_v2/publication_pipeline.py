@@ -64,6 +64,7 @@ def publication_batches(units,split,teacher,teacher_sha,args,*,cursor=(0,0,0),
                 if session is not None:
                     record_tensors([session.pools,session.token_bank,session.reference_bank,
                                     session.clock_bank,session.time_cache],stream)
+                    record_tensors(getattr(session,'consumer_buffers',()),stream)
             for bi,plan,begin,liquid,selection in plans:
                 if report:
                     report(dict(root=str(unit.root),session=str(unit.path),split=split,

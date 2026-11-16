@@ -52,7 +52,8 @@ def load_teacher(path, sha256, device='cpu', *, required_epoch=None):
                          decoder='same-checkpoint frozen V4; validation only')
 
 
-def normalize(values, valid, *, _indices=None, _checks=None, return_raw_references=False):
+def normalize(values, valid, *, _indices=None, _checks=None, return_raw_references=False,
+              _raw_references=None):
     """The same Float64 formulas and shared reference authority as V4, on device."""
     price_ids,activity_ids=(PRICES,ACTIVITY) if _indices is None else _indices[1:]
     source_ok=(torch.isfinite(values).all() &
@@ -61,8 +62,18 @@ def normalize(values, valid, *, _indices=None, _checks=None, return_raw_referenc
     if _checks is None:
         if not source_ok:raise ValueError('Invalid observed market evidence')
     else:_checks.append((source_ok,ValueError,'Invalid observed market evidence'))
-    price, quantity = local_references(values, valid,
-        _indices=None if _indices is None else (_indices[0],_indices[2]),_checks=_checks)
+    if _raw_references is None:
+        price, quantity = local_references(values, valid,
+            _indices=None if _indices is None else (_indices[0],_indices[2]),_checks=_checks)
+    else:
+        price,quantity=_raw_references
+        if (price.shape!=(len(values),1,1) or quantity.shape!=(len(values),6)
+            or price.dtype!=torch.float64 or quantity.dtype!=torch.float64):
+            raise ValueError('Source reference cache requires exact Float64 shapes')
+        ok=torch.isfinite(price).all()&(price>0).all()&torch.isfinite(quantity).all()&(quantity>=0).all()
+        if _checks is None:
+            if not ok:raise ValueError('Invalid cached source references')
+        else:_checks.append((ok,ValueError,'Invalid cached source references'))
     scaled = torch.where(valid, values, 0).double()
     prices = torch.where(valid[..., price_ids], scaled[..., price_ids], price)
     scaled[..., price_ids] = 100 * torch.log(prices / price)
@@ -80,6 +91,7 @@ class SessionTokens:
     avoid unbounded Python cache entries. No cache can cross a share-basis change.
     """
     requires_target_embeddings = True
+    cache_source_references = False
 
     def __init__(self, reader, teacher, teacher_sha, *, device='cpu', precision='fp32',
                  memory_mib=512, token_batch=256):
@@ -218,7 +230,10 @@ class SessionTokens:
             ids = torch.as_tensor(selected.copy(), device=self.device)
             gather = ids[:, None] - torch.arange(63, -1, -1, device=self.device)
             raw, evidence = values[gather], valid[gather].bool()
-            scaled, references = normalize(raw, evidence,_indices=self.reference_indices,_checks=self.validation_checks)
+            keep_references=self.cache_source_references and frame==0
+            normalized=normalize(raw,evidence,_indices=self.reference_indices,_checks=self.validation_checks,
+                return_raw_references=keep_references)
+            scaled,references=normalized[:2]
             time,time_valid = self.window_time(frame,gather)
             # Preserve the original transform's column-view strides as well as
             # values: reduction/GEMM dispatch may depend on input layout.
@@ -233,6 +248,7 @@ class SessionTokens:
             if self.validation_checks is None:
                 if not encoded_ok:raise FloatingPointError('Nonfinite scaled input or frozen teacher embedding')
             else:self.validation_checks.append((encoded_ok,FloatingPointError,'Nonfinite scaled input or frozen teacher embedding'))
+            if keep_references:self.store_source_references(selected,ids,*normalized[2:])
             self.bank[frame][ids] = encoded.float()
             self.refs[frame][ids] = references
             self.ready[frame][selected] = True

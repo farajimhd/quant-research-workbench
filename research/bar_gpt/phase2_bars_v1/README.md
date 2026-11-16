@@ -83,6 +83,15 @@ The decoder does not guarantee structurally valid market forecasts.
 
 The shared fixed-tile context cache,coalesced preparation,ordered workers,causal
 packing,full-pass scheduler,online W&B project and checkpoint proofs are reused.
+Exact Float64 source references are cached alongside the1s context tiles. The
+cache is private to the immutable receipt/teacher/precision/split-basis identity,
+uses explicit readiness bits,and reserves its bytes inside the existing total
+device-cache budget. Only missing future reference endpoints are calculated
+separately; they do not require a future V4 embedding forward. Labels reuse these
+exact medians with preallocated device indices instead of sorting the same
+historical/future windows on every batch. Source-value,reference and mask checks
+still complete before any optimizer update. No Float32 cached log reference is
+substituted for the canonical Float64 median.
 No future embedding target is explicitly requested; fixed pool-relative context
 tiles may still incidentally encode extra endpoints,as required for unchanged
 tokenizer numerics. This is not a claim of zero tile overfetch.

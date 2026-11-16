@@ -97,6 +97,20 @@ def test_context_exact_parity_and_future_label_indices(tmp_path):
     assert not torch.equal(before[2]['raw'],after[2]['raw'])
 
 
+def test_exact_reference_cache_and_binding_fail_closed(tmp_path):
+    reader=checked_unit(session(tmp_path));plan=plan_block(reader,0)
+    model=BarSessionTokens(reader,Teacher(),'pinned',token_batch=64)
+    model.prepare(plan);_,_,cached=model.batch(plan,0,len(plan.origins))
+    pool=reader.view(0);offset=np.arange(63,-1,-1)
+    f=plan.targets[:,None]-offset;h=plan.endpoints[0][:,-1,None]-offset
+    original=from_raw(torch.from_numpy(pool['values'][f].copy()),torch.from_numpy(pool['valid'][f].copy()).bool(),
+        torch.from_numpy(pool['values'][h].copy()),torch.from_numpy(pool['valid'][h].copy()).bool())
+    assert all(torch.equal(cached[k],original[k]) for k in original)
+    assert model.reference_cache_misses>0  # Cold future endpoints computed without V4 target forwards.
+    model._reference_binding='foreign'
+    with pytest.raises(ValueError,match='Foreign'):model.batch(plan,0,1)
+
+
 def test_raw_metrics_use_predicted_references_and_price_only_percentages():
     t=from_raw(*examples());p=torch.cat((t['bars'].flatten(1),t['references']),1)
     perfect=RawMetrics('cpu');perfect.add(p,t);a=perfect.result()
