@@ -117,6 +117,9 @@ profiles refuse an active BarGPT trainer; preserve64GiB RAM/150GiB free disk.
 All preparation workers close at the end of every profile/evaluation.
 CUDA capture initialization finishes before loader pinning threads start; pinned
 host allocation may synchronize the device and must not run during capture.
+One captured training step is retained across validation and epoch boundaries.
+It rebinds graph-owned gradients after any eager partial batch; a new epoch must
+not recapture backward while the preceding graph's gradient buffers still exist.
 
 Profile compute-only repeated real batches separately from actual-loader wall
 time. Compare fresh V4/V5 models with matched512/6layer/zero-dropout dimensions,

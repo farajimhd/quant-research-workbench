@@ -181,6 +181,38 @@ def test_training_resume_preserves_model_optimizer_rng(tmp_path,monkeypatch):
     assert state_hash(actual)==state_hash(expected)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA lifecycle regression')
+def test_cuda_graph_reused_after_validation_and_partial_tail(tmp_path,monkeypatch):
+    from research.bar_gpt.phase1_v5 import engine,replay
+    from research.bar_gpt.phase2_v2.train import load_checkpoint
+    from research.bar_gpt.v5.checkpoint_transition_v1 import state_hash
+    old_deterministic=torch.are_deterministic_algorithms_enabled()
+    torch.use_deterministic_algorithms(True)
+    units=[batch(8),batch(3)]
+    full=[batch(8,full=True)]
+    monkeypatch.setattr(engine,'loader',lambda *a,**k:full if a[4]=='validation' else units)
+    real_capture=replay.CudaStep;captures=[]
+    def capture(*args):
+        captures.append(True);return real_capture(*args)
+    monkeypatch.setattr(replay,'CudaStep',capture)
+    config=Config(width=128,embedding_width=256,feedforward=512)
+    states=[]
+    try:
+        for captured in (False,True):
+            output=tmp_path/str(captured);output.mkdir()
+            args=SimpleNamespace(output=output,resume=None,device='cuda',precision='bf16',batch_size=8,
+                learning_rate=1e-4,min_learning_rate=5e-5,warmup_updates=0,epochs=2,seed=17,
+                log_every=1,train_steps=0,validation_steps=0,cuda_graph=captured,wandb_mode='disabled')
+            torch.manual_seed(9);model=Autoencoder(config).cuda()
+            assert engine.train(model,{},stats(),{'fixture':True},args,lambda **k:None)=='complete'
+            states.append(load_checkpoint(output/'checkpoint_last.pt',{'fixture':True}))
+            del model;torch.cuda.synchronize()
+        assert len(captures)==1
+        assert len(states[1]['history'])==2 and states[1]['step']==4
+        assert state_hash(states[0])==state_hash(states[1])
+    finally:torch.use_deterministic_algorithms(old_deterministic)
+
+
 @pytest.mark.parametrize('width,height',[(120,38),(80,24),(60,16)])
 def test_terminal_layout_and_units(width,height):
     from io import StringIO

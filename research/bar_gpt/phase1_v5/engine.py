@@ -138,13 +138,18 @@ def train(model,manifest,stats,contract,args,status):
         if identity is None:write_json(identity_path,dict(id=reporter.id,name=reporter.name,url=reporter.url))
     try:
         if not args.resume:checkpoint('checkpoint_last.pt')
+        replay=None
         while epoch<args.epochs:
             if phase=='train':
                 model.train()
                 from .replay import CudaStep
                 # Capture BEFORE starting pin-memory threads. cudaHostAlloc may
                 # synchronize the device and invalidate an active graph capture.
-                replay=CudaStep(model,args.batch_size,stats_device) if args.cuda_graph else None
+                # A graph owns its backward buffers and stream dependencies for
+                # this model's lifetime. Reuse it after validation instead of
+                # recapturing while old graph-backed gradients still exist.
+                if args.cuda_graph and replay is None:
+                    replay=CudaStep(model,args.batch_size,stats_device)
                 source=loader(manifest,stats,model.config,args,'train',epoch);device=None
                 try:
                     # Deterministic replay preserves the worker lane ordering and augmentation seeds.
