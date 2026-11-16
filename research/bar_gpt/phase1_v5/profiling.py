@@ -146,7 +146,7 @@ def run(manifest,stats,config,args,status,raw):
                 recommended_capture=exact and pipeline_exact is True and args.device=='cuda' and args.precision=='bf16',
                 compute_scope='repeated fixed batch of real source windows; excludes normalization/loader',
                 pipeline_scope='actual frozen balanced split; respective objectives; original512-wide V4 baseline; equal depth/dropout0',
-                encoder_width=config.width,embedding_width=512,
+                encoder_width=config.width,embedding_width=config.embedding_width,
                 parity={str(k):v for k,v in parity.items()},pipeline_parity=pipeline_parity)
 
 

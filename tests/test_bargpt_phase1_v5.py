@@ -93,6 +93,25 @@ def test_approved_narrow_variants_export_512(width):
     assert model.encoder.export[0].weight.grad.abs().sum()>0
 
 
+@pytest.mark.parametrize('width',[128,256])
+def test_approved_256_output_variants(width):
+    model=Autoencoder(Config(width=width,embedding_width=256,layers=1,feedforward=4*width));b=batch(2)
+    z,p,r=model.from_batch(b)
+    assert z.shape==(2,256) and model.decoder.summary.in_features==256
+    assert model.config.contract()['embedding_width']==256
+    loss(p,r,b,stats())[0].backward()
+    assert model.encoder.values.weight.grad.abs().sum()>0
+
+
+def test_sampling_weights_exposures_and_retains_rare_entry_coverage():
+    from research.bar_gpt.phase1_v5.sampling import owners_for_sample
+    sizes=np.ones(100,dtype=np.int64);sizes[1]=100000
+    owners=owners_for_sample(sizes)
+    assert 1 in owners and 0 in owners and 99 in owners
+    assert len(owners)<=72 and np.array_equal(owners,np.unique(owners))
+    with pytest.raises(ValueError):owners_for_sample([0,1])
+
+
 def test_position_encoding_matters_but_joint_permutation_does_not():
     model=Autoencoder(Config(layers=1,feedforward=64)).eval();b=batch();perm=torch.arange(15,-1,-1)
     with torch.no_grad():

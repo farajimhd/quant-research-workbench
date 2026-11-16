@@ -7,6 +7,7 @@ from ..v5.encoder_v3 import AttentionBlock
 @dataclass(frozen=True)
 class Config:
     width:int=512
+    embedding_width:int=512
     layers:int=6
     heads:int=8
     feedforward:int=2048
@@ -16,15 +17,15 @@ class Config:
     feature_drop:float=.075
 
     def __post_init__(self):
-        if (self.width not in (128,256,512) or self.layers<1 or self.heads<1 or self.width%self.heads
+        if (self.width not in (128,256,512) or self.embedding_width not in (256,512)
+            or self.layers<1 or self.heads<1 or self.width%self.heads
             or self.feedforward<1 or self.decoder_width<1 or not 1<=self.visible_bars<64
             or not 0<=self.feature_drop<=.1 or not 0<=self.dropout<1):
             raise ValueError('Invalid V5 architecture or augmentation')
 
     def contract(self):return dict(version='bar-token-reference-mae-v5',**asdict(self),
-        embedding_width=512,
-        encoder='visible bars + one reference token; positioned; mean pool/norm; optional export projection to512',
-        decoder='small position-conditioned MLP; references only through512 bottleneck',
+        encoder='visible bars + one reference token; positioned; mean pool/norm; optional export projection',
+        decoder='small position-conditioned MLP; references only through exported bottleneck',
         loss='source-valid hidden-bar balanced standardized Huber + reference Huber; equal3family means',
         initialization='fresh; V4 column-input weights are not silently migrated')
 
@@ -39,7 +40,8 @@ class Encoder(nn.Module):
         self.blocks=nn.ModuleList([AttentionBlock(d,config.heads,config.feedforward,
             config.dropout,'sdpa',0.) for _ in range(config.layers)])
         self.norm=nn.LayerNorm(d)
-        self.export=nn.Identity() if d==512 else nn.Sequential(nn.Linear(d,512),nn.LayerNorm(512))
+        e=config.embedding_width
+        self.export=nn.Identity() if d==e else nn.Sequential(nn.Linear(d,e),nn.LayerNorm(e))
 
     def forward(self,visible,valid,positions,references,reference_valid):
         if (visible.ndim!=3 or visible.shape[-1]!=27 or valid.shape!=visible.shape
@@ -58,7 +60,7 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self,config):
         super().__init__();d=config.decoder_width
-        self.summary=nn.Linear(512,d);self.positions=nn.Embedding(64,d)
+        self.summary=nn.Linear(config.embedding_width,d);self.positions=nn.Embedding(64,d)
         self.bars=nn.Sequential(nn.LayerNorm(d),nn.Linear(d,d),nn.GELU(),nn.Linear(d,18))
         self.references=nn.Sequential(nn.LayerNorm(d),nn.Linear(d,d),nn.GELU(),nn.Linear(d,7))
 

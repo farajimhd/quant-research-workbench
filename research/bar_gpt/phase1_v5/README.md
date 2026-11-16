@@ -52,6 +52,10 @@ export does not restore information already compressed internally. Default width
 remains512. Select alternatives explicitly with `--encoder-width 128` or
 `--encoder-width 256`. Compare them against the original512-wide V4,
 not a silently narrowed V4 baseline. Representation quality remains unqualified.
+The user also approved exported embedding width256. Select it with
+`--embedding-width 256`; default remains512. The decoder's only input follows
+that exported width. This does not change raw shards, masks or reference labels.
+Existing phase-two512-wide teachers/students are not automatically replaced.
 
 ## Loss and validation
 
@@ -75,6 +79,13 @@ never substitute actual references into decoding. Raw metrics are diagnostic,
 not gradients. Nonfinite inverse results are reported as failures/unknown errors,
 not clipped predictions. Positive limits mark bounded training/validation smokes;
 zero step limits mean complete dataset traversals, never validation-count epochs.
+
+Calibration version3 mixes training-row-weighted source selection with rare-frame
+coverage, requires all six frames,and balances up to256 windows per frame. This
+fixes the early profiling-only shard-uniform sample,which overrepresented coarse
+files and missed100ms. Every selected source payload is hashed; exact row IDs and
+frame coverage remain in the seal. Older calibration files are not silently
+migrated or reused for full training. No full V5 run has been launched.
 
 ## Execution, checkpoints and profiling
 

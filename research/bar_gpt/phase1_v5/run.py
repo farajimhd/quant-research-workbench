@@ -17,6 +17,7 @@ from ..v5.loader_index_v1 import attach,Entries
 from ..phase2_v2.train import lease
 from .model import Config,Autoencoder
 from .objectives import Stats,fit_stats
+CALIBRATION_VERSION='v5-training-six-frame-stratified-loss-scales-v3'
 
 
 def arguments(argv=None):
@@ -32,6 +33,8 @@ def arguments(argv=None):
     p.add_argument('--feature-drop',type=float,default=.075)
     p.add_argument('--encoder-width',type=int,choices=(128,256,512),default=512,
                    help='Approved profiling alternatives; all export512; capacity differs')
+    p.add_argument('--embedding-width',type=int,choices=(256,512),default=512,
+                   help='Approved exported-bottleneck alternatives; decoder follows this width')
     p.add_argument('--batch-size',type=int,default=1024)
     p.add_argument('--batches',default='256,1024,4096')
     p.add_argument('--workers',type=int,default=8)
@@ -73,21 +76,15 @@ def arguments(argv=None):
 
 
 def calibration(manifest):
-    entries=Entries(manifest['loader_index']['train']);proof=[];raw=[]
-    for i in np.linspace(0,len(entries)-1,min(24,len(entries)),dtype=int):
-        item=entries[int(i)];path=Path(item['path'])
-        if path.stat().st_size!=item['bytes'] or file_hash(path)!=item['sha256']:raise ValueError('Calibration source SHA/size changed')
-        pool=np.load(path,mmap_mode='r',allow_pickle=False)
-        indices=np.linspace(item['start'],item['stop']-1,min(64,item['stop']-item['start']),dtype=int)
-        rows=pool[indices].copy();validate_complete_market(rows)
-        evidence=dict(split='train',path=str(path),sha256=item['sha256'],indices=indices.tolist(),
-                      frames_us=np.unique(rows['timeframe_us']).tolist())
-        proof.append(evidence);raw.append(rows)
+    from .sampling import sample_records
+    raw,proof=sample_records(manifest,'train',256)
     def batches():
-        for rows,evidence in zip(raw,proof):
+        offset=0
+        for evidence in proof:
+            rows=raw[offset:offset+len(evidence['indices'])];offset+=len(rows)
             yield (torch.from_numpy(rows['values'].copy()),torch.from_numpy(rows['valid'].astype(bool)),
                 torch.from_numpy(rows['end_us'].copy()),torch.from_numpy(rows['timeframe_us'].copy()),evidence)
-    return fit_stats(batches(),manifest['manifest_hash']),np.concatenate(raw)
+    return fit_stats(batches(),manifest['manifest_hash']),raw
 
 
 def main(argv=None):
@@ -122,12 +119,14 @@ def main(argv=None):
             if a.calibration:
                 c=json.loads(a.calibration.read_text())
                 if c['hash']!=digest({k:v for k,v in c.items() if k!='hash'}):raise ValueError('V5 calibration seal changed')
+                if c['version']!=CALIBRATION_VERSION:raise ValueError('V5 requires explicit six-frame calibrated scales; no implicit migration')
                 stats=Stats.load(c['stats']);raw=None
                 if stats.split_hash!=manifest['manifest_hash']:raise ValueError('Loss calibration split changed')
             else:stats,raw=calibration(manifest)
-            c=dict(version='v5-training-only-loss-scales-v1',stats=stats.state());c['hash']=digest(c)
+            c=dict(version=CALIBRATION_VERSION,stats=stats.state());c['hash']=digest(c)
             write_json(a.output/'calibration.json',c)
-            config=Config(width=a.encoder_width,feedforward=4*a.encoder_width,feature_drop=a.feature_drop)
+            config=Config(width=a.encoder_width,embedding_width=a.embedding_width,
+                          feedforward=4*a.encoder_width,feature_drop=a.feature_drop)
             files=list(Path(__file__).parent.glob('*.py'))
             parent=Path(__file__).parent.parent
             files += [parent/'v5'/name for name in ('data_v3.py','shard_prefetch_v3.py','loader_index_v1.py',
@@ -142,7 +141,7 @@ def main(argv=None):
                 checkpoint_every=a.checkpoint_every,torch_version=str(torch.__version__),cuda=torch.version.cuda,
                 deterministic=a.deterministic,cublas_workspace=os.environ.get('CUBLAS_WORKSPACE_CONFIG'))
             status(epoch_total=manifest['counts']['train'],validation_total=manifest['counts']['validation'],
-                encoder_width=config.width,embedding_width=512,
+                encoder_width=config.width,embedding_width=config.embedding_width,
                 gpu_total_mib=torch.cuda.get_device_properties(0).total_memory/2**20 if a.device=='cuda' else None)
             if not a.resume:write_json(a.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}))
             if a.mode=='profile':
