@@ -52,7 +52,7 @@ def load_teacher(path, sha256, device='cpu', *, required_epoch=None):
                          decoder='same-checkpoint frozen V4; validation only')
 
 
-def normalize(values, valid, *, _indices=None, _checks=None):
+def normalize(values, valid, *, _indices=None, _checks=None, return_raw_references=False):
     """The same Float64 formulas and shared reference authority as V4, on device."""
     price_ids,activity_ids=(PRICES,ACTIVITY) if _indices is None else _indices[1:]
     source_ok=(torch.isfinite(values).all() &
@@ -67,8 +67,10 @@ def normalize(values, valid, *, _indices=None, _checks=None):
     prices = torch.where(valid[..., price_ids], scaled[..., price_ids], price)
     scaled[..., price_ids] = 100 * torch.log(prices / price)
     scaled[..., activity_ids] = torch.log1p(scaled[..., activity_ids]) - torch.log1p(quantity[:, None])
-    return torch.where(valid, scaled, 0).float(), torch.cat(
-        (torch.log(price[:, 0]), torch.log1p(quantity)), dim=1).float()
+    result=torch.where(valid, scaled, 0).float()
+    references=torch.cat((torch.log(price[:, 0]), torch.log1p(quantity)), dim=1).float()
+    if return_raw_references:return result,references,price,quantity
+    return result,references
 
 
 class SessionTokens:
@@ -77,6 +79,8 @@ class SessionTokens:
     Lifetime is one immutable receipt on one teacher/precision. Dense ready bits
     avoid unbounded Python cache entries. No cache can cross a share-basis change.
     """
+    requires_target_embeddings = True
+
     def __init__(self, reader, teacher, teacher_sha, *, device='cpu', precision='fp32',
                  memory_mib=512, token_batch=256):
         if token_batch < 1 or memory_mib < 1 or precision not in ('fp32', 'bf16'):
@@ -240,7 +244,7 @@ class SessionTokens:
         self.validation_checks=[]
         try:
             for f, ends in enumerate(plan.endpoints):self.ensure(f, ends.reshape(-1))
-            self.ensure(0, plan.targets)
+            if self.requires_target_embeddings:self.ensure(0, plan.targets)
             checks=self.validation_checks
             if checks and not torch.stack([v[0] for v in checks]).all():
                 statuses=torch.stack([v[0] for v in checks]).cpu().tolist()
@@ -250,6 +254,15 @@ class SessionTokens:
 
     def batch(self, plan, start, stop):
         """No target values/clocks/references contribute to input metadata."""
+        targets=plan.targets[start:stop]
+        if not self.ready[0][targets].all():
+            raise ValueError('Requested uncached future target')
+        token,metadata,indices=self.context_batch(plan,start,stop)
+        target = self.token_bank[indices[:,16]]
+        return token, metadata, target.detach()
+
+    def context_batch(self,plan,start,stop):
+        """Historical context only; indices retain the frozen transfer geometry."""
         selected_frames = []
         for f, selected in enumerate(plan.endpoints):
             selected = selected[start:stop]
@@ -257,8 +270,6 @@ class SessionTokens:
                 raise ValueError('Requested uncached historical embeddings')
             selected_frames.append(selected + self.offsets[f])
         targets=plan.targets[start:stop]
-        if not self.ready[0][targets].all():
-            raise ValueError('Requested uncached future target')
         # One bounded transfer replaces a separate blocking transfer per frame.
         current=np.concatenate(selected_frames+[targets[:,None],plan.origin_us[start:stop,None]],axis=1)
         indices=self.batch_indices(plan,start,stop,current)
@@ -270,8 +281,7 @@ class SessionTokens:
         metadata = torch.cat((torch.log1p(age_start.double()/1e6)[..., None],
                               torch.log1p(age_end.double()/1e6)[..., None],
                               reference - reference[:, 7:8]), -1).float()
-        target = self.token_bank[indices[:,16]]
-        return token, metadata, target.detach()
+        return token,metadata,indices
 
     @torch.no_grad()
     def reconstruction(self, plan, start, stop):

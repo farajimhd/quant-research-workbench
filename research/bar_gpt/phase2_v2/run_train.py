@@ -43,7 +43,7 @@ def arguments(argv=None, *, expected_feature_drop=320/512):
     p.add_argument('--precision', choices=('fp32', 'bf16'), default='fp32')
     p.add_argument('--batch-size', type=int, default=256)
     p.add_argument('--feature-drop-rate',type=float,default=expected_feature_drop,
-                   help='V2 fixed320/512 coordinate-token masking')
+                   help='Fixed by selected design:320/512 for coordinate MAE;0 for unmasked')
     p.add_argument('--token-batch', type=int, default=256)
     p.add_argument('--cache-mib', type=int, default=512)
     p.add_argument('--threads', type=int, default=1)
@@ -166,7 +166,10 @@ def bounded_check(units, teacher, proof, args, *, model_type=Forecaster, model_c
                 scope='bounded selected-block sample; not full-corpus eligibility certification')
 
 
-def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_config=Config, version_sources=()):
+def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_config=Config, version_sources=(),
+         train_function=train,check_function=bounded_check,validation_contract=RECONSTRUCTION_CONTRACT,
+         validation_guard='full validation every N updates and pass end; latent MSE controls patience',
+         masking_description=None):
     a=argument_parser(argv)
     if (a.output/'STOP').exists():raise ValueError('Human STOP is present; it is never cleared by this launcher')
     if a.output.exists() and not a.resume:
@@ -197,9 +200,9 @@ def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_c
     implementation=digest({str(p.relative_to(Path(__file__).resolve().parents[1])):file_hash(p)
                            for p in sources})
     contract=dict(design=config.manifest(),dataset=dataset,teacher=proof,implementation=implementation,
-                  validation=dict(reconstruction=RECONSTRUCTION_CONTRACT,
+                  validation=dict(reconstruction=validation_contract,
                                   every_updates=a.validation_every,epoch_end=True,
-                                  interval_guard='full validation every N updates and pass end; latent MSE controls patience'),
+                                  interval_guard=validation_guard),
                   schedule=schedule_manifest(a),
                   tokenizer=dict(tile_batch=a.token_batch,precision=a.precision,
                                  algorithm='fixed-pool-endpoint-tiles-v1'),
@@ -216,14 +219,14 @@ def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_c
                       epochs=a.epochs,peak=a.learning_rate,minimum=a.min_learning_rate,
                       warmup=a.warmup_updates,weight_decay=.01,gradient_clip=1.,seed=a.seed,
                       patience=a.patience,order='root/session/block/eligible-origin chronological',
-                      masking=('none; all16x512 context content; loss all512 future coordinates' if config.mask_rate==0 else
-                          'fresh batch-shared coordinates removed before encoder; rate from design.model.mask_rate; future target only')))
+                      masking=(masking_description or ('none; all16x512 context content; loss all512 future coordinates' if config.mask_rate==0 else
+                          'fresh batch-shared coordinates removed before encoder; rate from design.model.mask_rate; future target only'))))
     # JSON-normalize tuples so checkpoint/reporting identities are platform stable.
     contract=json.loads(json.dumps(contract))
     a.output.mkdir(parents=True,exist_ok=bool(a.resume))
     with lease(a.output):
         if a.mode!='train':
-            result=bounded_check(units,teacher,proof,a,model_type=model_type,model_config=model_config)
+            result=check_function(units,teacher,proof,a,model_type=model_type,model_config=model_config)
             result['contract']=contract;write_json(a.output/'result.json',result)
             print(json.dumps(result));return result
         manifest=dict(mode='train',model=contract,dataset=dataset['hash'],seed=a.seed,
@@ -237,7 +240,7 @@ def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_c
         reporter=online_reporter(a.output,manifest)
         try:
             model=model_type(config).to(a.device)
-            state=train(model,teacher,proof['sha256'],units,contract,a,reporter)
+            state=train_function(model,teacher,proof['sha256'],units,contract,a,reporter)
             reporter.finish(state)
             return dict(state=state)
         except BaseException as error:

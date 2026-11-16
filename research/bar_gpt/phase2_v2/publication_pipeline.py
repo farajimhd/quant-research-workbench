@@ -9,7 +9,7 @@ from .device_pipeline import record_tensors
 
 
 def publication_batches(units,split,teacher,teacher_sha,args,*,cursor=(0,0,0),
-                        report=None,reconstruction=False):
+                        report=None,reconstruction=False,session_type=SessionTokens):
     workers=args.prepare_workers
     if not 1<=workers<=8:raise ValueError('Publication workers must be in [1,8]')
     cuda=torch.device(args.device).type=='cuda'
@@ -43,7 +43,7 @@ def publication_batches(units,split,teacher,teacher_sha,args,*,cursor=(0,0,0),
                 plans.append((bi,plan,begin,liquid,selection))
                 if begin==len(plan.origins):continue
                 if session is None:
-                    session=SessionTokens(reader,teacher,teacher_sha,device=args.device,
+                    session=session_type(reader,teacher,teacher_sha,device=args.device,
                         precision=args.precision,memory_mib=args.cache_mib,token_batch=args.token_batch)
                 session.prepare(plan)
             ready=None

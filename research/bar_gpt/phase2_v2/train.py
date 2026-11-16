@@ -142,12 +142,12 @@ class Metrics:
 
 
 def source_batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0), report=None,
-            reconstruction=False):
+            reconstruction=False,session_type=SessionTokens):
     """Stable chronological session/block/origin traversal; no random sample dropping."""
     if getattr(args,'prepare_workers',0):
         from .publication_pipeline import publication_batches
         yield from publication_batches(units,split,teacher,teacher_sha,args,cursor=cursor,
-                                        report=report,reconstruction=reconstruction)
+                                        report=report,reconstruction=reconstruction,session_type=session_type)
         return
     for ui,unit,reader in unit_readers(units,split,cursor[0],workers=getattr(args,'io_workers',0),
                                      prefetch_mib=getattr(args,'prefetch_mib',2048)):
@@ -161,7 +161,7 @@ def source_batches(units, split, teacher, teacher_sha, args, *, cursor=(0, 0, 0)
             if not 0 <= begin <= len(plan.origins):raise ValueError('Resume origin cursor out of bounds')
             if begin == len(plan.origins):continue
             if session is None:
-                session = SessionTokens(reader, teacher, teacher_sha, device=args.device,
+                session = session_type(reader, teacher, teacher_sha, device=args.device,
                                         precision=args.precision, memory_mib=args.cache_mib,
                                         token_batch=args.token_batch)
             session.prepare(plan)

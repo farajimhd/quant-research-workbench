@@ -6,9 +6,13 @@ import torch
 from .schedule import FullPassCosine,PassProgress
 
 
-def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
+def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,components=None):
     from .train import (optimizer_for,Metrics,load_checkpoint,save_checkpoint,restore_rng,rng_state,
                         device_batches,batches,autocast,future_loss,evaluate,write_json)
+    target_size=len
+    if components is not None:
+        batches,Metrics,evaluate=components.batches,components.Metrics,components.evaluate
+        target_size=components.target_size
     optimizer=optimizer_for(model,args)
     loss_function=getattr(model,'training_loss',future_loss)
     scheduler=FullPassCosine(args.learning_rate,args.min_learning_rate,args.validation_every,
@@ -47,6 +51,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
     captured=None
     if getattr(args,'cuda_step_replay',False):
         from .cuda_step import CudaStep
+        if components is not None:CudaStep=components.CudaStep
         captured=CudaStep(model,args.batch_size,metrics=metrics,
             attention_backend=getattr(args,'student_attention_backend','default'))
     if not args.resume:checkpoint('checkpoint_last.pt')
@@ -71,11 +76,12 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                     timing_steps=0;timing_started=fetch_mark=time.perf_counter()
                     try:
                         for tokens,meta,target,next_cursor,origins,liquid in source:
+                            batch_count=target_size(target)
                             received=time.perf_counter();timing['source_wait']+=received-fetch_mark
                             if (args.output/'STOP').exists():
                                 checkpoint('checkpoint_last.pt');return 'stopped'
                             optimizer.param_groups[0]['lr']=scheduler.value()
-                            if captured is not None and len(target)==args.batch_size:
+                            if captured is not None and batch_count==args.batch_size:
                                 predicted,loss,norm=captured(tokens,meta,target)
                                 if not (torch.isfinite(loss)&torch.isfinite(norm)):
                                     raise FloatingPointError('Nonfinite captured loss or gradient norm')
@@ -88,7 +94,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                                 norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)
                             computed=time.perf_counter();timing['compute_guard']+=computed-received
                             optimizer.step();step+=1;scheduler.updates+=1;cursor=next_cursor
-                            if captured is not None and len(target)==args.batch_size:metrics.count+=len(target)
+                            if captured is not None and batch_count==args.batch_size:metrics.count+=batch_count
                             else:metrics.add(predicted,target,tokens[:,7])
                             optimized=time.perf_counter();timing['optimizer_metrics']+=optimized-computed
                             if step%args.log_every==0:
@@ -124,7 +130,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter):
                         finish_pass();continue
                     raise ValueError('Training selection has no eligible origins')
                 phase='validation';checkpoint('checkpoint_last.pt')
-            mean=metrics.moments[2]/metrics.count
+            mean=metrics.baseline() if hasattr(metrics,'baseline') else metrics.moments[2]/metrics.count
             validation=evaluate(model,units,teacher,teacher_sha,args,mean,reporter,step)
             if validation is None:checkpoint('checkpoint_last.pt');return 'stopped'
             improved=validation['mse']<best
