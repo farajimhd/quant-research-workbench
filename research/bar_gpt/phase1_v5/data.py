@@ -18,6 +18,7 @@ class Batch:
     reference_valid:torch.Tensor
     reference_target:torch.Tensor
     native_raw:torch.Tensor
+    native_reference:torch.Tensor
     frames:torch.Tensor
 
     def pin_memory(self):return Batch(**{f.name:getattr(self,f.name).pin_memory() for f in fields(self)})
@@ -31,13 +32,13 @@ def normalize_raw(raw,valid,clocks,frames):
     refs=torch.cat((price.reshape(-1,1).log(),quantity.log1p()),1)
     ref_valid=torch.cat((torch.ones(len(raw),1,dtype=torch.bool,device=raw.device),
                         valid[...,[4,5,10,11,16,17]].any(1)),1)
-    return scaled,time.values[...,18:],time.valid[...,18:],refs,ref_valid
+    return scaled,time.values[...,18:],time.valid[...,18:],refs,ref_valid,torch.cat((price.reshape(-1,1),quantity),1)
 
 
 def prepare(raw,valid,clocks,frames,stats,generator,config,*,full=False,native=False):
     if raw.device.type!='cpu':raise ValueError('V5 workers prepare CPU batches')
     if clocks.shape!=raw.shape[:2] or frames.shape!=(len(raw),):raise ValueError('Bad source clocks/frame shape')
-    scaled,time,time_valid,refs,ref_valid=normalize_raw(raw,valid,clocks,frames)
+    scaled,time,time_valid,refs,ref_valid,actual_reference=normalize_raw(raw,valid,clocks,frames)
     b=len(raw)
     if full:visible_ids=hidden_ids=torch.arange(64).expand(b,-1)
     else:
@@ -54,7 +55,8 @@ def prepare(raw,valid,clocks,frames,stats,generator,config,*,full=False,native=F
     target=gather(scaled,hidden_ids);observed=gather(valid,hidden_ids)
     reference=torch.where(ref_valid,(refs-stats.reference_center)/stats.reference_scale,0).float()
     return Batch(visible,evidence,visible_ids,target,observed,hidden_ids,reference,ref_valid,
-        reference,gather(raw,hidden_ids) if native else torch.empty(0),frames)
+        reference,gather(raw,hidden_ids) if native else torch.empty(0),
+        actual_reference if native else torch.empty(0),frames)
 
 
 class Stream(EligibleStream):

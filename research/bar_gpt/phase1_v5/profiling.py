@@ -53,6 +53,7 @@ def run(manifest,stats,config,args,status,raw):
             parity[(count,captured)]=h
             trials.append(dict(kind='student_compute',batch=count,captured=captured,seconds=seconds,
                 windows_per_second=count*args.steps/seconds,loss=float(value.detach()),encoder_tokens=config.visible_bars+1))
+            status(profile_partial=dict(trials=trials))
             del replay,optimizer,model;gc.collect()
             if args.device=='cuda':torch.cuda.empty_cache()
     exact=all(parity[(b,False)]==parity.get((b,True),parity[(b,False)]) for b in batches)
@@ -104,6 +105,7 @@ def run(manifest,stats,config,args,status,raw):
             trials.append(dict(kind='actual_loader',version=version,batch=selected.batch_size,windows=seen,
                 seconds=seconds,windows_per_second=seen/seconds,compute_seconds=compute,
                 loader_wait_seconds=device.wait_seconds,loss=float(value.detach())))
+            status(profile_partial=dict(trials=trials))
             if version!='v4':pipeline_parity[version]=dict(model=state_hash(model.state_dict()),
                 optimizer=state_hash(optimizer.state_dict()),cpu_rng=state_hash(torch.get_rng_state()),
                 cuda_rng=state_hash(torch.cuda.get_rng_state_all()) if args.device=='cuda' else '')

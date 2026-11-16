@@ -52,6 +52,9 @@ def test_references_normalization_and_inverse_match_source():
     assert torch.equal(b.reference_input,b.reference_target)
     from research.bar_gpt.phase2_v2.tokenizer import normalize
     expected,_=normalize(*raw()[:2]);assert torch.equal(expected,b.target)
+    from research.bar_gpt.v5.pretraining_v3 import local_references
+    price,quantity=local_references(*raw()[:2])
+    assert torch.equal(b.native_reference,torch.cat((price.reshape(-1,1),quantity),1))
 
 
 def test_training_only_calibration_and_sparse_evidence():
@@ -154,6 +157,51 @@ def test_cli_requires_explicit_training_and_bounds(tmp_path):
     assert arguments(['--output',root]).feature_drop==.075
     for extra in (['--mode','train'],['--feature-drop','.2'],['--workers','33']):
         with pytest.raises(SystemExit):arguments(['--output',root]+extra)
+
+
+def test_three_loss_families_have_equal_weight():
+    from research.bar_gpt.v5.pretraining_v1 import PRICES,ACTIVITY
+    b=batch();s=stats()
+    for ids in (PRICES,ACTIVITY):
+        p=b.target.clone();p[...,ids]+=s.market_scale[list(ids)].float()
+        total,terms=loss(p,b.reference_target,b,s)
+        assert float(total)==pytest.approx(1/6,abs=1e-6)
+    total,_=loss(b.target,b.reference_target+1,b,s)
+    assert float(total)==pytest.approx(1/6,abs=1e-6)
+
+
+def test_real_validation_masked_and_raw_paths(tmp_path):
+    from research.bar_gpt.phase1_v5.engine import evaluate
+    class Oracle:
+        config=Config()
+        def eval(self):return self
+        def from_batch(self,b):return torch.zeros(len(b.target),512),b.target,b.reference_target
+    args=SimpleNamespace(output=tmp_path,device='cpu',precision='fp32',seed=17)
+    result=evaluate(Oracle(),[batch(full=True)],args,stats(),lambda **k:None,0)
+    assert result['origins']==8 and result['masked_objective']==0 and result['raw_nonfinite']==0
+    assert result['reference_nonfinite']==0 and result['full_population']
+    assert result['full_raw_mae']['1s']['trade_close']<1e-5
+    assert 'full_price_mape_pct/1s/trade_close' in result
+
+
+def test_shared_loader_default_matches_original_preparation(tmp_path):
+    from research.bar_gpt.v5.data_v3 import EligibleStream,make_loader,close_loader
+    from research.bar_gpt.v5.pretraining_v3 import prepare_batch,LocalReferencePolicy
+    from research.bar_gpt.v5.shards.phase1_contract import SAMPLE_DTYPE
+    from research.bar_gpt.v5.shards.contract import file_hash
+    from dataclasses import fields
+    rows=np.zeros(8,dtype=SAMPLE_DTYPE);v,m,c,f=raw()
+    rows['values']=v.numpy();rows['valid']=m.numpy();rows['end_us']=c.numpy();rows['timeframe_us']=f.numpy()
+    path=tmp_path/'legacy.npy';np.save(path,rows)
+    entry=dict(path=str(path),start=0,stop=8,bytes=path.stat().st_size,sha256=file_hash(path))
+    source=make_loader(EligibleStream({'splits':{'train':[entry]}},'train',LocalReferencePolicy(),4,seed=17),0,1)
+    try:actual=next(iter(source))
+    finally:close_loader(source)
+    rows=rows[:4][np.random.default_rng(17).permutation(4)]
+    expected=prepare_batch(torch.from_numpy(rows['values'].copy()),torch.from_numpy(rows['valid'].astype(bool)),
+        torch.from_numpy(rows['end_us'].copy()),torch.from_numpy(rows['timeframe_us'].copy()),
+        LocalReferencePolicy(),torch.Generator().manual_seed(17))
+    for field in fields(expected):assert torch.equal(getattr(actual,field.name),getattr(expected,field.name))
 
 
 def test_actual_profile_pipeline_cpu_smoke(tmp_path):

@@ -89,8 +89,7 @@ def evaluate(model,source,args,stats,status,step,*,limit=0):
             for f in range(6):
                 selected=(frame==f)[:,None,None]&mask
                 raw_sum[f]+=torch.where(selected&ok,errors,0).sum((0,1));raw_n[f]+=selected.sum((0,1));raw_bad[f]+=(selected&~ok).sum((0,1))
-            actual_logs=b.reference_target.double()*stats.reference_scale+stats.reference_center
-            actual=torch.cat((actual_logs[:,:1].exp(),actual_logs[:,1:].expm1()),1)
+            actual=b.native_reference
             re=(refs-actual).abs();rf=torch.isfinite(re)
             ref_error+=torch.where(b.reference_valid&rf,re,0).sum(0);ref_n+=b.reference_valid.sum(0)
             ref_bad+=(b.reference_valid&~rf).sum(0)

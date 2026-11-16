@@ -38,7 +38,7 @@ def fit_stats(batches,split_hash):
     rs=torch.zeros(7,dtype=torch.float64);rq=rs.clone();rn=rs.clone();evidence=[]
     for raw,mask,clocks,frames,proof in batches:
         if proof.get('split')!='train':raise ValueError('V5 loss calibration is training-only')
-        scaled,_,_,refs,rm=normalize_raw(raw,mask,clocks,frames)
+        scaled,_,_,refs,rm,_=normalize_raw(raw,mask,clocks,frames)
         v=scaled.double();sums+=(v*mask).sum((0,1));squares+=(v.square()*mask).sum((0,1));counts+=mask.sum((0,1))
         rs+=(refs*rm).sum(0);rq+=(refs.square()*rm).sum(0);rn+=rm.sum(0);evidence.append(proof)
     if (counts==0).any() or (rn==0).any():raise ValueError('Calibration lacks observed channels/references')
@@ -58,8 +58,12 @@ def loss(bars,references,batch,stats):
     e,active=family_loss(bars.float()/stats.market_scale.float(),
                           batch.target.float()/stats.market_scale.float(),batch.target_valid)
     terms=[]
-    for ids in (PRICES,ACTIVITY):
-        ok=active[list(ids)];terms.append((e[list(ids)]*ok).sum()/ok.sum().clamp_min(1))
+    # Fixed trade/bid/ask groups are each four prices + two activity channels.
+    # Views avoid creating CPU index tensors inside CUDA graph capture.
+    for part in (slice(0,4),slice(4,6)):
+        values=e.reshape(3,6)[:,part].reshape(-1)
+        ok=active.reshape(3,6)[:,part].reshape(-1)
+        terms.append((values*ok).sum()/ok.sum().clamp_min(1))
     rm=batch.reference_valid;n=rm.sum(0)
     re=(F.smooth_l1_loss(references.float(),batch.reference_target.float(),reduction='none')*rm).sum(0)/n.clamp_min(1)
     terms.append((re*(n>0)).sum()/(n>0).sum().clamp_min(1))

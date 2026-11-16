@@ -106,7 +106,9 @@ def main(argv=None):
         with lease(a.output):
             manifest=load_split(a.split_manifest)
             # Existing V4 index is hash-bound to this same split. No shard changes.
-            manifest=attach(manifest,a.output)
+            index_root=Path(manifest['dataset'])
+            existing=index_root/('loader-index-v1-'+manifest['manifest_hash'][:20])/'index.json'
+            manifest=attach(manifest,index_root if existing.is_file() else a.output)
             a.output.joinpath('loader-index-reference.json').write_text(json.dumps(manifest['loader_index']))
             manifest['splits']={} # workers only receive authenticated compact indices
             if a.resume and a.calibration is None:a.calibration=a.output/'calibration.json'
@@ -140,7 +142,8 @@ def main(argv=None):
             else:
                 from .engine import train
                 model=Autoencoder(config).to(a.device);state=train(model,manifest,stats,contract,a,status)
-                status(state=state,stage=state)
+                status(state='bounded_complete' if state=='complete' and a.train_steps else state,
+                    stage='bounded smoke complete; full passes not claimed' if state=='complete' and a.train_steps else state)
             return last
     except BaseException as e:
         status(state='failed',stage='failed',error=f'{type(e).__name__}: {e}');raise

@@ -1,5 +1,5 @@
 """Read-only V5 Rich console; no Torch import, trainer control or GPU assumptions."""
-import argparse,json,time,sys
+import argparse,json,time,sys,os
 from pathlib import Path
 if __package__ in (None,''):
     sys.path.insert(0,str(Path(__file__).resolve().parents[3]));__package__='research.bar_gpt.phase1_v5'
@@ -82,6 +82,9 @@ def main(argv=None):
     if a.refresh<.5 or (a.width and a.width<40) or (a.height and a.height<12):p.error('Unsupported refresh/dimensions')
     if a.capture and not a.capture.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):p.error('Captures belong under runtimes')
     console=Console(width=a.width,height=a.height,record=bool(a.capture));snapshot=read(a.run)
+    if os.name=='nt' and console.is_terminal:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleTitleW('BarGPT V5 · bar-token MAE · read-only')
     if a.json:print(json.dumps(snapshot));return 0
     def output():return render(snapshot,console.width,console.height)
     if a.once or not console.is_terminal:
@@ -93,7 +96,10 @@ def main(argv=None):
     try:
         with Live(output(),console=console,auto_refresh=False,transient=False,vertical_overflow='crop') as live:
             while True:
-                live.update(output(),refresh=True);time.sleep(a.refresh);snapshot=read(a.run)
+                live.update(output(),refresh=True);time.sleep(a.refresh)
+                current=read(a.run)
+                if current.get('state')=='unavailable':snapshot=dict(snapshot,read_warning=current['stage'])
+                else:snapshot=current
     except KeyboardInterrupt:console.print('Viewer closed; model processes are unchanged.',style='dim')
     return 0
 

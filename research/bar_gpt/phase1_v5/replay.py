@@ -14,7 +14,8 @@ class CudaStep:
             torch.arange(k,device=device).expand(batch,-1).clone(),torch.zeros(batch,hidden,18,device=device),
             torch.ones(batch,hidden,18,device=device,dtype=torch.bool),torch.arange(k,64,device=device).expand(batch,-1).clone(),
             torch.zeros(batch,7,device=device),torch.ones(batch,7,device=device,dtype=torch.bool),
-            torch.zeros(batch,7,device=device),torch.empty(0,device=device),torch.zeros(batch,device=device,dtype=torch.int64))
+            torch.zeros(batch,7,device=device),torch.empty(0,device=device),torch.empty(0,device=device),
+            torch.zeros(batch,device=device,dtype=torch.int64))
         cpu=torch.get_rng_state();cuda=torch.cuda.get_rng_state_all();stream=torch.cuda.Stream(device=device)
         stream.wait_stream(torch.cuda.current_stream(device))
         def run():
@@ -32,6 +33,6 @@ class CudaStep:
 
     def __call__(self,batch):
         for f in fields(self.batch):
-            if f.name not in ('native_raw','frames'):getattr(self.batch,f.name).copy_(getattr(batch,f.name))
+            if f.name not in ('native_raw','native_reference','frames'):getattr(self.batch,f.name).copy_(getattr(batch,f.name))
         for p,g in zip(self.model.parameters(),self.gradients):p.grad=g
         self.graph.replay();return self.outputs
