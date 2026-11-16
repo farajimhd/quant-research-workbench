@@ -2,7 +2,7 @@
 
 Independent baseline for the approved V5 D128 -> E256 model. It does not change
 or resume the transformed V5 run. Fresh initialization and a new output/W&B run
-are required. Full training has not been launched by this implementation.
+are required. See the runtime ledger for actual launch and completion state.
 
 ## Data and architecture
 
@@ -48,13 +48,22 @@ requires `--mode train --execute`. It preserves V5 AdamW, schedule, clipping,
 full validation, same-run resume and bounded rolling last/best checkpoints.
 Resume contracts reject transformed V5 checkpoints. CPU prep uses256-row chunks
 inside the original optimizer batch. Full validation and resume paths are tested
-independently; native GPU performance still needs qualification without competing
-with the currently running V5.
+independently. Native actual-loader profiling processed4,194,304 windows in29.398s
+(142,673 windows/s), with0.068s loader wait, at batch8192/workers32/prefetch4.
+This is a bounded profile, not a guarantee for every epoch. Faster TF32 was
+rejected: only0.2% compute gain with additional rounding. Keep highest FP32 math.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -m research.bar_gpt.phase1_v5_raw.run --mode profile --output D:/TradingML/runtimes/bar_gpt/v5-raw-profile-NEW --encoder-width 128 --embedding-width 256 --batches 1024,4096,8192 --workers 32 --prepare-threads 1 --prefetch 4 --precision bf16 --steps 24 --warmup 4 --wandb-mode disabled --source-revision COMMITTED_SHA
 ```
+
+`launch_train.py --source-revision COMMITTED_SHA` starts the fresh50-epoch online
+run with the measured batch8192/32-worker/BF16/CUDA-graph settings. It refuses an
+existing output, preserves logs and ownership, and holds a system keep-awake
+request. The read-only `panel.py --run RUN_DIRECTORY` shows both loss groups,
+full-pass progress, validation rate/ETA and direct raw metrics. Launch only after
+the previous GPU owner has drained and its final checkpoint has been preserved.
 
 Do not launch GPU profiling alongside another trainer. The implementation is an
 experimental baseline, not a claim that raw-scale reconstruction learns better.

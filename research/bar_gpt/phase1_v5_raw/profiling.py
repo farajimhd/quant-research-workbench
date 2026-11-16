@@ -15,7 +15,9 @@ def run(manifest,stats,config,args,status,raw):
         torch.manual_seed(args.seed);model=Autoencoder(config).to(args.device).train()
         optimizer=torch.optim.AdamW(model.parameters(),lr=args.learning_rate,weight_decay=.01,
                                     fused=args.device=='cuda')
+        status(stage='preparing GPU graph' if args.cuda_graph else 'preparing model')
         replay=CudaStep(model,count,device_stats) if args.cuda_graph else None
+        status(stage='starting loader workers',profile_done=0,profile_total=args.warmup+args.steps)
         source=loader(manifest,stats,config,selected,'train');device=None;seen=0;started=None
         try:
             device=DeviceBatches(source,args.device)
@@ -37,7 +39,7 @@ def run(manifest,stats,config,args,status,raw):
                     train=dict(loss=float(value.detach()),price_loss=float(terms[0].detach()),activity_loss=float(terms[1].detach())))
             if args.device=='cuda':torch.cuda.synchronize()
             seconds=time.perf_counter()-started
-            trials.append(dict(batch=count,windows=seen,seconds=seconds,windows_per_second=seen/seconds,
+            trials.append(dict(kind='actual_loader',batch=count,windows=seen,seconds=seconds,windows_per_second=seen/seconds,
                                loader_wait_seconds=device.wait_seconds-initial_wait,captured=bool(replay)))
         finally:
             if device:device.close()

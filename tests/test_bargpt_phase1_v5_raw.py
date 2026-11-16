@@ -27,6 +27,29 @@ def test_compute_guard_excludes_viewers():
     assert not v5_compute_command(['python',r'D:\codes\research\bar_gpt\phase1_v5\panel.py','--run','D:/phase1_v5_raw'])
 
 
+def test_fresh_launcher_uses_measured_config():
+    from research.bar_gpt.phase1_v5_raw.launch_train import command
+    from research.bar_gpt.phase1_v5_raw.run import arguments
+    cmd=command('python','D:/TradingML/runtimes/bar_gpt/new-raw-test','test-sha')
+    args=arguments(cmd[5:])
+    assert (args.batch_size,args.workers,args.prefetch,args.prepare_threads)==(8192,32,4,1)
+    assert args.cuda_graph and args.epochs==50 and args.resume is None
+    assert args.wandb_mode=='online' and args.train_steps==args.validation_steps==0
+
+
+@pytest.mark.parametrize('width,height',[(80,24),(120,40)])
+def test_raw_panel_two_families(width,height):
+    from research.bar_gpt.phase1_v5_raw.panel import render
+    from rich.console import Console
+    from io import StringIO
+    sink=StringIO();console=Console(file=sink,width=width,height=height,force_terminal=False)
+    console.print(render(dict(state='running',stage='training',epoch=1,epochs=50,
+        validation={'masked_families':[1.,2.]},train={'loss':1.5}),width,height))
+    text=sink.getvalue()
+    assert 'V5 RAW' in text and 'References' not in text and 'predicted references' not in text
+    assert max(map(len,text.splitlines()))<=width
+
+
 @pytest.mark.parametrize('full',[False,True])
 def test_raw_targets_inputs_time_and_chunk_parity(full):
     from research.bar_gpt.v5.transforms_v1 import BarInputTransformV1

@@ -197,6 +197,7 @@ def train(model,manifest,stats,contract,args,status):
                                 loader_wait_seconds=device.wait_seconds-initial_wait)
                             with (args.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,**metrics))+'\n')
                             status(state='running',stage='training',step=step,epoch=epoch+1,epoch_done=epoch_origins,origins=origins,
+                                gpu_used_mib=torch.cuda.memory_allocated()/2**20 if args.device=='cuda' else None,
                                 samples_per_second=seen/max(.001,time.perf_counter()-started),
                                 recent_samples_per_second=recent_rate,
                                 loader_wait_seconds=device.wait_seconds-initial_wait,train=metrics)
