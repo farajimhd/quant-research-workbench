@@ -56,6 +56,12 @@ The user also approved exported embedding width256. Select it with
 `--embedding-width 256`; default remains512. The decoder's only input follows
 that exported width. This does not change raw shards, masks or reference labels.
 Existing phase-two512-wide teachers/students are not automatically replaced.
+Absolute log-reference precision is retained in FP32 through the reference-token
+projection,pooled export and reference decoder branch. Attention/FF and bar-head
+work remains under BF16 autocast. Standardized log references rounded to BF16 can
+impose percent-level raw-price error floors;this is different from ordinary
+relative-price bar outputs. There is still no reference-to-decoder skip. This
+precision fix is not a claim that early learning error is entirely quantization.
 
 ## Loss and validation
 

@@ -99,6 +99,7 @@ def main(argv=None):
             raise MemoryError('Preserve64GiB RAM and150GiB disk reserves')
     torch.set_num_threads(a.threads);torch.manual_seed(a.seed)
     torch.use_deterministic_algorithms(a.deterministic)
+    torch.set_float32_matmul_precision('highest')
     a.output.mkdir(parents=True,exist_ok=bool(a.resume));last={}
     def status(**values):
         last.update(values,updated=time.time());write_json(a.output/'progress.json',last)

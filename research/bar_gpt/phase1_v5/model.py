@@ -26,6 +26,7 @@ class Config:
     def contract(self):return dict(version='bar-token-reference-mae-v5',**asdict(self),
         encoder='visible bars + one reference token; positioned; mean pool/norm; optional export projection',
         decoder='small position-conditioned MLP; references only through exported bottleneck',
+        reference_precision='FP32 reference projection, exported bottleneck and reference readout; attention/bar head follow autocast',
         loss='source-valid hidden-bar balanced standardized Huber + reference Huber; equal3family means',
         initialization='fresh; V4 column-input weights are not silently migrated')
 
@@ -52,9 +53,13 @@ class Encoder(nn.Module):
         tokens=self.values(torch.where(valid,visible,0))+self.missing((~valid).to(visible.dtype))
         tokens=tokens+self.position(positions)
         refs=torch.cat((torch.where(reference_valid,references,0),(~reference_valid).to(references.dtype)),1)
-        tokens=torch.cat((tokens,self.references(refs)[:,None]),1)
+        # Absolute log references need finer precision than BF16 can retain.
+        # This remains an encoder input, never a reference-to-decoder skip.
+        with torch.autocast(device_type=visible.device.type,enabled=False):reference_token=self.references(refs.float())
+        tokens=torch.cat((tokens,reference_token[:,None]),1)
         for block in self.blocks:tokens=block(tokens)
-        return self.export(self.norm(tokens.mean(1)))
+        with torch.autocast(device_type=visible.device.type,enabled=False):
+            return self.export(self.norm(tokens.float().mean(1)))
 
 
 class Decoder(nn.Module):
@@ -66,7 +71,11 @@ class Decoder(nn.Module):
 
     def forward(self,embedding,positions):
         shared=self.summary(embedding)
-        return self.bars(shared[:,None]+self.positions(positions)),self.references(shared)
+        bars=self.bars(shared[:,None]+self.positions(positions))
+        # Same projection/bottleneck; FP32 avoids a BF16 inverse-log floor.
+        with torch.autocast(device_type=embedding.device.type,enabled=False):
+            references=self.references(self.summary(embedding.float()))
+        return bars,references
 
 
 class Autoencoder(nn.Module):

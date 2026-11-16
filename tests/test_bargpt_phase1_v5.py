@@ -103,6 +103,13 @@ def test_approved_256_output_variants(width):
     assert model.encoder.values.weight.grad.abs().sum()>0
 
 
+def test_reference_precision_survives_autocast():
+    model=Autoencoder(Config(width=128,embedding_width=256,layers=1,feedforward=512));b=batch(2)
+    with torch.autocast('cpu',dtype=torch.bfloat16):z,p,r=model.from_batch(b)
+    assert z.dtype==torch.float32 and r.dtype==torch.float32
+    assert p.dtype==torch.bfloat16
+
+
 def test_sampling_weights_exposures_and_retains_rare_entry_coverage():
     from research.bar_gpt.phase1_v5.sampling import owners_for_sample
     sizes=np.ones(100,dtype=np.int64);sizes[1]=100000
