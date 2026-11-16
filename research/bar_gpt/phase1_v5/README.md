@@ -132,6 +132,16 @@ resume during validation reports the restored epoch and step immediately.
 W&B logs retain `optimizer_step`. If resume has already committed that SDK row,
 validation uses the next open reporting row; optimizer/scheduler state is not
 advanced to make room for telemetry.
+Validation also publishes separate `validation_loss`, `validation_full_raw_mae`,
+`validation_references_raw_mae`, per-statistic `validation_full_price_*`,
+price-band, coverage and health groups. Nested frame/channel dictionaries and
+named reference/activity arrays are flattened to scalars instead of discarded.
+Unknown/nonfinite values remain unavailable with explicit health flags, never
+fabricated zeros. Legacy metrics remain intact. On resume, saved completed
+validations are submitted once per sealed epoch receipt; a custom
+`validation_optimizer_step` axis preserves their original evaluation positions
+without overwriting history or moving the optimizer. Local receipts mean
+submitted; deployment audits independently verify W&B readback.
 
 Profile compute-only repeated real batches separately from actual-loader wall
 time. Compare fresh V4/V5 models with matched512/6layer/zero-dropout dimensions,
@@ -158,5 +168,12 @@ counts with explicit configuration labels. Unknown totals stay unknown. Metrics
 separate price/activity/reference losses from raw-unit trade/bid/ask close MAE.
 GPU capacity comes from the native run,not laptop hardware. Stale/failed states
 are visible; short terminals prioritize health/progress/losses,not hidden scrolling.
+During validation the viewer estimates recent windows/second and remaining ETA
+from fresh counter changes over up to60 seconds. It needs at least10 seconds of
+observations after attaching; a one-shot capture cannot invent that history.
+It resets on producer/epoch/step/total changes or counter rollback, and suppresses
+estimates for stale status or30 seconds without counter progress. ETA is a
+remaining-work estimate, not a promised completion time. This observer can be
+deployed independently without modifying or restarting the trainer.
 Redirected output is a single snapshot,Ctrl+C closes only the viewer,captures are
 runtime-only. No terminal starts/stops a model or clears STOP markers.

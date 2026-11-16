@@ -146,6 +146,11 @@ def train(model,manifest,stats,contract,args,status):
             resume='must' if identity else None,config=contract,dir=str(args.output))
         if identity is None:write_json(identity_path,dict(id=reporter.id,name=reporter.name,url=reporter.url))
     try:
+        if reporter:
+            from .reporting import configure,publish
+            configure(reporter)
+            for completed in history:
+                publish(reporter,completed['validation'],completed['epoch'],completed['step'],args.output)
         if not args.resume:checkpoint('checkpoint_last.pt')
         if args.resume:
             status(state='running',stage=phase,epoch=epoch+1,step=step,
@@ -219,6 +224,7 @@ def train(model,manifest,stats,contract,args,status):
                                 complete_training_pass=not bool(args.train_steps)))
             write_json(args.output/'results.json',history)
             report(reporter,{'validation/'+k:v for k,v in validation.items() if isinstance(v,(float,int))},step)
+            if reporter:publish(reporter,validation,epoch+1,step,args.output)
             epoch+=1;cursor=0;epoch_origins=0;phase='train';checkpoint('checkpoint_last.pt')
             if improved:checkpoint('checkpoint_best.pt')
             status(epoch=epoch,validation=validation,validation_done=validation['origins'])

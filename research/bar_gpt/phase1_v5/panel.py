@@ -1,5 +1,6 @@
 """Read-only V5 Rich console; no Torch import, trainer control or GPU assumptions."""
-import argparse,json,time,sys,os
+import argparse,json,time,sys,os,math
+from collections import deque
 from pathlib import Path
 if __package__ in (None,''):
     sys.path.insert(0,str(Path(__file__).resolve().parents[3]));__package__='research.bar_gpt.phase1_v5'
@@ -12,19 +13,79 @@ from ..panels.phase2_training_v1 import BlockBar,number
 
 
 def read(root):
-    try:return json.loads((root/'progress.json').read_text(encoding='utf-8-sig'))
+    try:
+        snapshot=json.loads((root/'progress.json').read_text(encoding='utf-8-sig'))
+        try:
+            owner=json.loads((root/'process.json').read_text(encoding='utf-8-sig'))
+            snapshot['_producer_identity']=(owner['pid'],owner['created'])
+        except (OSError,ValueError,KeyError):snapshot['_producer_identity']=None
+        return snapshot
     except (OSError,ValueError):return dict(state='unavailable',stage='waiting for a readable status snapshot')
+
+
+class ValidationRate:
+    """Read-only, bounded 60-second counter observer; never edits trainer status.
+
+    An attaching viewer cannot recover the beginning of an in-progress pass.
+    Rates therefore cover only this observer's fresh samples, not the full pass.
+    """
+    def __init__(self):self.reset()
+
+    def reset(self):
+        self.key=None;self.points=deque(maxlen=256);self.changed=None
+
+    def update(self,snapshot,*,now=None,wall=None):
+        now=time.monotonic() if now is None else now
+        wall=time.time() if wall is None else wall
+        result=dict(snapshot,validation_samples_per_second=None,validation_eta_seconds=None,
+                    validation_rate_window_seconds=None,validation_rate_status='inactive')
+        if snapshot.get('stage')!='validation' or snapshot.get('state') not in ('validating','running','starting'):
+            self.reset();return result
+        done=snapshot.get('validation_done');total=snapshot.get('validation_total')
+        updated=snapshot.get('updated')
+        if (not isinstance(done,int) or isinstance(done,bool) or done<0
+            or (total is not None and (not isinstance(total,int) or isinstance(total,bool) or total<=0 or done>total))
+            or not isinstance(updated,(int,float)) or not math.isfinite(updated)):
+            self.reset();result['validation_rate_status']='unavailable';return result
+        if wall-updated>30:
+            self.reset();result['validation_rate_status']='stale';return result
+        key=(snapshot.get('_producer_identity'),snapshot.get('epoch'),snapshot.get('step'),total)
+        if self.key!=key or (self.points and (done<self.points[-1][1] or now<self.points[-1][0])):
+            self.reset();self.key=key
+        if not self.points or done!=self.points[-1][1]:self.changed=now
+        self.points.append((now,done))
+        while len(self.points)>2 and now-self.points[1][0]>=60:self.points.popleft()
+        span=now-self.points[0][0];delta=done-self.points[0][1]
+        if total is not None and done==total:
+            result['validation_eta_seconds']=0.;result['validation_rate_status']='complete'
+        elif now-self.changed>=30:
+            result['validation_rate_status']='stalled';return result
+        else:result['validation_rate_status']='measuring'
+        if span>=10 and delta>0:
+            rate=delta/span
+            result.update(validation_samples_per_second=rate,validation_rate_window_seconds=span)
+            if total is not None:result['validation_eta_seconds']=(total-done)/rate
+            if done!=total:result['validation_rate_status']='active'
+        return result
+
+
+def duration(seconds):
+    if seconds is None:return '—'
+    seconds=max(0,math.ceil(seconds));minutes,seconds=divmod(seconds,60);hours,minutes=divmod(minutes,60)
+    if hours>=24:return f'{hours//24}d {hours%24:02d}h'
+    if hours:return f'{hours}h {minutes:02d}m'
+    return f'{minutes}m {seconds:02d}s'
 
 
 def render(p,width=120,height=35):
     short=height<22;compact=width<90;state=p.get('state','unavailable');stage=p.get('stage','starting')
-    stale=state in ('starting','running','profiling') and time.time()-p.get('updated',0)>30
+    stale=state in ('starting','running','profiling','validating') and time.time()-p.get('updated',0)>30
     rows=[Text('BarGPT V5 · BAR-TOKEN MAE'+(f' · width{p["encoder_width"]} →{p.get("embedding_width",512)}' if p.get('encoder_width') else ''),style='bold bright_cyan'),
           Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,
                style='red' if state=='failed' else 'yellow' if stale else 'bold')]
     if p.get('error'):rows.append(Text(p['error'],style='bold red',overflow='ellipsis',no_wrap=True))
     if p.get('read_warning'):rows.append(Text(p['read_warning']+' · retaining last snapshot',style='yellow',overflow='ellipsis',no_wrap=True))
-    bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=14 if compact else 20);bars.add_column(ratio=1);bars.add_column(justify='right',width=17 if compact else 27,no_wrap=True,overflow='ellipsis')
+    bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=14 if compact else 20,no_wrap=True,overflow='ellipsis');bars.add_column(ratio=1);bars.add_column(justify='right',width=17 if compact else 27,no_wrap=True,overflow='ellipsis')
     def bar(label,done,total,tail):bars.add_row(label,BlockBar(done or 0,total),tail)
     if p.get('mode')=='profile':
         trial=p.get('profile_trial',0);total=p.get('profile_trials');done=p.get('profile_done',0);size=p.get('profile_total',0)
@@ -37,15 +98,25 @@ def render(p,width=120,height=35):
         epoch=p.get('epoch',0);epochs=p.get('epochs');count=p.get('epoch_done',0);total=p.get('epoch_total')
         overall=max(0,epoch-1)+(count/total if total else 0)
         if state=='complete':overall=epochs or epoch
-        bar('Full-pass epochs',overall,epochs,f'pass {epoch}/{epochs or "?"}')
-        bar('Training windows',count,total,f'{number(count)}/{number(total)}')
+        bar('Epochs' if compact else 'Full-pass epochs',overall,epochs,f'pass {epoch}/{epochs or "?"}')
+        bar('Train windows' if compact else 'Training windows',count,total,f'{number(count)}/{number(total)}')
         bar('Validation',p.get('validation_done',0),p.get('validation_total'),
             f'{number(p.get("validation_done"))}/{number(p.get("validation_total"))}')
     rows.append(bars)
-    rate=(f'recent {number(p["recent_samples_per_second"])}/s · ' if p.get('recent_samples_per_second') is not None else '')
-    scope='profile' if p.get('mode')=='profile' else 'epoch avg'
-    rows.append(Text(f'Step {p.get("step",0):,} · {rate}{scope} {number(p.get("samples_per_second"))} windows/s',
-                     style='dim',no_wrap=True,overflow='ellipsis'))
+    if stage=='validation':
+        speed=None if stale else p.get('validation_samples_per_second')
+        eta=None if stale else p.get('validation_eta_seconds')
+        label='Val' if compact else 'Validation recent'
+        unit='win/s' if compact else 'windows/s'
+        rate_text=f'{label} {number(speed)} {unit} · ETA {duration(eta)}'
+        if speed is None and eta is None:
+            reason='stale' if stale else p.get('validation_rate_status','measuring')
+            rate_text+=f' · {reason}'
+    else:
+        rate=(f'recent {number(p["recent_samples_per_second"])}/s · ' if p.get('recent_samples_per_second') is not None else '')
+        scope='profile' if p.get('mode')=='profile' else 'epoch avg'
+        rate_text=f'{rate}{scope} {number(p.get("samples_per_second"))} windows/s'
+    rows.append(Text(f'Step {p.get("step",0):,} · {rate_text}',style='dim',no_wrap=True,overflow='ellipsis'))
     train=p.get('train',{});val=p.get('validation',{});families=val.get('masked_families',[None]*3)
     metrics=Table('Objective','Profile' if p.get('mode')=='profile' else 'Train','Masked val',box=box.SIMPLE_HEAD if height<34 else box.HORIZONTALS,
                   show_lines=height>=34,padding=(0,1),expand=False)
@@ -85,7 +156,8 @@ def main(argv=None):
     a=p.parse_args(argv)
     if a.refresh<.5 or (a.width and a.width<40) or (a.height and a.height<12):p.error('Unsupported refresh/dimensions')
     if a.capture and not a.capture.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):p.error('Captures belong under runtimes')
-    console=Console(width=a.width,height=a.height,record=bool(a.capture));snapshot=read(a.run)
+    console=Console(width=a.width,height=a.height,record=bool(a.capture));observer=ValidationRate()
+    snapshot=observer.update(read(a.run))
     if os.name=='nt' and console.is_terminal:
         import ctypes
         ctypes.windll.kernel32.SetConsoleTitleW('BarGPT V5 · bar-token MAE · read-only')
@@ -102,8 +174,11 @@ def main(argv=None):
             while True:
                 live.update(output(),refresh=True);time.sleep(a.refresh)
                 current=read(a.run)
-                if current.get('state')=='unavailable':snapshot=dict(snapshot,read_warning=current['stage'])
-                else:snapshot=current
+                if current.get('state')=='unavailable':
+                    observer.reset()
+                    snapshot=dict(snapshot,read_warning=current['stage'],validation_samples_per_second=None,
+                                  validation_eta_seconds=None,validation_rate_status='unavailable')
+                else:snapshot=observer.update(current)
     except KeyboardInterrupt:console.print('Viewer closed; model processes are unchanged.',style='dim')
     return 0
 
