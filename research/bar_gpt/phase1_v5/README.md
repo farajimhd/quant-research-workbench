@@ -45,6 +45,14 @@ decodes48 masked bars; full validation decodes64. No visible-bar encoder states,
 raw references, full target time arrays or raw bars bypass the bottleneck. No
 V4 column projection or optimizer state is implicitly transferred.
 
+The user subsequently approved profiling internal widths128 and256 as well.
+These keep six layers/eight heads,FF4x internal width,and add a single pooled
+projection plus LayerNorm to export512. This changes model capacity; a wider
+export does not restore information already compressed internally. Default width
+remains512. Select alternatives explicitly with `--encoder-width 128` or
+`--encoder-width 256`. Compare them against the original512-wide V4,
+not a silently narrowed V4 baseline. Representation quality remains unqualified.
+
 ## Loss and validation
 
 Freeze V5-specific statistics from a bounded, distributed sample of TRAINING
@@ -90,10 +98,13 @@ The launcher sets PYTHONDONTWRITEBYTECODE. Native execution must use the require
 environment and a committed,pushed,SHA-verified immutable source snapshot. GPU
 profiles refuse an active BarGPT trainer; preserve64GiB RAM/150GiB free disk.
 All preparation workers close at the end of every profile/evaluation.
+CUDA capture initialization finishes before loader pinning threads start; pinned
+host allocation may synchronize the device and must not run during capture.
 
 Profile compute-only repeated real batches separately from actual-loader wall
 time. Compare fresh V4/V5 models with matched512/6layer/zero-dropout dimensions,
-their respective objectives and the same balanced source order. Optional CUDA
+their respective objectives and the same balanced source order. Narrow variants
+explicitly change width/FF capacity; the V4 comparison stays512-wide. Optional CUDA
 replay is accepted only after model/AdamW/CPU+CUDA RNG parity with eager updates.
 Default deterministic algorithms and process-local `CUBLAS_WORKSPACE_CONFIG=:4096:8`
 make repeated position-embedding gradient reductions reproducible. Profiling found

@@ -30,6 +30,8 @@ def arguments(argv=None):
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda')
     p.add_argument('--precision',choices=('fp32','bf16'),default='bf16')
     p.add_argument('--feature-drop',type=float,default=.075)
+    p.add_argument('--encoder-width',type=int,choices=(128,256,512),default=512,
+                   help='Approved profiling alternatives; all export512; capacity differs')
     p.add_argument('--batch-size',type=int,default=1024)
     p.add_argument('--batches',default='256,1024,4096')
     p.add_argument('--workers',type=int,default=8)
@@ -118,13 +120,14 @@ def main(argv=None):
             manifest['splits']={} # workers only receive authenticated compact indices
             if a.resume and a.calibration is None:a.calibration=a.output/'calibration.json'
             if a.calibration:
-                c=json.loads(a.calibration.read_text());assert c['hash']==digest({k:v for k,v in c.items() if k!='hash'})
+                c=json.loads(a.calibration.read_text())
+                if c['hash']!=digest({k:v for k,v in c.items() if k!='hash'}):raise ValueError('V5 calibration seal changed')
                 stats=Stats.load(c['stats']);raw=None
                 if stats.split_hash!=manifest['manifest_hash']:raise ValueError('Loss calibration split changed')
             else:stats,raw=calibration(manifest)
             c=dict(version='v5-training-only-loss-scales-v1',stats=stats.state());c['hash']=digest(c)
             write_json(a.output/'calibration.json',c)
-            config=Config(feature_drop=a.feature_drop)
+            config=Config(width=a.encoder_width,feedforward=4*a.encoder_width,feature_drop=a.feature_drop)
             files=list(Path(__file__).parent.glob('*.py'))
             parent=Path(__file__).parent.parent
             files += [parent/'v5'/name for name in ('data_v3.py','shard_prefetch_v3.py','loader_index_v1.py',
@@ -139,6 +142,7 @@ def main(argv=None):
                 checkpoint_every=a.checkpoint_every,torch_version=str(torch.__version__),cuda=torch.version.cuda,
                 deterministic=a.deterministic,cublas_workspace=os.environ.get('CUBLAS_WORKSPACE_CONFIG'))
             status(epoch_total=manifest['counts']['train'],validation_total=manifest['counts']['validation'],
+                encoder_width=config.width,embedding_width=512,
                 gpu_total_mib=torch.cuda.get_device_properties(0).total_memory/2**20 if a.device=='cuda' else None)
             if not a.resume:write_json(a.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}))
             if a.mode=='profile':

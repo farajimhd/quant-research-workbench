@@ -140,14 +140,17 @@ def train(model,manifest,stats,contract,args,status):
         if not args.resume:checkpoint('checkpoint_last.pt')
         while epoch<args.epochs:
             if phase=='train':
+                model.train()
+                from .replay import CudaStep
+                # Capture BEFORE starting pin-memory threads. cudaHostAlloc may
+                # synchronize the device and invalidate an active graph capture.
+                replay=CudaStep(model,args.batch_size,stats_device) if args.cuda_graph else None
                 source=loader(manifest,stats,model.config,args,'train',epoch);device=None
                 try:
                     # Deterministic replay preserves the worker lane ordering and augmentation seeds.
                     import itertools
                     device=DeviceBatches(itertools.islice(source,cursor,None),args.device)
-                    model.train();started=time.perf_counter();seen=0
-                    from .replay import CudaStep
-                    replay=CudaStep(model,args.batch_size,stats_device) if args.cuda_graph else None
+                    started=time.perf_counter();seen=0
                     while True:
                         if (args.output/'STOP').exists():checkpoint('checkpoint_last.pt');return 'stopped'
                         try:b=device.pop()

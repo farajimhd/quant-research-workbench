@@ -19,7 +19,7 @@ def read(root):
 def render(p,width=120,height=35):
     short=height<22;compact=width<90;state=p.get('state','unavailable');stage=p.get('stage','starting')
     stale=state in ('starting','running','profiling') and time.time()-p.get('updated',0)>30
-    rows=[Text('BarGPT V5 · BAR-TOKEN MAE',style='bold bright_cyan'),
+    rows=[Text('BarGPT V5 · BAR-TOKEN MAE'+(f' · width{p["encoder_width"]} →512' if p.get('encoder_width') else ''),style='bold bright_cyan'),
           Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,
                style='red' if state=='failed' else 'yellow' if stale else 'bold')]
     if p.get('error'):rows.append(Text(p['error'],style='bold red',overflow='ellipsis',no_wrap=True))

@@ -82,6 +82,17 @@ def test_only_masked_labels_and_reference_bottleneck():
     assert loss(p,r,b2,s)[0]!=value
 
 
+@pytest.mark.parametrize('width',[128,256])
+def test_approved_narrow_variants_export_512(width):
+    model=Autoencoder(Config(width=width,layers=1,feedforward=4*width));b=batch(2)
+    z,p,r=model.from_batch(b)
+    assert z.shape==(2,512) and p.shape==(2,48,18) and r.shape==(2,7)
+    assert model.encoder.blocks[0].self_attn.embed_dim==width
+    assert model.config.contract()['embedding_width']==512
+    loss(p,r,b,stats())[0].backward()
+    assert model.encoder.export[0].weight.grad.abs().sum()>0
+
+
 def test_position_encoding_matters_but_joint_permutation_does_not():
     model=Autoencoder(Config(layers=1,feedforward=64)).eval();b=batch();perm=torch.arange(15,-1,-1)
     with torch.no_grad():

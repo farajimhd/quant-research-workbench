@@ -16,13 +16,14 @@ class Config:
     feature_drop:float=.075
 
     def __post_init__(self):
-        if (self.width!=512 or self.layers<1 or self.heads<1 or self.width%self.heads
+        if (self.width not in (128,256,512) or self.layers<1 or self.heads<1 or self.width%self.heads
             or self.feedforward<1 or self.decoder_width<1 or not 1<=self.visible_bars<64
             or not 0<=self.feature_drop<=.1 or not 0<=self.dropout<1):
             raise ValueError('Invalid V5 architecture or augmentation')
 
     def contract(self):return dict(version='bar-token-reference-mae-v5',**asdict(self),
-        encoder='visible bar tokens + one reference token; positioned; mean pool -> LayerNorm512',
+        embedding_width=512,
+        encoder='visible bars + one reference token; positioned; mean pool/norm; optional export projection to512',
         decoder='small position-conditioned MLP; references only through512 bottleneck',
         loss='source-valid hidden-bar balanced standardized Huber + reference Huber; equal3family means',
         initialization='fresh; V4 column-input weights are not silently migrated')
@@ -31,12 +32,14 @@ class Config:
 class Encoder(nn.Module):
     def __init__(self,config):
         super().__init__();self.config=config
-        self.values=nn.Linear(27,512);self.missing=nn.Linear(27,512,bias=False)
-        self.position=nn.Embedding(64,512)
-        self.references=nn.Linear(14,512)
-        self.blocks=nn.ModuleList([AttentionBlock(512,config.heads,config.feedforward,
+        d=config.width
+        self.values=nn.Linear(27,d);self.missing=nn.Linear(27,d,bias=False)
+        self.position=nn.Embedding(64,d)
+        self.references=nn.Linear(14,d)
+        self.blocks=nn.ModuleList([AttentionBlock(d,config.heads,config.feedforward,
             config.dropout,'sdpa',0.) for _ in range(config.layers)])
-        self.norm=nn.LayerNorm(512)
+        self.norm=nn.LayerNorm(d)
+        self.export=nn.Identity() if d==512 else nn.Sequential(nn.Linear(d,512),nn.LayerNorm(512))
 
     def forward(self,visible,valid,positions,references,reference_valid):
         if (visible.ndim!=3 or visible.shape[-1]!=27 or valid.shape!=visible.shape
@@ -49,7 +52,7 @@ class Encoder(nn.Module):
         refs=torch.cat((torch.where(reference_valid,references,0),(~reference_valid).to(references.dtype)),1)
         tokens=torch.cat((tokens,self.references(refs)[:,None]),1)
         for block in self.blocks:tokens=block(tokens)
-        return self.norm(tokens.mean(1))
+        return self.export(self.norm(tokens.mean(1)))
 
 
 class Decoder(nn.Module):

@@ -45,7 +45,7 @@ def run(manifest,stats,config,args,status,raw):
                 optimizer.step()
                 status(stage='compute profile',profile_trial=trial,profile_trials=total_trials,
                        profile_done=step+1,profile_total=args.warmup+args.steps,
-                       configuration=f'V5 B{count} '+('captured' if captured else 'eager'),train=dict(loss=float(value.detach()),
+                       configuration=f'V5 D{config.width} B{count} '+('captured' if captured else 'eager'),train=dict(loss=float(value.detach()),
                            price_loss=float(terms[0].detach()),activity_loss=float(terms[1].detach()),reference_loss=float(terms[2].detach())))
             synchronize();seconds=time.perf_counter()-measured
             h=dict(model=state_hash(model.state_dict()),optimizer=state_hash(optimizer.state_dict()),
@@ -65,7 +65,7 @@ def run(manifest,stats,config,args,status,raw):
         if version=='v5-captured' and not (exact and args.device=='cuda' and args.precision=='bf16'):continue
         torch.manual_seed(71)
         if version=='v4':
-            model=MaskedAutoencoderV4(EncoderConfig(width=config.width,layers=config.layers,heads=config.heads,feedforward=config.feedforward,
+            model=MaskedAutoencoderV4(EncoderConfig(width=512,layers=config.layers,heads=8,feedforward=2048,
                 decoder_width=config.decoder_width,decoder_layers=1,decoder_heads=config.heads,dropout=0.,attention_dropout=0.)).to(args.device)
             stream=EligibleStream(manifest,'train',LocalReferencePolicy(),selected.batch_size,seed=17)
             stream.shard_prefetch=args.shard_prefetch;stream.shard_prefetch_bytes=args.shard_prefetch_mib*2**20
@@ -74,11 +74,12 @@ def run(manifest,stats,config,args,status,raw):
         model.train();optimizer=torch.optim.AdamW(model.parameters(),lr=3e-4,weight_decay=.01,fused=args.device=='cuda')
         device=None;captured=None;compute=0.;seen=0;measured=None
         try:
+            # DataLoader pinning can synchronize CUDA. Finish capture first.
+            if version=='v5-captured':captured=CudaStep(model,selected.batch_size,stats_device)
             if version=='v4':
                 from ..v5.engine_v3 import CudaBatches
                 device=CudaBatches(source) if args.device=='cuda' else CpuBatches(source)
             else:device=DeviceBatches(source,args.device)
-            if version=='v5-captured':captured=CudaStep(model,selected.batch_size,stats_device)
             for step in range(args.warmup+args.steps):
                 if step==args.warmup:synchronize();measured=time.perf_counter()
                 b=device.pop();synchronize();start=time.perf_counter()
@@ -121,8 +122,8 @@ def run(manifest,stats,config,args,status,raw):
         trial+=1
         if version=='v4':
             from ..v5.encoder_v3 import ColumnEncoderV3
-            encoder=ColumnEncoderV3(EncoderConfig(width=config.width,layers=config.layers,heads=config.heads,
-                feedforward=config.feedforward,dropout=0.,attention_dropout=0.)).to(args.device).eval()
+            encoder=ColumnEncoderV3(EncoderConfig(width=512,layers=config.layers,heads=8,
+                feedforward=2048,dropout=0.,attention_dropout=0.)).to(args.device).eval()
             encode=lambda:encoder.encode_full(full.visible[...,:18],full.valid[...,:18],full.visible[...,18:],full.valid[...,18:])
         else:
             encoder=Autoencoder(config).to(args.device).eval();encode=lambda:encoder.encode_full(full)
@@ -144,7 +145,8 @@ def run(manifest,stats,config,args,status,raw):
                 recommended_batch=selected.batch_size,
                 recommended_capture=exact and pipeline_exact is True and args.device=='cuda' and args.precision=='bf16',
                 compute_scope='repeated fixed batch of real source windows; excludes normalization/loader',
-                pipeline_scope='actual frozen balanced split; respective V4/V5 objectives differ; matched widths/depth/dropout0',
+                pipeline_scope='actual frozen balanced split; respective objectives; original512-wide V4 baseline; equal depth/dropout0',
+                encoder_width=config.width,embedding_width=512,
                 parity={str(k):v for k,v in parity.items()},pipeline_parity=pipeline_parity)
 
 
