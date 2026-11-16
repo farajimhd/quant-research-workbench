@@ -35,28 +35,35 @@ def normalize_raw(raw,valid,clocks,frames):
     return scaled,time.values[...,18:],time.valid[...,18:],refs,ref_valid,torch.cat((price.reshape(-1,1),quantity),1)
 
 
-def prepare(raw,valid,clocks,frames,stats,generator,config,*,full=False,native=False):
+def prepare(raw,valid,clocks,frames,stats,generator,config,*,full=False,native=False,chunk_size=1024):
     if raw.device.type!='cpu':raise ValueError('V5 workers prepare CPU batches')
     if clocks.shape!=raw.shape[:2] or frames.shape!=(len(raw),):raise ValueError('Bad source clocks/frame shape')
-    scaled,time,time_valid,refs,ref_valid,actual_reference=normalize_raw(raw,valid,clocks,frames)
     b=len(raw)
+    if chunk_size<1:raise ValueError('Preparation chunk size must be positive')
     if full:visible_ids=hidden_ids=torch.arange(64).expand(b,-1).clone()
     else:
         order=torch.rand(b,64,generator=generator).argsort(1)
         visible_ids=order[:,:config.visible_bars].sort(1).values
         hidden_ids=order[:,config.visible_bars:].sort(1).values
-    values=torch.cat((scaled,time),2);mask=torch.cat((valid,time_valid),2)
-    gather=lambda a,ids:a.gather(1,ids[...,None].expand(-1,-1,a.shape[-1]))
-    visible=gather(values,visible_ids);evidence=gather(mask,visible_ids)
-    if not full and config.feature_drop:
-        drop=torch.rand(b,1,18,generator=generator)<config.feature_drop
-        evidence[...,:18]&=~drop
-        visible=torch.where(evidence,visible,0)
-    target=gather(scaled,hidden_ids);observed=gather(valid,hidden_ids)
-    reference=torch.where(ref_valid,(refs-stats.reference_center)/stats.reference_scale,0).float()
-    return Batch(visible,evidence,visible_ids,target,observed,hidden_ids,reference,ref_valid,
-        reference,gather(raw,hidden_ids) if native else torch.empty(0),
-        actual_reference if native else torch.empty(0),frames)
+    # Draw augmentation for the ORIGINAL batch before chunking: lanes, random
+    # draws, row order and optimizer batch boundaries remain exactly unchanged.
+    drop=torch.rand(b,1,18,generator=generator)<config.feature_drop if not full and config.feature_drop else None
+    chunks=[]
+    for start in range(0,b,chunk_size):
+        end=min(b,start+chunk_size);v=valid[start:end];vi=visible_ids[start:end];hi=hidden_ids[start:end]
+        scaled,time,time_valid,refs,ref_valid,actual_reference=normalize_raw(raw[start:end],v,clocks[start:end],frames[start:end])
+        values=torch.cat((scaled,time),2);mask=torch.cat((v,time_valid),2)
+        gather=lambda a,ids:a.gather(1,ids[...,None].expand(-1,-1,a.shape[-1]))
+        visible=gather(values,vi);evidence=gather(mask,vi)
+        if drop is not None:
+            evidence[...,:18]&=~drop[start:end]
+            visible=torch.where(evidence,visible,0)
+        reference=torch.where(ref_valid,(refs-stats.reference_center)/stats.reference_scale,0).float()
+        chunks.append(Batch(visible,evidence,vi,gather(scaled,hi),gather(v,hi),hi,reference,ref_valid,
+            reference,gather(raw[start:end],hi) if native else torch.empty(0),
+            actual_reference if native else torch.empty(0),frames[start:end]))
+    if len(chunks)==1:return chunks[0]
+    return Batch(**{f.name:torch.cat([getattr(c,f.name) for c in chunks]) for f in fields(Batch)})
 
 
 class Stream(EligibleStream):

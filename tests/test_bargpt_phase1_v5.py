@@ -44,6 +44,22 @@ def test_bar_removal_positions_and_feature_dropout():
     assert batch(full=True).valid[...,:18].all()
 
 
+@pytest.mark.parametrize('full,native',[(False,False),(False,True),(True,True)])
+def test_chunked_preparation_preserves_every_tensor_and_rng(full,native):
+    from dataclasses import fields
+    v,m,c,f=raw(2051)
+    f=torch.tensor([100_000,1_000_000,10_000_000,60_000_000,3_600_000_000,86_400_000_000]*342)[:len(v)]
+    m[::2,:,6:12]=False;m[::3,:,12:]=False
+    v[~m]=0
+    s=stats();config=Config(width=128,embedding_width=256,feedforward=512)
+    first=torch.Generator().manual_seed(912);second=torch.Generator().manual_seed(912)
+    expected=prepare(v,m,c,f,s,first,config,full=full,native=native,chunk_size=len(v))
+    actual=prepare(v,m,c,f,s,second,config,full=full,native=native)
+    for field in fields(actual):
+        assert torch.equal(getattr(actual,field.name),getattr(expected,field.name)),field.name
+    assert torch.equal(first.get_state(),second.get_state())
+
+
 def test_references_normalization_and_inverse_match_source():
     b=batch(full=True);s=stats();actual=raw()[0]
     reconstructed,refs=reconstruct(b.target,b.reference_target,s)

@@ -126,6 +126,13 @@ precedes every optimizer update. `--prepare-threads 1|2` independently controls
 threads inside each CPU preparation worker, is recorded in the resume contract,
 and does not change worker lanes or augmentation seeds. Qualify it on the native
 loader before choosing it; more CPU threads are not assumed faster.
+CPU preparation limits normalization and gather temporaries to1024 rows at a
+time, then assembles the original optimizer batch. Mask positions and feature
+dropout are drawn for the whole original batch before chunking, with the same
+generator calls and ordering. This is not gradient accumulation or resampling:
+all targets, references, clocks, masks and lane tails retain their original
+order. Qualify tensor/RNG equality and sustained native throughput; short fresh
+loader benchmarks alone can miss late CPU preparation degradation.
 Telemetry distinguishes a trailing roughly60-second training rate from the
 cumulative epoch average. Loader wait excludes the initial worker-startup wait;
 resume during validation reports the restored epoch and step immediately.
