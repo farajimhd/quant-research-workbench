@@ -35,7 +35,7 @@ def normalize_raw(raw,valid,clocks,frames):
     return scaled,time.values[...,18:],time.valid[...,18:],refs,ref_valid,torch.cat((price.reshape(-1,1),quantity),1)
 
 
-def prepare(raw,valid,clocks,frames,stats,generator,config,*,full=False,native=False,chunk_size=1024):
+def prepare(raw,valid,clocks,frames,stats,generator,config,*,full=False,native=False,chunk_size=256):
     if raw.device.type!='cpu':raise ValueError('V5 workers prepare CPU batches')
     if clocks.shape!=raw.shape[:2] or frames.shape!=(len(raw),):raise ValueError('Bad source clocks/frame shape')
     b=len(raw)
