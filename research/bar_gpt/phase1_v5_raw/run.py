@@ -20,6 +20,14 @@ from .objectives import Stats,fit_stats
 CALIBRATION_VERSION='v5-raw-training-six-frame-loss-weights-v1'
 
 
+def v5_compute_command(command):
+    """Recognize actual entry points, never read-only panels or output paths."""
+    modules=('research.bar_gpt.phase1_v5.run','research.bar_gpt.phase1_v5_raw.run')
+    scripts=('phase1_v5/run.py','phase1_v5_raw/run.py')
+    return any(arg in modules or any(arg.replace('\\','/').endswith('/'+s) for s in scripts)
+               for arg in command)
+
+
 def arguments(argv=None):
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--mode',choices=('profile','train'),default='profile')
@@ -100,7 +108,7 @@ def main(argv=None):
         for p in psutil.process_iter(['cmdline','name']):
             try:
                 if (p.pid!=os.getpid() and (p.info['name'] or '').lower().startswith('python')
-                    and any('phase1_v5' in x for x in (p.info['cmdline'] or []))):
+                    and v5_compute_command(p.info['cmdline'] or [])):
                     raw_owners.append(p.pid)
             except (psutil.NoSuchProcess,psutil.AccessDenied):continue
         if active_trainers() or raw_owners:raise RuntimeError('Another BarGPT trainer owns the GPU; no contention allowed')

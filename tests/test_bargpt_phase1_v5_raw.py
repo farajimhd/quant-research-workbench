@@ -20,6 +20,13 @@ def threads():
 def stats():return fit_stats([(*raw(),{'split':'train','sha256':'fixture'})],'fixture')
 
 
+def test_compute_guard_excludes_viewers():
+    from research.bar_gpt.phase1_v5_raw.run import v5_compute_command
+    assert v5_compute_command(['python','-m','research.bar_gpt.phase1_v5.run'])
+    assert v5_compute_command(['python',r'D:\codes\research\bar_gpt\phase1_v5_raw\run.py'])
+    assert not v5_compute_command(['python',r'D:\codes\research\bar_gpt\phase1_v5\panel.py','--run','D:/phase1_v5_raw'])
+
+
 @pytest.mark.parametrize('full',[False,True])
 def test_raw_targets_inputs_time_and_chunk_parity(full):
     from research.bar_gpt.v5.transforms_v1 import BarInputTransformV1
