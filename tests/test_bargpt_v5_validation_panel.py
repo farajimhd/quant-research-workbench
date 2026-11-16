@@ -70,6 +70,19 @@ def test_reader_is_read_only_and_binds_producer(tmp_path):
     assert result['_producer_identity']==(42,123.) and path.read_bytes()==before
 
 
+def test_reader_restores_last_completed_validation_after_resume(tmp_path):
+    path=tmp_path/'progress.json';path.write_text(json.dumps(progress(0)))
+    results=tmp_path/'results.json'
+    results.write_text(json.dumps([{'epoch':1,'validation':{'masked_objective':.2}}]))
+    restored=read(tmp_path)
+    assert restored['validation']['masked_objective']==.2 and restored['completed_validation_epoch']==1
+    results.write_text(json.dumps([{'epoch':2,'validation':{'masked_objective':.15}}]))
+    restored=read(tmp_path)
+    assert restored['validation']['masked_objective']==.15 and restored['completed_validation_epoch']==2
+    snapshot=progress(0);snapshot['validation']={'masked_objective':.1};path.write_text(json.dumps(snapshot))
+    assert read(tmp_path)['validation']['masked_objective']==.1
+
+
 @pytest.mark.parametrize('width,height',[(120,38),(80,24),(60,16)])
 @pytest.mark.parametrize('condition',['active','measuring','stale'])
 def test_validation_speed_eta_fit_and_never_reuse_training_rate(width,height,condition):

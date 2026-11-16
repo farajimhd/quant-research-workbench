@@ -1,6 +1,7 @@
 """Read-only V5 Rich console; no Torch import, trainer control or GPU assumptions."""
 import argparse,json,time,sys,os,math
 from collections import deque
+from functools import lru_cache
 from pathlib import Path
 if __package__ in (None,''):
     sys.path.insert(0,str(Path(__file__).resolve().parents[3]));__package__='research.bar_gpt.phase1_v5'
@@ -12,6 +13,14 @@ from rich import box
 from ..panels.phase2_training_v1 import BlockBar,number
 
 
+@lru_cache(maxsize=2)
+def completed_validation(path,modified,size):
+    history=json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    if history and isinstance(history,list) and isinstance(history[-1].get('validation'),dict):
+        return history[-1]['epoch'],history[-1]['validation']
+    return None
+
+
 def read(root):
     try:
         snapshot=json.loads((root/'progress.json').read_text(encoding='utf-8-sig'))
@@ -19,6 +28,13 @@ def read(root):
             owner=json.loads((root/'process.json').read_text(encoding='utf-8-sig'))
             snapshot['_producer_identity']=(owner['pid'],owner['created'])
         except (OSError,ValueError,KeyError):snapshot['_producer_identity']=None
+        try:
+            path=root/'results.json';info=path.stat()
+            completed=completed_validation(str(path),info.st_mtime_ns,info.st_size)
+            if completed:
+                snapshot['completed_validation_epoch']=completed[0]
+                if not snapshot.get('validation'):snapshot['validation']=completed[1]
+        except (OSError,ValueError,KeyError,TypeError,AttributeError):pass
         return snapshot
     except (OSError,ValueError):return dict(state='unavailable',stage='waiting for a readable status snapshot')
 
@@ -118,7 +134,8 @@ def render(p,width=120,height=35):
         rate_text=f'{rate}{scope} {number(p.get("samples_per_second"))} windows/s'
     rows.append(Text(f'Step {p.get("step",0):,} · {rate_text}',style='dim',no_wrap=True,overflow='ellipsis'))
     train=p.get('train',{});val=p.get('validation',{});families=val.get('masked_families',[None]*3)
-    metrics=Table('Objective','Profile' if p.get('mode')=='profile' else 'Train','Masked val',box=box.SIMPLE_HEAD if height<34 else box.HORIZONTALS,
+    val_label=f'Masked e{p["completed_validation_epoch"]}' if p.get('completed_validation_epoch') else 'Masked val'
+    metrics=Table('Objective','Profile' if p.get('mode')=='profile' else 'Train',val_label,box=box.SIMPLE_HEAD if height<34 else box.HORIZONTALS,
                   show_lines=height>=34,padding=(0,1),expand=False)
     for name,key,v in [('Balanced Huber','loss',val.get('masked_objective')),
         ('Price','price_loss',families[0]),('Activity','activity_loss',families[1]),('References','reference_loss',families[2])]:

@@ -175,5 +175,7 @@ It resets on producer/epoch/step/total changes or counter rollback, and suppress
 estimates for stale status or30 seconds without counter progress. ETA is a
 remaining-work estimate, not a promised completion time. This observer can be
 deployed independently without modifying or restarting the trainer.
+After resume it restores the last completed metrics from `results.json`, cached
+by file identity/mtime and explicitly labeled by completed epoch.
 Redirected output is a single snapshot,Ctrl+C closes only the viewer,captures are
 runtime-only. No terminal starts/stops a model or clears STOP markers.
