@@ -169,7 +169,7 @@ def bounded_check(units, teacher, proof, args, *, model_type=Forecaster, model_c
 def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_config=Config, version_sources=(),
          train_function=train,check_function=bounded_check,validation_contract=RECONSTRUCTION_CONTRACT,
          validation_guard='full validation every N updates and pass end; latent MSE controls patience',
-         masking_description=None):
+         masking_description=None,learning_guard_contract=None):
     a=argument_parser(argv)
     if (a.output/'STOP').exists():raise ValueError('Human STOP is present; it is never cleared by this launcher')
     if a.output.exists() and not a.resume:
@@ -221,6 +221,8 @@ def main(argv=None, *, argument_parser=arguments, model_type=Forecaster, model_c
                       patience=a.patience,order='root/session/block/eligible-origin chronological',
                       masking=(masking_description or ('none; all16x512 context content; loss all512 future coordinates' if config.mask_rate==0 else
                           'fresh batch-shared coordinates removed before encoder; rate from design.model.mask_rate; future target only'))))
+    if learning_guard_contract is not None:
+        contract['validation']['learning_guard']=learning_guard_contract(a)
     # JSON-normalize tuples so checkpoint/reporting identities are platform stable.
     contract=json.loads(json.dumps(contract))
     a.output.mkdir(parents=True,exist_ok=bool(a.resume))

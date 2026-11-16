@@ -6,6 +6,7 @@ from ..phase2_v2.full_pass import train_full_pass
 from .data import batches,target_size
 from .metrics import Metrics,RawMetrics
 from .cuda_step import CudaStep
+from .early_stop import SessionGuard
 
 
 @torch.no_grad()
@@ -28,5 +29,7 @@ def evaluate(model,units,teacher,teacher_sha,args,mean,reporter,step):
 
 def train(model,teacher,teacher_sha,units,contract,args,reporter):
     if args.validation_every<=0:raise ValueError('Full-pass validation cadence is mandatory')
-    components=SimpleNamespace(batches=batches,Metrics=Metrics,evaluate=evaluate,CudaStep=CudaStep,target_size=target_size)
+    guard=SessionGuard(units,args)
+    components=SimpleNamespace(batches=batches,Metrics=Metrics,evaluate=evaluate,CudaStep=CudaStep,
+        target_size=target_size,learning_guard=guard.review)
     return train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,components=components)

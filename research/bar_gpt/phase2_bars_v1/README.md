@@ -1,5 +1,54 @@
 # Phase-two Bars V1
 
+## November 16 architecture investigation and prepared stopping policy
+
+The stopped `phase2-bars-v1-20261116` run remains immutable and is NOT restarted
+by these source changes. Its existing patience8 STOP remains in force.
+
+V4 full encoding supplies all18 normalized market columns, validity and nine
+time features (including timeframe). Input participation does not imply retention
+of raw normalization references: multiplying every raw price by2 leaves the
+normalized prices and embedding identical while doubling the price reference.
+No claim is made that a512-dimensional bottleneck preserves every input detail.
+
+Phase two has no row-position encoding. Self-attention is permutation equivariant;
+selecting row7 makes the output invariant to permutations of the other15 rows.
+This holds for an untrained model as well as the trained checkpoints and is not
+caused by concatenating attention heads. V4 can carry within-window temporal and
+timeframe content, but phase-two row placement adds no temporal-order information.
+Permutation invariance alone does NOT prove timing information is absent from
+token content. A bounded linear probe on frozen cached embeddings (192 training
+contexts,48 separate2025 diagnostic contexts) recovered timeframe with92.6-94.8%
+accuracy, but the eight1s window slots with only11.5-13.5% accuracy (12.5% chance),
+including a probe supplied the latest1s embedding as an anchor. This is evidence
+of weak accessible relative-order information, not proof of nonlinear impossibility
+or full2026 validation quality. Do not duplicate timeframe encodings by assumption.
+No architecture or metadata-conditioning change has been implemented here.
+
+Keep consecutive rolling origins and the shared GPU pools; no redundant raw
+window materialization or publication mixing is introduced. Loss rebalancing is
+only a proposal: fixed TRAINING-only per-channel scales with a floor, averaged
+within price/activity/reference families, would balance units without changing
+targets. It needs explicit calibration and comparison before activation; the
+current normalized-bar plus reference-change objective remains unchanged.
+
+New direct-bars launches default to `--patience 24`,
+`--stop-min-session-fraction 0.10` and `--stop-stale-session-fraction 0.02`.
+ALL stopping gates must hold:
+24 consecutive non-improving full validations, at least10% of the planned
+training session-publication slots traversed cumulatively, and at least2% of
+a pass's slots completed since the best validation. Validation-only publications
+are excluded. Repeated ticker-days in separate certified roots count as separate
+publication exposures, not unique market sessions. The current publication is
+counted conservatively only after advancing to the next one; pass exhaustion
+counts its final publication. A full validation at the same position does not
+increase coverage. History/checkpoints record each review and the policy is
+included in the model contract. Resume derives counters from that bound history;
+old histories require an explicit migration, never an implicit reset or STOP
+override. Old experiment launchers retain their original patience behavior.
+Validation frequency, scheduler, targets, architecture and nonfinite guards are
+unchanged. These defaults are engineering choices, not evidence of better learning.
+
 Implemented2026-11-15 as a separate experiment. The running
 `phase2-unmasked-v1-20261115` remains pinned to its original source and is not
 modified, restarted or migrated. No new training task is started by implementation.

@@ -160,6 +160,8 @@ def test_real_launcher_audit_mode_is_read_only_and_teacher_free(tmp_path,monkeyp
     assert result['blocks'][0]['target_shape']==[3,64,18]
     assert result['contract']['teacher'] is None
     assert result['contract']['design']['version']=='bargpt-phase2-bars-v1'
+    guard=result['contract']['validation']['learning_guard']
+    assert guard['patience']==24 and guard['minimum_pass_fraction']==.1
 
 
 def test_gpu_launcher_refuses_competing_trainer(monkeypatch):

@@ -140,7 +140,14 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
                 train=metrics.result(),validation=validation,step=step,data_pass=epoch+1,
                 pass_complete=exhausted,epoch_start_learning_rate=bounds[0],epoch_min_learning_rate=bounds[1],
                 last_update_learning_rate=optimizer.param_groups[0]['lr']))
+            guard_review=None
+            if components is not None and hasattr(components,'learning_guard'):
+                guard_review=components.learning_guard(epoch=epoch,cursor=cursor,exhausted=exhausted,
+                    history=history,stale=stale)
+                history[-1]['learning_guard']=guard_review
             reporter.log(dict({f'validation_{k}':v for k,v in validation.items()},
+                **({f'learning_guard/{k}':v for k,v in guard_review.items()
+                    if type(v) in (int,float,bool)} if guard_review else {}),
                 validation_is_epoch_end=exhausted,full_pass=epoch+1,validation_index=len(history)),step)
             write_json(args.output/'results.json',history)
             scheduler.validation(1. if exhausted else progress.fraction(cursor))
@@ -149,9 +156,9 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
             checkpoint('checkpoint_validation_last.pt');checkpoint('checkpoint_last.pt')
             if improved:checkpoint('checkpoint_best.pt')
             if exhausted:finish_pass()
-            if stale>=args.patience:
+            if (guard_review['stop'] if guard_review is not None else stale>=args.patience):
                 write_json(args.output/'learning-review.json',dict(action='stop',reason='validation patience',
-                    full_pass=epoch+1,patience=args.patience))
+                    full_pass=epoch+1,patience=args.patience,**({'coverage':guard_review} if guard_review else {})))
                 (args.output/'STOP').write_text('LEARNING_GUARD_STOP: validation patience\n')
                 return 'learning_guard_stop'
         return 'complete'
