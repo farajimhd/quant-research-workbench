@@ -22,7 +22,8 @@ def render(p,width=120,height=35):
     rows=[Text('BarGPT V5 · BAR-TOKEN MAE',style='bold bright_cyan'),
           Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,
                style='red' if state=='failed' else 'yellow' if stale else 'bold')]
-    if p.get('error'):rows.append(Text(p['error'],style='bold red',overflow='fold'))
+    if p.get('error'):rows.append(Text(p['error'],style='bold red',overflow='ellipsis',no_wrap=True))
+    if p.get('read_warning'):rows.append(Text(p['read_warning']+' · retaining last snapshot',style='yellow',overflow='ellipsis',no_wrap=True))
     bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=14 if compact else 20);bars.add_column(ratio=1);bars.add_column(justify='right',width=17 if compact else 27,no_wrap=True,overflow='ellipsis')
     def bar(label,done,total,tail):bars.add_row(label,BlockBar(done or 0,total),tail)
     if p.get('mode')=='profile':

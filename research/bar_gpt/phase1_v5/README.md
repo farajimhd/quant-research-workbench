@@ -95,6 +95,12 @@ Profile compute-only repeated real batches separately from actual-loader wall
 time. Compare fresh V4/V5 models with matched512/6layer/zero-dropout dimensions,
 their respective objectives and the same balanced source order. Optional CUDA
 replay is accepted only after model/AdamW/CPU+CUDA RNG parity with eager updates.
+Default deterministic algorithms and process-local `CUBLAS_WORKSPACE_CONFIG=:4096:8`
+make repeated position-embedding gradient reductions reproducible. Profiling found
+that ordinary eager repeats differed without this setting; enabling determinism
+made the bounded eager/captured comparison exact. Capture requires this mode;
+it does not weaken or silently replace parity checks. Performance must be measured
+under the actual selected setting,not extrapolated from nondeterministic trials.
 Attention-pair16x savings compare V5's64 versus16 BAR tokens. V4 instead uses
 feature-column tokens (about10/11 during masked training,21 all-visible); V5 is
 not automatically faster than V4,particularly all-visible inference. Report

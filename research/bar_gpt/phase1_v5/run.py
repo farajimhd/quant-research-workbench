@@ -1,6 +1,7 @@
 """V5 isolated profiling or explicitly authorized fresh/resumed training."""
 import os
 os.environ['PYTHONDONTWRITEBYTECODE']='1'
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',':4096:8')
 if __package__ in (None,''):
     import sys
     from pathlib import Path
@@ -48,6 +49,8 @@ def arguments(argv=None):
     p.add_argument('--train-steps',type=int,default=0,help='0 means full training pass; positive is an explicit bounded smoke')
     p.add_argument('--validation-steps',type=int,default=0,help='0 means full validation; positive is explicitly partial')
     p.add_argument('--cuda-graph',action='store_true')
+    p.add_argument('--deterministic',action=argparse.BooleanOptionalAction,default=True,
+                   help='Reproducible embedding reductions; required for accepted graph replay')
     p.add_argument('--resume',type=Path)
     p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
     a=p.parse_args(argv)
@@ -61,6 +64,7 @@ def arguments(argv=None):
     except ValueError:p.error('Profile batches must be comma-separated integers in1..8192')
     if a.train_steps<0 or a.validation_steps<0 or a.warmup_updates<0:p.error('Negative limits are invalid')
     if a.cuda_graph and (a.device!='cuda' or a.precision!='bf16'):p.error('Capture requires CUDA/BF16')
+    if a.cuda_graph and not a.deterministic:p.error('V5 capture requires deterministic qualification')
     if a.mode=='profile' and a.resume:p.error('Profiles never resume or overwrite training state')
     if not a.output.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):p.error('Use the required runtime root')
     return a
@@ -95,6 +99,7 @@ def main(argv=None):
         if psutil.virtual_memory().available<64*2**30 or shutil.disk_usage(a.output.parent).free<150*2**30:
             raise MemoryError('Preserve64GiB RAM and150GiB disk reserves')
     torch.set_num_threads(a.threads);torch.manual_seed(a.seed)
+    torch.use_deterministic_algorithms(a.deterministic)
     a.output.mkdir(parents=True,exist_ok=bool(a.resume));last={}
     def status(**values):
         last.update(values,updated=time.time());write_json(a.output/'progress.json',last)
@@ -131,7 +136,8 @@ def main(argv=None):
                 shard_prefetch_mib=a.shard_prefetch_mib,precision=a.precision,seed=a.seed,epochs=a.epochs,
                 peak=a.learning_rate,floor=a.min_learning_rate,warmup=a.warmup_updates,train_steps=a.train_steps,
                 validation_steps=a.validation_steps,cuda_graph=a.cuda_graph,source_revision=a.source_revision,
-                checkpoint_every=a.checkpoint_every,torch_version=str(torch.__version__),cuda=torch.version.cuda)
+                checkpoint_every=a.checkpoint_every,torch_version=str(torch.__version__),cuda=torch.version.cuda,
+                deterministic=a.deterministic,cublas_workspace=os.environ.get('CUBLAS_WORKSPACE_CONFIG'))
             status(epoch_total=manifest['counts']['train'],validation_total=manifest['counts']['validation'],
                 gpu_total_mib=torch.cuda.get_device_properties(0).total_memory/2**20 if a.device=='cuda' else None)
             if not a.resume:write_json(a.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}))
