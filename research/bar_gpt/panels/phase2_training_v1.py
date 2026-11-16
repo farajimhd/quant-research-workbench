@@ -96,6 +96,9 @@ class Observer:
                     or not isinstance(h['validation'].get('mse'),(int,float)) for h in history):
                     raise ValueError('Invalid history')
                 self.history=history;self.history_stamp=stamp
+        except FileNotFoundError:
+            if self.history or p.get('step',0)>p.get('validation_every_updates',150000):
+                warnings.append('Validation history unavailable · retaining previous results')
         except (OSError,ValueError):
             warnings.append('Validation history unavailable · retaining previous results')
         history=self.history
@@ -103,6 +106,8 @@ class Observer:
         except (OSError,ValueError):proof={}
         try:identity=read_json(self.root/'wandb-identity.json')
         except (OSError,ValueError):identity={}
+        try:direct_bars=read_json(self.root/'manifest.json').get('phase2_version')=='bargpt-phase2-bars-v1'
+        except (OSError,ValueError):direct_bars=False
         try:
             with (self.root/'metrics.jsonl').open('rb') as stream:
                 stream.seek(max(0,stream.seek(0,2)-65536));lines=stream.read().decode().splitlines()
@@ -174,7 +179,7 @@ class Observer:
                     proof=proof,identity=identity,config=config,last=last,last_val=last_val,
                     validations=len(history),best=best,stale=stale,validation_total=total,
                     previous=previous,next_step=next_step,rate=rate,step_rate=step_rate,kind=kind,
-                    trained_origins=trained)
+                    trained_origins=trained,direct_bars=direct_bars)
 
 
 def render(s,width=110,height=32):
@@ -238,17 +243,22 @@ def render(s,width=110,height=32):
         rows.append(t)
         return Group(*rows)
     learning=table(['Learning metric','Train batch','Last full val','Reference'])
-    learning.add_row('Latent MSE',number(last.get('train_loss'),6),number(val.get('mse'),6),'best '+number(s['best'],6))
-    learning.add_row('Cosine','—',number(val.get('cosine'),5),'target alignment')
+    direct=s.get('direct_bars',False)
+    learning.add_row('Bars + refs MSE' if direct else 'Latent MSE',number(last.get('train_loss'),6),number(val.get('mse'),6),'best '+number(s['best'],6))
+    if direct:
+        learning.add_row('Normalized bars','—',number(val.get('normalized_bar_mse'),6),'source-valid values')
+        learning.add_row('Reference changes','—',number(val.get('reference_change_mse'),6),'price ref $'+number(val.get('reference_raw_mae/price'),4))
+    else:learning.add_row('Cosine','—',number(val.get('cosine'),5),'target alignment')
     learning.add_row('Gradient norm',number(last.get('gradient_norm'),4),'—','clip '+number(s['config'].get('gradient_clip'),1))
     if not compact:
-        learning.add_row('Baseline MSE','—',number(val.get('persistence_mse'),6),'persistence')
+        if not direct:learning.add_row('Baseline MSE','—',number(val.get('persistence_mse'),6),'persistence')
         learning.add_row('Mean-baseline MSE','—',number(val.get('training_mean_mse'),6),'training-only mean')
     learning.add_row('Patience','—',f"{s['stale']}/{s['config'].get('patience',8)}",'non-improving vals')
     rows.append(learning)
     if not compact:
-        decoded=table(['Decoded close MAE ($)','Trade','Bid','Ask'])
-        decoded.add_row('Target-referenced',*[number(val.get('decoded_raw_mae/1s/'+k+'_close'),4) for k in ('trade','bid','ask')])
+        decoded=table(['Forecast close MAE ($)' if direct else 'Decoded close MAE ($)','Trade','Bid','Ask'])
+        prefix='full_raw_mae/1s/' if direct else 'decoded_raw_mae/1s/'
+        decoded.add_row('Predicted refs' if direct else 'Target-referenced',*[number(val.get(prefix+k+'_close'),4) for k in ('trade','bid','ask')])
         rows.append(decoded)
     resources=table(['Resource','Current','Resource','Current'])
     resources.add_row('GPU utilization',number(p.get('gpu_util'))+'%','GPU power',number(p.get('gpu_power_w'))+' W')

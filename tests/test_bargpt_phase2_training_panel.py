@@ -136,3 +136,22 @@ def test_ctrl_c_closes_only_observer_and_restores_terminal(tmp_path,monkeypatch)
     assert panel.main(['--run',str(tmp_path)])==0
     assert 'Panel closed; training continues.' in output.getvalue()
     assert before=={p.name:p.read_bytes() for p in tmp_path.iterdir()}
+
+
+def test_direct_bar_run_has_forecast_loss_labels_and_predicted_reference_metrics(tmp_path):
+    fixture(tmp_path)
+    (tmp_path/'manifest.json').write_text(json.dumps({'phase2_version':'bargpt-phase2-bars-v1'}))
+    h=json.loads((tmp_path/'results.json').read_text());h[-1]['validation'].update(
+        normalized_bar_mse=.21,reference_change_mse=.05,**{'full_raw_mae/1s/trade_close':.1234})
+    (tmp_path/'results.json').write_text(json.dumps(h))
+    s=snapshot(tmp_path);out=text(s)
+    assert 'Bars + refs MSE' in out and 'Normalized bars' in out and 'Reference changes' in out
+    assert 'Forecast close MAE' in out and 'Predicted refs' in out and '0.1234' in out
+    assert 'Latent MSE' not in out and 'Target-referenced' not in out
+    assert all(len(line)<=80 for line in text(s,80,24).splitlines())
+
+
+def test_no_completed_validation_is_expected_before_first_interval(tmp_path):
+    p=fixture(tmp_path);(tmp_path/'results.json').unlink();p['step']=500
+    (tmp_path/'progress.json').write_text(json.dumps(p))
+    assert not any('history unavailable' in w for w in snapshot(tmp_path)['warnings'])
