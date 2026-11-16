@@ -1,0 +1,172 @@
+from dataclasses import replace
+from types import SimpleNamespace
+import json
+import numpy as np
+import pytest
+import torch
+from research.bar_gpt.phase1_v5.model import Config,Autoencoder
+from research.bar_gpt.phase1_v5.data import prepare,normalize_raw
+from research.bar_gpt.phase1_v5.objectives import fit_stats,loss,reconstruct
+from research.bar_gpt.phase1_v5.panel import render
+
+
+@pytest.fixture(autouse=True)
+def threads():
+    old=torch.get_num_threads();torch.set_num_threads(1)
+    yield
+    torch.set_num_threads(old)
+
+
+def raw(n=8):
+    from tests.test_bargpt_phase2_latent_v1 import bars
+    from research.bar_gpt.v5.shards.sql import clock
+    source=bars(np.arange(1,65)*1_000_000+clock('2023-01-03',4))
+    v=torch.tensor(source['values'].copy()).repeat(n,1,1)
+    v*=torch.linspace(.8,1.2,n)[:,None,None]
+    m=torch.ones_like(v,dtype=torch.bool)
+    return v,m,torch.tensor(source['end_us'].copy()).repeat(n,1),torch.full((n,),1_000_000,dtype=torch.int64)
+
+
+def stats():return fit_stats([(*raw(),{'split':'train','sha256':'fixture'})],'fixture-split')
+
+
+def batch(n=8,full=False,feature_drop=.075):
+    return prepare(*raw(n),stats(),torch.Generator().manual_seed(2),Config(layers=1,feedforward=64,feature_drop=feature_drop),full=full,native=full)
+
+
+def test_bar_removal_positions_and_feature_dropout():
+    b=batch(512);assert b.visible.shape==(512,16,27) and b.target.shape==(512,48,18)
+    assert torch.equal(torch.cat((b.positions,b.target_positions),1).sort(1).values,torch.arange(64).expand(512,-1))
+    dropped=(~b.valid[...,:18]).float().mean();assert .06<float(dropped)<.09
+    assert torch.equal(b.valid[...,:18],b.valid[:,:1,:18].expand(-1,16,-1))
+    assert not torch.count_nonzero(b.visible[~b.valid])
+    assert batch(full=True).visible.shape==(8,64,27)
+    assert batch(full=True).valid[...,:18].all()
+
+
+def test_references_normalization_and_inverse_match_source():
+    b=batch(full=True);s=stats();actual=raw()[0]
+    reconstructed,refs=reconstruct(b.target,b.reference_target,s)
+    torch.testing.assert_close(reconstructed,actual.double(),rtol=2e-5,atol=2e-5)
+    assert refs.shape==(8,7)
+    assert torch.equal(b.reference_input,b.reference_target)
+    from research.bar_gpt.phase2_v2.tokenizer import normalize
+    expected,_=normalize(*raw()[:2]);assert torch.equal(expected,b.target)
+
+
+def test_training_only_calibration_and_sparse_evidence():
+    with pytest.raises(ValueError,match='training-only'):
+        fit_stats([(*raw(),{'split':'validation'})],'x')
+    v,m,c,f=raw();m[:,:,6:]=False;v[:,:,6:]=0
+    with pytest.raises(ValueError,match='lacks observed'):
+        fit_stats([(v,m,c,f,{'split':'train'})],'x')
+
+
+def test_only_masked_labels_and_reference_bottleneck():
+    torch.manual_seed(1);model=Autoencoder(Config(layers=1,feedforward=64));b=batch();s=stats()
+    z,p,r=model.from_batch(b);z.retain_grad();value,terms=loss(p,r,b,s);value.backward()
+    assert z.shape==(8,512) and p.shape==(8,48,18) and r.shape==(8,7)
+    assert z.grad is not None and z.grad.abs().sum()>0
+    assert model.encoder.references.weight.grad.abs().sum()>0
+    assert terms.shape==(3,) and torch.isfinite(value)
+    # Decoder has no raw values/reference argument or skip path.
+    fixed=torch.zeros_like(z);a=model.decoder(fixed,b.target_positions)
+    altered=replace(b,reference_input=b.reference_input+1)
+    assert not torch.equal(model.from_batch(altered)[0],z)
+    torch.testing.assert_close(model.decoder(fixed,b.target_positions)[1],a[1])
+    b2=replace(b,target=b.target+1)
+    torch.testing.assert_close(model.from_batch(b2)[1],p)
+    assert loss(p,r,b2,s)[0]!=value
+
+
+def test_position_encoding_matters_but_joint_permutation_does_not():
+    model=Autoencoder(Config(layers=1,feedforward=64)).eval();b=batch();perm=torch.arange(15,-1,-1)
+    with torch.no_grad():
+        z=model.from_batch(b)[0]
+        permuted=replace(b,visible=b.visible[:,perm],valid=b.valid[:,perm],positions=b.positions[:,perm])
+        torch.testing.assert_close(model.from_batch(permuted)[0],z,atol=2e-6,rtol=2e-5)
+        shuffled_values=replace(permuted,positions=b.positions)
+        assert not torch.allclose(model.from_batch(shuffled_values)[0],z)
+
+
+def test_loader_hook_preserves_real_source_path(tmp_path):
+    from tests.test_bargpt_phase2_latent_v1 import session
+    from research.bar_gpt.phase1_v5.data import Stream
+    from research.bar_gpt.v5.data_v3 import make_loader,close_loader
+    # Existing sealed phase-one fixture authority exercises EligibleStream's real reader.
+    from tests.test_bargpt_phase2_latent_v1 import bars
+    from research.bar_gpt.v5.shards.phase1_contract import SAMPLE_DTYPE
+    rows=np.zeros(8,dtype=SAMPLE_DTYPE)
+    v,m,c,f=raw();rows['values']=v.numpy();rows['valid']=m.numpy();rows['end_us']=c.numpy();rows['timeframe_us']=f.numpy()
+    path=tmp_path/'samples.npy';np.save(path,rows)
+    from research.bar_gpt.v5.shards.contract import file_hash
+    entry=dict(path=str(path),start=0,stop=8,bytes=path.stat().st_size,sha256=file_hash(path))
+    stream=Stream({'splits':{'train':[entry]}},'train',stats(),4,config=Config(layers=1,feedforward=64))
+    source=make_loader(stream,0,1)
+    try:
+        batches=list(source);assert len(batches)==2 and batches[0].visible.shape==(4,16,27)
+    finally:close_loader(source)
+
+
+def test_training_resume_preserves_model_optimizer_rng(tmp_path,monkeypatch):
+    from research.bar_gpt.phase1_v5 import engine
+    from research.bar_gpt.phase2_v2.train import load_checkpoint
+    from research.bar_gpt.v5.checkpoint_transition_v1 import state_hash
+    b=batch(2);units=[b,b]
+    monkeypatch.setattr(engine,'loader',lambda *a,**k:units)
+    monkeypatch.setattr(engine,'evaluate',lambda *a,**k:{'masked_objective':.2,'origins':4})
+    config=Config(layers=1,feedforward=64)
+    def args(output,resume=None):
+        output.mkdir(exist_ok=True)
+        return SimpleNamespace(output=output,resume=resume,device='cpu',precision='fp32',batch_size=2,
+            learning_rate=1e-4,min_learning_rate=5e-5,warmup_updates=0,epochs=2,
+            log_every=1,train_steps=0,validation_steps=0,cuda_graph=False,wandb_mode='disabled')
+    torch.manual_seed(9);full=Autoencoder(config);a=args(tmp_path/'full')
+    assert engine.train(full,{},stats(),{'fixture':True},a,lambda **k:None)=='complete'
+    expected=load_checkpoint(a.output/'checkpoint_last.pt',{'fixture':True})
+    torch.manual_seed(9);partial=Autoencoder(config);a=args(tmp_path/'resumed')
+    def stop(**values):
+        if values.get('step')==1:(a.output/'STOP').write_text('TEST OWNED STOP')
+    assert engine.train(partial,{},stats(),{'fixture':True},a,stop)=='stopped'
+    (a.output/'STOP').unlink();a.resume=a.output/'checkpoint_last.pt'
+    assert engine.train(Autoencoder(config),{},stats(),{'fixture':True},a,lambda **k:None)=='complete'
+    actual=load_checkpoint(a.resume,{'fixture':True})
+    assert state_hash(actual)==state_hash(expected)
+
+
+@pytest.mark.parametrize('width,height',[(120,38),(80,24),(60,16)])
+def test_terminal_layout_and_units(width,height):
+    from io import StringIO
+    from rich.console import Console
+    p=dict(state='profile_complete',stage='finished',mode='profile',profile_trial=3,profile_trials=3,
+        profile_done=24,profile_total=24,train={'loss':.1},gpu_total_mib=96*1024,gpu_used_mib=8*1024,
+        profile={'trials':[dict(version=v,kind='actual_loader',batch=1024,windows_per_second=12345.)
+                           for v in ('v4','v5-eager','v5-captured')]})
+    stream=StringIO();console=Console(file=stream,width=width,height=height,color_system=None)
+    console.print(render(p,width,height));text=stream.getvalue()
+    assert 'V5' in text and 'References' in text and 'GiB' in text
+    assert len(text.splitlines())<=height and all(len(line)<=width for line in text.splitlines())
+
+
+def test_cli_requires_explicit_training_and_bounds(tmp_path):
+    from research.bar_gpt.phase1_v5.run import arguments
+    root='D:/TradingML/runtimes/bar_gpt/test-v5-not-started'
+    assert arguments(['--output',root]).feature_drop==.075
+    for extra in (['--mode','train'],['--feature-drop','.2'],['--workers','33']):
+        with pytest.raises(SystemExit):arguments(['--output',root]+extra)
+
+
+def test_actual_profile_pipeline_cpu_smoke(tmp_path):
+    from research.bar_gpt.phase1_v5.profiling import run
+    from research.bar_gpt.v5.shards.phase1_contract import SAMPLE_DTYPE
+    from research.bar_gpt.v5.shards.contract import file_hash
+    rows=np.zeros(8,dtype=SAMPLE_DTYPE);v,m,c,f=raw()
+    rows['values']=v.numpy();rows['valid']=m.numpy();rows['end_us']=c.numpy();rows['timeframe_us']=f.numpy()
+    path=tmp_path/'source.npy';np.save(path,rows)
+    entry=dict(path=str(path),start=0,stop=8,bytes=path.stat().st_size,sha256=file_hash(path))
+    args=SimpleNamespace(output=tmp_path,device='cpu',precision='fp32',batches='2',batch_size=2,
+        steps=2,warmup=1,workers=0,prefetch=1,shard_prefetch=0,shard_prefetch_mib=64,seed=17)
+    result=run({'splits':{'train':[entry]}},stats(),Config(layers=1,feedforward=64),args,lambda **k:None,rows)
+    assert not result['recommended_capture']
+    actual=[r for r in result['trials'] if r['kind']=='actual_loader']
+    assert len(actual)==2 and all(t['windows']==4 and t['windows_per_second']>0 for t in actual)

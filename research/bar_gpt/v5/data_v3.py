@@ -451,6 +451,12 @@ class EligibleStream(IterableDataset):
             0, self.total - self.start_batch
         )  # Raw upper bound; not an eligible completion claim.
 
+    def prepare_rows(self,rows,rng):
+        return prepare_batch(
+            torch.from_numpy(rows['values'].copy()),torch.from_numpy(rows['valid'].astype(bool)),
+            torch.from_numpy(rows['end_us'].copy()),torch.from_numpy(rows['timeframe_us'].copy()),
+            self.stats,torch.Generator().manual_seed(rng),native_validation=self.full_validation)
+
     def __iter__(self):
         worker = torch.utils.data.get_worker_info()
         physical, workers = (worker.id, worker.num_workers) if worker else (0, 1)
@@ -492,15 +498,7 @@ class EligibleStream(IterableDataset):
             # Lane-local sequence identifies the batch independently of scheduling/prefetch timing.
             rng = self.seed + self.epoch * 1_000_003 + completed * workers + lane
             rows = rows[np.random.default_rng(rng).permutation(len(rows))]
-            batch = prepare_batch(
-                torch.from_numpy(rows["values"].copy()),
-                torch.from_numpy(rows["valid"].astype(bool)),
-                torch.from_numpy(rows["end_us"].copy()),
-                torch.from_numpy(rows["timeframe_us"].copy()),
-                self.stats,
-                torch.Generator().manual_seed(rng),
-                native_validation=self.full_validation,
-            )
+            batch = self.prepare_rows(rows,rng)
             elapsed = time.perf_counter() - pack_started
             pack_seconds += elapsed
             pack_last_ms = elapsed * 1000
