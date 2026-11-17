@@ -116,3 +116,14 @@ Inputs retain `[B,64,18]` market values/masks, `[B,64]` UTC microsecond clocks a
 `[B]` timeframe microseconds. The export includes fixed training-only transform
 buffers and encoder weights, but no decoder weights. It never accepts references
 or statistics computed from hidden targets.
+
+Final qualification: E06 is the balanced reconstruction research recommendation;
+E08 remains the compact price/validity alternative. Held-out frozen probes improved
+some shape information, not every metric. Neither is qualified for market-valid
+all-feature reconstruction: independent OHLC readouts frequently violate ordering,
+and activity outputs can be negative. Target OHLC validation found no corresponding
+source violations. The eight-experiment limit has been reached. A constrained
+readout/validity follow-up and full-authority streaming qualification are required
+before approving the proposed full-data training configuration; no full run was
+launched. The runtime report distinguishes the pre-audit primary finalist from
+the final recommendation and retains all failures and tradeoffs.

@@ -84,6 +84,8 @@ def main():
             detail=(f"{100*relative['mean']:.5g}%/{100*relative['median']:.5g}%/{100*relative['p90']:.5g}%" if relative else f"log1p={v['log1p_absolute_error'].get('mean',float('nan')):.5g}")
             lines.append(f"{frame} | {channel} | {v['mae']:.7g} | {masked['mae']:.7g} | {detail} | {v['zero_denominators']}/{v['tiny_denominators']}")
     lines+=['','Detailed per-band distributions, masks, variance, structure counts, learning curves, profiles and hashes are in comparison.json and immutable per-run/finalist JSON files.']
+    for filename,title in (('campaign-review.json','RESEARCH CONCLUSIONS AND DISPOSITIONS'),('next-training-proposal.json','NEXT FULL-TRAINING CONFIGURATION FOR APPROVAL')):
+        if (root/filename).exists():lines+=['',title,json.dumps(read(root/filename),indent=2)]
     (root/'comparison.txt').write_text('\n'.join(lines),encoding='utf-8')
 
 
