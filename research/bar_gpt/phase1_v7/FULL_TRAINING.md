@@ -26,5 +26,27 @@ contract and W&B identity. The ordered worker prefix is replayed without optimiz
 updates. Human STOP files are never removed. Source geometry violations are fatal,
 not filtered or clipped. Per-epoch validation must cover the full frozen partition.
 
+Measured full-pipeline profiles (4,194,304 windows, excluding startup): CPU-built
+98-wide inputs reached 58.7K windows/s with 32 workers (that first profile used
+2,097,152 windows). Compact 27-wide transfer plus captured GPU feature expansion
+reached 117.3K/s with 32 workers, 155.2K/s with 16, and 83.1K/s with eight. These
+use batch 8192, prefetch four, one preparation thread per worker, 256-row CPU
+chunks, BF16 backbone, and FP32 export/readout. The 525K/s compute-only result is
+not a full-pipeline rate. Startup measured 42/22/12 seconds for 32/16/eight workers.
+
+The pinned finalist's development price error was 0.73363% FP32 and 0.73407%
+BF16 with GPU preparation. No nonempty price band exceeded the qualification
+tolerance (5% relative increase plus 1e-5 absolute relative error); aggregate
+price/activity/worst-band tolerances are 2%. Eight laptop contract tests pass.
+The real GPU path passed captured/eager optimizer-update parity and verified
+checkpoint serialization/resume parity. Tiny-set objective fell from 0.69093 to
+0.00023989 after 800 additional updates (engineering qualification only).
+
+Every 5,000 updates, frozen development diagnostics report all-visible and
+48-masked reconstruction separately. Every epoch validates all 47,750,007 frozen
+validation windows, with all 18 native MAEs, price-relative histogram quantiles
+and bands, activity log errors, and structural/nonfinite counts. Full training
+contains 186,575,722 windows per epoch. No validation subset is called a full pass.
+
 Runtime profiling evidence and the final launch configuration are recorded under
 `D:\TradingML\runtimes\bar_gpt\phase1-v7-full-setup-20261117` on the workstation.

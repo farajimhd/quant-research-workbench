@@ -49,6 +49,7 @@ def main():
     if aux['hash']!=digest({k:v for k,v in aux.items() if k!='hash'}):raise ValueError('Auxiliary dataset seal changed')
     names=['train.npy']
     if a.mode in ('qualify','engineering'):names+=['development.npy','tiny.npy']
+    elif a.mode=='train':names+=['development.npy']
     for name in names:
         if file_hash(a.data/name)!=aux['files'][name]:raise ValueError(f'Auxiliary data changed: {name}')
     if a.mode in ('qualify','validation-profile') and file_hash(a.checkpoint)!='69d46de6c1ae6950292c90ae56f9f6cbe6619a11c1c772c8f4cbea65ae979dec':

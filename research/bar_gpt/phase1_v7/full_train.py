@@ -49,7 +49,9 @@ def evaluate(model,manifest,args,status,limit=0):
         result.update(prices.metrics('full_raw_mae',FRAME_NAMES,CHANNELS))
         rel=[v for k,v in result.items() if k.startswith('full_price_mape_pct/') and v is not None]
         result['balanced_price_mape_pct']=sum(rel)/len(rel)
-        result['selection_score']=result['balanced_price_mape_pct']*.5+result['activity_log_mae']
+        bands=[v for k,v in result.items() if k.startswith('full_price_mape_pct_by_price_band/') and v is not None]
+        result['worst_price_band_mape_pct']=max(bands)
+        result['selection_score']=result['balanced_price_mape_pct']*.5+result['activity_log_mae']+result['worst_price_band_mape_pct']*.0005
         if nonfinite or negative or violations:raise FloatingPointError('Validation structural/native failure')
         return result
     finally:
@@ -124,6 +126,11 @@ def train(args,manifest,status):
                             with (args.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
                             if reporter:reporter.log({'train/'+k:v for k,v in metrics.items()},step=max(step,reporter.step))
                         if step%args.checkpoint_every==0:checkpoint()
+                        if step%5000==0:
+                            from .full_diagnostics import run
+                            status(stage='frozen development diagnostics')
+                            diagnostic=run(model,args,step)
+                            if reporter:reporter.log(diagnostic,step=max(step,reporter.step))
                         if args.max_updates and step>=args.max_updates:checkpoint();return 'qualification_complete'
                     if epoch_done!=manifest['counts']['train']:raise ValueError(f'Training population mismatch: {epoch_done}')
                     phase='validation';checkpoint()
