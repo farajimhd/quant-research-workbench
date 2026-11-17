@@ -15,6 +15,39 @@ from ..v5.shards.phase1_contract import write_json
 def model():return Autoencoder(Config(variant='geometry_joint',width=2048,embedding=768),torch.zeros(18),torch.ones(18)).cuda()
 
 
+def engineering(args):
+    """Tiny overfit, captured/eager parity, and full-state serialization resume."""
+    from ..phase2_v2.train import save_checkpoint,load_checkpoint,rng_state
+    rows=np.load(args.data/'tiny.npy',allow_pickle=False)
+    b=prepare(rows,compact=args.preparation=='gpu').to('cuda')
+    m=model();other=model();other.load_state_dict(m.state_dict())
+    opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
+    eager_opt=torch.optim.AdamW(other.parameters(),lr=3e-4,fused=True)
+    replay=Replay(m,b,args.precision)
+    for _ in range(3):
+        value,_,norm=replay(b);opt.step()
+        eager_opt.zero_grad(set_to_none=True);ev,_,en=backward(other,b,args.precision);eager_opt.step()
+        torch.testing.assert_close(value,ev,rtol=1e-5,atol=1e-7)
+        for p,q in zip(m.parameters(),other.parameters()):torch.testing.assert_close(p,q,rtol=1e-5,atol=1e-7)
+    initial=float(value);began=time.perf_counter()
+    for _ in range(800):
+        value,_,norm=replay(b)
+        if not (torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('Tiny overfit')
+        opt.step()
+    final=float(value)
+    if final>=initial*.2:raise AssertionError(f'Tiny overfit insufficient: {initial} -> {final}')
+    contract=dict(test='full-state-engineering',precision=args.precision,preparation=args.preparation)
+    path=args.output/'checkpoint_test.pt'
+    save_checkpoint(path,dict(model=m.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),contract=contract,step=803,cursor=(0,803)))
+    saved=load_checkpoint(path,contract);other.load_state_dict(saved['model']);eager_opt.load_state_dict(saved['optimizer'])
+    value,_,_=replay(b);opt.step()
+    eager_opt.zero_grad(set_to_none=True);ev,_,_=backward(other,b,args.precision);eager_opt.step()
+    for p,q in zip(m.parameters(),other.parameters()):torch.testing.assert_close(p,q,rtol=1e-5,atol=1e-7)
+    result=dict(initial_loss=initial,final_loss=final,ratio=final/initial,seconds=time.perf_counter()-began,
+        graph_eager_update_parity=True,checkpoint_resume_update_parity=True)
+    write_json(args.output/'engineering.json',result);return result
+
+
 def qualify(args):
     rows=np.load(args.data/'development.npy',allow_pickle=False)
     saved=torch.load(args.checkpoint,map_location='cpu',weights_only=False)

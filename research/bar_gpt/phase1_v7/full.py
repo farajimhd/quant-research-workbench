@@ -10,7 +10,7 @@ from ..v5.shards.phase1_contract import write_json,file_hash,digest
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument('mode',choices=('qualify','compute','stream','validation-profile','train'))
+    p.add_argument('mode',choices=('qualify','engineering','compute','stream','validation-profile','train'))
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--deployment',type=Path,required=True)
     p.add_argument('--data',type=Path,default=Path(r'D:\TradingML\runtimes\bar_gpt\encoder-campaign2-20261117\dataset'))
@@ -45,13 +45,22 @@ def main():
     def status(**kwargs):
         state.update(kwargs,updated=time.time());write_json(a.output/'status.json',state)
     status(stage='verifying source and hardware')
+    aux=json.loads((a.data/'manifest.json').read_text())
+    if aux['hash']!=digest({k:v for k,v in aux.items() if k!='hash'}):raise ValueError('Auxiliary dataset seal changed')
+    names=['train.npy']
+    if a.mode in ('qualify','engineering'):names+=['development.npy','tiny.npy']
+    for name in names:
+        if file_hash(a.data/name)!=aux['files'][name]:raise ValueError(f'Auxiliary data changed: {name}')
+    if a.mode in ('qualify','validation-profile') and file_hash(a.checkpoint)!='69d46de6c1ae6950292c90ae56f9f6cbe6619a11c1c772c8f4cbea65ae979dec':
+        raise ValueError('Pinned finalist checkpoint changed')
+    write_json(a.output/'auxiliary-data.json',dict(hash=aux['hash'],files={n:aux['files'][n] for n in names}))
     write_json(a.output/'hardware.json',dict(host=os.environ.get('COMPUTERNAME'),gpu=torch.cuda.get_device_name(),
         memory_mib=torch.cuda.get_device_properties(0).total_memory/2**20,torch=str(torch.__version__),cuda=torch.version.cuda,
         ram_available=psutil.virtual_memory().available,disk_free=psutil.disk_usage(str(a.output)).free))
     from ..phase2_v2.train import lease
     try:
         with lease(a.output):
-            if a.mode in ('qualify','compute'):
+            if a.mode in ('qualify','compute','engineering'):
                 from . import full_profile
                 result=getattr(full_profile,a.mode)(a)
             else:
