@@ -95,3 +95,27 @@ Run one experiment through `python -B -m research.bar_gpt.phase1_v8.launch
 checks finite campaign limits, owns the child process, and gives it a bounded
 graceful shutdown before the strict wall ceiling. No recurring automation.
 New W&B project: `mehdifaraji/bargpt-v8-learned-mae-20261117`.
+
+## Bounded campaign outcome
+
+Eight experiments completed. E07 (`e07-fused-longer-training`) was selected on
+development evidence before the audit: fused width 1024, three residual blocks,
+512 learned latent values, 20,000 updates, price weight .02, no squared-price
+auxiliary, 75% all-visible / 25% masked batches. It has 10,443,136 encoder
+parameters and a disposable 1,772,928-parameter single-affine decoder.
+
+Audit balanced mean price error was 1.2948% all-visible and 1.5136% hidden-only
+(visible-median control 2.0828%); activity log MAE was .2600 all-visible.
+The frozen linear return probe improved R² from .4396 untrained to .6277;
+log-price-scale MAE improved from .07982 to .001105. Range, volatility and spread
+R² remained mixed; rare invalid fields and a valid extreme bid-low were not
+faithfully reconstructed. This is the best supported research candidate, not
+proof of complete input preservation or trading usefulness. No full run was
+started. The runtime `COMPARISON.md` retains all comparisons, limitations,
+checkpoint/encoder hashes, source revisions and reproduction commands.
+
+An audit-only coverage-summary diagnostic incorrectly reused the source mask
+and reported zero error. That score was removed with preserved before/after
+receipts; native reconstruction, frozen probes, predicted-validity confusion,
+checkpoints and selection were unchanged. The corrected finalizer excludes
+source-mask coverage from decoder-summary recovery metrics.

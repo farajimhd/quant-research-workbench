@@ -83,7 +83,10 @@ def main():
         prediction,_,_,_=predict(model,data[a.partition],1024)
         decoded=rows[a.partition].copy();decoded['values']=prediction
         recovered,names=summaries(decoded)
-        result['decoder_summary_mae']={key:float(np.abs(recovered[:,j]-ey[:,j]).mean()) for j,key in enumerate(names)}
+        # Coverage is defined by the source mask in summaries(); copying that mask
+        # for native metric eligibility cannot measure predicted coverage recovery.
+        result['decoder_summary_mae']={key:float(np.abs(recovered[:,j]-ey[:,j]).mean()) for j,key in enumerate(names) if key!='quote_coverage'}
+        result['decoder_summary_policy']='Market summary errors use source-valid eligibility. Quote coverage excluded: its recovery is evaluated by frozen probes and independently predicted validity confusion, not copied source masks.'
         artifact=a.output/(name+'-encoder.pt');save(model,artifact,**identity,dataset_hash=manifest['hash'])
         encoder=load(artifact,a.device)
         from .data import batch
