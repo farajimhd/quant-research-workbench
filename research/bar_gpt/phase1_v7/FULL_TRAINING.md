@@ -164,3 +164,18 @@ counters and prior history matched the preserved parent exactly. The hashed
 profile and identifies the rejected/failed trials. Runtime `resume.ps1` and
 `resumed-task.xml` record the complete reproducible launch; no recurring trigger
 was added. The full dataset and 50-epoch schedule remain in effect.
+
+The resumed run completed all 47,750,007 epoch-1 validation windows in
+437.28 seconds (steady 109,839 windows/s), with zero nonfinite, negative, or
+OHLC/paired-quote violations. Balanced price MAPE was 0.238019%; activity log
+MAE was 0.093366. These are full-population reconstruction metrics, not evidence
+of trading usefulness. Epoch 2 advanced beyond step 46,400; a new checkpoint at
+step 46,000 confirmed continued saving under the new contract.
+
+The initial live epoch-2 observation was 216,671 windows/s including checkpoint
+overhead. A 20-second sample measured 63.2% average GPU busy time, 97% peak,
+and 5,112 MiB peak device memory use. These observations are recorded in
+`epoch2-live-verification.json`, alongside the initial/final counters and every
+GPU sample. Do not substitute the 230,895/s bounded profile for sustained
+whole-epoch throughput. The read-only panel uses snapshot `fa76fef64`; the
+trainer remains on immutable snapshot `27740a981` without another interruption.
