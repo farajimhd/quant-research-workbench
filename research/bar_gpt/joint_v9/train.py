@@ -71,15 +71,19 @@ def main():
         for k in range(a.tiny_steps):
             optimizer.param_groups[0]['lr']=.00001+.00099*.5*(1+np.cos(np.pi*k/max(1,a.tiny_steps-1)))
             optimizer.zero_grad(set_to_none=True);loss,parts=loss_for(tiny,b,a.reconstruction_weight)
-            if first is None:first=float(parts['forecast'].detach())
+            if first is None:
+                first=float(parts['forecast'].detach());first_reconstruction=float(parts['reconstruction'].detach())
             if not torch.isfinite(loss):raise FloatingPointError('Nonfinite tiny fit')
             loss.backward();torch.nn.utils.clip_grad_norm_(tiny.parameters(),1.,error_if_nonfinite=True);optimizer.step()
             if k%100==0:status(tiny_step=k,tiny_forecast=float(parts['forecast'].detach()))
         tiny.eval()
         with torch.no_grad():_,last=loss_for(tiny,b,a.reconstruction_weight)
-        tiny_result=dict(initial_forecast=first,final_forecast=float(last['forecast']),ratio=float(last['forecast'])/max(first,1e-12),steps=a.tiny_steps)
+        tiny_result=dict(initial_forecast=first,final_forecast=float(last['forecast']),ratio=float(last['forecast'])/max(first,1e-12),steps=a.tiny_steps,
+            initial_reconstruction=first_reconstruction,final_reconstruction=float(last['reconstruction']),
+            reconstruction_ratio=float(last['reconstruction'])/max(first_reconstruction,1e-12))
         write_json(a.output/'tiny-fit.json',tiny_result)
         if tiny_result['ratio']>.2 and tiny_result['final_forecast']>.01:raise RuntimeError('Tiny future fit failed; diagnose before scaling')
+        if a.reconstruction_weight>0 and tiny_result['reconstruction_ratio']>.5:raise RuntimeError('Tiny reconstruction failed to halve error; diagnose before scaling')
         del tiny,optimizer
         profile=[];pg=torch.Generator(device=a.device).manual_seed(917)
         for bs in a.batch_sizes:
@@ -161,7 +165,7 @@ def main():
         result=dict(state='complete',step=step,examples=seen,planned_examples=a.examples,truncated=seen<a.examples,elapsed_seconds=time.time()-started,
             train_evaluation='Fixed random up to 1024 training origins; full development sets',evaluations=results,checkpoint_sha256=file_hash(a.output/'best.pt'))
         if time.time()>deadline:raise TimeoutError('Incomplete final evaluation')
-        write_json(a.output/'results.json',result);status('complete')
+        write_json(a.output/'results.json',result);status('complete',seen=seen,planned_steps=steps)
         if wb:
             wb.summary.update({'result/state':'complete','result/checkpoint_sha256':result['checkpoint_sha256'],'result/seconds':result['elapsed_seconds']})
             artifact=wandb.Artifact(a.output.name+'-evidence',type='evaluation')

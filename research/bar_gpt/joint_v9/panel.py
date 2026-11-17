@@ -16,7 +16,7 @@ def read(path):
 
 def render(root):
     ledger=read(root/'campaign.json');name=ledger.get('current_experiment','dataset');p=read(root/name/'progress.json')
-    stage=p.get('stage','preparing');stale=time.time()-p.get('updated',time.time())>30
+    stage=p.get('stage','preparing');stale=stage not in ('complete','failed','stopped') and time.time()-p.get('updated',time.time())>30
     rows=[Text('BarGPT V9 · CAUSAL MULTISCALE FORECASTING',style='bold cyan'),Text(f'{name} · {stage}'+(' · stale' if stale else ''),style='yellow' if stale else 'bold'),
         Text('16 past windows → next 64 observed 1s bars · future inputs forbidden',style='dim')]
     bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=17);bars.add_column(ratio=1);bars.add_column(width=21,justify='right')
@@ -24,6 +24,8 @@ def render(root):
     bars.add_row('Elapsed / limit',BlockBar(p.get('elapsed',0),p.get('limit_seconds')),f'{duration(p.get("elapsed"))}/{duration(p.get("limit_seconds"))}')
     if 'validation' in stage or 'evaluation' in stage:bars.add_row('Evaluation',BlockBar(p.get('evaluation_done',0),p.get('evaluation_total')),f'{number(p.get("evaluation_done"))}/{number(p.get("evaluation_total"))}')
     rows.append(bars)
+    if 'validation' in stage or 'evaluation' in stage:
+        rows.append(Text(f'Evaluation: {number(p.get("evaluation_origins_per_second"))} origins/s · ETA {duration(p.get("evaluation_eta_seconds"))}',style='cyan'))
     rows.append(Text(f'Training incl. checks: {number(p.get("origins_per_second") if stage=="training" and not stale else None)} origins/s · GPU peak {number(p.get("gpu_memory_bytes",0)/2**30,1)} GiB · cached inputs',style='dim'))
     rows.append(Text(f'Loss: forecast {number(p.get("forecast_loss"),4)} · reconstruction {number(p.get("reconstruction_loss"),4)}'))
     latest=read(root/name/'development-latest.json')

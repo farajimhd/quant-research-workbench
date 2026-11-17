@@ -59,9 +59,9 @@ def fit_evaluate(features,targets):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--runs',nargs='+',required=True)
-    p.add_argument('--output',type=Path,required=True);a=p.parse_args();torch.set_num_threads(8)
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--data',type=Path);a=p.parse_args();torch.set_num_threads(8)
     if a.output.exists():raise FileExistsError('Preserve immutable probe report')
-    rows,manifest=load(a.root/'dataset',('train','development','novel_development'))
+    rows,manifest=load(a.data or a.root/'dataset',('train','development','novel_development'))
     data={k:cache(v) for k,v in rows.items()};targets={k:labels(v) for k,v in data.items()}
     raw={k:summaries(v) for k,v in data.items()}
     result=dict(dataset_hash=manifest['hash'],method='Frozen encoder. Ridge alpha=100, standardized using training only, no tuning on validation. All eligible future labels, rejection counts explicit.',

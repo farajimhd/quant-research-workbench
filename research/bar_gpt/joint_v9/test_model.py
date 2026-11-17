@@ -22,6 +22,14 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_masked_encoder_has_no_hidden_reference(self):
+        d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**calibrate(d)).eval()
+        visible=d['valid'].clone();visible[:,:,16:]=False
+        changed=d['x'].clone();changed[:,:,16:]+=12345
+        with torch.no_grad():
+            a=model.encode_windows(d['x'],visible);b=model.encode_windows(changed,visible)
+        torch.testing.assert_close(a,b,rtol=0,atol=0)
+
     def test_detached_reconstruction_probe_does_not_train_encoder(self):
         data=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**calibrate(data))
         z=model.encode_windows(data['x'],data['valid']);loss=model.reconstruct(z.detach())[0].sum();loss.backward()

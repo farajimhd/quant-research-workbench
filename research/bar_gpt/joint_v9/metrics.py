@@ -1,5 +1,6 @@
 """Future-change skill, grouped uncertainty and native reconstruction evidence."""
 import numpy as np
+import time
 import torch
 from .data import anchor
 from .model import structured
@@ -38,15 +39,20 @@ def skill(prediction,target,valid,baseline,scale,identities):
     result['selection_score']=float(np.mean(scores));result['sessions']=len(groups)
     changes=prediction-baseline;actual=target-baseline
     result['forecast_change_variance']=np.var(changes,axis=(0,1)).tolist();result['target_change_variance']=np.var(actual,axis=(0,1)).tolist()
-    result['horizon_close']={str(h):dict(mae=float(np.abs(prediction[:,h-1,3]-target[:,h-1,3]).mean()),
-        persistence_mae=float(np.abs(baseline[:,h-1,3]-target[:,h-1,3]).mean()),
-        sign_accuracy=float((np.sign(changes[:,h-1,3])==np.sign(actual[:,h-1,3])).mean()),zero_target_changes=int((actual[:,h-1,3]==0).sum())) for h in (1,8,16,32,64)}
+    result['horizon_close']={}
+    for h in (1,8,16,32,64):
+        ix=m[:,h-1,3]
+        result['horizon_close'][str(h)]=dict(count=int(ix.sum()),invalid_count=int((~ix).sum()),
+            mae=float(np.abs(prediction[ix,h-1,3]-target[ix,h-1,3]).mean()) if ix.any() else None,
+            persistence_mae=float(np.abs(baseline[ix,h-1,3]-target[ix,h-1,3]).mean()) if ix.any() else None,
+            sign_accuracy=float((np.sign(changes[ix,h-1,3])==np.sign(actual[ix,h-1,3])).mean()) if ix.any() else None,
+            zero_target_changes=int((actual[ix,h-1,3]==0).sum()))
     return result
 
 
 @torch.no_grad()
 def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status=None):
-    model.eval();pred=[];past=[];means=[];recon=[];zs=[]
+    model.eval();pred=[];past=[];means=[];recon=[];zs=[];metadata=[];started=time.perf_counter()
     for start in range(0,len(rows),batch_size):
         d={k:v[start:start+batch_size] for k,v in data.items()}
         o=model(d['x'],d['valid'],d['ages'],reconstruct=reconstruction)
@@ -54,14 +60,39 @@ def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status
         if not torch.isfinite(p).all():raise FloatingPointError('Nonfinite forecast')
         pred.append(p.cpu().numpy());past.append(structured(base[:,None]).expand(-1,64,-1).cpu().numpy())
         means.append(structured(base[:,None]+model.mean_future_delta).cpu().numpy());zs.append(o['joint'].cpu().numpy())
-        if reconstruction:recon.append(inverse(o['reconstruction'][0]).cpu().numpy())
-        if status:status(evaluation_done=min(start+batch_size,len(rows)),evaluation_total=len(rows))
+        if reconstruction:
+            recon.append(inverse(o['reconstruction'][0]).cpu().numpy())
+            _,t,vl=o['reconstruction'];v=d['valid'];tv=v[...,18:]
+            time_error=(t*model.input_scale[18:]+model.input_mean[18:]-d['x'][...,18:]).abs()
+            yes=vl>=0
+            metadata.append(dict(time_sum=torch.where(tv,time_error,0).sum((0,1,2)).cpu().numpy(),time_count=tv.sum((0,1,2)).cpu().numpy(),
+                tp=int((yes&v).sum()),tn=int((~yes&~v).sum()),fp=int((yes&~v).sum()),fn=int((~yes&v).sum())))
+        if status:
+            done=min(start+batch_size,len(rows));elapsed=time.perf_counter()-started
+            status(evaluation_done=done,evaluation_total=len(rows),evaluation_origins_per_second=done/max(elapsed,1e-9),evaluation_eta_seconds=(len(rows)-done)*elapsed/done)
     p=np.concatenate(pred);baseline=np.concatenate(past);mean=np.concatenate(means);target=data['target'].cpu().numpy();valid=data['target_valid'].cpu().numpy()
     result=skill(p,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
     result['training_mean_control']=skill(mean,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
     future=future_rows(rows)
     result['native_forecast']=native_metrics(inverse(torch.from_numpy(p)).numpy(),future)
     result['native_persistence']=native_metrics(inverse(torch.from_numpy(baseline)).numpy(),future)
-    if reconstruction:result['reconstruction']=native_metrics(np.concatenate(recon).reshape(-1,64,18),rows['context'].reshape(-1))
+    if reconstruction:
+        result['reconstruction']=native_metrics(np.concatenate(recon).reshape(-1,64,18),rows['context'].reshape(-1))
+        result['reconstruction_metadata']=dict(time_mae=(sum(x['time_sum'] for x in metadata)/np.maximum(sum(x['time_count'] for x in metadata),1)).tolist(),
+            time_valid_counts=sum(x['time_count'] for x in metadata).tolist(),validity_confusion={k:sum(x[k] for x in metadata) for k in ('tp','tn','fp','fn')})
     result['joint_embedding_variance']=np.var(np.concatenate(zs),axis=0).tolist()
     return result
+
+
+@torch.no_grad()
+def masked_reconstruction(model,data,rows,batch_size=128,seed=917):
+    """Sixteen random visible bars per window; no hidden reference in encoder."""
+    model.eval();rng=np.random.default_rng(seed);pred=[]
+    for start in range(0,len(rows),batch_size):
+        x=data['x'][start:start+batch_size];v=data['valid'][start:start+batch_size]
+        ranks=rng.random(tuple(v.shape[:-1])).argsort(-1).argsort(-1)
+        visible=torch.from_numpy(ranks<16).to(v.device)
+        z=model.encode_windows(x,v&visible[...,None]);p=model.reconstruct(z)[0]
+        pred.append(inverse(p).cpu().numpy())
+    return dict(visible_bars=16,seed=seed,masking='All 27 input feature validities hidden for 48 bars. Original source-valid targets retained. No copied references.',
+        native=native_metrics(np.concatenate(pred).reshape(-1,64,18),rows['context'].reshape(-1)))

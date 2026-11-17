@@ -1,7 +1,7 @@
 """Frozen diverse sessions from certified Phase 2 pools, never historical events."""
 import os
 os.environ.update(PYTHONDONTWRITEBYTECODE='1',POLARS_MAX_THREADS='4')
-import argparse,hashlib,json,time
+import argparse,hashlib,json,time,shutil
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -66,8 +66,16 @@ def extract(item):
     return result,identities,dict(reject)
 
 
-def prepare(certificate,output,per_cell=240,workers=8):
+def prepare(certificate,output,per_cell=240,workers=8,base=None):
     started=time.time();output.mkdir(parents=True,exist_ok=False);cert=sealed(certificate)
+    base_manifest=None;base_keys=set()
+    if base is not None:
+        base_manifest=sealed(base/'manifest.json')
+        if base_manifest['source_certificate_hash']!=cert['hash']:raise ValueError('Expansion source changed')
+        for name,expected in base_manifest['files'].items():
+            if file_hash(base/name)!=expected:raise ValueError('Base dataset changed')
+        base_ids=json.loads((base/'train-identities.json').read_text())
+        base_keys={r['ticker']+'|'+r['session'] for r in base_ids}
     if not cert.get('input_context_certified'):raise ValueError('Uncertified Phase 2 release')
     tables=[]
     for number,root in enumerate(cert['roots']):
@@ -95,12 +103,22 @@ def prepare(certificate,output,per_cell=240,workers=8):
         'audit_2026':units.filter(pl.col('year')==2026)}
     summary={};rejections=Counter(duplicate_publication_groups=total-units.height)
     for partition,table in groups.items():
+        if base is not None and partition!='train':
+            for suffix in ('.npy','-identities.json'):shutil.copyfile(base/(partition+suffix),output/(partition+suffix))
+            summary[partition]=base_manifest['summary'][partition]
+            continue
         selected=[]
         for _,cell in table.group_by('year','liquid',maintain_order=True):
             n=per_cell if partition=='train' else max(80,per_cell//2)
             if partition=='audit_2026':n=cell.height
             # Fixed seeded sample over independent session groups; not adjacent origins.
-            selected.extend(cell.sample(n=min(n,cell.height),seed=2026111709,shuffle=True).to_dicts())
+            if base is not None:
+                cell=cell.with_columns((pl.col('ticker')+'|'+pl.col('date')).alias('_group'))
+                retained=cell.filter(pl.col('_group').is_in(list(base_keys)))
+                extra=cell.filter(~pl.col('_group').is_in(list(base_keys)))
+                selected.extend(retained.drop('_group').to_dicts())
+                selected.extend(extra.sample(n=min(max(0,n-retained.height),extra.height),seed=2026111709,shuffle=True).drop('_group').to_dicts())
+            else:selected.extend(cell.sample(n=min(n,cell.height),seed=2026111709,shuffle=True).to_dicts())
         for item in selected:item.update(minimum=bounds[partition][0],maximum=bounds[partition][1])
         arrays=[];identities=[];done=0
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -111,22 +129,30 @@ def prepare(certificate,output,per_cell=240,workers=8):
         if not arrays:raise ValueError('Empty partition '+partition)
         array=np.array(arrays,dtype=SAMPLE);np.save(output/(partition+'.npy'),array,allow_pickle=False)
         write_json(output/(partition+'-identities.json'),identities)
+        if base is not None and partition=='train':
+            def key(r):return (r['ticker'],r['session'],r['block'],r['origin_index'])
+            index={key(r):i for i,r in enumerate(identities)};old=np.load(base/'train.npy',mmap_mode='r')
+            for i,r in enumerate(base_ids):
+                if key(r) not in index or old[i].tobytes()!=array[index[key(r)]].tobytes():raise ValueError('Expansion failed byte-exact nested training retention')
         price=array['context']['values'][:,7,-1,3]
         summary[partition]=dict(examples=len(array),sessions=len({(r['ticker'],r['session']) for r in identities}),tickers=len({r['ticker'] for r in identities}),
             price_bands=np.bincount(np.digitize(price,[.1,1,5,20,100]),minlength=6).tolist(),
             valid_market_counts=array['future']['valid'].sum((0,1)).tolist(),year_counts=dict(Counter(r['year'] for r in identities)),
             liquid_counts=dict(Counter(r['liquid'] for r in identities)),min_context_us=int(array['context']['end_us'].min()),max_target_us=int(array['future']['end_us'].max()))
-    train=np.load(output/'train.npy',mmap_mode='r');np.save(output/'tiny.npy',train[np.linspace(0,len(train)-1,16,dtype=int)],allow_pickle=False)
+    train=np.load(output/'train.npy',mmap_mode='r')
+    if base is not None:shutil.copyfile(base/'tiny.npy',output/'tiny.npy')
+    else:np.save(output/'tiny.npy',train[np.linspace(0,len(train)-1,16,dtype=int)],allow_pickle=False)
     result=dict(version='joint-v9-frozen-causal-1',source_certificate_hash=cert['hash'],source_certificate=str(certificate),
         geometry=dict(windows=16,bars=64,allocation=TOKENS,frames=FRAMES,future='next 64 observed 1s bars inside same source block'),
         split_policy='Train 2019-2023 excluding SHA-held tickers; development second-half 2024 with all context >=2024; novel development uses excluded tickers; sealed audits 2025/2026 with context >=2025. No train/development context-target overlap. Historical audits were exposed to prior unrelated experiments; not pristine external tests.',
         sampling='Seeded equal maximum session counts per year/liquidity; up to four nonoverlapping future supports/session. Uniform retained samples; report natural counts, no population claim.',
         seed=2026111709,summary=summary,rejections=dict(rejections),elapsed_seconds=time.time()-started,
         files={p.name:file_hash(p) for p in output.iterdir() if p.suffix=='.npy' or p.name.endswith('-identities.json')})
+    if base is not None:result['expansion']=dict(base_hash=base_manifest['hash'],retained_training_examples=len(base_ids),unchanged_holdouts=True,retention='byte-exact examples; fixed source identities')
     result['hash']=digest(result);write_json(output/'manifest.json',result);return result
 
 
 if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--certificate',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--per-cell',type=int,default=240);p.add_argument('--workers',type=int,default=8);a=p.parse_args()
-    print(json.dumps(prepare(a.certificate,a.output,a.per_cell,a.workers)))
+    p.add_argument('--per-cell',type=int,default=240);p.add_argument('--workers',type=int,default=8);p.add_argument('--base',type=Path);a=p.parse_args()
+    print(json.dumps(prepare(a.certificate,a.output,a.per_cell,a.workers,a.base)))
