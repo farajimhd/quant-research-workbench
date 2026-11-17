@@ -11,13 +11,15 @@ def main():
     p.add_argument('--source-revision',required=True);p.add_argument('--deployment',type=Path,required=True)
     p.add_argument('--batch-size',type=int,default=4096);p.add_argument('--workers',type=int,default=16)
     p.add_argument('--precision',choices=('fp32','bf16'),default='bf16');p.add_argument('--resume',action='store_true')
-    p.add_argument('--preparation',choices=('cpu','gpu'),default='gpu')
+    p.add_argument('--preparation',choices=('cpu','gpu','raw_gpu'),default='gpu')
+    p.add_argument('--engineering-receipt',type=Path)
     a=p.parse_args();setup=a.output.with_name(a.output.name+'-launcher');setup.mkdir(exist_ok=a.resume)
     if a.output.exists() and not a.resume:raise FileExistsError('Fresh run requires new output')
     cmd=[sys.executable.replace('pythonw.exe','python.exe'),'-B','-u','-m','research.bar_gpt.phase1_v7.full','train',
         '--output',str(a.output),'--source-revision',a.source_revision,'--deployment',str(a.deployment),
         '--batch-size',str(a.batch_size),'--workers',str(a.workers),'--precision',a.precision,'--preparation',a.preparation,'--epochs','50']
     if a.resume:cmd+=['--resume']
+    if a.engineering_receipt:cmd+=['--engineering-receipt',str(a.engineering_receipt)]
     import psutil
     own=psutil.Process()
     # Task Scheduler defaults to Below Normal; match the profiled CPU/loader service class.
@@ -31,6 +33,7 @@ def main():
             child=subprocess.Popen(cmd,cwd=Path(__file__).resolve().parents[3],env=dict(os.environ),stdout=stdout,stderr=stderr,
                 creationflags=subprocess.CREATE_NO_WINDOW if os.name=='nt' else 0)
             proof['child']=dict(pid=child.pid,created=psutil.Process(child.pid).create_time());write_json(setup/'launch.json',proof)
+            write_json(setup/f'launch-{child.pid}-{int(proof["started"])}.json',proof)
             code=child.wait();write_json(setup/'exit.json',dict(code=code,ended=time.time()));return code
     finally:
         if os.name=='nt':ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)

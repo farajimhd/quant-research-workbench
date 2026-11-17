@@ -159,6 +159,16 @@ class BarInputTransformV1(nn.Module):
             raise ValueError("Unsupported timeframe for the current shard contract.")
         frames = timeframe_us.expand(batch)  # Scalar/[B] → [B], without copying.
 
+        transformed = self.assemble(values, observed, end_us, frames, present, gaps)
+        if not torch.isfinite(transformed.values).all():
+            raise ValueError("Market values overflow Float32.")
+        return transformed
+
+    @staticmethod
+    def assemble(values, observed, end_us, frames, present, gaps):
+        """Shared arithmetic after validation; capture-safe for prevalidated shards."""
+        batch, device = len(values), values.device
+
         time_values = torch.zeros((batch, WIDTH, len(TIME_CHANNELS)), dtype=torch.float32, device=device)
         # Relative sequence position broadcasts [64] across all samples → [B,64].
         time_values[..., 0] = torch.arange(WIDTH, device=device, dtype=torch.float32) / (WIDTH - 1)
@@ -170,7 +180,7 @@ class BarInputTransformV1(nn.Module):
         time_values[..., 2] = torch.sin(clock_angle)
         time_values[..., 3] = torch.cos(clock_angle)
         time_values[:, 1:, 4] = torch.log1p(gaps.double() / frames[:, None])  # [B,63].
-        weekday, week, weeks_in_year = self._utc_week_fields(end_us // DAY_US)
+        weekday, week, weeks_in_year = BarInputTransformV1._utc_week_fields(end_us // DAY_US)
         weekday_angle = 2 * torch.pi * weekday.double() / 7  # UTC Monday=0.
         time_values[..., 5] = torch.sin(weekday_angle)
         time_values[..., 6] = torch.cos(weekday_angle)
@@ -182,8 +192,6 @@ class BarInputTransformV1(nn.Module):
         time_valid[:, 0, 4] = False  # No predecessor exists in this shard sample.
         time_values = torch.where(time_valid, time_values, 0)  # Padding carries no clock or sequence signal.
         clean_values = torch.where(observed, values, 0).float()  # [B,64,18], unscaled, differentiable.
-        if not torch.isfinite(clean_values).all():
-            raise ValueError("Market values overflow Float32.")
         return TransformedBars(
             values=torch.cat((clean_values, time_values), dim=-1),  # 18+9 → [B,64,27].
             valid=torch.cat((observed, time_valid), dim=-1),  # Matching [B,64,27] evidence.

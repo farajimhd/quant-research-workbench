@@ -29,8 +29,8 @@ def evaluate(model,manifest,args,status,limit=0):
             if (args.output/'STOP').exists():return None
             try:b=device.pop()
             except StopIteration:break
-            p=forward(model,b,args.precision);raw=model.transform.inverse(p);truth=b.raw.double();valid=b.valid
-            e=(raw-truth).abs();le=(p.double()-b.target.double()).abs()
+            p,target=forward(model,b,args.precision,with_target=True);raw=model.transform.inverse(p);truth=b.raw.double();valid=b.valid
+            e=(raw-truth).abs();le=(p.double()-target.double()).abs()
             nonfinite+=int((~torch.isfinite(raw)&valid).sum());negative+=int(((raw<0)&valid).sum())
             for base in (0,6,12):
                 o,h,l,c=raw[...,base:base+4].unbind(-1)
@@ -82,16 +82,20 @@ def train(args,manifest,status):
         objective='equal price/activity channel means; Huber on 100*log-price residual and log1p-activity residual',
         normalization='no fitted population statistics; visible-input references exported in embedding',
         initialization='fresh seed, not subset checkpoint',torch=str(torch.__version__))
-    epoch=step=cursor=origins=epoch_done=0;phase='train';best=float('inf');history=[]
+    epoch=step=cursor=origins=epoch_done=0;phase='train';best=float('inf');history=[];engineering_history=[];migration=None
     if args.resume:
-        s=load_checkpoint(args.output/'checkpoint_last.pt',contract)
+        from .full_engineering import resume
+        s,migration=resume(args.output/'checkpoint_last.pt',contract,args.engineering_receipt)
         model.load_state_dict(s['model']);optimizer.load_state_dict(s['optimizer']);restore_rng(s['rng'])
         epoch,step,cursor,origins,epoch_done,phase,best,history=(s[k] for k in ('epoch','step','batch_cursor','origins','epoch_done','phase','best','history'))
+        engineering_history=s.get('engineering_history',[])
+        if migration:engineering_history=engineering_history+[migration]
     else:write_json(args.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()}))
     def checkpoint(name='checkpoint_last.pt'):
         save_checkpoint(args.output/name,dict(contract=contract,model=model.state_dict(),optimizer=optimizer.state_dict(),
             rng=rng_state(),epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,
-            phase=phase,best=best,history=history,scheduler=dict(epoch=epoch,step=step,peak=args.learning_rate,floor=args.min_learning_rate,warmup=args.warmup_updates)))
+            phase=phase,best=best,history=history,engineering_history=engineering_history,
+            scheduler=dict(epoch=epoch,step=step,peak=args.learning_rate,floor=args.min_learning_rate,warmup=args.warmup_updates)))
     reporter=None;replay=None
     if args.wandb_mode=='online':
         from research.mlops.env import discover_env_files,load_env_files
@@ -100,14 +104,16 @@ def train(args,manifest,status):
         ip=args.output/'wandb-identity.json';identity=json.loads(ip.read_text()) if ip.exists() else None
         if args.resume and not identity:raise ValueError('Missing original W&B identity')
         reporter=wandb.init(project='bargpt-v7-full',entity='mehdifaraji',name=args.output.name,
-            id=identity['id'] if identity else None,resume='must' if identity else None,config=contract,dir=str(args.output))
+            id=identity['id'] if identity else None,resume='must' if identity else None,config=None if identity else contract,dir=str(args.output))
+        if engineering_history:reporter.config.update({'engineering/current_source_revision':args.source_revision,
+            'engineering/current_preparation':args.preparation,'engineering/history':engineering_history},allow_val_change=True)
         if not identity:write_json(ip,dict(id=reporter.id,url=reporter.url,name=reporter.name))
     try:
-        if not args.resume:checkpoint()
+        if not args.resume or migration:checkpoint()
         # Real-data graph capture before loader pin-memory threads start.
         if args.cuda_graph:
             rows=np.load(args.data/'train.npy',mmap_mode='r',allow_pickle=False)
-            example=prepare(rows[:args.batch_size],compact=args.preparation=='gpu').to('cuda');replay=Replay(model,example,args.precision);del example
+            example=prepare(rows[:args.batch_size],compact=args.preparation=='gpu',raw_gpu=args.preparation=='raw_gpu').to('cuda');replay=Replay(model,example,args.precision);del example
         while epoch<args.epochs:
             if phase=='train':
                 model.train();source=loader(manifest,args,'train',epoch);device=None

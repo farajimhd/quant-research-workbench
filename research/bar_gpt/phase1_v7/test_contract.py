@@ -11,6 +11,29 @@ from .export import EncoderOnly
 
 
 class Contracts(unittest.TestCase):
+    def test_engineering_resume_rejects_scientific_changes(self):
+        import json
+        from unittest.mock import patch
+        from .full_engineering import resume
+        from ..v5.shards.phase1_contract import digest,file_hash
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);checkpoint=root/'checkpoint.pt';checkpoint.write_bytes(b'parent')
+            previous=dict(source_revision='old',preparation='gpu',batch_size=4096)
+            current=dict(previous,source_revision='new',preparation='raw_gpu')
+            checkpoint.with_suffix('.proof.json').write_text(json.dumps(dict(contract=digest(previous))))
+            evidence={}
+            for name,value in dict(precision=dict(bf16_accepted=True,preparation_prediction_parity=True),
+                engineering=dict(graph_eager_update_parity=True,checkpoint_resume_update_parity=True,ratio=.01),
+                stream=dict(windows_per_second=200000)).items():
+                path=root/(name+'.json');path.write_text(json.dumps(value));evidence[name]=dict(path=str(path),sha256=file_hash(path))
+            receipt=dict(previous_contract=previous,new_source_revision='new',checkpoint_sha256=file_hash(checkpoint),evidence=evidence)
+            receipt['hash']=digest(receipt);path=root/'receipt.json';path.write_text(json.dumps(receipt))
+            with patch('research.bar_gpt.phase1_v7.full_engineering.load_checkpoint',return_value={'step':9}):
+                state,_=resume(checkpoint,current,path);self.assertEqual(state['step'],9)
+                with self.assertRaisesRegex(ValueError,'Scientific'):resume(checkpoint,dict(current,batch_size=8192),path)
+                checkpoint.write_bytes(b'changed')
+                with self.assertRaisesRegex(ValueError,'parent checkpoint'):resume(checkpoint,current,path)
+
     def test_full_worker_preparation_and_gradients(self):
         from .full_data import prepare
         from .train import cache
@@ -30,6 +53,10 @@ class Contracts(unittest.TestCase):
         from .full_step import forward
         compact=prepare(rows,compact=True)
         torch.testing.assert_close(p,forward(model,compact,'fp32'),rtol=0,atol=0)
+        raw=prepare(rows,raw_gpu=True)
+        torch.testing.assert_close(p,forward(model,raw,'fp32'),rtol=0,atol=0)
+        self.assertIs(raw.grid,raw.target)
+        self.assertIs(raw.to('cpu').grid,raw.to('cpu').target)
         loss,_=objective(p,prepared.target,prepared.valid,None);loss.backward()
         self.assertTrue(all(torch.isfinite(v.grad).all() for v in model.parameters()))
 

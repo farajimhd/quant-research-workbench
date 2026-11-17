@@ -19,7 +19,7 @@ def engineering(args):
     """Tiny overfit, captured/eager parity, and full-state serialization resume."""
     from ..phase2_v2.train import save_checkpoint,load_checkpoint,rng_state
     rows=np.load(args.data/'tiny.npy',allow_pickle=False)
-    b=prepare(rows,compact=args.preparation=='gpu').to('cuda')
+    b=prepare(rows,compact=args.preparation=='gpu',raw_gpu=args.preparation=='raw_gpu').to('cuda')
     m=model();other=model();other.load_state_dict(m.state_dict())
     opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
     eager_opt=torch.optim.AdamW(other.parameters(),lr=3e-4,fused=True)
@@ -52,12 +52,13 @@ def qualify(args):
     rows=np.load(args.data/'development.npy',allow_pickle=False)
     saved=torch.load(args.checkpoint,map_location='cpu',weights_only=False)
     m=model();m.load_state_dict(saved['model']);m.eval();result={};predictions={}
-    for precision in ('fp32','bf16'):
+    modes=('cpu_fp32','fp32','bf16') if args.preparation=='raw_gpu' else ('fp32','bf16')
+    for precision in modes:
         parts=[]
         with torch.no_grad():
             for start in range(0,len(rows),512):
-                b=prepare(rows[start:start+512],compact=args.preparation=='gpu').to('cuda')
-                parts.append(m.transform.inverse(forward(m,b,precision)).cpu().numpy())
+                b=prepare(rows[start:start+512],compact=args.preparation=='gpu',raw_gpu=args.preparation=='raw_gpu' and precision!='cpu_fp32').to('cuda')
+                parts.append(m.transform.inverse(forward(m,b,'fp32' if precision=='cpu_fp32' else precision)).cpu().numpy())
         pred=np.concatenate(parts);metrics=evaluate(pred,rows);require_structured(metrics,paired=True)
         predictions[precision]=pred;result[precision]=metrics
     p=result['fp32'];q=result['bf16']
@@ -73,6 +74,14 @@ def qualify(args):
                     regressions.append(dict(frame=f,channel=c,band=band,fp32=pb['mean'],bf16=qb['mean']))
     result['bf16_group_regressions']=regressions
     result['bf16_accepted'] &= not bool(regressions)
+    if args.preparation=='raw_gpu':
+        baseline=predictions['cpu_fp32'];candidate=predictions['fp32']
+        source=rows['values'].astype(np.float64);valid=rows['valid'].astype(bool)
+        relative=np.abs(candidate-baseline)/np.maximum(np.abs(baseline),1e-12)
+        result['preparation_prediction_max_relative_difference']=float(relative[valid].max())
+        # Include near-zero activity outputs in an absolute-plus-relative parity test.
+        result['preparation_prediction_parity']=bool(np.allclose(candidate[valid],baseline[valid],rtol=2e-4,atol=1e-5))
+        if not result['preparation_prediction_parity']:raise AssertionError('GPU raw/time preparation changes pinned predictions beyond tolerance')
     write_json(args.output/'precision.json',result)
     return dict(bf16_accepted=result['bf16_accepted'],regressions=len(regressions),
                 fp32=p['balanced_price_relative_mean'],bf16=q['balanced_price_relative_mean'])
@@ -85,7 +94,7 @@ def compute(args):
         for batch in args.batches:
             for graph in (False,True):
                 torch.cuda.empty_cache();torch.manual_seed(17);m=model();m.train()
-                b=prepare(rows[:batch],compact=args.preparation=='gpu').to('cuda');opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
+                b=prepare(rows[:batch],compact=args.preparation=='gpu',raw_gpu=args.preparation=='raw_gpu').to('cuda');opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
                 began=time.perf_counter();replay=Replay(m,b,precision) if graph else None
                 startup=time.perf_counter()-began
                 def step():
@@ -112,7 +121,7 @@ def stream(args,manifest,status):
     m=model();m.train();opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
     # Capture before starting pin-memory threads.
     rows=np.load(args.data/'train.npy',mmap_mode='r',allow_pickle=False)
-    example=prepare(rows[:args.batch_size],compact=args.preparation=='gpu').to('cuda')
+    example=prepare(rows[:args.batch_size],compact=args.preparation=='gpu',raw_gpu=args.preparation=='raw_gpu').to('cuda')
     replay=Replay(m,example,args.precision) if args.cuda_graph else None
     began=time.perf_counter();source=loader(manifest,args,'train');device=None
     seen=0;steady=None;initial_wait=0
