@@ -48,6 +48,7 @@ def main():
     rows['audit']=np.load(audit_path,allow_pickle=False)
     results={}
     for name in names:
+        candidate_started=time.time()
         run=a.root/name;state=torch.load(run/'best.pt',map_location='cpu',weights_only=False)
         identity=state['identity'];config=Config(**identity['config'])
         mean=torch.tensor(identity['calibration']['mean']);scale=torch.tensor(identity['calibration']['scale'])
@@ -60,13 +61,25 @@ def main():
                 metrics[partition+('_full' if full else '_masked')]=evaluate(pred,rows[partition],mask)
                 if full:embeddings[partition]=z
         info=probes(embeddings['train'],embeddings['audit'],rows['train'],rows['audit'])
+        constant=model.transform.inverse(torch.zeros(1,64,18,device=a.device)).cpu().numpy()
+        controls={'training_constant_full':evaluate(np.broadcast_to(constant,(len(rows['audit']),64,18)),rows['audit'])}
+        for full in (True,False):
+            _,_,target_mask=predict(model,data['audit'],bs,full)
+            observed=rows['audit']['valid'].astype(bool)
+            visible=observed if full else observed&~target_mask
+            control=np.empty_like(rows['audit']['values'],dtype=np.float64)
+            for j in range(18):
+                values=np.ma.array(rows['audit']['values'][...,j],mask=~visible[...,j])
+                med=np.ma.median(values,axis=1).filled(float(constant[0,0,j]))
+                control[...,j]=med[:,None]
+            controls['visible_median_'+('full' if full else 'masked')]=evaluate(control,rows['audit'],target_mask)
         torch.manual_seed(identity['seed'])
         untrained=Autoencoder(config,mean,scale).to(a.device)
         _,train_z,_=predict(untrained,data['train'],bs)
         _,audit_z,_=predict(untrained,data['audit'],bs)
         sy,_=summaries(rows['train']);ay,_=summaries(rows['audit'])
         result=dict(identity=identity,checkpoint_sha256=file_hash(run/'best.pt'),selected_step=state['step'],
-            dataset_hash=manifest['hash'],metrics=metrics,audit_probes=info,
+            dataset_hash=manifest['hash'],metrics=metrics,audit_probes=info,audit_controls=controls,
             untrained_audit_probes=probes(train_z,audit_z,rows['train'],rows['audit']),
             raw_summary_audit_probes=probes(sy,ay,rows['train'],rows['audit']),
             representation=rank_diagnostics(embeddings['audit']),precision='FP32 model, FP64 raw inverse',
@@ -85,7 +98,8 @@ def main():
         assert not hasattr(exported,'decoder')
         torch.testing.assert_close(actual.cpu(),torch.from_numpy(embeddings['audit'][:8]),rtol=1e-5,atol=1e-5)
         write_json(output/(name+'-export.json'),dict(sha256=file_hash(encoder_path),dimensions=config.embedding,
-            decoder_present=False,raw_input_parity=True,checkpoint_sha256=result['checkpoint_sha256']))
+            decoder_present=False,raw_input_parity=True,checkpoint_sha256=result['checkpoint_sha256'],
+            finalist_evaluation_seconds=time.time()-candidate_started))
         del exported
         del model,untrained,data
         if a.device=='cuda':torch.cuda.empty_cache()

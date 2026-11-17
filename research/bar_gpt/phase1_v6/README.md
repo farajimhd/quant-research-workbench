@@ -91,3 +91,28 @@ computed exclusively from supplied visible input masks. They replace three learn
 coordinates, keeping export size fixed; decoder capacity stays unchanged. This
 targets the consistently poor quote-coverage probes while explicitly separating
 architectural information preservation from improvements learned by optimization.
+
+The November 17 bounded campaign used eight experiment identities (one excluded
+for a mistyped source revision and repeated with verified provenance). The final
+source admission gate checks the complete revision and every deployed file hash.
+E08 is the compact primary finalist; E06 is the activity-reconstruction alternative.
+See runtime `comparison.txt`/`comparison.json` for the authoritative held-out outcome,
+limitations, pinned hashes and all 18 raw-channel errors. The scientific budget is
+exhausted; this source does not authorize an automatic full-data run.
+
+`finalize.py --root CAMPAIGN_ROOT --names e08-token-validity,e06-wide-embedding`
+freezes finalist identities before opening audit values, evaluates each once,
+pins checkpoints, and verifies decoder-free export parity. It refuses to overwrite
+an existing audit. `report.py --root CAMPAIGN_ROOT --recommended e08-token-validity`
+reproduces the comparison from recorded evidence.
+
+```python
+from research.bar_gpt.phase1_v6.export import load_encoder
+encoder = load_encoder("PINNED_ENCODER_ONLY.pt", device="cpu")
+embedding = encoder.encode_raw(raw_values, source_valid, end_us, timeframe_us)
+```
+
+Inputs retain `[B,64,18]` market values/masks, `[B,64]` UTC microsecond clocks and
+`[B]` timeframe microseconds. The export includes fixed training-only transform
+buffers and encoder weights, but no decoder weights. It never accepts references
+or statistics computed from hidden targets.
