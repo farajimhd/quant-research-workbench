@@ -87,11 +87,11 @@ def main(argv=None):
     p.add_argument('--source-revision',required=True);p.add_argument('--variant',choices=('canonical','geometry','geometry_joint'),default='canonical')
     p.add_argument('--minutes',type=float,default=20);p.add_argument('--steps',type=int,default=2400)
     p.add_argument('--width',type=int,default=1024);p.add_argument('--layers',type=int,default=3)
-    p.add_argument('--embedding',type=int,default=256);p.add_argument('--decoder',type=int,default=256)
+    p.add_argument('--embedding',type=int,default=256);p.add_argument('--decoder',type=int,choices=(0,),default=0,help='Compatibility field: V7 has no hidden decoder layers')
     p.add_argument('--visible',type=int,default=16);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--resume',action='store_true')
     p.add_argument('--full-probability',type=float,default=0.)
-    p.add_argument('--validity-slots',action='store_true')
+    p.add_argument('--validity-slots',action='store_true',default=True,help='V7 always exports quote validity fractions')
     p.add_argument('--device',default='cuda');p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
     p.add_argument('--hypothesis',required=True);p.add_argument('--parent',default='none')
     a=p.parse_args(argv)
@@ -137,6 +137,8 @@ def main(argv=None):
     config=Config(a.variant,a.width,a.embedding,a.layers,a.decoder,a.visible,a.validity_slots)
     model=Autoencoder(config,mean,scale).to(device)
     identity=dict(version='phase1-v7-light-decoder-campaign',config=asdict(config),source_revision=a.source_revision,
+        architecture=dict(decoder='one affine projection plus fixed output algebra',validity_slots=3,
+            scale_slots=18,paired_quote_slots=4 if model.joint else 0),
         dataset_hash=manifest['hash'],seed=a.seed,learning_rate=a.lr,steps=a.steps,minutes=a.minutes,
         full_probability=a.full_probability,
         precision='FP32 encoder/readout; FP64 inverse',hypothesis=a.hypothesis,parent=a.parent,
