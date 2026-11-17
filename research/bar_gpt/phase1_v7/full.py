@@ -45,7 +45,7 @@ def main():
     status(stage='verifying source and hardware')
     write_json(a.output/'hardware.json',dict(host=os.environ.get('COMPUTERNAME'),gpu=torch.cuda.get_device_name(),
         memory_mib=torch.cuda.get_device_properties(0).total_memory/2**20,torch=str(torch.__version__),cuda=torch.version.cuda,
-        ram_available=psutil.virtual_memory().available,disk_free=psutil.disk_usage(a.output).free))
+        ram_available=psutil.virtual_memory().available,disk_free=psutil.disk_usage(str(a.output)).free))
     from ..phase2_v2.train import lease
     try:
         with lease(a.output):
