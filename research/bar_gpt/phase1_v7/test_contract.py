@@ -3,6 +3,7 @@ import unittest
 import tempfile
 from pathlib import Path
 import torch
+import numpy as np
 from .model import Config, Autoencoder, Transform, objective, PRICES, ACTIVITY
 from .train import batch, save_checkpoint
 from .export import EncoderOnly
@@ -10,6 +11,15 @@ from .export import EncoderOnly
 
 
 class Contracts(unittest.TestCase):
+    def test_control_reporting_is_separate_from_model_acceptance(self):
+        from .metrics import evaluate,require_structured
+        rows=np.zeros(1,dtype=[('values','f4',(64,18)),('valid','u1',(64,18)),('timeframe_us','i8')])
+        rows['values']=1;rows['valid']=1;rows['timeframe_us']=100000
+        control=rows['values'].astype(np.float64);control[...,1]=.5
+        metrics=evaluate(control,rows)
+        self.assertEqual(metrics['frames']['100000']['structure']['trade']['prediction'],64)
+        with self.assertRaises(FloatingPointError):require_structured(metrics)
+
     def test_inverse_difficult_values(self):
         raw=torch.tensor([1e-8,.1,.2,1.,1e4,1e12]).reshape(6,1,1).expand(6,64,18).clone()
         raw[0,:,ACTIVITY]=0
