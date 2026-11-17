@@ -139,7 +139,10 @@ class Autoencoder(nn.Module):
 
 def objective(prediction,target,valid,scale):
     residual=prediction.float()-target.float()
-    residual=residual.clone();residual[...,PRICES]*=100
+    residual=residual.clone()
+    for base in (0,6,12):residual[...,base:base+4]*=100
     loss=torch.nn.functional.smooth_l1_loss(residual,torch.zeros_like(residual),reduction='none',beta=1.)
     channel=torch.where(valid,loss,0).sum((0,1))/valid.sum((0,1)).clamp_min(1)
-    return .5*(channel[PRICES].mean()+channel[ACTIVITY].mean()),channel
+    price=torch.cat([channel[base:base+4] for base in (0,6,12)])
+    activity=torch.cat([channel[base+4:base+6] for base in (0,6,12)])
+    return .5*(price.mean()+activity.mean()),channel
