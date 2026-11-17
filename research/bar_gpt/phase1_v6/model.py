@@ -16,6 +16,7 @@ class Config:
     layers: int = 3
     decoder: int = 256
     visible: int = 16
+    validity_slots: bool = False
 
 
 class Transform(nn.Module):
@@ -48,13 +49,14 @@ class Autoencoder(nn.Module):
         super().__init__()
         self.config=config
         if config.variant not in ('pooled','scale_slots','flat_scale_slots'):raise ValueError(config.variant)
+        if config.validity_slots and config.variant=='pooled':raise ValueError('Validity slots require an explicit-slot variant')
         self.transform=Transform(mean,scale)
         trunk=max(256,config.embedding)
         token=TokenConfig(width=config.width,embedding_width=trunk,layers=config.layers,
             feedforward=config.width*4,decoder_width=config.decoder,feature_drop=0.)
         self.backbone=(nn.Sequential(nn.Linear(64*54,config.width*4),nn.GELU(),
             nn.Linear(config.width*4,trunk),nn.LayerNorm(trunk)) if config.variant=='flat_scale_slots' else Encoder(token))
-        self.export=nn.Linear(trunk,config.embedding-(18 if config.variant!='pooled' else 0))
+        self.export=nn.Linear(trunk,config.embedding-(18 if config.variant!='pooled' else 0)-(3 if config.validity_slots else 0))
         self.decoder=nn.Sequential(nn.Linear(config.embedding,config.decoder),nn.GELU(),
             nn.Linear(config.decoder,config.decoder),nn.GELU(),nn.Linear(config.decoder,64*18))
 
@@ -72,6 +74,10 @@ class Autoencoder(nn.Module):
                 grid.scatter_(1,positions[...,None].expand(-1,-1,54),source)
                 learned=self.export(self.backbone(grid.flatten(1)))
             else:learned=self.export(self.backbone(centered,valid,positions))
+            if self.config.validity_slots:
+                metadata=torch.stack((m[...,9].float().mean(1),m[...,15].float().mean(1),
+                    (m[...,9]&m[...,15]).float().mean(1)),1)
+                return torch.cat((refs,metadata,learned),-1)
             return torch.cat((refs,learned),-1)
         return self.export(self.backbone(values,valid,positions))
 

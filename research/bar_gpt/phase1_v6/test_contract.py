@@ -5,6 +5,7 @@ from pathlib import Path
 import torch
 from .model import Config, Autoencoder, Transform, objective, PRICES, ACTIVITY
 from .train import batch, save_checkpoint
+from .export import EncoderOnly
 
 
 class Contracts(unittest.TestCase):
@@ -38,6 +39,17 @@ class Contracts(unittest.TestCase):
         valid=torch.ones_like(pred,dtype=torch.bool);valid[:,:,6:]=False
         loss,_=objective(pred,target,valid,torch.ones(18));loss.backward()
         self.assertEqual(float(pred.grad[:,:,6:].abs().sum()),0.)
+
+    def test_visible_validity_is_exported_without_hidden_metadata(self):
+        model=Autoencoder(Config(variant='flat_scale_slots',embedding=512,validity_slots=True),torch.zeros(18),torch.ones(18))
+        x=torch.randn(2,16,27);v=torch.ones_like(x,dtype=torch.bool)
+        v[0,:8,9]=False;v[0,:4,15]=False
+        z=model.encode(x,v,torch.arange(16).expand(2,-1))
+        self.assertEqual(z.shape,(2,512))
+        torch.testing.assert_close(z[:,18:21],torch.tensor([[.5,.75,.5],[1.,1.,1.]]))
+        encoder=EncoderOnly(model)
+        self.assertFalse(hasattr(encoder,'decoder'))
+        torch.testing.assert_close(encoder(x,v,torch.arange(16).expand(2,-1)),z)
 
     def test_checkpoint_resume_replays_next_update(self):
         config=Config(variant='flat_scale_slots',layers=1)

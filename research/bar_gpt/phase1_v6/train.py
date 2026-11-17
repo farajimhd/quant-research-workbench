@@ -91,6 +91,7 @@ def main(argv=None):
     p.add_argument('--visible',type=int,default=16);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--resume',action='store_true')
     p.add_argument('--full-probability',type=float,default=0.)
+    p.add_argument('--validity-slots',action='store_true')
     p.add_argument('--device',default='cuda');p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
     p.add_argument('--hypothesis',required=True);p.add_argument('--parent',default='none')
     a=p.parse_args(argv)
@@ -133,7 +134,7 @@ def main(argv=None):
     started=time.time();deadline=started+a.minutes*60
     rows,manifest=load_data(a.data)
     mean,scale=calibration(rows['train'])
-    config=Config(a.variant,a.width,a.embedding,a.layers,a.decoder,a.visible)
+    config=Config(a.variant,a.width,a.embedding,a.layers,a.decoder,a.visible,a.validity_slots)
     model=Autoencoder(config,mean,scale).to(device)
     identity=dict(version='phase1-v6-log-campaign',config=asdict(config),source_revision=a.source_revision,
         dataset_hash=manifest['hash'],seed=a.seed,learning_rate=a.lr,steps=a.steps,minutes=a.minutes,

@@ -8,6 +8,7 @@ import torch
 from .model import Config,Autoencoder
 from .train import load_data,cache,predict
 from .metrics import evaluate,probes,summaries
+from .export import save_encoder,load_encoder
 from ..v5.shards.phase1_contract import file_hash,write_json
 
 
@@ -15,6 +16,8 @@ def rank_diagnostics(z):
     x=z-z.mean(0)
     covariance=x.T@x/max(len(x)-1,1)
     eigen=np.linalg.eigvalsh(covariance.astype(np.float64)).clip(0)
+    if eigen.sum()==0:
+        return dict(effective_rank=0.,variance=z.var(0).tolist(),constant_dimensions=z.shape[1],largest_component_fraction=0.,variance_trace=0.)
     mass=eigen/eigen.sum()
     positive=mass>0
     return dict(effective_rank=float(np.exp(-(mass[positive]*np.log(mass[positive])).sum())),
@@ -71,6 +74,19 @@ def main():
         write_json(output/(name+'.json'),result);results[name]=result
         shutil.copy2(run/'best.pt',output/(name+'-pinned.pt'))
         assert file_hash(output/(name+'-pinned.pt'))==result['checkpoint_sha256']
+        encoder_path=output/(name+'-encoder-only.pt')
+        save_encoder(model,encoder_path,checkpoint_sha256=result['checkpoint_sha256'],source_revision=identity['source_revision'],dataset_hash=manifest['hash'])
+        exported=load_encoder(encoder_path,a.device)
+        sample=rows['audit'][:8]
+        with torch.no_grad():
+            actual=exported.encode_raw(torch.from_numpy(sample['values'].copy()).to(a.device),
+                torch.from_numpy(sample['valid'].astype(bool)).to(a.device),torch.from_numpy(sample['end_us'].copy()).to(a.device),
+                torch.from_numpy(sample['timeframe_us'].copy()).to(a.device))
+        assert not hasattr(exported,'decoder')
+        torch.testing.assert_close(actual.cpu(),torch.from_numpy(embeddings['audit'][:8]),rtol=1e-5,atol=1e-5)
+        write_json(output/(name+'-export.json'),dict(sha256=file_hash(encoder_path),dimensions=config.embedding,
+            decoder_present=False,raw_input_parity=True,checkpoint_sha256=result['checkpoint_sha256']))
+        del exported
         del model,untrained,data
         if a.device=='cuda':torch.cuda.empty_cache()
     write_json(output/'complete.json',dict(names=names,elapsed_seconds=time.time()-started,time=time.time(),state='complete',dataset_hash=manifest['hash']))

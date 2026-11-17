@@ -84,3 +84,10 @@ decoder hidden width 512 together, because leaving a 256-wide first decoder laye
 would immediately compress the wider representation again. A companion decoder-256
 ablation measures whether the wider decoder improves reconstruction without
 mistaking decoder capacity for improved frozen-embedding information.
+
+V6.5 optionally reserves three additional exported coordinates for visible bid-close
+validity, ask-close validity and joint bid/ask-close validity fractions. These are
+computed exclusively from supplied visible input masks. They replace three learned
+coordinates, keeping export size fixed; decoder capacity stays unchanged. This
+targets the consistently poor quote-coverage probes while explicitly separating
+architectural information preservation from improvements learned by optimization.
