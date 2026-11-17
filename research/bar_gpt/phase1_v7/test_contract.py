@@ -42,6 +42,7 @@ class Contracts(unittest.TestCase):
         for width,height in ((80,24),(120,35)):
             out=io.StringIO();Console(file=out,width=width,height=height).print(render(state,width,height))
             text=out.getvalue();self.assertNotIn('999',text);self.assertIn('Validation',text);self.assertIn('phase ETA',text)
+            self.assertLessEqual(len(text.splitlines()),height)
 
     def test_engineering_resume_rejects_scientific_changes(self):
         import json

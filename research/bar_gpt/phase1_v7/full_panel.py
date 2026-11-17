@@ -67,7 +67,7 @@ def render(root,width=120,height=35):
     rows.append(Text(f'Loader wait {number(wait,1)}s ({number(100*fraction if fraction is not None else None,1)}% of phase) · startup/replay {duration(s.get("phase_startup_seconds"))}',style='dim'))
     gpu=s.get('gpu_mib');capacity=s.get('memory_mib')
     rows.append(Text(f'GPU tensors {number(gpu/1024 if gpu is not None else None,1)}/{number(capacity/1024 if capacity else None,1)} GiB · LR {number(s.get("learning_rate"),7)}',style='dim'))
-    rows.append(Text('ETA excludes later phases · STOP requests graceful checkpoint · source-valid masks retained',style='dim'))
+    if height>=28:rows.append(Text('ETA excludes later phases · STOP requests graceful checkpoint · source-valid masks retained',style='dim'))
     return Group(*rows)
 
 
