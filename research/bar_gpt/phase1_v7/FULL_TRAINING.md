@@ -100,3 +100,28 @@ and new source. Resume rejects any architecture, objective, optimizer, schedule,
 batch-size, worker-count, or traversal change. Only source revision and equivalent
 preparation backend change. Optimizer/scheduler/RNG and sample cursor persist;
 the ordered source prefix is replayed without optimizer updates.
+
+## Completed-pass throughput tuning (2026-11-17)
+
+The user authorized larger batches, worker/prefetch tuning, faster full validation,
+and the V5 raw style progress panel. This transition is allowed only after a
+complete training pass, with checkpoint phase `validation` and its exact training
+population count. Architecture, data, loss, optimizer state, RNG, learning-rate
+schedule and W&B identity remain fixed. A larger batch changes the number of
+optimizer updates per subsequent epoch; this is an explicitly authorized change,
+not a claim of bitwise-equivalent training.
+
+The preserved epoch-1 parent is `checkpoint_before_throughput_step-45561.pt`,
+SHA256 `2b5a7e03c0d5ce76cd13d9025ce5648e13b99b7f1b3c4c89cdf854683408cb37`.
+It contains all 186,575,722 training windows. Its interrupted validation must
+restart in full; partial validation is never presented as complete.
+
+Engineering adds independently selectable validation batch size, bounded shard
+read-ahead depth/bytes, captured inference/native inverse, deferred validation
+failure-counter synchronization, and startup-separated loader telemetry. Price
+relative histograms retain their existing CPU Float64 definitions and masks.
+The V5-style read-only panel shows training/validation progress, phase-specific
+speed/ETA, completed full-validation quality, and loader wait separately from
+startup/replay. Missing values stay unavailable; stale training rates are never
+shown as validation throughput. Profiles and qualification receipts reside under
+`D:/TradingML/runtimes/bar_gpt/phase1-v7-throughput-20261117`.

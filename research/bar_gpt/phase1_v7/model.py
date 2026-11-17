@@ -19,8 +19,10 @@ class Config:
 class Transform(PreviousTransform):
     def inverse(self, logs):
         raw=logs.double().clone()
-        raw[...,PRICES]=logs[...,PRICES].double().exp()
-        raw[...,ACTIVITY]=logs[...,ACTIVITY].double().expm1()
+        # Fixed channel slices avoid implicit CPU index tensors during CUDA capture.
+        for base in (0,6,12):
+            raw[...,base:base+4]=logs[...,base:base+4].double().exp()
+            raw[...,base+4:base+6]=logs[...,base+4:base+6].double().expm1()
         return raw
 
 

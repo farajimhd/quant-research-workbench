@@ -136,6 +136,10 @@ class Contracts(unittest.TestCase):
         trans=Transform(torch.zeros(18),torch.ones(18))
         out=trans.inverse(Transform.logs(raw,valid).float())
         torch.testing.assert_close(out,raw.double(),rtol=2e-6,atol=1e-10)
+        logs=Transform.logs(raw,valid).float();previous=logs.double().clone()
+        previous[...,PRICES]=logs[...,PRICES].double().exp()
+        previous[...,ACTIVITY]=logs[...,ACTIVITY].double().expm1()
+        torch.testing.assert_close(out,previous,rtol=0,atol=0)
 
     def test_embedding_only_and_hidden_independence(self):
         for variant in ('canonical','geometry','geometry_joint'):
