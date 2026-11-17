@@ -11,6 +11,38 @@ from .export import EncoderOnly
 
 
 class Contracts(unittest.TestCase):
+    def test_throughput_resume_requires_completed_pass(self):
+        import json
+        from unittest.mock import patch
+        from .full_engineering import resume
+        from ..v5.shards.phase1_contract import digest,file_hash
+        with tempfile.TemporaryDirectory(dir='D:/TradingML/runtimes') as directory:
+            root=Path(directory);checkpoint=root/'checkpoint.pt';checkpoint.write_bytes(b'parent')
+            previous=dict(source_revision='old',preparation='raw_gpu',batch_size=4096,learning_rate=.0003)
+            current=dict(previous,source_revision='new',batch_size=8192,validation_graph=True)
+            checkpoint.with_suffix('.proof.json').write_text(json.dumps(dict(contract=digest(previous))))
+            receipt=dict(transition='completed-pass-throughput-v1',previous_contract=previous,new_source_revision='new',
+                checkpoint_sha256=file_hash(checkpoint),evidence={},validation_parity=True,user_authorized_batch_change=True,training_population=100)
+            receipt['hash']=digest(receipt);path=root/'receipt.json';path.write_text(json.dumps(receipt))
+            with patch('research.bar_gpt.phase1_v7.full_engineering.load_checkpoint',return_value=dict(phase='validation',epoch_done=100,step=9)) as load:
+                self.assertEqual(resume(checkpoint,current,path)[0]['step'],9)
+                with self.assertRaisesRegex(ValueError,'scientific'):resume(checkpoint,dict(current,learning_rate=.001),path)
+                load.return_value['phase']='train'
+                with self.assertRaisesRegex(ValueError,'completed training pass'):resume(checkpoint,current,path)
+                load.return_value.update(phase='validation',epoch_done=99)
+                with self.assertRaisesRegex(ValueError,'completed training pass'):resume(checkpoint,current,path)
+
+    def test_panel_uses_validation_rate_and_hides_stale_training_speed(self):
+        import io,time
+        from rich.console import Console
+        from .full_panel import render
+        state=dict(state='running',stage='full validation',updated=time.time(),windows_per_second=999999,
+            validation_windows_per_second=123456,validation_eta_seconds=60,epoch=1,epoch_done=100,epoch_total=100,
+            validation_done=50,validation_total=100)
+        for width,height in ((80,24),(120,35)):
+            out=io.StringIO();Console(file=out,width=width,height=height).print(render(state,width,height))
+            text=out.getvalue();self.assertNotIn('999',text);self.assertIn('Validation',text);self.assertIn('phase ETA',text)
+
     def test_engineering_resume_rejects_scientific_changes(self):
         import json
         from unittest.mock import patch

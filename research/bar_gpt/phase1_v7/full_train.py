@@ -18,24 +18,36 @@ from ..v5.price_relative_v3 import PriceRelative
 
 @torch.no_grad()
 def evaluate(model,manifest,args,status,limit=0):
-    source=loader(manifest,args,'validation');device=None;model.eval();began=time.perf_counter()
+    model.eval();began=time.perf_counter();replay=None
+    batch_size=args.validation_batch_size or args.batch_size
+    if args.validation_graph:
+        import numpy as np
+        from .full_step import InferenceReplay
+        rows=np.load(args.data/'train.npy',mmap_mode='r',allow_pickle=False)
+        example=prepare(rows[:batch_size],native=True,compact=args.preparation=='gpu',raw_gpu=args.preparation=='raw_gpu').to('cuda')
+        replay=InferenceReplay(model,example,args.precision);del example
+    source=loader(manifest,args,'validation');device=None
     sums=torch.zeros(6,18,device='cuda',dtype=torch.float64);counts=sums.clone();logs=sums.clone()
-    negative=nonfinite=violations=0;n=0;prices=PriceRelative()
+    negative=torch.zeros((),device='cuda',dtype=torch.int64);nonfinite=negative.clone();violations=negative.clone();n=0;prices=PriceRelative()
     reducers=[PriceRelative() for _ in range(4)];pending=[None]*4;pool=ThreadPoolExecutor(max_workers=4)
     batches=0;steady_started=None;steady_n=0
     try:
         device=DeviceBatches(source,'cuda')
+        startup=time.perf_counter()-began;initial_wait=device.wait_seconds;recent=deque([(time.perf_counter(),0)])
         while True:
             if (args.output/'STOP').exists():return None
             try:b=device.pop()
             except StopIteration:break
-            p,target=forward(model,b,args.precision,with_target=True);raw=model.transform.inverse(p);truth=b.raw.double();valid=b.valid
+            if replay and len(b.target)==batch_size:p,target,raw=replay(b)
+            else:
+                p,target=forward(model,b,args.precision,with_target=True);raw=model.transform.inverse(p)
+            truth=b.raw.double();valid=b.valid
             e=(raw-truth).abs();le=(p.double()-target.double()).abs()
-            nonfinite+=int((~torch.isfinite(raw)&valid).sum());negative+=int(((raw<0)&valid).sum())
+            nonfinite+=(~torch.isfinite(raw)&valid).sum();negative+=((raw<0)&valid).sum()
             for base in (0,6,12):
                 o,h,l,c=raw[...,base:base+4].unbind(-1)
-                violations+=int(((h<torch.maximum(o,c))|(l>torch.minimum(o,c))).logical_and(valid[...,base:base+4].all(-1)).sum())
-            violations+=int(((raw[...,6:10]>raw[...,12:16])&valid[...,6:10]&valid[...,12:16]).sum())
+                violations+=((h<torch.maximum(o,c))|(l>torch.minimum(o,c))).logical_and(valid[...,base:base+4].all(-1)).sum()
+            violations+=((raw[...,6:10]>raw[...,12:16])&valid[...,6:10]&valid[...,12:16]).sum()
             fi=(b.frames[:,None]==torch.tensor(FRAMES,device='cuda')).long().argmax(1)
             for f in range(6):
                 mask=valid&(fi==f)[:,None,None]
@@ -46,14 +58,24 @@ def evaluate(model,manifest,args,status,limit=0):
             pending[lane]=pool.submit(reducers[lane].add,*cpu);batches+=1
             n+=len(b.target);device.advance()
             if batches==8:steady_started=time.perf_counter();steady_n=n
-            status(stage='bounded validation profile' if limit else 'full validation',validation_done=n,validation_seconds=time.perf_counter()-began)
-            if limit and n>=limit*args.batch_size:break
+            now=time.perf_counter();recent.append((now,n))
+            while len(recent)>2 and now-recent[1][0]>60:recent.popleft()
+            rate=(n-recent[0][1])/max(.001,now-recent[0][0]);total=limit*batch_size if limit else manifest['counts']['validation']
+            status(stage='bounded validation profile' if limit else 'full validation',validation_done=n,validation_seconds=now-began,
+                validation_windows_per_second=rate,validation_eta_seconds=max(0,total-n)/rate,
+                phase_startup_seconds=startup,phase_loader_wait_seconds=device.wait_seconds-initial_wait,
+                phase_loader_wait_fraction=(device.wait_seconds-initial_wait)/max(.001,now-began-startup),
+                gpu_mib=torch.cuda.memory_allocated()/2**20)
+            if limit and n>=limit*batch_size:break
         if not limit and n!=manifest['counts']['validation']:raise ValueError(f'Incomplete validation: {n}')
         for future in pending:
             if future is not None:future.result()
         for reducer in reducers:prices.merge(reducer)
+        nonfinite,negative,violations=(int(x) for x in (nonfinite,negative,violations))
         raw_mae=(sums/counts.clamp_min(1)).cpu();log_mae=(logs/counts.clamp_min(1)).cpu();counts=counts.cpu()
-        result=dict(origins=n,full_population=not bool(limit),seconds=time.perf_counter()-began,nonfinite=nonfinite,negative=negative,
+        result=dict(origins=n,full_population=not bool(limit),seconds=time.perf_counter()-began,startup_seconds=startup,
+            loader_wait_seconds=device.wait_seconds-initial_wait,validation_batch_size=batch_size,validation_graph=args.validation_graph,
+            nonfinite=nonfinite,negative=negative,
             structure_violations=violations,raw_mae={FRAME_NAMES[f]:{name:float(raw_mae[f,c]) if counts[f,c] else None for c,name in enumerate(CHANNELS)} for f in range(6)},
             log_mae=log_mae.tolist(),valid_counts=counts.long().tolist(),activity_log_mae=float(log_mae[:,ACTIVITY].mean()))
         result.update(prices.metrics('full_raw_mae',FRAME_NAMES,CHANNELS))
@@ -77,6 +99,8 @@ def train(args,manifest,status):
     contract=dict(version='v7-full-1',architecture=asdict(model.config),source_revision=args.source_revision,
         split=manifest['manifest_hash'],batch_size=args.batch_size,workers=args.workers,prefetch=args.prefetch,
         precision=args.precision,cuda_graph=args.cuda_graph,preparation=args.preparation,epochs=args.epochs,seed=args.seed,
+        shard_prefetch=args.shard_prefetch,shard_prefetch_mib=args.shard_prefetch_mib,
+        validation_batch_size=args.validation_batch_size,validation_graph=args.validation_graph,
         learning_rate=args.learning_rate,min_learning_rate=args.min_learning_rate,warmup_updates=args.warmup_updates,
         sampling='all certified windows, deterministic shuffled shard lanes; all lane tails retained',
         objective='equal price/activity channel means; Huber on 100*log-price residual and log1p-activity residual',
@@ -119,7 +143,8 @@ def train(args,manifest,status):
                 model.train();source=loader(manifest,args,'train',epoch);device=None
                 status(stage='starting training loader',epoch=epoch+1,step=step,epoch_done=epoch_done,origins=origins)
                 try:
-                    device=DeviceBatches(itertools.islice(source,cursor,None),'cuda')
+                    startup_began=time.perf_counter();device=DeviceBatches(itertools.islice(source,cursor,None),'cuda')
+                    startup=time.perf_counter()-startup_began;initial_wait=device.wait_seconds
                     began=time.perf_counter();seen=0;recent=deque([(began,0)])
                     while True:
                         if (args.output/'STOP').exists() or (args.output.parent/'STOP').exists():checkpoint();return 'stopped'
@@ -139,7 +164,10 @@ def train(args,manifest,status):
                             while len(recent)>2 and now-recent[1][0]>60:recent.popleft()
                             metrics=dict(loss=float(value),price_loss=float(channels[PRICES].mean()),activity_loss=float(channels[ACTIVITY].mean()),
                                 gradient_norm=float(norm),learning_rate=lr,windows_per_second=(seen-recent[0][1])/max(.001,now-recent[0][0]),
-                                loader_wait_seconds=device.wait_seconds,gpu_mib=torch.cuda.memory_allocated()/2**20)
+                                loader_wait_seconds=device.wait_seconds,phase_startup_seconds=startup,
+                                phase_loader_wait_seconds=device.wait_seconds-initial_wait,
+                                phase_loader_wait_fraction=(device.wait_seconds-initial_wait)/max(.001,now-began),
+                                gpu_mib=torch.cuda.memory_allocated()/2**20)
                             status(stage='training',epoch=epoch+1,step=step,epoch_done=epoch_done,origins=origins,**metrics)
                             with (args.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
                             if reporter:reporter.log({'train/'+k:v for k,v in metrics.items()},step=max(step,reporter.step))
@@ -155,7 +183,8 @@ def train(args,manifest,status):
                 finally:
                     if device:device.close()
                     close_loader(source)
-            status(stage='full validation',validation_done=0)
+            status(stage='full validation',epoch=epoch+1,step=step,epoch_done=epoch_done,validation_done=0,
+                validation_windows_per_second=None,validation_eta_seconds=None,phase_loader_wait_seconds=None,phase_startup_seconds=None)
             validation=evaluate(model,manifest,args,status)
             if validation is None:checkpoint();return 'stopped'
             write_json(args.output/f'validation-{epoch+1:03}.json',validation)

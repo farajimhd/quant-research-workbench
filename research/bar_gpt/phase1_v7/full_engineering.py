@@ -13,6 +13,20 @@ def resume(path,contract,receipt_path=None):
     if receipt['hash']!=digest({k:v for k,v in receipt.items() if k!='hash'}):raise ValueError('Engineering receipt changed')
     previous=receipt['previous_contract']
     if receipt['new_source_revision']!=contract['source_revision']:raise ValueError('Engineering source mismatch')
+    if receipt.get('transition')=='completed-pass-throughput-v1':
+        allowed={'source_revision','batch_size','workers','prefetch','shard_prefetch','shard_prefetch_mib',
+                 'validation_batch_size','validation_graph'}
+        if {k:v for k,v in previous.items() if k not in allowed}!={k:v for k,v in contract.items() if k not in allowed}:
+            raise ValueError('Throughput transition changes scientific/optimizer contract')
+        if file_hash(path)!=receipt['checkpoint_sha256']:raise ValueError('Throughput parent changed')
+        for item in receipt['evidence'].values():
+            if file_hash(Path(item['path']))!=item['sha256']:raise ValueError('Throughput evidence changed')
+        if not receipt.get('validation_parity') or not receipt.get('user_authorized_batch_change'):
+            raise ValueError('Missing throughput qualification/authorization')
+        state=load_checkpoint(path,previous)
+        if state['phase']!='validation' or state['epoch_done']!=receipt['training_population']:
+            raise ValueError('Batch/worker change requires completed training pass')
+        return state,receipt
     if previous['preparation']!='gpu' or contract['preparation']!='raw_gpu':raise ValueError('Only qualified compact-to-raw GPU preparation transition permitted')
     scientific=lambda c:{k:v for k,v in c.items() if k not in ('source_revision','preparation')}
     if scientific(previous)!=scientific(contract):raise ValueError('Scientific/traversal/optimizer contract changed')

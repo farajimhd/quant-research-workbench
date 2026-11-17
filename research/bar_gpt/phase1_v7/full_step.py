@@ -49,3 +49,27 @@ class Replay:
             copied.add(destination.data_ptr())
         for p,g in zip(self.params,self.grads):p.grad=g
         self.graph.replay();return self.outputs
+
+
+class InferenceReplay:
+    """Fixed-size inference only; native inverse retains FP64 semantics."""
+    @torch.no_grad()
+    def __init__(self,model,b,precision):
+        self.batch=b.map(lambda x:x.clone())
+        self.graph=torch.cuda.CUDAGraph();stream=torch.cuda.Stream()
+        def run():
+            prediction,target=forward(model,self.batch,precision,with_target=True)
+            return prediction,target,model.transform.inverse(prediction)
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):run()
+        torch.cuda.current_stream().wait_stream(stream)
+        with torch.cuda.graph(self.graph,stream=stream):self.outputs=run()
+
+    def __call__(self,b):
+        copied=set()
+        for name in ('grid','slots','target','valid','frames'):
+            destination=getattr(self.batch,name)
+            if destination.data_ptr() not in copied:destination.copy_(getattr(b,name),non_blocking=True)
+            copied.add(destination.data_ptr())
+        self.graph.replay();return self.outputs

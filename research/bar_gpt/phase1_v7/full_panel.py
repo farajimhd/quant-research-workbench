@@ -1,52 +1,88 @@
-"""One read-only panel: full-run state, trustworthy counters, and latest validation."""
-import argparse,json,time
+"""V5-style read-only progress with phase-specific rates and full-validation quality."""
+import argparse,json,time,sys
 from pathlib import Path
-from rich.console import Console
+from rich.console import Console,Group
 from rich.live import Live
-from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
+from rich import box
+from ..panels.phase2_training_v1 import BlockBar,number
+from ..phase1_v5_raw.panel import duration
 
 
-def render(root):
-    path=root/'status.json'
-    if not path.exists():return Panel('Waiting for trainer status',title='BarGPT V7 full training')
-    s=json.loads(path.read_text());age=time.time()-s['updated'];t=Table.grid(padding=(0,3))
-    replay=[]
-    if s.get('stage')=='starting training loader' and s.get('step',0):
-        for p in (root/'workers'/'train').glob('worker-*.json'):
-            try:
-                w=json.loads(p.read_text())
-                if w.get('updated',0)>=s['started']:replay.append(w)
-            except (OSError,json.JSONDecodeError):pass
-        if replay:age=time.time()-max(w['updated'] for w in replay)
-    t.add_column(style='bold');t.add_column()
-    state=s.get('state','unknown');stage=s.get('stage','starting')
-    t.add_row('State',f'{state} / {stage}'+(f' | status {age:.0f}s old' if age>30 else ''))
-    t.add_row('Epoch',f"{s.get('epoch',0)} / {s.get('epochs',50)} | optimizer step {s.get('step',0):,}")
-    done=s.get('epoch_done',0);total=s.get('epoch_total',0);rate=s.get('windows_per_second',0)
-    t.add_row('Training',f'{done:,} / {total:,} windows | {rate:,.0f} windows/s')
-    if replay:t.add_row('Resume input replay',f"{sum(w.get('scanned_candidates',0) for w in replay):,} source windows scanned | optimizer unchanged until cursor recovered")
-    if rate and stage=='training':t.add_row('Pass remaining',f'{max(0,total-done)/rate/60:.1f} min (excludes validation)')
-    t.add_row('Loss',f"price {s.get('price_loss',0):.5f} | activity {s.get('activity_loss',0):.5f}")
-    t.add_row('Resources',f"GPU {s.get('gpu_mib',0)/1024:.1f} GiB | loader wait {s.get('loader_wait_seconds',0):.1f}s")
-    t.add_row('Validation',f"{s.get('validation_done',0):,} / {s.get('validation_total',0):,} windows")
-    v=s.get('latest_validation')
-    if v:t.add_row('Last full validation',f"epoch {v['epoch']} | price MAPE {v['price_mape_pct']:.3f}% | activity log MAE {v['activity_log_mae']:.4f}")
-    if s.get('error'):t.add_row('[red]Failure[/red]',s['error'])
-    t.add_row('Elapsed',f"{(time.time()-s['started'])/3600:.2f} h | STOP file requests graceful checkpoint")
-    return Panel(t,title='BarGPT V7 · 50 full epochs',subtitle=root.name,border_style='red' if state=='failed' else 'cyan')
+def read(root):
+    try:s=json.loads((root/'status.json').read_text())
+    except (OSError,ValueError):return dict(state='unavailable',stage='waiting for readable status')
+    for name in ('hardware','resume-arguments','arguments'):
+        try:
+            data=json.loads((root/(name+'.json')).read_text())
+            for k,v in data.items():s.setdefault(k,v)
+        except (OSError,ValueError):pass
+    files=sorted(root.glob('validation-[0-9][0-9][0-9].json'))
+    if files:
+        try:s['completed_validation']=json.loads(files[-1].read_text());s['completed_epoch']=int(files[-1].stem[-3:])
+        except (OSError,ValueError):pass
+    return s
+
+
+def render(root,width=120,height=35):
+    s=read(root) if isinstance(root,Path) else root
+    state=s.get('state','unavailable');stage=s.get('stage','starting');active=state=='running'
+    stale=active and time.time()-s.get('updated',0)>30
+    validating='validation' in stage;training=stage=='training'
+    rows=[Text('BarGPT V7 · PHASE 1 · all 64 bars visible',style='bold bright_cyan'),
+          Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,style='yellow' if stale else 'red' if state=='failed' else 'bold')]
+    if s.get('error'):rows.append(Text(s['error'],style='red'))
+    bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=15);bars.add_column(ratio=1);bars.add_column(width=24,justify='right')
+    epoch=s.get('epoch',0);total=s.get('epoch_total');done=s.get('epoch_done',0);epochs=s.get('epochs',50)
+    complete_epochs=epochs if state=='complete' else max(0,epoch-1)
+    for label,n,t,tail in (
+        ('Full epochs',complete_epochs,epochs,f'{complete_epochs}/{epochs} complete'),
+        ('Train windows',done,total,f'{number(done)}/{number(total)}'),
+        ('Validation',s.get('validation_done',0),s.get('validation_total'),f'{number(s.get("validation_done"))}/{number(s.get("validation_total"))}')):
+        bars.add_row(label,BlockBar(n or 0,t),tail)
+    rows.append(bars)
+    rate=None;eta=None
+    if active and not stale:
+        if validating:rate=s.get('validation_windows_per_second');eta=s.get('validation_eta_seconds')
+        elif training:
+            rate=s.get('windows_per_second');eta=max(0,total-done)/rate if rate and total else None
+    rows.append(Text(f'Step {s.get("step",0):,} · {"Validation" if validating else "Training"} {number(rate)} windows/s · phase ETA {duration(eta)}',style='bold'))
+    rows.append(Text(f'Batch {s.get("batch_size","—")} · validation {s.get("validation_batch_size") or s.get("batch_size","—")} · workers {s.get("workers","—")} · prefetch {s.get("prefetch","—")}',style='dim'))
+    metrics=Table('Training objective','Latest train batch',box=box.SIMPLE_HEAD,padding=(0,1))
+    for label,key in (('Balanced Huber','loss'),('Price','price_loss'),('Activity','activity_loss')):metrics.add_row(label,number(s.get(key),5))
+    rows.append(metrics)
+    validation=s.get('completed_validation',{});raw=validation.get('raw_mae',{})
+    if height>=24:
+        table=Table('Raw close MAE ($)','Trade','Bid','Ask',box=box.SIMPLE_HEAD,padding=(0,1))
+        for frame in (('1s','1m','daily') if height<32 else ('100ms','1s','10s','1m','1h','daily')):
+            table.add_row(frame,*(number(raw.get(frame,{}).get(k+'_close'),5) for k in ('trade','bid','ask')))
+        rows.append(table)
+    rows.append(Text(f'Completed full validation: epoch {s.get("completed_epoch","—")} · price MAPE {number(validation.get("balanced_price_mape_pct"),3)}% · activity log MAE {number(validation.get("activity_log_mae"),4)}',style='dim'))
+    wait=s.get('phase_loader_wait_seconds');fraction=s.get('phase_loader_wait_fraction')
+    rows.append(Text(f'Loader wait {number(wait,1)}s ({number(100*fraction if fraction is not None else None,1)}% of phase) · startup/replay {duration(s.get("phase_startup_seconds"))}',style='dim'))
+    gpu=s.get('gpu_mib');capacity=s.get('memory_mib')
+    rows.append(Text(f'GPU memory {number(gpu/1024 if gpu is not None else None,1)}/{number(capacity/1024 if capacity else None,1)} GiB · LR {number(s.get("learning_rate"),7)}',style='dim'))
+    rows.append(Text('ETA excludes later phases · STOP requests graceful checkpoint · source-valid masks retained',style='dim'))
+    return Group(*rows)
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args();console=Console()
-    if not console.is_terminal:console.print(render(a.run));return
-    with Live(render(a.run),console=console,refresh_per_second=1,screen=False) as live:
-        while True:
-            try:
-                live.update(render(a.run))
-                if (a.run/'status.json').exists() and json.loads((a.run/'status.json').read_text()).get('state') in ('complete','stopped','failed','interrupted'):break
-            except (OSError,json.JSONDecodeError):pass
-            time.sleep(1)
+    if hasattr(sys.stdout,'reconfigure'):sys.stdout.reconfigure(encoding='utf-8')
+    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);p.add_argument('--once',action='store_true')
+    p.add_argument('--width',type=int);p.add_argument('--height',type=int);p.add_argument('--capture',type=Path);a=p.parse_args()
+    if a.capture and not a.capture.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):p.error('Capture must be under runtime root')
+    console=Console(width=a.width,height=a.height,record=bool(a.capture))
+    def output():return render(a.run,console.width,console.height)
+    if a.once or not console.is_terminal:
+        console.print(output())
+        if a.capture:
+            console.save_text(str(a.capture.with_suffix('.txt')),clear=False);console.save_svg(str(a.capture.with_suffix('.svg')),clear=False)
+        return
+    try:
+        with Live(output(),console=console,auto_refresh=False,vertical_overflow='crop') as live:
+            while True:live.update(output(),refresh=True);time.sleep(1)
+    except KeyboardInterrupt:console.print('Viewer closed; trainer unchanged.')
 
 
 if __name__=='__main__':main()
