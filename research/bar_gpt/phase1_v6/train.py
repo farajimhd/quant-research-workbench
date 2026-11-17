@@ -105,8 +105,22 @@ def main(argv=None):
     device=torch.device(a.device)
     if device.type=='cuda':
         import subprocess
-        gpu=subprocess.check_output(['nvidia-smi','--query-compute-apps=pid','--format=csv,noheader'],text=True)
-        others=[int(s.strip()) for s in gpu.splitlines() if s.strip().isdigit() and int(s.strip())!=os.getpid()]
+        gpu=subprocess.check_output(['nvidia-smi','--query-compute-apps=pid,process_name','--format=csv,noheader'],text=True)
+        others=[];desktop=[]
+        desktop_names={'dwm.exe','shellhost.exe','crossdeviceresume.exe','startmenuexperiencehost.exe',
+            'searchhost.exe','explorer.exe','shellexperiencehost.exe','msedgewebview2.exe','lockapp.exe',
+            'logioptionsplus_agent.exe','textinputhost.exe','taskmgr.exe','chatgpt.exe','codex-computer-use-swift.exe'}
+        for line in gpu.splitlines():
+            fields=line.split(',',1)
+            if not fields[0].strip().isdigit():continue
+            pid=int(fields[0]);name=fields[1].strip().lower() if len(fields)>1 else ''
+            if pid==os.getpid():continue
+            # WDDM reports desktop graphics as C+G even through query-compute-apps.
+            # Only inspected OS/desktop executables qualify; unknown owners fail closed.
+            if os.name=='nt' and (pid==4 or (name.startswith(('c:\\windows\\','c:\\program files\\','c:\\program files (x86)\\')) and Path(name).name in desktop_names)):
+                desktop.append(dict(pid=pid,path=name));continue
+            others.append(pid)
+        write_json(a.output/'gpu-ownership.json',dict(desktop_clients=desktop,other_compute_pids=others))
         if others:raise RuntimeError(f'GPU owned by other processes: {others}')
     started=time.time();deadline=started+a.minutes*60
     rows,manifest=load_data(a.data)
