@@ -24,7 +24,7 @@ class Transform(PreviousTransform):
         return raw
 
 
-def geometry(logs, valid):
+def geometry(logs, valid,check=True):
     """Invertible OHLC coordinates; reject incompatible valid sources."""
     result=logs.clone()
     for base in (0,6,12):
@@ -32,12 +32,12 @@ def geometry(logs, valid):
         m=valid[...,base:base+4]
         complete=m.all(-1)
         upper=h-torch.maximum(o,c);lower=torch.minimum(o,c)-l
-        if ((upper<0)&complete).any() or ((lower<0)&complete).any():
+        if check and (((upper<0)&complete).any() or ((lower<0)&complete).any()):
             raise ValueError('Valid source OHLC ordering violation')
         result[...,base+1]=torch.where(complete,upper,0).sqrt()
         result[...,base+2]=torch.where(complete,lower,0).sqrt()
         result[...,base+3]=c-o
-    result[...,ACTIVITY]=logs[...,ACTIVITY].sqrt()
+    for base in (0,6,12):result[...,base+4:base+6]=logs[...,base+4:base+6].sqrt()
     return result
 
 
@@ -48,14 +48,14 @@ class Residual(nn.Module):
     def forward(self,x):return x+self.block(x)*.25
 
 
-def quote_geometry(logs,valid):
+def quote_geometry(logs,valid,check=True):
     """Complete visible paired quotes only; canonical partial fields remain inputs."""
     complete=valid[...,6:10].all(-1)&valid[...,12:16].all(-1)
     bo,bh,bl,bc=logs[...,6:10].unbind(-1)
     ao,ah,al,ac=logs[...,12:16].unbind(-1)
     gaps=torch.stack((ao-bo,ah-torch.maximum(torch.maximum(ao,ac),bh),al-bl,ac-bc),-1)
     mask=complete[...,None].expand_as(gaps)
-    if ((gaps<0)&mask).any():raise ValueError('Valid crossed source quote: joint representation is not applicable')
+    if check and ((gaps<0)&mask).any():raise ValueError('Valid crossed source quote: joint representation is not applicable')
     return torch.where(mask,gaps,0).sqrt(),mask
 
 
@@ -75,19 +75,20 @@ class Autoencoder(nn.Module):
         grid,slots=Autoencoder.prepare(self,values,valid,positions)
         return Autoencoder.encode_prepared(self,grid,slots)
 
-    def prepare(self,values,valid,positions):
+    def prepare(self,values,valid,positions,check=True):
         """Deterministic CPU-worker preparation, identical to the original graph."""
         m=valid[...,:18];logs=values[...,:18]
-        mixed=logs.clone();mixed[...,ACTIVITY]=logs[...,ACTIVITY].sqrt()
+        mixed=logs.clone()
+        for base in (0,6,12):mixed[...,base+4:base+6]=logs[...,base+4:base+6].sqrt()
         refs=torch.where(m,mixed,0).sum(1)/m.sum(1).clamp_min(1)
         centered=values.clone();centered[...,:18]=torch.where(m,mixed-refs[:,None],0)
-        centered[...,PRICES]*=100
+        for base in (0,6,12):centered[...,base:base+4]*=100
         source=torch.cat((torch.where(valid,centered,0),valid.float()),-1)
         pair_refs=None
         if self.config.variant in ('geometry','geometry_joint'):
-            shaped=geometry(logs,m)
+            shaped=geometry(logs,m,check)
             for base in (0,6,12):shaped[...,base]-=refs[:,None,base]
-            shaped[...,ACTIVITY]-=refs[:,None,ACTIVITY]
+            for base in (0,6,12):shaped[...,base+4:base+6]-=refs[:,None,base+4:base+6]
             gm=m.clone()
             for base in (0,6,12):
                 gm[...,base:base+4]=m[...,base:base+4].all(-1,keepdim=True)
@@ -95,11 +96,15 @@ class Autoencoder(nn.Module):
                 shaped[...,base+1:base+3]*=10
             source=torch.cat((source,torch.where(gm,shaped,0),gm.float()),-1)
         if self.joint:
-            pair,pm=quote_geometry(logs,m)
+            pair,pm=quote_geometry(logs,m,check)
             pair_refs=torch.where(pm,pair,0).sum(1)/pm.sum(1).clamp_min(1)
             source=torch.cat((source,torch.where(pm,(pair-pair_refs[:,None])*100,0),pm.float()),-1)
-        grid=source.new_zeros(len(values),64,self.input_width)
-        grid.scatter_(1,positions[...,None].expand(-1,-1,self.input_width),source)
+        if positions is None:
+            if values.shape[1]!=64:raise ValueError('Ordered-grid shortcut requires all 64 bars')
+            grid=source
+        else:
+            grid=source.new_zeros(len(values),64,self.input_width)
+            grid.scatter_(1,positions[...,None].expand(-1,-1,self.input_width),source)
         coverage=torch.stack((m[...,9].float().mean(1),m[...,15].float().mean(1),
             (m[...,9]&m[...,15]).float().mean(1)),1)
         slots=torch.cat((refs,coverage,pair_refs),-1) if self.joint else torch.cat((refs,coverage),-1)

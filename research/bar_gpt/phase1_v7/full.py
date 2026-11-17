@@ -10,7 +10,7 @@ from ..v5.shards.phase1_contract import write_json,file_hash,digest
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument('mode',choices=('qualify','compute','stream','train'))
+    p.add_argument('mode',choices=('qualify','compute','stream','validation-profile','train'))
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--deployment',type=Path,required=True)
     p.add_argument('--data',type=Path,default=Path(r'D:\TradingML\runtimes\bar_gpt\encoder-campaign2-20261117\dataset'))
@@ -19,10 +19,12 @@ def main():
     p.add_argument('--batch-size',type=int,default=8192);p.add_argument('--workers',type=int,default=32)
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--precision',choices=('fp32','bf16'),default='fp32')
     p.add_argument('--cuda-graph',action=argparse.BooleanOptionalAction,default=True)
+    p.add_argument('--preparation',choices=('cpu','gpu'),default='cpu')
     p.add_argument('--batches',type=int,nargs='+',default=[512,1024,2048,4096,8192])
     p.add_argument('--steps',type=int,default=40);p.add_argument('--seed',type=int,default=17)
     p.add_argument('--epochs',type=int,default=50);p.add_argument('--resume',action='store_true')
     p.add_argument('--checkpoint-every',type=int,default=1000)
+    p.add_argument('--max-updates',type=int,default=0,help='Explicit engineering smoke boundary; zero means full schedule')
     p.add_argument('--learning-rate',type=float,default=3e-4);p.add_argument('--min-learning-rate',type=float,default=3e-5)
     p.add_argument('--warmup-updates',type=int,default=1000)
     p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
@@ -63,6 +65,12 @@ def main():
                 if a.mode=='stream':
                     from .full_profile import stream
                     result=stream(a,manifest,status)
+                elif a.mode=='validation-profile':
+                    from .full_profile import model
+                    from .full_train import evaluate
+                    m=model();m.load_state_dict(torch.load(a.checkpoint,map_location='cpu',weights_only=False)['model'])
+                    result=evaluate(m,manifest,a,status,limit=a.steps)
+                    write_json(a.output/'validation-profile.json',result)
                 else:
                     from .full_train import train
                     result=train(a,manifest,status)

@@ -16,7 +16,7 @@ from ..v5.price_relative_v3 import PriceRelative
 
 
 @torch.no_grad()
-def evaluate(model,manifest,args,status):
+def evaluate(model,manifest,args,status,limit=0):
     source=loader(manifest,args,'validation');device=None;model.eval();began=time.perf_counter()
     sums=torch.zeros(6,18,device='cuda',dtype=torch.float64);counts=sums.clone();logs=sums.clone()
     negative=nonfinite=violations=0;n=0;prices=PriceRelative()
@@ -39,10 +39,11 @@ def evaluate(model,manifest,args,status):
                 sums[f]+=torch.where(mask,e,0).sum((0,1));logs[f]+=torch.where(mask,le,0).sum((0,1));counts[f]+=mask.sum((0,1))
             prices.add(e.transpose(1,2),truth.transpose(1,2),valid.transpose(1,2),fi)
             n+=len(b.target);device.advance()
-            status(stage='full validation',validation_done=n,validation_seconds=time.perf_counter()-began)
-        if n!=manifest['counts']['validation']:raise ValueError(f'Incomplete validation: {n}')
+            status(stage='bounded validation profile' if limit else 'full validation',validation_done=n,validation_seconds=time.perf_counter()-began)
+            if limit and n>=limit*args.batch_size:break
+        if not limit and n!=manifest['counts']['validation']:raise ValueError(f'Incomplete validation: {n}')
         raw_mae=(sums/counts.clamp_min(1)).cpu();log_mae=(logs/counts.clamp_min(1)).cpu();counts=counts.cpu()
-        result=dict(origins=n,full_population=True,seconds=time.perf_counter()-began,nonfinite=nonfinite,negative=negative,
+        result=dict(origins=n,full_population=not bool(limit),seconds=time.perf_counter()-began,nonfinite=nonfinite,negative=negative,
             structure_violations=violations,raw_mae={FRAME_NAMES[f]:{name:float(raw_mae[f,c]) if counts[f,c] else None for c,name in enumerate(CHANNELS)} for f in range(6)},
             log_mae=log_mae.tolist(),valid_counts=counts.long().tolist(),activity_log_mae=float(log_mae[:,ACTIVITY].mean()))
         result.update(prices.metrics('full_raw_mae',FRAME_NAMES,CHANNELS))
@@ -61,7 +62,7 @@ def train(args,manifest,status):
     model=make_model();optimizer=torch.optim.AdamW(model.parameters(),lr=args.learning_rate,weight_decay=.01,fused=True)
     contract=dict(version='v7-full-1',architecture=asdict(model.config),source_revision=args.source_revision,
         split=manifest['manifest_hash'],batch_size=args.batch_size,workers=args.workers,prefetch=args.prefetch,
-        precision=args.precision,cuda_graph=args.cuda_graph,epochs=args.epochs,seed=args.seed,
+        precision=args.precision,cuda_graph=args.cuda_graph,preparation=args.preparation,epochs=args.epochs,seed=args.seed,
         learning_rate=args.learning_rate,min_learning_rate=args.min_learning_rate,warmup_updates=args.warmup_updates,
         sampling='all certified windows, deterministic shuffled shard lanes; all lane tails retained',
         objective='equal price/activity channel means; Huber on 100*log-price residual and log1p-activity residual',
@@ -92,7 +93,7 @@ def train(args,manifest,status):
         # Real-data graph capture before loader pin-memory threads start.
         if args.cuda_graph:
             rows=np.load(args.data/'train.npy',mmap_mode='r',allow_pickle=False)
-            example=prepare(rows[:args.batch_size]).to('cuda');replay=Replay(model,example,args.precision);del example
+            example=prepare(rows[:args.batch_size],compact=args.preparation=='gpu').to('cuda');replay=Replay(model,example,args.precision);del example
         while epoch<args.epochs:
             if phase=='train':
                 model.train();source=loader(manifest,args,'train',epoch);device=None
@@ -123,6 +124,7 @@ def train(args,manifest,status):
                             with (args.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
                             if reporter:reporter.log({'train/'+k:v for k,v in metrics.items()},step=max(step,reporter.step))
                         if step%args.checkpoint_every==0:checkpoint()
+                        if args.max_updates and step>=args.max_updates:checkpoint();return 'qualification_complete'
                     if epoch_done!=manifest['counts']['train']:raise ValueError(f'Training population mismatch: {epoch_done}')
                     phase='validation';checkpoint()
                 finally:

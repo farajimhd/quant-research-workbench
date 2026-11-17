@@ -6,7 +6,10 @@ from .model import objective
 
 
 def forward(model,b,precision):
-    z=model.encode_prepared(b.grid,b.slots,precision)
+    if b.grid.ndim==3:
+        grid,slots=model.prepare(b.grid,b.slots,None,check=False)
+    else:grid,slots=b.grid,b.slots
+    z=model.encode_prepared(grid,slots,precision)
     return model.decode(z)
 
 

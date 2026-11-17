@@ -23,7 +23,7 @@ def qualify(args):
         parts=[]
         with torch.no_grad():
             for start in range(0,len(rows),512):
-                b=prepare(rows[start:start+512]).to('cuda')
+                b=prepare(rows[start:start+512],compact=args.preparation=='gpu').to('cuda')
                 parts.append(m.transform.inverse(forward(m,b,precision)).cpu().numpy())
         pred=np.concatenate(parts);metrics=evaluate(pred,rows);require_structured(metrics,paired=True)
         predictions[precision]=pred;result[precision]=metrics
@@ -52,7 +52,7 @@ def compute(args):
         for batch in args.batches:
             for graph in (False,True):
                 torch.cuda.empty_cache();torch.manual_seed(17);m=model();m.train()
-                b=prepare(rows[:batch]).to('cuda');opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
+                b=prepare(rows[:batch],compact=args.preparation=='gpu').to('cuda');opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
                 began=time.perf_counter();replay=Replay(m,b,precision) if graph else None
                 startup=time.perf_counter()-began
                 def step():
@@ -79,7 +79,7 @@ def stream(args,manifest,status):
     m=model();m.train();opt=torch.optim.AdamW(m.parameters(),lr=3e-4,fused=True)
     # Capture before starting pin-memory threads.
     rows=np.load(args.data/'train.npy',mmap_mode='r',allow_pickle=False)
-    example=prepare(rows[:args.batch_size]).to('cuda')
+    example=prepare(rows[:args.batch_size],compact=args.preparation=='gpu').to('cuda')
     replay=Replay(m,example,args.precision) if args.cuda_graph else None
     began=time.perf_counter();source=loader(manifest,args,'train');device=None
     seen=0;steady=None;initial_wait=0

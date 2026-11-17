@@ -27,6 +27,9 @@ class Contracts(unittest.TestCase):
         other=model.encode_prepared(prepared.grid,prepared.slots)
         torch.testing.assert_close(z,other,rtol=0,atol=0)
         torch.testing.assert_close(p,model.decode(other),rtol=0,atol=0)
+        from .full_step import forward
+        compact=prepare(rows,compact=True)
+        torch.testing.assert_close(p,forward(model,compact,'fp32'),rtol=0,atol=0)
         loss,_=objective(p,prepared.target,prepared.valid,None);loss.backward()
         self.assertTrue(all(torch.isfinite(v.grad).all() for v in model.parameters()))
 
