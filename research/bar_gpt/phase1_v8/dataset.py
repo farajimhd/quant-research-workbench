@@ -80,4 +80,3 @@ if __name__=='__main__':
     p=argparse.ArgumentParser();p.add_argument('--old',type=Path,required=True);p.add_argument('--split',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--root',type=Path,required=True);p.add_argument('--previous',type=Path,nargs='+',required=True);a=p.parse_args()
     print(json.dumps(prepare(a.old,a.split,a.output,a.root,a.previous)))
-

@@ -47,7 +47,7 @@ class Encoder(nn.Module):
     def __init__(self,config,input_mean,input_scale):
         super().__init__();self.config=config
         self.register_buffer('input_mean',input_mean.float().clone());self.register_buffer('input_scale',input_scale.float().clone())
-        if config.architecture=='mlp':
+        if config.architecture in ('mlp','fused'):
             self.backbone=nn.Sequential(nn.Linear(64*54,config.width),nn.GELU(),
                 *[Residual(config.width) for _ in range(config.layers)],nn.LayerNorm(config.width))
         else:
@@ -59,13 +59,34 @@ class Encoder(nn.Module):
             for block in self.backbone.layers:
                 for module in block.modules():
                     if isinstance(module,nn.Linear):module.reset_parameters()
-        self.export=nn.Linear(config.width,config.embedding)
+        if config.architecture=='fused':self.context=nn.Linear(54,128)
+        self.export=nn.Linear(config.width+(128 if config.architecture=='fused' else 0),config.embedding)
+
+    def encode_raw(self,raw,valid,clocks,frames):
+        from ..phase1_v6.model import Transform
+        from ..v5.transforms_v1 import BarInputTransformV1
+        inputs=BarInputTransformV1()(raw,valid,clocks,frames)
+        inputs.values[...,:18]=Transform.logs(raw,valid).float()
+        positions=torch.arange(64,device=raw.device).expand(len(raw),-1)
+        return self.encode(inputs.values,inputs.valid,positions)
 
     def encode(self,values,valid,positions):
         normalized=torch.where(valid,(values-self.input_mean)/self.input_scale,0)
+        context=None
+        if self.config.architecture=='fused':
+            # Statistics of ONLY supplied visible inputs. They are inputs to learned
+            # matrices, never copied into z or read directly by the decoder.
+            count=valid.sum(1)
+            reference=torch.where(valid,values,0).sum(1)/count.clamp_min(1)
+            reference=torch.where(count>0,reference,self.input_mean)
+            summary=torch.cat(((reference-self.input_mean)/self.input_scale,valid.float().mean(1)),-1)
+            context=self.context(summary)
+            factor=values.new_tensor([100 if j in PRICES else 1 for j in range(18)])
+            residual=torch.asinh((values[...,:18]-reference[:,None,:18])*factor)
+            normalized=torch.cat((torch.where(valid[...,:18],residual,0),normalized[...,18:]),-1)
         tokens=torch.cat((normalized,valid.float()),-1)
         with torch.autocast(values.device.type,dtype=torch.bfloat16,enabled=self.config.precision=='bf16'):
-            if self.config.architecture=='mlp':
+            if self.config.architecture in ('mlp','fused'):
                 grid=tokens.new_zeros(len(tokens),64,54)
                 grid.scatter_(1,positions[...,None].expand(-1,-1,54),tokens)
                 hidden=self.backbone(grid.flatten(1))
@@ -73,7 +94,8 @@ class Encoder(nn.Module):
                 tokens=self.input(tokens)+self.position[positions]
                 hidden=self.backbone(torch.cat((self.cls.expand(len(tokens),-1,-1),tokens),1))[:,0]
         # EVERY exported coordinate is produced by learned weights. No copied slots.
-        return self.export(hidden.float())
+        hidden=hidden.float() if context is None else torch.cat((hidden.float(),context.float()),-1)
+        return self.export(hidden)
 
     def forward(self,values,valid,positions):return self.encode(values,valid,positions)
 
@@ -111,14 +133,14 @@ class Autoencoder(Encoder):
         return z,self.decode(z)
 
 
-def objective(outputs,target,target_valid,selected,input_mean,input_scale):
+def objective(outputs,target,target_valid,selected,input_mean,input_scale,price_weight=1.):
     prediction,time,validity=outputs
     residual=prediction-target[...,:18]
     factor=residual.new_tensor([100 if j in PRICES else 1 for j in range(18)])
     losses=F.smooth_l1_loss(residual*factor,torch.zeros_like(residual),reduction='none',beta=1.)
     mask=target_valid[...,:18]&selected[...,None]
     channel=torch.where(mask,losses,0).sum((0,1))/mask.sum((0,1)).clamp_min(1)
-    market=.5*(channel[list(PRICES)].mean()+channel[list(ACTIVITY)].mean())
+    market=.5*(price_weight*channel[list(PRICES)].mean()+channel[list(ACTIVITY)].mean())
     time_target=(target[...,18:]-input_mean[18:])/input_scale[18:]
     time_mask=target_valid[...,18:]&selected[...,None]
     tl=F.smooth_l1_loss(time,time_target,reduction='none')

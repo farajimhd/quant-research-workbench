@@ -25,7 +25,7 @@ def sample(n=4):
 class Contracts(unittest.TestCase):
     def test_no_copied_latent_coordinates(self):
         data=cache(sample());params,_=calibrate(data,'joint')
-        for architecture in ('mlp','attention'):
+        for architecture in ('mlp','attention','fused'):
             model=Autoencoder(Config(architecture=architecture,width=64,layers=1,embedding=32,output='joint'),**params)
             with torch.no_grad():
                 for name,p in model.named_parameters():
@@ -38,13 +38,14 @@ class Contracts(unittest.TestCase):
 
     def test_hidden_targets_never_enter_encoder(self):
         data=cache(sample());params,_=calibrate(data,'direct')
-        model=Autoencoder(Config(width=64,layers=1,embedding=32),**params).eval()
-        gen=torch.Generator().manual_seed(2);b=batch(data,torch.arange(4),16,gen)
-        z=model.encode(*b[:3]);changed={k:v.clone() for k,v in data.items()}
-        changed['values'][b[-1]]+=1000
-        other=batch(changed,torch.arange(4),16,torch.Generator().manual_seed(2))
-        torch.testing.assert_close(model.encode(*other[:3]),z,rtol=0,atol=0)
-        self.assertEqual(int(b[-1].sum()),4*48)
+        for architecture in ('mlp','attention','fused'):
+            model=Autoencoder(Config(architecture=architecture,width=64,layers=1,embedding=32),**params).eval()
+            gen=torch.Generator().manual_seed(2);b=batch(data,torch.arange(4),16,gen)
+            z=model.encode(*b[:3]);changed={k:v.clone() for k,v in data.items()}
+            changed['values'][b[-1]]+=1000
+            other=batch(changed,torch.arange(4),16,torch.Generator().manual_seed(2))
+            torch.testing.assert_close(model.encode(*other[:3]),z,rtol=0,atol=0)
+            self.assertEqual(int(b[-1].sum()),4*48)
 
     def test_encoder_only_and_finite_masked_gradients(self):
         data=cache(sample());params,_=calibrate(data,'joint')
@@ -58,6 +59,11 @@ class Contracts(unittest.TestCase):
             path=Path(folder)/'encoder.pt';save(model,path,test=True);restored=load(path)
             torch.testing.assert_close(restored(*b[:3]),z,rtol=0,atol=0)
             self.assertFalse(any('decoder' in key for key in restored.state_dict()))
+            rows=sample()
+            actual=restored.encode_raw(torch.from_numpy(rows['values'].copy()),torch.from_numpy(rows['valid'].astype(bool)),
+                torch.from_numpy(rows['end_us'].copy()),torch.from_numpy(rows['timeframe_us'].copy()))
+            expected=model.encode(data['values'],data['valid'],torch.arange(64).expand(4,-1))
+            torch.testing.assert_close(actual,expected,rtol=0,atol=0)
 
     def test_structured_coordinate_oracle_roundtrip(self):
         # Labelled coordinate oracle tests algebra only, never model acceptance.

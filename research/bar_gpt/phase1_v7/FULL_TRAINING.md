@@ -101,6 +101,18 @@ batch-size, worker-count, or traversal change. Only source revision and equivale
 preparation backend change. Optimizer/scheduler/RNG and sample cursor persist;
 the ordered source prefix is replayed without optimizer updates.
 
+## User-stopped: not an entirely learned embedding (2026-11-17)
+
+The user rejected V7's 25 deterministic reference/coverage slots. Although the
+decoder consumed only its exported embedding, those slots copied input-derived
+information rather than learning to recover it. The run is **not qualified for
+the user's entirely learned reconstruction objective**. It stopped gracefully
+at step 83,220 (epoch 3), with all exact owned processes verified exited.
+`checkpoint_userstop_copied_slots_step-83220.pt` is retained with SHA256
+`b47f2a03955228e228c039fe75c672ade7a7ec4449110eda24a336179be1fc87`.
+The user STOP marker remains in place; do not resume without new authorization.
+The successor campaign is `research/bar_gpt/phase1_v8`, with no copied slots.
+
 ## Completed-pass throughput tuning (2026-11-17)
 
 The user authorized larger batches, worker/prefetch tuning, faster full validation,

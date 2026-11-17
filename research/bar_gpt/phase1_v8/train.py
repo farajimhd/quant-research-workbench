@@ -17,17 +17,18 @@ from ..v5.shards.phase1_contract import write_json,file_hash
 def main(argv=None):
     p=argparse.ArgumentParser()
     p.add_argument('--data',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
-    p.add_argument('--architecture',choices=('mlp','attention'),default='mlp');p.add_argument('--width',type=int,default=1024)
+    p.add_argument('--architecture',choices=('mlp','attention','fused'),default='mlp');p.add_argument('--width',type=int,default=1024)
     p.add_argument('--layers',type=int,default=3);p.add_argument('--embedding',type=int,default=512)
     p.add_argument('--output-coordinates',choices=('direct','geometry','joint'),default='direct')
     p.add_argument('--visible',type=int,default=16);p.add_argument('--full-probability',type=float,default=.25)
     p.add_argument('--precision',choices=('fp32','bf16'),default='fp32');p.add_argument('--lr',type=float,default=.0003)
+    p.add_argument('--price-weight',type=float,default=1.,help='Explicit family weight; price residual remains in 100*log-relative units')
     p.add_argument('--steps',type=int,default=5000);p.add_argument('--minutes',type=float,default=25)
     p.add_argument('--validate-every',type=int,default=500);p.add_argument('--seed',type=int,default=17)
     p.add_argument('--device',choices=('cuda','cpu'),default='cuda');p.add_argument('--resume',action='store_true')
     p.add_argument('--wandb-mode',choices=('online','disabled'),default='online');p.add_argument('--hypothesis',required=True);p.add_argument('--parent',default='none')
     a=p.parse_args(argv)
-    if not 0<a.minutes<=60 or not 1<=a.visible<64 or not 0<=a.full_probability<=1:raise ValueError('Invalid bounded configuration')
+    if not 0<a.minutes<=60 or not 1<=a.visible<64 or not 0<=a.full_probability<=1 or not 0<a.price_weight<=10:raise ValueError('Invalid bounded configuration')
     started=time.time();deadline=started+a.minutes*60;preflight(a)
     torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
     torch.set_float32_matmul_precision('highest');torch.use_deterministic_algorithms(True)
@@ -43,11 +44,12 @@ def main(argv=None):
     config=Config(a.architecture,a.width,a.layers,a.embedding,a.visible,a.output_coordinates,a.precision)
     model=Autoencoder(config,**params).to(a.device)
     identity=dict(version='v8-fully-learned-mae-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],
-        steps=a.steps,minutes=a.minutes,seed=a.seed,learning_rate=a.lr,full_probability=a.full_probability,parent=a.parent,hypothesis=a.hypothesis,
-        input='18 fixed-global log/log1p normalized market channels + 9 fixed-normalized time channels + validity; no window statistics',
+        steps=a.steps,minutes=a.minutes,seed=a.seed,learning_rate=a.lr,price_weight=a.price_weight,full_probability=a.full_probability,parent=a.parent,hypothesis=a.hypothesis,
+        input=('Visible-only centered asinh market residuals + fixed-normalized time + validity; visible means/coverage pass through learned context and export matrices; no copied values'
+               if a.architecture=='fused' else '18 fixed-global log/log1p normalized market channels + 9 fixed-normalized time channels + validity; no window statistics'),
         latent='Every coordinate produced by learned export projection; zero copied reference/validity slots',
         decoder='One affine projection to 64x54; predicts all market/time values and validity; optional fixed structure algebra; no external inputs',
-        loss='Equal price/activity means; Huber(100*log-price residual), Huber(log1p-activity residual), .05*time and .05*validity auxiliaries',
+        loss='0.5*(price_weight*mean Huber(100*log-price residual) + mean Huber(log1p-activity residual)); .05*time and .05*validity auxiliaries',
         calibration=calibration,parameters={k:v.tolist() for k,v in params.items()},
         sampling='Equal timeframe/last-close-price-band mass; uniform rows within cells; calibration and metrics unweighted',
         parameter_count=sum(v.numel() for v in model.parameters()),decoder_parameters=sum(v.numel() for v in model.decoder.parameters()),
@@ -75,7 +77,7 @@ def main(argv=None):
         np.random.set_state(state['numpy_rng']);random.setstate(state['python_rng'])
         step=state['step'];started=state['started'];deadline=started+a.minutes*60;best=state['best']
     def checkpoint(name='last.pt'):save_checkpoint(a.output/name,model,opt,scheduler,gen,step,started,identity,best)
-    def loss_for(m,b):return objective(m(b[0],b[1],b[2])[1],*b[3:],m.input_mean,m.input_scale)
+    def loss_for(m,b):return objective(m(b[0],b[1],b[2])[1],*b[3:],m.input_mean,m.input_scale,a.price_weight)
     try:
         if not a.resume:
             raw=torch.from_numpy(rows['train']['values'].copy()).double();valid=torch.from_numpy(rows['train']['valid'].astype(bool))

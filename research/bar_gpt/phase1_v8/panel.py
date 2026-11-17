@@ -35,7 +35,8 @@ def render(root,width=120,height=30):
     rate=p.get('evaluation_windows_per_second') if evaluating else p.get('windows_per_second') if stage=='training' else None
     if age>30:rate=None
     rows.append(Text(f'{"Evaluation" if evaluating else "Training incl. checks"} {number(rate)} windows/s'+(f' · ETA {duration(p.get("evaluation_eta_seconds"))}' if evaluating and age<=30 else '')))
-    rows.append(Text(f'Loss {number(p.get("loss"),5)} · GPU allocated peak {number(p.get("gpu_memory_bytes",0)/2**30,1)} GiB · cached data: no per-step loader waits',style='dim'))
+    memory=p.get('gpu_memory_bytes')
+    rows.append(Text(f'Loss {number(p.get("loss"),5)} · GPU allocated peak {number(memory/2**30 if memory is not None else None,1)} GiB · cache mode: no per-step loader waits',style='dim'))
     latest=read(root/name/'development-latest.json') if name else {}
     rows.append(Text('Latest development · all-visible reconstruction',style='bold'))
     rows.append(Text(f'Price error {number(100*latest["balanced_price_relative_mean"] if latest else None,3)}% · worst price band {number(100*latest["worst_price_band_relative_mean"] if latest else None,2)}% · activity log MAE {number(latest.get("balanced_activity_log_mae"),4)}'))

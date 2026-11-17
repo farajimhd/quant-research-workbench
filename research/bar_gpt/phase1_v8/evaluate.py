@@ -11,6 +11,7 @@ from ..phase1_v7.metrics import evaluate,probes,summaries,require_structured
 def predict(model,data,batch_size,full=True,status=None):
     model.eval();pred=[];embeddings=[];masks=[];time_error=torch.zeros(9,device=model.input_mean.device,dtype=torch.float64)
     time_count=time_error.clone();valid_correct=valid_total=0;began=time.perf_counter()
+    confusion=torch.zeros(4,27,device=model.input_mean.device,dtype=torch.int64)
     generator=torch.Generator(device=model.input_mean.device).manual_seed(731)
     n=len(data['values'])
     for start in range(0,n,batch_size):
@@ -22,11 +23,15 @@ def predict(model,data,batch_size,full=True,status=None):
         actual=(t*model.input_scale[18:]+model.input_mean[18:]-y[...,18:]).abs()
         time_error+=torch.where(mt,actual,0).double().sum((0,1));time_count+=mt.sum((0,1))
         valid_correct+=int((((vl>=0)==m)&selected[...,None]).sum());valid_total+=int(selected.sum())*27
+        positive=vl>=0;take=selected[...,None]
+        for i,condition in enumerate((positive&m,~positive&~m,positive&~m,~positive&m)):
+            confusion[i]+=(condition&take).sum((0,1))
         if status and (start//batch_size)%8==0:
             done=min(start+batch_size,n);rate=done/max(time.perf_counter()-began,.001)
             status(evaluation_done=done,evaluation_total=n,evaluation_windows_per_second=rate,evaluation_eta_seconds=(n-done)/rate)
     metadata=dict(time_mae=(time_error/time_count.clamp_min(1)).cpu().tolist(),time_valid_counts=time_count.cpu().long().tolist(),
-        validity_correct=valid_correct,validity_total=valid_total,validity_accuracy=valid_correct/max(1,valid_total),seconds=time.perf_counter()-began)
+        validity_correct=valid_correct,validity_total=valid_total,validity_accuracy=valid_correct/max(1,valid_total),
+        validity_confusion=dict(zip(('tp','tn','fp','fn'),confusion.cpu().tolist())),seconds=time.perf_counter()-began)
     return np.concatenate(pred),np.concatenate(embeddings),np.concatenate(masks),metadata
 
 

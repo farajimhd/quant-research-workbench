@@ -17,7 +17,12 @@ Inputs are 64 bars with 18 source-valid market channels and the existing nine
 causal UTC/timeframe features. Prices use log, activity uses log1p; fixed global
 channel mean/std are fitted only on the frozen training subset. Validity bits
 are explicit encoder inputs. Hidden bars are physically removed before encoder
-execution; no full-window statistics are calculated for the encoder or decoder.
+execution. Baseline encoders calculate no window statistics. The optional fused
+encoder calculates means/coverage from supplied visible inputs only, then maps
+them through a learned context projection and the common learned export layer.
+Its shape branch sees centered asinh log residuals. No statistic is appended to
+the latent or supplied to the decoder; every absolute output still must be
+predicted. Hidden targets cannot affect those visible-input calculations.
 
 An MLP control and attention/CLS encoder are experimental alternatives. One affine
 decoder predicts 18 market coordinates, nine time coordinates and 27 validity
@@ -30,10 +35,16 @@ native reconstruction metrics use original source-valid masks, never predicted
 validity to exclude difficult observations.
 
 The price objective is Huber on `100 * log-price error`; activity uses log1p
-error, with equal family means. Time and validity prediction each have auxiliary
+error, with explicit configurable price-family weight (default one). Time and validity prediction each have auxiliary
 weight .05. Full-visible and hidden-only evaluation are separate. Missing market
 values cannot in general be reconstructed exactly; this is not a lossless coding
 claim. Reconstruction and within-window probes are not evidence of trading value.
+
+E02 training-only gradient diagnosis found price/activity encoder-gradient ratios
+of approximately 61x all-visible and 121x masked despite comparable scalar losses.
+The `price_weight=.02` ablation retains the meaningful 100*log-price residual but
+reduces its family weight. Native selection metrics remain identical across
+objective variants; lower weighted training loss is not an acceptance criterion.
 
 Campaign runtime: `D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117`.
 At most eight experiments and eight hours, with each experiment strictly below
