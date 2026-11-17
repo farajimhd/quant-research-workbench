@@ -60,3 +60,11 @@ requires a new identity. Human STOP files are never removed.
 Run integrity tests with `python -B -m unittest research.bar_gpt.phase1_v6.test_contract`.
 Actual candidate conclusions, native metrics, profiles, checkpoints, source hashes,
 coverage limitations and audit access belong in the runtime comparison report.
+
+V6.2 adds `--full-probability 0.5`: half of training batches reconstruct all-visible
+inputs, half reconstruct the 48 removed bars. The architecture and decoder remain
+unchanged. This tests the visibility/objective mismatch identified by V6.1's weak
+shape probes and failure to beat a visible-context median on masked reconstruction.
+Profiling exercises the selected mixture. Per-cell sampling probabilities are
+persisted explicitly. Native metrics also expose variance of per-window channel
+means across examples, in addition to pooled observation variance.

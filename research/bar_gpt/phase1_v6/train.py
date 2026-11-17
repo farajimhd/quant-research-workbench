@@ -90,10 +90,12 @@ def main(argv=None):
     p.add_argument('--embedding',type=int,default=256);p.add_argument('--decoder',type=int,default=256)
     p.add_argument('--visible',type=int,default=16);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--resume',action='store_true')
+    p.add_argument('--full-probability',type=float,default=0.)
     p.add_argument('--device',default='cuda');p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
     p.add_argument('--hypothesis',required=True);p.add_argument('--parent',default='none')
     a=p.parse_args(argv)
     assert 0<a.minutes<=60
+    assert 0<=a.full_probability<=1
     if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():raise RuntimeError('STOP remains in force')
     if a.output.exists() and not a.resume:raise FileExistsError(a.output)
     a.output.mkdir(parents=True,exist_ok=a.resume)
@@ -129,6 +131,7 @@ def main(argv=None):
     model=Autoencoder(config,mean,scale).to(device)
     identity=dict(version='phase1-v6-log-campaign',config=asdict(config),source_revision=a.source_revision,
         dataset_hash=manifest['hash'],seed=a.seed,learning_rate=a.lr,steps=a.steps,minutes=a.minutes,
+        full_probability=a.full_probability,
         precision='FP32 encoder/readout; FP64 inverse',hypothesis=a.hypothesis,parent=a.parent,
         sampling='Equal mass per observed timeframe/last-close-price-band cell; uniform rows within cell. Calibration and metrics use unweighted selected observations.',
         selection='equal-frame/channel price relative mean + 0.1 worst price-band relative mean + 0.1 equal-frame/channel activity log1p MAE',
@@ -139,8 +142,11 @@ def main(argv=None):
     else:write_json(a.output/'manifest.json',identity)
     data={k:cache(v,mean,scale,device) for k,v in rows.items()}
     groups=np.c_[rows['train']['timeframe_us'],np.digitize(rows['train']['values'][:,-1,3],[.1,1,5,20,100])]
-    _,group_ids,counts=np.unique(groups,axis=0,return_inverse=True,return_counts=True)
+    cells,group_ids,counts=np.unique(groups,axis=0,return_inverse=True,return_counts=True)
     sampling=torch.tensor(1/counts[group_ids],dtype=torch.float32,device=device)
+    if not a.resume:
+        write_json(a.output/'sampling.json',dict(cells=cells.tolist(),counts=counts.tolist(),
+            per_row_probability=(1/counts/len(counts)).tolist(),interpretation='probability for each row in a cell; cells have equal total mass'))
     write_json(a.output/'startup.json',dict(seconds=time.time()-started,windows={k:len(v) for k,v in rows.items()},loader='preverified CPU preparation then complete GPU cache; no per-step loader wait',loader_wait_seconds=0))
     opt=torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=.01)
     scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,a.steps,eta_min=a.lr*.1)
@@ -191,7 +197,8 @@ def main(argv=None):
         begin=time.perf_counter()
         for k in range(12):
             ids=torch.randint(len(rows['train']),(bs,),device=device,generator=gen)
-            x,v,pos,y,m=batch(data['train'],ids,config.visible,gen)
+            full=bool(torch.rand((),device=device,generator=gen)<a.full_probability) if a.full_probability else False
+            x,v,pos,y,m=batch(data['train'],ids,config.visible,gen,full)
             po.zero_grad(set_to_none=True);_,pred=pm(x,v,pos);loss,_=objective(pred,y,m,scale.to(device));loss.backward();po.step()
         if device.type=='cuda':torch.cuda.synchronize()
         elapsed=time.perf_counter()-begin
@@ -234,7 +241,8 @@ def main(argv=None):
             if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():break
             model.train();begin=time.perf_counter()
             ids=torch.multinomial(sampling,bs,replacement=True,generator=gen)
-            x,v,pos,y,m=batch(data['train'],ids,config.visible,gen)
+            full=bool(torch.rand((),device=device,generator=gen)<a.full_probability) if a.full_probability else False
+            x,v,pos,y,m=batch(data['train'],ids,config.visible,gen,full)
             opt.zero_grad(set_to_none=True);_,pred=model(x,v,pos);loss,_=objective(pred,y,m,scale.to(device))
             if not torch.isfinite(loss):raise FloatingPointError('Nonfinite objective')
             loss.backward();norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)

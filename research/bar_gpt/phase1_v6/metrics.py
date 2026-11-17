@@ -26,6 +26,11 @@ def evaluate(pred, rows, mask=None):
             c=dict(count=int(ok.sum()),mae=float(e.mean()) if len(e) else None,
                 prediction_variance=float(pv.var()) if len(e) else None,target_variance=float(tv.var()) if len(e) else None,
                 zero_denominators=int((tv==0).sum()),tiny_denominators=int(((tv>0)&(tv<1e-8)).sum()))
+            counts=ok.sum(1);observed=counts>0
+            predicted_means=np.where(ok,p[...,j],0).sum(1)/np.maximum(counts,1)
+            target_means=np.where(ok,t[...,j],0).sum(1)/np.maximum(counts,1)
+            c['across_example_prediction_mean_variance']=float(predicted_means[observed].var()) if observed.any() else None
+            c['across_example_target_mean_variance']=float(target_means[observed].var()) if observed.any() else None
             if j in PRICES:
                 pos=tv>0
                 c['relative']=distribution(e[pos]/tv[pos])
