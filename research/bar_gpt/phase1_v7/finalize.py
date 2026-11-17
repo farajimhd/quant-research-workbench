@@ -9,6 +9,7 @@ from .model import Config,Autoencoder
 from .train import load_data,cache,predict
 from .metrics import evaluate,probes,summaries,require_structured
 from .export import save_encoder,load_encoder
+from .nonlinear_probe import probe
 from ..v5.shards.phase1_contract import file_hash,write_json
 
 
@@ -83,6 +84,9 @@ def main():
             dataset_hash=manifest['hash'],metrics=metrics,audit_probes=info,audit_controls=controls,
             untrained_audit_probes=probes(train_z,audit_z,rows['train'],rows['audit']),
             raw_summary_audit_probes=probes(sy,ay,rows['train'],rows['audit']),
+            nonlinear_audit_probes=probe(embeddings['train'],embeddings['audit'],rows['train'],rows['audit'],a.device),
+            nonlinear_untrained_audit_probes=probe(train_z,audit_z,rows['train'],rows['audit'],a.device),
+            nonlinear_raw_summary_audit_probes=probe(sy,ay,rows['train'],rows['audit'],a.device),
             representation=rank_diagnostics(embeddings['audit']),precision='FP32 model, FP64 raw inverse',
             inference_contract='encoder returns fixed vector; model.decode(vector) and model.transform.inverse(output) require no target references')
         write_json(output/(name+'.json'),result);results[name]=result

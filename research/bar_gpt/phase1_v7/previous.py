@@ -8,6 +8,7 @@ import torch
 from ..phase1_v6.model import Autoencoder,Config
 from ..phase1_v6.train import cache,predict
 from ..phase1_v6.metrics import evaluate,probes
+from .nonlinear_probe import probe
 from ..v5.shards.phase1_contract import file_hash,write_json
 
 
@@ -40,7 +41,8 @@ def main():
             if full:audit_z=z
         results[name]=dict(checkpoint_sha256=file_hash(checkpoint),source_revision=identity['source_revision'],
             original_dataset_hash=old['hash'],audit_dataset_hash=new['hash'],metrics=metrics,
-            audit_probes=probes(train_z,audit_z,rows['train'],rows['audit']))
+            audit_probes=probes(train_z,audit_z,rows['train'],rows['audit']),
+            nonlinear_audit_probes=probe(train_z,audit_z,rows['train'],rows['audit'],a.device))
         del model,data
         if a.device=='cuda':torch.cuda.empty_cache()
     write_json(output,dict(results=results,seconds=time.time()-started,policy='Prior pinned winners only; no retraining or audit-based checkpoint selection'))
