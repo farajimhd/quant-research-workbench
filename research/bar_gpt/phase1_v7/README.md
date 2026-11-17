@@ -89,7 +89,7 @@ outputs and zero nonfinites. The old V6 recommended checkpoint evaluated on this
 same audit yields 0.0235916 and 0.552967 respectively. This is a comparison of
 complete candidates, not a transformation-only or compute-matched ablation.
 
-The same-head E06 comparator has slightly better audit price error (0.00882606)
+The independent-quote E06 comparator has slightly better audit price error (0.00882606)
 and worst-band mean (0.154039 versus E08 0.167328), but 87,894 crossed closes.
 E08 is preferred for its coupled valid outputs with similar reconstruction.
 The worst E08 audit band is daily ask-high below $0.10 with only two observations;

@@ -14,9 +14,9 @@ from ..v5.shards.phase1_contract import file_hash,write_json
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--previous',type=Path,required=True)
-    p.add_argument('--device',default='cpu');a=p.parse_args()
+    p.add_argument('--device',default='cpu');p.add_argument('--output',type=Path);a=p.parse_args()
     assert (a.root/'finalist-audit/selection.json').exists(),'Freeze current finalists first'
-    output=a.root/'previous-on-new-audit.json'
+    output=a.output or a.root/'previous-on-new-audit.json'
     if output.exists():raise FileExistsError(output)
     new=json.loads((a.root/'dataset/manifest.json').read_text());old=json.loads((a.previous/'dataset/manifest.json').read_text())
     assert new['parent_hash']==old['hash']
