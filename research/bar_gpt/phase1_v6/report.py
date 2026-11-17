@@ -10,7 +10,8 @@ def read(path):return json.loads(path.read_text())
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--recommended',required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--recommended',required=True)
+    p.add_argument('--plot',action='store_true');a=p.parse_args()
     root=a.root;ledger=read(root/'campaign.json');dataset=read(root/'dataset/manifest.json')
     rows=[]
     for entry in ledger['experiments']:
@@ -87,6 +88,27 @@ def main():
     for filename,title in (('campaign-review.json','RESEARCH CONCLUSIONS AND DISPOSITIONS'),('next-training-proposal.json','NEXT FULL-TRAINING CONFIGURATION FOR APPROVAL')):
         if (root/filename).exists():lines+=['',title,json.dumps(read(root/filename),indent=2)]
     (root/'comparison.txt').write_text('\n'.join(lines),encoding='utf-8')
+    if a.plot:
+        os.environ.setdefault('MPLCONFIGDIR',str(root/'matplotlib-cache'))
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        fig,axes=plt.subplots(2,2,figsize=(12,8))
+        panels=[('balanced_price_relative_mean','Development price error (%)',100),
+            ('activity_log_mae','Development activity log1p MAE',1),('train_loss','Training objective',1),
+            ('selection_score','Development checkpoint score',1)]
+        for row in rows:
+            if not row['eligible']:continue
+            history=[json.loads(line) for line in (root/row['name']/'learning.jsonl').read_text().splitlines()]
+            for ax,(key,label,factor) in zip(axes.flat,panels):
+                ax.plot([v['step'] for v in history],[v[key]*factor for v in history],label=row['name'],
+                    linewidth=2.3 if row['name']==a.recommended else 1.)
+                ax.set(xlabel='Optimizer updates',ylabel=label);ax.grid(alpha=.2)
+        axes[0,0].set_yscale('log')
+        handles,labels=axes[0,0].get_legend_handles_labels()
+        fig.legend(handles,labels,loc='lower center',ncol=3,fontsize=8)
+        fig.suptitle('Fixed development subset; E04 excluded for provenance error')
+        fig.tight_layout(rect=(0,.10,1,.96));fig.savefig(root/'learning-curves.png',dpi=170);plt.close(fig)
 
 
 if __name__=='__main__':main()

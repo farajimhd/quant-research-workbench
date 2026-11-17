@@ -127,3 +127,10 @@ readout/validity follow-up and full-authority streaming qualification are requir
 before approving the proposed full-data training configuration; no full run was
 launched. The runtime report distinguishes the pre-audit primary finalist from
 the final recommendation and retains all failures and tradeoffs.
+
+For independent reconstruction without training or reopening the held-out audit,
+run `python -B -m research.bar_gpt.phase1_v6.reproduce --checkpoint PINNED.pt
+--data FROZEN_DATASET --output NEW_RUNTIME_REPORT.json --device cpu`.
+This evaluates the development partition. CPU/CUDA mask draws differ; the
+all-visible population is identical. `report.py --plot` also regenerates the
+standalone learning-curve figure from immutable per-run logs.
