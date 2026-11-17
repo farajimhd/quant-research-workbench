@@ -1,0 +1,81 @@
+import unittest
+import numpy as np
+import torch
+from .dataset import SAMPLE
+from .data import cache,calibrate,anchor
+from .model import Config,JointModel,structured,objective
+from ..phase1_v8.test_contract import sample
+from ..phase1_v8.model import coordinates
+
+
+def examples(n=4):
+    result=np.zeros(n,dtype=SAMPLE)
+    for i in range(n):
+        context=sample(16);context['values']*=1+i*.1
+        # Keep safe dynamic range; source-valid quote geometry unchanged.
+        context['values']=np.tile(sample(1)['values'],(16,1,1))*(1+i*.1)
+        result['context'][i]=context;result['origin_us'][i]=context['end_us'].max()
+        for key in ('values','valid','end_us'):result['future'][i][key]=context[7][key]
+        result['future'][i]['end_us']+=64*1000000
+        result['future'][i]['values']*=1.01
+    return result
+
+
+class ModelContract(unittest.TestCase):
+    def test_detached_reconstruction_probe_does_not_train_encoder(self):
+        data=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**calibrate(data))
+        z=model.encode_windows(data['x'],data['valid']);loss=model.reconstruct(z.detach())[0].sum();loss.backward()
+        self.assertTrue(all(v.grad is None for v in model.encoder.parameters()))
+        self.assertTrue(any(v.grad is not None for v in model.reconstruction.parameters()))
+
+    def test_dropout_rng_optimizer_resume_next_update(self):
+        import tempfile
+        from pathlib import Path
+        from .train import loss_for
+        torch.manual_seed(71);data=cache(examples());parameters=calibrate(data)
+        c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=.1,precision='fp32')
+        model=JointModel(c,**parameters);opt=torch.optim.AdamW(model.parameters(),lr=.001)
+        scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,10);gen=torch.Generator().manual_seed(5)
+        def update(m,o,s,g):
+            ids=torch.randint(4,(4,),generator=g);b={k:v[ids] for k,v in data.items()}
+            o.zero_grad(set_to_none=True);loss,_=loss_for(m,b,.1);loss.backward();torch.nn.utils.clip_grad_norm_(m.parameters(),1.);o.step();s.step()
+            return ids
+        update(model,opt,scheduler,gen)
+        with tempfile.TemporaryDirectory(dir='D:/TradingML/runtimes') as folder:
+            path=Path(folder)/'state.pt';torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),scheduler=scheduler.state_dict(),rng=torch.get_rng_state(),generator=gen.get_state()),path)
+            ids=update(model,opt,scheduler,gen);state=torch.load(path,weights_only=False)
+            restored=JointModel(c,**parameters);restored.load_state_dict(state['model']);ro=torch.optim.AdamW(restored.parameters(),lr=.001)
+            rs=torch.optim.lr_scheduler.CosineAnnealingLR(ro,10);ro.load_state_dict(state['optimizer']);rs.load_state_dict(state['scheduler'])
+            rg=torch.Generator();rg.set_state(state['generator']);torch.set_rng_state(state['rng'])
+            torch.testing.assert_close(update(restored,ro,rs,rg),ids,rtol=0,atol=0)
+            for key,v in model.state_dict().items():torch.testing.assert_close(restored.state_dict()[key],v,rtol=0,atol=0)
+
+    def test_architectures_shapes_gradients_and_decoder_only_latent(self):
+        torch.set_num_threads(2);data=cache(examples());params=calibrate(data)
+        for arch in ('mlp','conv','patch','bar','variable'):
+            model=JointModel(Config(architecture=arch,width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**params)
+            out=model(data['x'],data['valid'],data['ages']);self.assertEqual(out['forecast'].shape,(4,64,18));self.assertEqual(out['windows'].shape,(4,16,64))
+            loss,_=objective(model,out,data,.1);loss.backward()
+            self.assertTrue(all(torch.isfinite(v.grad).all() for v in model.parameters() if v.grad is not None))
+            with torch.no_grad():
+                for value in model.encoder.parameters():value.zero_()
+                z=model.encode_windows(data['x'],data['valid']);torch.testing.assert_close(z,torch.zeros_like(z),rtol=0,atol=0)
+                p=model.reconstruct(z)[0];torch.testing.assert_close(p,p[:1,:1].expand_as(p),rtol=0,atol=0)
+
+    def test_no_future_values_masks_or_timestamps_affect_inputs_or_prediction(self):
+        rows=examples();data=cache(rows);model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**calibrate(data)).eval()
+        changed=rows.copy();changed['future']['values']*=10;changed['future']['end_us']+=99999999;changed['future']['valid']=0
+        other=cache(changed)
+        with torch.no_grad():
+            a=model(data['x'],data['valid'],data['ages']);b=model(other['x'],other['valid'],other['ages'])
+        for key in ('x','valid','ages'):torch.testing.assert_close(data[key],other[key],rtol=0,atol=0)
+        torch.testing.assert_close(a['forecast'],b['forecast'],rtol=0,atol=0)
+
+    def test_geometry_roundtrip_and_history_anchor(self):
+        data=cache(examples());code,mask=coordinates(data['target'],data['target_valid'],'joint')
+        actual=structured(code);complete=data['target_valid'].all(-1)
+        torch.testing.assert_close(actual[complete],data['target'][complete],atol=1e-6,rtol=1e-5)
+        a=anchor(data['x'],data['valid']);self.assertTrue(torch.isfinite(a).all())
+
+
+if __name__=='__main__':unittest.main()
