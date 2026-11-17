@@ -8,15 +8,32 @@ from ..v5.shards.phase1_contract import write_json
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True)
-    p.add_argument('--name',required=True);p.add_argument('args',nargs=argparse.REMAINDER);a=p.parse_args()
+    p.add_argument('--name',required=True);p.add_argument('--retry-startup',action='store_true')
+    p.add_argument('args',nargs=argparse.REMAINDER);a=p.parse_args()
     ledger=json.loads((a.root/'campaign.json').read_text())
-    if time.time()>=ledger['deadline'] or len(ledger['experiments'])>=8:raise RuntimeError('Campaign limit reached')
+    if time.time()>=ledger['deadline'] or (len(ledger['experiments'])>=8 and not a.retry_startup):raise RuntimeError('Campaign limit reached')
     if (a.root/'STOP').exists():raise RuntimeError('Human STOP preserved')
-    if any(e['name']==a.name for e in ledger['experiments']):raise RuntimeError('Identity already recorded; use explicit engineering resume')
     run=a.root/a.name
+    previous=next((e for e in ledger['experiments'] if e['name']==a.name),None)
+    if a.retry_startup:
+        if previous is None or previous.get('exit_code',0)==0:raise RuntimeError('No failed startup to retry')
+        if any((run/n).exists() for n in ('manifest.json','last.pt','best.pt','wandb-identity.json')):raise RuntimeError('Initialized experiment requires exact checkpoint resume')
+        import psutil
+        owner=json.loads((a.root/(a.name+'.owner.json')).read_text())
+        if psutil.pid_exists(owner['pid']) and abs(psutil.Process(owner['pid']).create_time()-owner['created'])<.01:raise RuntimeError('Prior owner still alive')
+        attempt=a.root/(a.name+'-startup-failure-'+str(int(previous['started'])))
+        run.rename(attempt)
+        for suffix in ('.stdout.log','.stderr.log','.owner.json'):
+            (a.root/(a.name+suffix)).rename(attempt/('attempt'+suffix))
+        record=previous
+        record.setdefault('startup_failures',[]).append(dict(artifact=str(attempt),ended=previous['ended'],exit_code=previous['exit_code']))
+        record.update(state='running',retry_started=time.time())
+    else:
+        if previous is not None:raise RuntimeError('Identity already recorded; use explicit engineering resume')
+        record=dict(name=a.name,started=time.time(),state='running')
+        ledger['experiments'].append(record)
     ledger.update(state='running',current_experiment=a.name)
-    record=dict(name=a.name,started=time.time(),state='running')
-    ledger['experiments'].append(record);write_json(a.root/'campaign.json',ledger)
+    write_json(a.root/'campaign.json',ledger)
     args=a.args[1:] if a.args[:1]==['--'] else a.args
     command=[sys.executable.replace('pythonw.exe','python.exe'),'-B','-u','-m','research.bar_gpt.phase1_v8.train',
         '--data',str(a.root/'dataset'),'--output',str(run),*args]

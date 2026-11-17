@@ -28,6 +28,8 @@ def preflight(args):
             if not fields[0].strip().isdigit():continue
             pid=int(fields[0]);name=fields[1].strip().lower()
             if pid==own.pid or pid==4:continue
+            # Verified Windows sign-in surface can appear in WDDM compute inventory.
+            if name=='c:\\windows\\system32\\logonui.exe':continue
             if name.startswith(('c:\\windows\\','c:\\program files\\','c:\\program files (x86)\\')) and Path(name).name in desktop:continue
             other.append(dict(pid=pid,name=name))
         write_json(args.output/'gpu-ownership.json',dict(other_compute_owners=other))
