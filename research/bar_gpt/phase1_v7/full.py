@@ -1,0 +1,75 @@
+"""Full V7 training entry point: explicit immutable source and runtime ownership."""
+import os
+os.environ.update(PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',PYTHONUNBUFFERED='1',CUBLAS_WORKSPACE_CONFIG=':4096:8')
+import argparse,json,time,random
+from pathlib import Path
+import numpy as np
+import torch
+from ..v5.shards.phase1_contract import write_json,file_hash,digest
+
+
+def main():
+    p=argparse.ArgumentParser()
+    p.add_argument('mode',choices=('qualify','compute','stream','train'))
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
+    p.add_argument('--deployment',type=Path,required=True)
+    p.add_argument('--data',type=Path,default=Path(r'D:\TradingML\runtimes\bar_gpt\encoder-campaign2-20261117\dataset'))
+    p.add_argument('--checkpoint',type=Path,default=Path(r'D:\TradingML\runtimes\bar_gpt\encoder-campaign2-20261117\finalist-audit\e08-coupled-quotes-pinned.pt'))
+    p.add_argument('--split',type=Path,default=Path(r'D:\TradingML\runtimes\bar_gpt\phase1-v6-cohort-balanced-v4\split.json'))
+    p.add_argument('--batch-size',type=int,default=8192);p.add_argument('--workers',type=int,default=32)
+    p.add_argument('--prefetch',type=int,default=4);p.add_argument('--precision',choices=('fp32','bf16'),default='fp32')
+    p.add_argument('--cuda-graph',action=argparse.BooleanOptionalAction,default=True)
+    p.add_argument('--batches',type=int,nargs='+',default=[512,1024,2048,4096,8192])
+    p.add_argument('--steps',type=int,default=40);p.add_argument('--seed',type=int,default=17)
+    p.add_argument('--epochs',type=int,default=50);p.add_argument('--resume',action='store_true')
+    p.add_argument('--checkpoint-every',type=int,default=1000)
+    p.add_argument('--learning-rate',type=float,default=3e-4);p.add_argument('--min-learning-rate',type=float,default=3e-5)
+    p.add_argument('--warmup-updates',type=int,default=1000)
+    p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
+    a=p.parse_args()
+    if not 0<=a.workers<=32 or not 1<=a.prefetch<=4 or min(a.batch_size,a.steps,a.epochs)<1:raise ValueError('Invalid bounded configuration')
+    if not a.output.resolve().is_relative_to(Path(r'D:\TradingML\runtimes').resolve()):raise ValueError('Runtime authority required')
+    if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():raise RuntimeError('Human STOP remains in force')
+    proof=json.loads(a.deployment.read_text());root=Path(__file__).resolve().parents[3]
+    if proof['revision']!=a.source_revision:raise ValueError('Deployment revision mismatch')
+    for name,h in proof['files'].items():
+        if file_hash(root/name)!=h:raise ValueError(f'Immutable source changed: {name}')
+    a.output.mkdir(parents=True,exist_ok=a.resume)
+    import psutil
+    own=psutil.Process();write_json(a.output/'process.json',dict(pid=own.pid,created=own.create_time(),command=own.cmdline()))
+    torch.set_num_threads(1);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
+    torch.set_float32_matmul_precision('highest');torch.use_deterministic_algorithms(True)
+    state=dict(state='running',started=time.time(),updated=time.time(),mode=a.mode,epochs=a.epochs)
+    def status(**kwargs):
+        state.update(kwargs,updated=time.time());write_json(a.output/'status.json',state)
+    status(stage='verifying source and hardware')
+    write_json(a.output/'hardware.json',dict(host=os.environ.get('COMPUTERNAME'),gpu=torch.cuda.get_device_name(),
+        memory_mib=torch.cuda.get_device_properties(0).total_memory/2**20,torch=str(torch.__version__),cuda=torch.version.cuda,
+        ram_available=psutil.virtual_memory().available,disk_free=psutil.disk_usage(a.output).free))
+    from ..phase2_v2.train import lease
+    try:
+        with lease(a.output):
+            if a.mode in ('qualify','compute'):
+                from . import full_profile
+                result=getattr(full_profile,a.mode)(a)
+            else:
+                from ..v5.data_v3 import load_split
+                from ..v5.loader_index_v1 import attach
+                status(stage='verifying full split and compact loader index')
+                manifest=load_split(a.split)
+                manifest=attach(manifest,Path(manifest['dataset']))
+                manifest['splits']={}
+                status(epoch_total=manifest['counts']['train'],validation_total=manifest['counts']['validation'])
+                if a.mode=='stream':
+                    from .full_profile import stream
+                    result=stream(a,manifest,status)
+                else:
+                    from .full_train import train
+                    result=train(a,manifest,status)
+            status(state='complete' if a.mode!='train' else result,stage=str(result) if isinstance(result,str) else 'profile complete')
+            print(json.dumps(result),flush=True)
+    except BaseException as e:
+        status(state='failed',stage='failed',error=f'{type(e).__name__}: {e}');raise
+
+
+if __name__=='__main__':main()

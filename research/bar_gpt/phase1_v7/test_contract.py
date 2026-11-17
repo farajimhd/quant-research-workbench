@@ -11,6 +11,25 @@ from .export import EncoderOnly
 
 
 class Contracts(unittest.TestCase):
+    def test_full_worker_preparation_and_gradients(self):
+        from .full_data import prepare
+        from .train import cache
+        from ..v5.shards.phase1_contract import SAMPLE_DTYPE
+        rows=np.zeros(3,dtype=SAMPLE_DTYPE)
+        rows['values']=1;rows['valid']=1;rows['timeframe_us']=1000000
+        rows['end_us']=1700000000000000+np.arange(64)*1000000
+        rows['values'][:,:,12:16]=1.01
+        rows['valid'][0,:4,6:18]=0
+        prepared=prepare(rows,True)
+        data=cache(rows,torch.zeros(18),torch.ones(18),'cpu')
+        model=Autoencoder(Config(variant='geometry_joint',width=64,embedding=64,layers=1),torch.zeros(18),torch.ones(18))
+        z,p=model(data['values'],data['valid'],torch.arange(64).expand(3,-1))
+        other=model.encode_prepared(prepared.grid,prepared.slots)
+        torch.testing.assert_close(z,other,rtol=0,atol=0)
+        torch.testing.assert_close(p,model.decode(other),rtol=0,atol=0)
+        loss,_=objective(p,prepared.target,prepared.valid,None);loss.backward()
+        self.assertTrue(all(torch.isfinite(v.grad).all() for v in model.parameters()))
+
     def test_joint_coordinate_inverse_oracle_diagnostic(self):
         from .model import quote_geometry
         model=Autoencoder(Config(variant='geometry_joint',width=32,embedding=64,layers=1),torch.zeros(18),torch.ones(18))

@@ -72,6 +72,11 @@ class Autoencoder(nn.Module):
         nn.init.normal_(self.decoder.weight,std=.0005);nn.init.zeros_(self.decoder.bias)
 
     def encode(self,values,valid,positions):
+        grid,slots=Autoencoder.prepare(self,values,valid,positions)
+        return Autoencoder.encode_prepared(self,grid,slots)
+
+    def prepare(self,values,valid,positions):
+        """Deterministic CPU-worker preparation, identical to the original graph."""
         m=valid[...,:18];logs=values[...,:18]
         mixed=logs.clone();mixed[...,ACTIVITY]=logs[...,ACTIVITY].sqrt()
         refs=torch.where(m,mixed,0).sum(1)/m.sum(1).clamp_min(1)
@@ -95,10 +100,18 @@ class Autoencoder(nn.Module):
             source=torch.cat((source,torch.where(pm,(pair-pair_refs[:,None])*100,0),pm.float()),-1)
         grid=source.new_zeros(len(values),64,self.input_width)
         grid.scatter_(1,positions[...,None].expand(-1,-1,self.input_width),source)
-        learned=self.export(self.backbone(grid.flatten(1)))
         coverage=torch.stack((m[...,9].float().mean(1),m[...,15].float().mean(1),
             (m[...,9]&m[...,15]).float().mean(1)),1)
-        return torch.cat((refs,coverage,pair_refs,learned),-1) if self.joint else torch.cat((refs,coverage,learned),-1)
+        slots=torch.cat((refs,coverage,pair_refs),-1) if self.joint else torch.cat((refs,coverage),-1)
+        return grid.flatten(1),slots
+
+    def encode_prepared(self,grid,slots,precision='fp32'):
+        with torch.autocast(grid.device.type,dtype=torch.bfloat16,enabled=precision=='bf16'):
+            hidden=self.backbone(grid)
+        # Preserve absolute scale and small residuals at the exported boundary.
+        with torch.autocast(grid.device.type,enabled=False):
+            learned=self.export(hidden.float())
+            return torch.cat((slots.float(),learned),-1)
 
     def decode(self,z):
         # Only exported z and fixed constants; no target metadata or input bypass.
