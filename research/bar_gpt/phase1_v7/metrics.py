@@ -57,10 +57,13 @@ def evaluate(pred, rows, mask=None):
     activity=[c['log1p_absolute_error']['mean'] for f in result.values() for c in f['channels'].values()
               if c.get('log1p_absolute_error',{}).get('count')]
     price=float(np.mean(groups));worst=float(max(bands));act=float(np.mean(activity))
-    failures=sum(f['nonfinite']+f['negative']+sum(f['structure'][side]['prediction'] for side in ('trade','bid','ask')) for f in result.values())
-    if failures:raise FloatingPointError(f'Structured decoder contract failed on {failures} valid predictions')
     return dict(frames=result,balanced_price_relative_mean=price,worst_price_band_relative_mean=worst,
         balanced_activity_log_mae=act,selection_score=50*price+.05*worst+act)
+
+
+def require_structured(metrics):
+    failures=sum(f['nonfinite']+f['negative']+sum(f['structure'][side]['prediction'] for side in ('trade','bid','ask')) for f in metrics['frames'].values())
+    if failures:raise FloatingPointError(f'Structured decoder contract failed on {failures} valid predictions')
 
 
 def summaries(rows):

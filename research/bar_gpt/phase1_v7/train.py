@@ -10,7 +10,7 @@ import time
 import numpy as np
 import torch
 from .model import Config, Autoencoder, Transform, objective
-from .metrics import evaluate, probes, summaries
+from .metrics import evaluate, probes, summaries, require_structured
 from ..v5.transforms_v1 import BarInputTransformV1
 from ..v5.shards.phase1_contract import file_hash, digest, write_json
 
@@ -260,7 +260,7 @@ def main(argv=None):
             if step%500==0 or step==a.steps:
                 status('development validation',loss=last_loss)
                 begin=time.time();pred,z,_=predict(model,data['development'],bs)
-                metrics=evaluate(pred,rows['development']);elapsed_eval=time.time()-begin
+                metrics=evaluate(pred,rows['development']);require_structured(metrics);elapsed_eval=time.time()-begin
                 score=50*metrics['balanced_price_relative_mean']+metrics['balanced_activity_log_mae']+.05*metrics['worst_price_band_relative_mean']
                 record=dict(step=step,elapsed=time.time()-started,train_loss=last_loss,selection_score=score,
                     balanced_price_relative_mean=metrics['balanced_price_relative_mean'],activity_log_mae=metrics['balanced_activity_log_mae'],
@@ -281,6 +281,7 @@ def main(argv=None):
                 if time.time()>=deadline:raise TimeoutError('Deadline before complete evaluation')
                 pred,z,mask=predict(model,data[name],bs,full)
                 evaluations[name+('_full' if full else '_masked')]=evaluate(pred,rows[name],mask)
+                require_structured(evaluations[name+('_full' if full else '_masked')])
                 if full:embeddings[name]=z
         information=probes(embeddings['train'],embeddings['development'],rows['train'],rows['development'])
         result=dict(state='complete',steps=step,planned_steps=a.steps,training_truncated=step<a.steps,

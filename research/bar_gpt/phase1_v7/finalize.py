@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from .model import Config,Autoencoder
 from .train import load_data,cache,predict
-from .metrics import evaluate,probes,summaries
+from .metrics import evaluate,probes,summaries,require_structured
 from .export import save_encoder,load_encoder
 from ..v5.shards.phase1_contract import file_hash,write_json
 
@@ -59,6 +59,7 @@ def main():
             for full in (True,False):
                 pred,z,mask=predict(model,data[partition],bs,full)
                 metrics[partition+('_full' if full else '_masked')]=evaluate(pred,rows[partition],mask)
+                require_structured(metrics[partition+('_full' if full else '_masked')])
                 if full:embeddings[partition]=z
         info=probes(embeddings['train'],embeddings['audit'],rows['train'],rows['audit'])
         constant=model.transform.inverse(mean.to(a.device).expand(1,64,18)).cpu().numpy()
