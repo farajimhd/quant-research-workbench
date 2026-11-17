@@ -23,6 +23,43 @@ def sample(n=4):
 
 
 class Contracts(unittest.TestCase):
+    def test_fidelity_auxiliary_never_penalizes_hidden_batches(self):
+        data=cache(sample());params,_=calibrate(data,'joint')
+        model=Autoencoder(Config(width=64,layers=1,embedding=32,output='joint'),**params)
+        for full in (False,True):
+            b=batch(data,torch.arange(4),16,torch.Generator().manual_seed(3),full)
+            outputs=model(*b[:3])[1]
+            base,_=objective(outputs,*b[3:],model.input_mean,model.input_scale,.02)
+            auxiliary,_=objective(outputs,*b[3:],model.input_mean,model.input_scale,.02,.005)
+            if full:self.assertGreater(float(auxiliary.detach()),float(base.detach()))
+            else:torch.testing.assert_close(base,auxiliary,rtol=0,atol=0)
+
+    def test_checkpoint_next_update_matches_uninterrupted(self):
+        from .checkpoint import save_checkpoint
+        data=cache(sample());params,_=calibrate(data,'joint')
+        config=Config(architecture='fused',width=64,layers=1,embedding=32,output='joint')
+        model=Autoencoder(config,**params);opt=torch.optim.AdamW(model.parameters(),lr=.001)
+        scheduler=torch.optim.lr_scheduler.CosineAnnealingLR(opt,10)
+        gen=torch.Generator().manual_seed(19)
+        def update(m,o,s,g):
+            ids=torch.multinomial(torch.tensor([1.,2.,3.,4.]),4,replacement=True,generator=g)
+            b=batch(data,ids,16,g,False);o.zero_grad(set_to_none=True)
+            loss,_=objective(m(*b[:3])[1],*b[3:],m.input_mean,m.input_scale,.02)
+            loss.backward();torch.nn.utils.clip_grad_norm_(m.parameters(),1.);o.step();s.step()
+            return b
+        update(model,opt,scheduler,gen)
+        with tempfile.TemporaryDirectory(dir='D:/TradingML/runtimes') as folder:
+            path=Path(folder)/'last.pt';save_checkpoint(path,model,opt,scheduler,gen,1,0,{'test':True},1.)
+            expected=update(model,opt,scheduler,gen)
+            state=torch.load(path,weights_only=False)
+            restored=Autoencoder(config,**params);restored.load_state_dict(state['model'])
+            ro=torch.optim.AdamW(restored.parameters(),lr=.001);rs=torch.optim.lr_scheduler.CosineAnnealingLR(ro,10)
+            ro.load_state_dict(state['optimizer']);rs.load_state_dict(state['scheduler'])
+            rg=torch.Generator();rg.set_state(state['generator']);actual=update(restored,ro,rs,rg)
+            for a,b in zip(actual,expected):torch.testing.assert_close(a,b,rtol=0,atol=0)
+            for key,value in model.state_dict().items():torch.testing.assert_close(restored.state_dict()[key],value,rtol=0,atol=0)
+            self.assertEqual(rs.state_dict(),scheduler.state_dict())
+
     def test_no_copied_latent_coordinates(self):
         data=cache(sample());params,_=calibrate(data,'joint')
         for architecture in ('mlp','attention','fused'):

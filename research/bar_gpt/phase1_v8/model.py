@@ -133,7 +133,7 @@ class Autoencoder(Encoder):
         return z,self.decode(z)
 
 
-def objective(outputs,target,target_valid,selected,input_mean,input_scale,price_weight=1.):
+def objective(outputs,target,target_valid,selected,input_mean,input_scale,price_weight=1.,full_price_mse=0.):
     prediction,time,validity=outputs
     residual=prediction-target[...,:18]
     factor=residual.new_tensor([100 if j in PRICES else 1 for j in range(18)])
@@ -141,6 +141,12 @@ def objective(outputs,target,target_valid,selected,input_mean,input_scale,price_
     mask=target_valid[...,:18]&selected[...,None]
     channel=torch.where(mask,losses,0).sum((0,1))/mask.sum((0,1)).clamp_min(1)
     market=.5*(price_weight*channel[list(PRICES)].mean()+channel[list(ACTIVITY)].mean())
+    # Stronger fidelity supervision only when the entire input was visible.
+    # Targets are used in the loss; neither target statistics nor this mask enter decode.
+    full_mask=target_valid[...,list(PRICES)]&selected.all(1)[:,None,None]
+    square=(100*residual[...,list(PRICES)]).square()
+    full_square=(torch.where(full_mask,square,0).sum((0,1))/full_mask.sum((0,1)).clamp_min(1)).mean()
+    market=market+full_price_mse*full_square
     time_target=(target[...,18:]-input_mean[18:])/input_scale[18:]
     time_mask=target_valid[...,18:]&selected[...,None]
     tl=F.smooth_l1_loss(time,time_target,reduction='none')

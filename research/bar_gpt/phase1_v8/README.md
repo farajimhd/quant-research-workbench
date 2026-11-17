@@ -46,6 +46,34 @@ The `price_weight=.02` ablation retains the meaningful 100*log-price residual bu
 reduces its family weight. Native selection metrics remain identical across
 objective variants; lower weighted training loss is not an acceptance criterion.
 
+The final fidelity ablation adds `.005 * mean((100 * log-price error)^2)`
+only on all-visible batches. At 1% log error its derivative is comparable to
+the weighted robust price term; at a large visible excursion its penalty grows
+instead of saturating. Hidden-bar batches keep the robust objective. This is a
+test of preserving visible rare events, not a license to remove such events.
+All absolute values still pass through the same learned 512-value bottleneck
+and single-affine decoder. No new target-dependent decoder input is introduced.
+
+E01–E06 short profiles omitted gradient clipping and used a fixed 25% full mix;
+their actual training rates include clipping and validation. E07 onward profiles
+include the finite check, gradient clipping and configured visibility mix, with
+a separate profile RNG. Do not compare the old microprofile rate to the corrected
+end-to-end training-step rate as if the benchmark were identical. Validation
+inference speed excludes CPU metric aggregation; learning records retain total
+validation duration. A checkpoint metadata string inherited from V7 described
+uniform rows; actual V8 sampling has always used the manifest's equal cell mass.
+The V8 checkpoint writer corrects that description without changing sampling.
+
+Pinned reproduction/finalist evaluation uses `python -B -m
+research.bar_gpt.phase1_v8.finalize --root <campaign-root> --runs <run-name>
+--output <new-runtime-folder> --source-revision <deployed-hash> --partition
+development --nonlinear`. Use `audit` only after selecting finalists. It records
+the selected checkpoint hashes before reading audit values, performs separate
+all-visible/hidden-only evaluation and fixed frozen probes, then exports a
+decoder-free artifact with exact encoder parity. Probe labels are within-window
+summaries; the raw-summary control contains those statistics directly and is an
+upper bound, not evidence of future predictive value.
+
 Campaign runtime: `D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117`.
 At most eight experiments and eight hours, with each experiment strictly below
 60 minutes including preparation/profile/training/evaluation. Dataset preparation
