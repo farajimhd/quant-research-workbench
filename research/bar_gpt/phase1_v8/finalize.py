@@ -21,6 +21,12 @@ def main():
     p.add_argument('--partition',choices=('development','audit'),default='development')
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda');p.add_argument('--nonlinear',action='store_true')
     a=p.parse_args();a.resume=False;started=time.time();preflight(a)
+    progress={}
+    def status(stage=None,**values):
+        if stage is not None:progress['stage']=stage
+        progress.update(experiment=a.output.name,updated=time.time(),elapsed=time.time()-started,limit_seconds=1200,**values)
+        write_json(a.output/'progress.json',progress)
+    status('verifying sealed finalist data')
     torch.set_num_threads(4);torch.set_float32_matmul_precision('highest');torch.use_deterministic_algorithms(True)
     rows,manifest=load_data(a.root/'dataset')
     identities={}
@@ -42,6 +48,7 @@ def main():
     out={}
     for name,identity in identities.items():
         if time.time()-started>1200:raise TimeoutError('Finalist evaluation budget exceeded')
+        status('untrained frozen probes: '+name)
         state=torch.load(identity['checkpoint'],map_location=a.device,weights_only=False);m=state['identity']
         if m['dataset_hash']!=manifest['hash']:raise ValueError('Data identity mismatch')
         params={k:torch.tensor(v) for k,v in m['parameters'].items()}
@@ -52,9 +59,11 @@ def main():
         if a.nonlinear:result['untrained_nonlinear']=probe(ut,ue,rows['train'],rows[a.partition],a.device)
         del ut,ue
         model.load_state_dict(state['model']);del state
+        status('all-visible validation: '+name)
         _,tz,_,_=predict(model,data['train'],1024)
-        result['full'],ez=measure(model,data[a.partition],rows[a.partition],1024,True)
-        result['masked'],_=measure(model,data[a.partition],rows[a.partition],1024,False)
+        result['full'],ez=measure(model,data[a.partition],rows[a.partition],1024,True,status)
+        status('hidden-only validation: '+name)
+        result['masked'],_=measure(model,data[a.partition],rows[a.partition],1024,False,status)
         constant=inverse(model.input_mean[:18].expand(1,64,18)).cpu().numpy()
         result['training_constant_full']=evaluate(np.broadcast_to(constant,(len(rows[a.partition]),64,18)),rows[a.partition])
         _,_,hidden,_=predict(model,data[a.partition],1024,False)
@@ -65,6 +74,7 @@ def main():
             control[...,j]=med[:,None]
         result['visible_median_hidden']=evaluate(control,rows[a.partition],hidden)
         del control,hidden,visible
+        status('trained frozen probes: '+name)
         result['trained_linear']=probes(tz,ez,rows['train'],rows[a.partition])
         if a.nonlinear:result['trained_nonlinear']=probe(tz,ez,rows['train'],rows[a.partition],a.device)
         sy,_=summaries(rows['train']);ey,_=summaries(rows[a.partition])
@@ -85,6 +95,7 @@ def main():
         write_json(a.output/(name+'.json'),result);out[name]=result
         del model,encoder,tz,ez,prediction,decoded
     write_json(a.output/'results.json',dict(state='complete',elapsed_seconds=time.time()-started,partition=a.partition,runs=out))
+    status('complete')
     print(json.dumps(dict(state='complete',runs=list(out),seconds=time.time()-started)))
 
 
