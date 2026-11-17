@@ -14,7 +14,7 @@ explicit scale slots, exported projection, decoder, and objective stay FP32.
 Native inversion uses FP64. No fitted population calibration is required.
 
 Source snapshots must include `research/__init__.py`, `research/bar_gpt`,
-`research/mlops`, and `pipelines/market_sip`: the existing checkpoint integrity
+`research/mlops`, `pipelines/market_sip`, and `pipelines/certified_research`: the existing checkpoint integrity
 utilities transitively import canonical pipeline modules. Importing these modules
 does not read events or run a writer. Training reads certified shards only.
 Commit and push before creating each immutable snapshot; pass its file-hash
