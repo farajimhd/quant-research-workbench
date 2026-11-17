@@ -1,8 +1,10 @@
 """CPU integrity tests for the real encoder/decoder and training batch path."""
 import unittest
+import tempfile
+from pathlib import Path
 import torch
 from .model import Config, Autoencoder, Transform, objective, PRICES, ACTIVITY
-from .train import batch
+from .train import batch, save_checkpoint
 
 
 class Contracts(unittest.TestCase):
@@ -36,6 +38,37 @@ class Contracts(unittest.TestCase):
         valid=torch.ones_like(pred,dtype=torch.bool);valid[:,:,6:]=False
         loss,_=objective(pred,target,valid,torch.ones(18));loss.backward()
         self.assertEqual(float(pred.grad[:,:,6:].abs().sum()),0.)
+
+    def test_checkpoint_resume_replays_next_update(self):
+        config=Config(variant='flat_scale_slots',layers=1)
+        torch.manual_seed(37)
+        model=Autoencoder(config,torch.zeros(18),torch.ones(18))
+        opt=torch.optim.AdamW(model.parameters(),lr=.001)
+        schedule=torch.optim.lr_scheduler.CosineAnnealingLR(opt,10)
+        gen=torch.Generator().manual_seed(81)
+        x=torch.randn(8,64,27);v=torch.ones_like(x,dtype=torch.bool)
+        data=dict(values=x,valid=v,target=x[...,:18],mask=v[...,:18])
+        def update(m,o,s,g):
+            ids=torch.randint(8,(3,),generator=g)
+            inputs,valid,pos,target,mask=batch(data,ids,16,g)
+            o.zero_grad();_,out=m(inputs,valid,pos)
+            loss,_=objective(out,target,mask,torch.ones(18));loss.backward();o.step();s.step()
+            return loss.detach()
+        update(model,opt,schedule,gen)
+        root=Path('D:/TradingML/runtimes/bar_gpt')
+        with tempfile.TemporaryDirectory(prefix='v6-resume-test-',dir=root) as folder:
+            path=Path(folder)/'last.pt'
+            save_checkpoint(path,model,opt,schedule,gen,1,0.,dict(test=True),1.)
+            expected=update(model,opt,schedule,gen)
+            restored=Autoencoder(config,torch.zeros(18),torch.ones(18))
+            ro=torch.optim.AdamW(restored.parameters(),lr=.001)
+            rs=torch.optim.lr_scheduler.CosineAnnealingLR(ro,10)
+            state=torch.load(path,weights_only=False,map_location='cpu')
+            restored.load_state_dict(state['model']);ro.load_state_dict(state['optimizer']);rs.load_state_dict(state['scheduler'])
+            rg=torch.Generator();rg.set_state(state['generator'])
+            actual=update(restored,ro,rs,rg)
+            torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+            for left,right in zip(model.parameters(),restored.parameters()):torch.testing.assert_close(left,right,rtol=0,atol=0)
 
 
 if __name__=='__main__':unittest.main()

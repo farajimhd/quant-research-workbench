@@ -97,6 +97,12 @@ def main(argv=None):
     assert 0<a.minutes<=60
     assert 0<=a.full_probability<=1
     if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():raise RuntimeError('STOP remains in force')
+    if a.device=='cuda':
+        proof=json.loads((a.output.parent/f'deployment-{a.source_revision[:9]}.json').read_text())
+        if proof['revision']!=a.source_revision:raise ValueError('Source revision differs from immutable deployment receipt')
+        source_root=Path(__file__).resolve().parents[3]
+        for name,expected in proof['files'].items():
+            if file_hash(source_root/name)!=expected:raise ValueError(f'Immutable snapshot changed: {name}')
     if a.output.exists() and not a.resume:raise FileExistsError(a.output)
     a.output.mkdir(parents=True,exist_ok=a.resume)
     import psutil
