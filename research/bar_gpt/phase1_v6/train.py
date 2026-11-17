@@ -84,7 +84,7 @@ def save_checkpoint(path,model,opt,scheduler,gen,step,started,identity,best):
 def main(argv=None):
     p=argparse.ArgumentParser()
     p.add_argument('--data',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--source-revision',required=True);p.add_argument('--variant',choices=('pooled','scale_slots'),default='pooled')
+    p.add_argument('--source-revision',required=True);p.add_argument('--variant',choices=('pooled','scale_slots','flat_scale_slots'),default='pooled')
     p.add_argument('--minutes',type=float,default=20);p.add_argument('--steps',type=int,default=2400)
     p.add_argument('--width',type=int,default=128);p.add_argument('--layers',type=int,default=3)
     p.add_argument('--embedding',type=int,default=256);p.add_argument('--decoder',type=int,default=256)

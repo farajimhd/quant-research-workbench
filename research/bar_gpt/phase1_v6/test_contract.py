@@ -15,7 +15,7 @@ class Contracts(unittest.TestCase):
         torch.testing.assert_close(out,raw.double(),rtol=2e-6,atol=1e-10)
 
     def test_embedding_only_and_hidden_independence(self):
-        for variant in ('pooled','scale_slots'):
+        for variant in ('pooled','scale_slots','flat_scale_slots'):
             model=Autoencoder(Config(variant=variant,layers=1),torch.zeros(18),torch.ones(18)).eval()
             x=torch.randn(2,64,27);v=torch.ones_like(x,dtype=torch.bool)
             data=dict(values=x,valid=v,target=x[...,:18].clone(),mask=v[...,:18].clone())

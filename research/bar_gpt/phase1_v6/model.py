@@ -47,30 +47,37 @@ class Autoencoder(nn.Module):
     def __init__(self, config, mean, scale):
         super().__init__()
         self.config=config
-        if config.variant not in ('pooled','scale_slots'):raise ValueError(config.variant)
+        if config.variant not in ('pooled','scale_slots','flat_scale_slots'):raise ValueError(config.variant)
         self.transform=Transform(mean,scale)
         token=TokenConfig(width=config.width,embedding_width=256,layers=config.layers,
             feedforward=config.width*4,decoder_width=config.decoder,feature_drop=0.)
-        self.backbone=Encoder(token)
-        self.export=nn.Linear(256,config.embedding-(18 if config.variant=='scale_slots' else 0))
+        self.backbone=(nn.Sequential(nn.Linear(64*54,config.width*4),nn.GELU(),
+            nn.Linear(config.width*4,256),nn.LayerNorm(256)) if config.variant=='flat_scale_slots' else Encoder(token))
+        self.export=nn.Linear(256,config.embedding-(18 if config.variant!='pooled' else 0))
         self.decoder=nn.Sequential(nn.Linear(config.embedding,config.decoder),nn.GELU(),
             nn.Linear(config.decoder,config.decoder),nn.GELU(),nn.Linear(config.decoder,64*18))
 
     def encode(self, values, valid, positions):
-        if self.config.variant=='scale_slots':
+        if self.config.variant!='pooled':
             m=valid[...,:18]
             # Statistics of VISIBLE INPUTS only. They are part of the exported vector.
             refs=torch.where(m,values[...,:18],0).sum(1)/m.sum(1).clamp_min(1)
             centered=values.clone()
             centered[...,:18]=torch.where(m,values[...,:18]-refs[:,None],0)
-            learned=self.export(self.backbone(centered,valid,positions))
+            if self.config.variant=='flat_scale_slots':
+                # Only supplied visible values/masks occupy the fixed positional grid.
+                source=torch.cat((torch.where(valid,centered,0),valid.to(centered.dtype)),-1)
+                grid=torch.zeros(len(values),64,54,device=values.device,dtype=values.dtype)
+                grid.scatter_(1,positions[...,None].expand(-1,-1,54),source)
+                learned=self.export(self.backbone(grid.flatten(1)))
+            else:learned=self.export(self.backbone(centered,valid,positions))
             return torch.cat((refs,learned),-1)
         return self.export(self.backbone(values,valid,positions))
 
     def decode(self, embedding):
         with torch.autocast(device_type=embedding.device.type,enabled=False):
             prediction=self.decoder(embedding.float()).reshape(-1,64,18)
-            if self.config.variant=='scale_slots':prediction=prediction+embedding[:,:18,None].transpose(1,2)
+            if self.config.variant!='pooled':prediction=prediction+embedding[:,:18,None].transpose(1,2)
             return prediction
 
     def forward(self, values, valid, positions):

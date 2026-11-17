@@ -68,3 +68,12 @@ shape probes and failure to beat a visible-context median on masked reconstructi
 Profiling exercises the selected mixture. Per-cell sampling probabilities are
 persisted explicitly. Native metrics also expose variance of per-window channel
 means across examples, in addition to pooled observation variance.
+
+V6.3 adds a positional dense encoder (`flat_scale_slots`) as an architectural
+ablation of token attention plus mean pooling. Visible centered values and their
+masks are scattered into a fixed 64-position grid; absent bars have zero value
+and zero evidence. A two-layer dense encoder exports the same 256 coordinates,
+including the same 18 scale slots. Decoder size and reconstruction objective are
+unchanged. This tests whether fixed positional access better retains ordering
+and high-frequency activity than pooled token features. Parameter count changes
+are reported; this is not a parameter-matched comparison.
