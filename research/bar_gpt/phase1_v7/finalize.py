@@ -55,13 +55,18 @@ def main():
         mean=torch.tensor(identity['calibration']['mean']);scale=torch.tensor(identity['calibration']['scale'])
         data={key:cache(value,mean,scale,a.device) for key,value in rows.items() if key in ('train','development','audit')}
         model=Autoencoder(config,mean,scale).to(a.device);model.load_state_dict(state['model'])
-        bs=512;metrics={};embeddings={}
+        bs=512;metrics={};embeddings={};decoded_information={}
         for partition in ('train','development','audit'):
             for full in (True,False):
                 pred,z,mask=predict(model,data[partition],bs,full)
                 metrics[partition+('_full' if full else '_masked')]=evaluate(pred,rows[partition],mask)
                 require_structured(metrics[partition+('_full' if full else '_masked')])
                 if full:embeddings[partition]=z
+                if full and partition=='audit':
+                    decoded,labels=summaries(dict(values=pred,valid=rows[partition]['valid']))
+                    target,_=summaries(rows[partition])
+                    decoded_information={label:dict(mae=float(np.abs(decoded[:,j]-target[:,j]).mean()),
+                        r2=float(1-((decoded[:,j]-target[:,j])**2).sum()/max(((target[:,j]-target[:,j].mean())**2).sum(),1e-20))) for j,label in enumerate(labels) if label!='quote_coverage'}
         info=probes(embeddings['train'],embeddings['audit'],rows['train'],rows['audit'])
         constant=model.transform.inverse(mean.to(a.device).expand(1,64,18)).cpu().numpy()
         controls={'training_constant_full':evaluate(np.broadcast_to(constant,(len(rows['audit']),64,18)),rows['audit'])}
@@ -84,6 +89,9 @@ def main():
             dataset_hash=manifest['hash'],metrics=metrics,audit_probes=info,audit_controls=controls,
             untrained_audit_probes=probes(train_z,audit_z,rows['train'],rows['audit']),
             raw_summary_audit_probes=probes(sy,ay,rows['train'],rows['audit']),
+            decoder_derived_information=decoded_information,
+            direct_exported_log_price_scale_mae=float(np.abs(embeddings['audit'][:,3]-ay[:,0]).mean()),
+            scale_note='Price log mean is explicitly exported from visible inputs; this preservation is structural, not a learned-probe improvement. Decoder-derived summaries use decoder predictions and evaluation validity masks; quote coverage is excluded because validity is not predicted.',
             nonlinear_audit_probes=probe(embeddings['train'],embeddings['audit'],rows['train'],rows['audit'],a.device),
             nonlinear_untrained_audit_probes=probe(train_z,audit_z,rows['train'],rows['audit'],a.device),
             nonlinear_raw_summary_audit_probes=probe(sy,ay,rows['train'],rows['audit'],a.device),
