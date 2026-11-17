@@ -48,7 +48,9 @@ def render(root,width=120,height=35):
         elif training:
             rate=s.get('windows_per_second');eta=max(0,total-done)/rate if rate and total else None
     rows.append(Text(f'Step {s.get("step",0):,} · {"Validation" if validating else "Training"} {number(rate)} windows/s · phase ETA {duration(eta)}',style='bold'))
-    rows.append(Text(f'Batch {s.get("batch_size","—")} · validation {s.get("validation_batch_size") or s.get("batch_size","—")} · workers {s.get("workers","—")} · prefetch {s.get("prefetch","—")}',style='dim'))
+    workers=s.get('validation_workers',-1) if validating else -1
+    if workers<0:workers=s.get('workers','—')
+    rows.append(Text(f'Batch {s.get("batch_size","—")} · validation {s.get("validation_batch_size") or s.get("batch_size","—")} · active workers {workers} · prefetch {s.get("prefetch","—")}',style='dim'))
     metrics=Table('Training objective','Latest train batch',box=box.SIMPLE_HEAD,padding=(0,1))
     for label,key in (('Balanced Huber','loss'),('Price','price_loss'),('Activity','activity_loss')):metrics.add_row(label,number(s.get(key),5))
     rows.append(metrics)

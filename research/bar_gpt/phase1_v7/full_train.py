@@ -101,6 +101,7 @@ def train(args,manifest,status):
         precision=args.precision,cuda_graph=args.cuda_graph,preparation=args.preparation,epochs=args.epochs,seed=args.seed,
         shard_prefetch=args.shard_prefetch,shard_prefetch_mib=args.shard_prefetch_mib,
         validation_batch_size=args.validation_batch_size,validation_graph=args.validation_graph,
+        validation_workers=args.validation_workers,
         learning_rate=args.learning_rate,min_learning_rate=args.min_learning_rate,warmup_updates=args.warmup_updates,
         sampling='all certified windows, deterministic shuffled shard lanes; all lane tails retained',
         objective='equal price/activity channel means; Huber on 100*log-price residual and log1p-activity residual',
@@ -130,7 +131,10 @@ def train(args,manifest,status):
         reporter=wandb.init(project='bargpt-v7-full',entity='mehdifaraji',name=args.output.name,
             id=identity['id'] if identity else None,resume='must' if identity else None,config=None if identity else contract,dir=str(args.output))
         if engineering_history:reporter.config.update({'engineering/current_source_revision':args.source_revision,
-            'engineering/current_preparation':args.preparation,'engineering/history':engineering_history},allow_val_change=True)
+            'engineering/current_preparation':args.preparation,'engineering/current_batch_size':args.batch_size,
+            'engineering/current_workers':args.workers,'engineering/current_validation_batch_size':args.validation_batch_size,
+            'engineering/current_validation_workers':args.validation_workers,
+            'engineering/history':engineering_history},allow_val_change=True)
         if not identity:write_json(ip,dict(id=reporter.id,url=reporter.url,name=reporter.name))
     try:
         if not args.resume or migration:checkpoint()

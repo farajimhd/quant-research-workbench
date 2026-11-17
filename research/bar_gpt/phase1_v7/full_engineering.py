@@ -15,7 +15,7 @@ def resume(path,contract,receipt_path=None):
     if receipt['new_source_revision']!=contract['source_revision']:raise ValueError('Engineering source mismatch')
     if receipt.get('transition')=='completed-pass-throughput-v1':
         allowed={'source_revision','batch_size','workers','prefetch','shard_prefetch','shard_prefetch_mib',
-                 'validation_batch_size','validation_graph'}
+                 'validation_batch_size','validation_graph','validation_workers'}
         if {k:v for k,v in previous.items() if k not in allowed}!={k:v for k,v in contract.items() if k not in allowed}:
             raise ValueError('Throughput transition changes scientific/optimizer contract')
         if file_hash(path)!=receipt['checkpoint_sha256']:raise ValueError('Throughput parent changed')

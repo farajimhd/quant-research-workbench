@@ -20,6 +20,7 @@ def main():
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--precision',choices=('fp32','bf16'),default='fp32')
     p.add_argument('--shard-prefetch',type=int,default=16);p.add_argument('--shard-prefetch-mib',type=int,default=64)
     p.add_argument('--validation-batch-size',type=int,default=0)
+    p.add_argument('--validation-workers',type=int,default=-1)
     p.add_argument('--validation-graph',action=argparse.BooleanOptionalAction,default=True)
     p.add_argument('--cuda-graph',action=argparse.BooleanOptionalAction,default=True)
     p.add_argument('--preparation',choices=('cpu','gpu','raw_gpu'),default='cpu')
@@ -35,6 +36,7 @@ def main():
     a=p.parse_args()
     if not 0<=a.workers<=32 or not 1<=a.prefetch<=4 or min(a.batch_size,a.steps,a.epochs)<1:raise ValueError('Invalid bounded configuration')
     if not 0<=a.shard_prefetch<=64 or not 1<=a.shard_prefetch_mib<=1024 or not 0<=a.validation_batch_size<=65536:raise ValueError('Invalid bounded prefetch/validation configuration')
+    if not -1<=a.validation_workers<=32:raise ValueError('Validation workers must be -1 (inherit) or 0..32')
     if not a.output.resolve().is_relative_to(Path(r'D:\TradingML\runtimes').resolve()):raise ValueError('Runtime authority required')
     if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():raise RuntimeError('Human STOP remains in force')
     proof=json.loads(a.deployment.read_text());root=Path(__file__).resolve().parents[3]

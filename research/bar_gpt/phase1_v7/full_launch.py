@@ -16,6 +16,7 @@ def main():
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--shard-prefetch',type=int,default=16)
     p.add_argument('--shard-prefetch-mib',type=int,default=64);p.add_argument('--validation-batch-size',type=int,default=0)
     p.add_argument('--validation-graph',action=argparse.BooleanOptionalAction,default=True)
+    p.add_argument('--validation-workers',type=int,default=-1)
     a=p.parse_args();setup=a.output.with_name(a.output.name+'-launcher');setup.mkdir(exist_ok=a.resume)
     if a.output.exists() and not a.resume:raise FileExistsError('Fresh run requires new output')
     cmd=[sys.executable.replace('pythonw.exe','python.exe'),'-B','-u','-m','research.bar_gpt.phase1_v7.full','train',
@@ -23,7 +24,7 @@ def main():
         '--batch-size',str(a.batch_size),'--workers',str(a.workers),'--precision',a.precision,'--preparation',a.preparation,'--epochs','50']
     if a.resume:cmd+=['--resume']
     if a.engineering_receipt:cmd+=['--engineering-receipt',str(a.engineering_receipt)]
-    for name in ('prefetch','shard_prefetch','shard_prefetch_mib','validation_batch_size'):
+    for name in ('prefetch','shard_prefetch','shard_prefetch_mib','validation_batch_size','validation_workers'):
         cmd+=['--'+name.replace('_','-'),str(getattr(a,name))]
     cmd+=['--validation-graph' if a.validation_graph else '--no-validation-graph']
     import psutil

@@ -61,7 +61,8 @@ def loader(manifest,args,split,epoch=0):
     stream=Stream(manifest,split,None,batch_size,seed=args.seed,epoch=epoch,
                   native=split=='validation',compact=args.preparation=='gpu',raw_gpu=args.preparation=='raw_gpu',telemetry=str(telemetry))
     stream.shard_prefetch=getattr(args,'shard_prefetch',16);stream.shard_prefetch_bytes=getattr(args,'shard_prefetch_mib',64)*2**20;stream.prepare_threads=1
-    return make_loader(stream,args.workers,args.prefetch,ordered=True)
+    workers=getattr(args,'validation_workers',-1) if split=='validation' else -1
+    return make_loader(stream,args.workers if workers<0 else workers,args.prefetch,ordered=True)
 
 
 def prepare_raw(rows,native=False):
