@@ -7,6 +7,10 @@ each year.
 
 ## 2026
 
+### [2026-11-17 - BarGPT experiments and stopped V5 handoff](docs/codex/chat-summaries/2026/CHAT-20261025-1131-bargpt-representation-experiments-stopped-v5.md)
+
+TASK-0170. Records quote repair and compact phase-two shards, evolving latent/bar-target models, V4 reference-conditioned reconstruction, transformed V5 scale-recovery failures, raw V5 price-band errors, and V2 raw-z-score precision limits. Raw V5 was stopped naturally after 24 epochs at step 546980; checkpoints, STOP and W&B identity are preserved. Source and measured throughput delivered; representation quality remains unresolved. Proposed global-log normalization and reference-loss/readout changes remain untested. Successor campaign exists but its work was not reviewed. Early chat evidence is partial; no fresh data-release certification or automatic restart is implied.
+
 ### [2026-11-05 - V66 review, disk failure, storage repair and cleanup handoff](docs/codex/chat-summaries/2026/CHAT-20261101-1732-v66-review-storage-cleanup-handoff.md)
 
 TASK-0223. V66 stopped after sealed generation96 when disk admission blocked97; epoch95's 64-control package consumption is hash-confirmed. Manual reviews use live optimizer-owned windows and existing training evidence only; failed/mixed repairs remain hypotheses. Scheduler explicitly PAUSED. User approved seven deletions; about3.84 TiB reclaimed, V66/checkpoint preserved. Storage commit cac5002ac compresses metrics, references paired slices and coalesces journals. One real sample shrank83.7% exactly;272 V66 tests,17 final checks and25 workstation tests passed (overlapping counts). Verified deployment and generation96/188-cache continuation prepared but NOT started; post-cleanup panel loaded1088 candidates. Preserve archived source manifest; no automatic restart or evidence migration. Earlier context partial.
