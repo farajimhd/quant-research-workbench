@@ -19,7 +19,12 @@ def main():
         '--batch-size',str(a.batch_size),'--workers',str(a.workers),'--precision',a.precision,'--preparation',a.preparation,'--epochs','50']
     if a.resume:cmd+=['--resume']
     import psutil
-    own=psutil.Process();proof=dict(command=cmd,controller=dict(pid=own.pid,created=own.create_time()),started=time.time())
+    own=psutil.Process()
+    # Task Scheduler defaults to Below Normal; match the profiled CPU/loader service class.
+    if os.name=='nt':
+        own.nice(psutil.NORMAL_PRIORITY_CLASS)
+        own.ionice(psutil.IOPRIO_NORMAL)
+    proof=dict(command=cmd,controller=dict(pid=own.pid,created=own.create_time()),started=time.time(),priority=int(own.nice()))
     if os.name=='nt':ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
     try:
         with (setup/'stdout.log').open('a') as stdout,(setup/'stderr.log').open('a') as stderr:

@@ -59,3 +59,17 @@ contains 186,575,722 windows per epoch. No validation subset is called a full pa
 
 Runtime profiling evidence and the final launch configuration are recorded under
 `D:\TradingML\runtimes\bar_gpt\phase1-v7-full-setup-20261117` on the workstation.
+
+The full run is `phase1-v7-full-e08-b4096-50ep-20261117`, W&B project
+`mehdifaraji/bargpt-v7-full`, run `sx629rcz`. Its immutable training source is
+`f1b259994ec0e8f6d13c3ef274874a98da88756e`. A manually started, triggerless task
+keeps the controller alive independently of SSH; no recurring automation exists.
+The source snapshot and checkpoint contract remain unchanged during training.
+
+Launch diagnosis found Task Scheduler's default priority 7 had inherited Below
+Normal CPU and Low I/O priority into the controller, trainer, and 16 workers.
+Those 18 exact PID/creation-time owners were changed to Normal CPU and Normal I/O
+priority in place, without restart or optimizer/traversal changes. Runtime receipts
+are `priority-correction.json` and `io-priority-correction.json` inside the run.
+The task is now priority 4; the launcher explicitly sets both classes for future
+launches. This launcher-only fix does not rewrite the active immutable snapshot.
