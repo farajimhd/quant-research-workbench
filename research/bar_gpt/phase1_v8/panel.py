@@ -34,7 +34,7 @@ def render(root,width=120,height=30):
     rows.append(bars)
     rate=p.get('evaluation_windows_per_second') if evaluating else p.get('windows_per_second') if stage=='training' else None
     if age>30:rate=None
-    rows.append(Text(f'{"Evaluation" if evaluating else "Training incl. checks"} {number(rate)} windows/s'+(f' · ETA {duration(p.get("evaluation_eta_seconds"))}' if evaluating and age<=30 else '')))
+    rows.append(Text(f'{"Evaluation inference" if evaluating else "Training incl. checks"} {number(rate)} windows/s'+(f' · inference ETA {duration(p.get("evaluation_eta_seconds"))}' if evaluating and age<=30 else '')))
     memory=p.get('gpu_memory_bytes')
     rows.append(Text(f'Loss {number(p.get("loss"),5)} · GPU allocated peak {number(memory/2**30 if memory is not None else None,1)} GiB · cache mode: no per-step loader waits',style='dim'))
     latest=read(root/name/'development-latest.json') if name else {}

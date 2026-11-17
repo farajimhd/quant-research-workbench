@@ -106,6 +106,7 @@ def main(argv=None):
             if tiny_result['ratio']>.05 or tiny_result['price_log_mae']>.01:raise RuntimeError('Tiny fit failed; diagnose before larger training')
             del tiny,to
             profile=[]
+            profile_gen=torch.Generator(device=a.device).manual_seed(817)
             for bs in (128,512,1024):
                 status('profiling',profile_batch=bs)
                 pm=Autoencoder(config,**params).to(a.device);po=torch.optim.AdamW(pm.parameters(),lr=a.lr,fused=a.device=='cuda')
@@ -113,15 +114,19 @@ def main(argv=None):
                     if k==3:
                         if a.device=='cuda':torch.cuda.synchronize();torch.cuda.reset_peak_memory_stats()
                         begin=time.perf_counter()
-                    ix=torch.multinomial(sampling,bs,replacement=True,generator=gen)
-                    b=batch(data['train'],ix,config.visible,gen,k%4==0)
-                    po.zero_grad(set_to_none=True);loss,_=loss_for(pm,b);loss.backward();po.step()
+                    ix=torch.multinomial(sampling,bs,replacement=True,generator=profile_gen)
+                    full=bool(torch.rand((),device=a.device,generator=profile_gen)<a.full_probability)
+                    b=batch(data['train'],ix,config.visible,profile_gen,full)
+                    po.zero_grad(set_to_none=True);loss,_=loss_for(pm,b)
+                    if not torch.isfinite(loss):raise FloatingPointError('Nonfinite profile loss')
+                    loss.backward();torch.nn.utils.clip_grad_norm_(pm.parameters(),1.,error_if_nonfinite=True);po.step()
                 if a.device=='cuda':torch.cuda.synchronize()
                 elapsed=time.perf_counter()-begin
                 profile.append(dict(batch=bs,seconds=elapsed,windows_per_second=bs*12/elapsed,peak_bytes=torch.cuda.max_memory_allocated() if a.device=='cuda' else 0))
                 del pm,po
             bs=max(profile,key=lambda x:x['windows_per_second'])['batch']
-            write_json(a.output/'profile.json',dict(configurations=profile,selected_batch=bs,precision=a.precision,loader_workers=0,loader_wait_seconds=0))
+            write_json(a.output/'profile.json',dict(configurations=profile,selected_batch=bs,precision=a.precision,loader_workers=0,loader_wait_seconds=0,
+                full_probability=a.full_probability,includes_gradient_clip_and_finite_check=True,profile_seed=817))
             status('untrained probes and controls')
             _,tz,_,_=predict(model,data['train'],bs);_,dz,hidden,_=predict(model,data['development'],bs,False)
             _,fullz,_,_=predict(model,data['development'],bs)
