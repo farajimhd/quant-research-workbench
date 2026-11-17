@@ -16,7 +16,8 @@ def read(root):
     for name in ('hardware','resume-arguments','arguments'):
         try:
             data=json.loads((root/(name+'.json')).read_text())
-            for k,v in data.items():s.setdefault(k,v)
+            for k in ('memory_mib','batch_size','validation_batch_size','workers','validation_workers','prefetch','epochs'):
+                if k in data:s.setdefault(k,data[k])
         except (OSError,ValueError):pass
     files=sorted(root.glob('validation-[0-9][0-9][0-9].json'))
     if files:
@@ -33,6 +34,7 @@ def render(root,width=120,height=35):
     rows=[Text('BarGPT V7 · PHASE 1 · all 64 bars visible',style='bold bright_cyan'),
           Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,style='yellow' if stale else 'red' if state=='failed' else 'bold')]
     if s.get('error'):rows.append(Text(s['error'],style='red'))
+    if s.get('read_warning'):rows.append(Text(s['read_warning'],style='yellow'))
     bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=15);bars.add_column(ratio=1);bars.add_column(width=24,justify='right')
     epoch=s.get('epoch',0);total=s.get('epoch_total');done=s.get('epoch_done',0);epochs=s.get('epochs',50)
     complete_epochs=epochs if state=='complete' else max(0,epoch-1)
@@ -64,7 +66,7 @@ def render(root,width=120,height=35):
     wait=s.get('phase_loader_wait_seconds');fraction=s.get('phase_loader_wait_fraction')
     rows.append(Text(f'Loader wait {number(wait,1)}s ({number(100*fraction if fraction is not None else None,1)}% of phase) · startup/replay {duration(s.get("phase_startup_seconds"))}',style='dim'))
     gpu=s.get('gpu_mib');capacity=s.get('memory_mib')
-    rows.append(Text(f'GPU memory {number(gpu/1024 if gpu is not None else None,1)}/{number(capacity/1024 if capacity else None,1)} GiB · LR {number(s.get("learning_rate"),7)}',style='dim'))
+    rows.append(Text(f'GPU tensors {number(gpu/1024 if gpu is not None else None,1)}/{number(capacity/1024 if capacity else None,1)} GiB · LR {number(s.get("learning_rate"),7)}',style='dim'))
     rows.append(Text('ETA excludes later phases · STOP requests graceful checkpoint · source-valid masks retained',style='dim'))
     return Group(*rows)
 
@@ -75,7 +77,13 @@ def main():
     p.add_argument('--width',type=int);p.add_argument('--height',type=int);p.add_argument('--capture',type=Path);a=p.parse_args()
     if a.capture and not a.capture.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):p.error('Capture must be under runtime root')
     console=Console(width=a.width,height=a.height,record=bool(a.capture))
-    def output():return render(a.run,console.width,console.height)
+    last={}
+    def output():
+        current=read(a.run)
+        if current.get('state')=='unavailable' and last:
+            current=dict(last,read_warning='Status temporarily unreadable; retaining last snapshot')
+        else:last.clear();last.update(current)
+        return render(current,console.width,console.height)
     if a.once or not console.is_terminal:
         console.print(output())
         if a.capture:

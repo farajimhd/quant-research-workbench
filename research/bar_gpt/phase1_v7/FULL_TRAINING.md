@@ -125,3 +125,42 @@ speed/ETA, completed full-validation quality, and loader wait separately from
 startup/replay. Missing values stay unavailable; stale training rates are never
 shown as validation throughput. Profiles and qualification receipts reside under
 `D:/TradingML/runtimes/bar_gpt/phase1-v7-throughput-20261117`.
+
+### Selected settings and measured results
+
+Workstation source `27740a981f0572fa538449823bae1ad45682e256` resumed the same
+`sx629rcz` run. Training uses batch 8,192, 24 workers, four ready batches per
+worker, and verified shard read-ahead depth 32 with a 256 MiB budget per worker.
+Validation independently uses batch 4,096 and eight workers with captured
+inference. BF16 backbone, FP32 exported scale/readout and FP64 native inverse
+remain unchanged. No learning-rate scaling was applied.
+
+| Training batch / workers | Profile windows | Windows/s | Loader wait | Startup |
+| --- | ---: | ---: | ---: | ---: |
+| 8,192 / 16 | 8,388,608 | 201,325 | 20.36 s | 21.43 s |
+| 8,192 / 32 | 8,388,608 | 227,429 | 8.07 s | 43.71 s |
+| 16,384 / 24 | 8,388,608 | 223,141 | 3.44 s | 32.26 s |
+| 32,768 / 24 | 8,388,608 | 218,112 | 0.03 s | 33.52 s |
+| **8,192 / 24** | **16,777,216** | **230,895** | **16.33 s** | **31.91 s** |
+
+These are bounded-prefix steady rates, not promises about whole-epoch speed.
+Loader waiting overlaps queued GPU work; it is not a measurement of GPU idle
+seconds. The largest batch removed virtually all loader wait but was slower,
+so filling GPU memory was not the selection criterion.
+
+Validation with batch 4,096 improved from 98,973/s eager to 114,168/s captured
+on the same 1,048,576 windows. All 2,245 compared metric fields matched exactly,
+including all 108 raw MAEs, validity counts, and price-band quantiles. A longer
+2,097,152-window check with eight workers reached 114,515/s. Batch 16,384
+validation was rejected at 83,777/s. The first capture attempt failed because
+advanced indexing constructed an unpinned CPU index tensor; fixed channel
+slices resolved this with exact inverse and captured/eager prediction parity.
+
+Eleven laptop integrity tests passed. After resume, every tensor and field in
+model, optimizer, RNG, scheduler, epoch, step, traversal cursor, population
+counters and prior history matched the preserved parent exactly. The hashed
+`throughput-resume-receipt.json` records the source transition and evidence.
+`comparison.json` under the throughput runtime root retains every successful
+profile and identifies the rejected/failed trials. Runtime `resume.ps1` and
+`resumed-task.xml` record the complete reproducible launch; no recurring trigger
+was added. The full dataset and 50-epoch schedule remain in effect.
