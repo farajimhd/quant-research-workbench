@@ -49,11 +49,12 @@ class Autoencoder(nn.Module):
         self.config=config
         if config.variant not in ('pooled','scale_slots','flat_scale_slots'):raise ValueError(config.variant)
         self.transform=Transform(mean,scale)
-        token=TokenConfig(width=config.width,embedding_width=256,layers=config.layers,
+        trunk=max(256,config.embedding)
+        token=TokenConfig(width=config.width,embedding_width=trunk,layers=config.layers,
             feedforward=config.width*4,decoder_width=config.decoder,feature_drop=0.)
         self.backbone=(nn.Sequential(nn.Linear(64*54,config.width*4),nn.GELU(),
-            nn.Linear(config.width*4,256),nn.LayerNorm(256)) if config.variant=='flat_scale_slots' else Encoder(token))
-        self.export=nn.Linear(256,config.embedding-(18 if config.variant!='pooled' else 0))
+            nn.Linear(config.width*4,trunk),nn.LayerNorm(trunk)) if config.variant=='flat_scale_slots' else Encoder(token))
+        self.export=nn.Linear(trunk,config.embedding-(18 if config.variant!='pooled' else 0))
         self.decoder=nn.Sequential(nn.Linear(config.embedding,config.decoder),nn.GELU(),
             nn.Linear(config.decoder,config.decoder),nn.GELU(),nn.Linear(config.decoder,64*18))
 

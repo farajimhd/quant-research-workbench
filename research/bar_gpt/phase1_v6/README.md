@@ -77,3 +77,10 @@ including the same 18 scale slots. Decoder size and reconstruction objective are
 unchanged. This tests whether fixed positional access better retains ordering
 and high-frequency activity than pooled token features. Parameter count changes
 are reported; this is not a parameter-matched comparison.
+
+V6.4 allows the dense learned trunk to grow with a 512-coordinate exported vector.
+The 256-vector path is unchanged. The capacity experiment uses embedding 512 and
+decoder hidden width 512 together, because leaving a 256-wide first decoder layer
+would immediately compress the wider representation again. A companion decoder-256
+ablation measures whether the wider decoder improves reconstruction without
+mistaking decoder capacity for improved frozen-embedding information.
