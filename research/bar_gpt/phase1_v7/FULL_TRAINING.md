@@ -61,10 +61,11 @@ Runtime profiling evidence and the final launch configuration are recorded under
 `D:\TradingML\runtimes\bar_gpt\phase1-v7-full-setup-20261117` on the workstation.
 
 The full run is `phase1-v7-full-e08-b4096-50ep-20261117`, W&B project
-`mehdifaraji/bargpt-v7-full`, run `sx629rcz`. Its immutable training source is
+`mehdifaraji/bargpt-v7-full`, run `sx629rcz`. Its initial immutable source was
 `f1b259994ec0e8f6d13c3ef274874a98da88756e`. A manually started, triggerless task
 keeps the controller alive independently of SSH; no recurring automation exists.
-The source snapshot and checkpoint contract remain unchanged during training.
+Snapshots remain immutable; explicit engineering transitions require pinned
+parent checkpoints and hashed qualification receipts.
 
 Launch diagnosis found Task Scheduler's default priority 7 had inherited Below
 Normal CPU and Low I/O priority into the controller, trainer, and 16 workers.
@@ -73,3 +74,29 @@ priority in place, without restart or optimizer/traversal changes. Runtime recei
 are `priority-correction.json` and `io-priority-correction.json` inside the run.
 The task is now priority 4; the launcher explicitly sets both classes for future
 launches. This launcher-only fix does not rewrite the active immutable snapshot.
+
+## Qualified raw-input GPU preparation
+
+After the live run exposed continued CPU feeding limits, source
+`625895d83f4e42ed4998b1b70194fbeffd70942d` moved FP64 log transforms and the shared
+UTC-feature arithmetic onto the GPU. Workers retain all source, clock, timeframe,
+price/activity, OHLC, and paired-quote validity checks. CPU and GPU time paths
+share `BarInputTransformV1.assemble`; no alternative calendar semantics exist.
+Raw arrays shared between input/target bookkeeping transfer only once.
+
+The new path reached **225,618 windows/s over 8,388,608 windows**, with 8.81 seconds
+of loader wait in 37.18 seconds and 20.87-second startup. That exceeds the prior
+160,512/s profile by 40.6%. Pinned-model precision, tiny overfit, eager/captured
+updates, checkpoint resume, and native metric parity passed. All 108 raw MAEs
+matched the previous validation path exactly; histogram summation differed only
+at floating-point reduction precision. Twenty-seven laptop tests passed.
+
+The active run resumed under the same W&B identity at update **26,943**, with
+**110,358,528** training windows consumed. The preserved parent checkpoint is
+`checkpoint_before_raw_gpu_step-26943.pt`, SHA256
+`9b7b31b200203362ac79e9004081f3a6ebc7ffe47b23e01e9bfef6a398e24b15`.
+`engineering-raw-gpu-receipt.json` binds the parent state, qualification evidence,
+and new source. Resume rejects any architecture, objective, optimizer, schedule,
+batch-size, worker-count, or traversal change. Only source revision and equivalent
+preparation backend change. Optimizer/scheduler/RNG and sample cursor persist;
+the ordered source prefix is replayed without optimizer updates.
