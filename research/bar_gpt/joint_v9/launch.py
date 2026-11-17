@@ -4,12 +4,29 @@ os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json,subprocess,sys,time
 from pathlib import Path
 import psutil
+from contextlib import contextmanager
 from ..v5.shards.phase1_contract import write_json
+
+
+@contextmanager
+def controller_lock(root):
+    """Serialize admission and ledger writes, including trainer shutdown."""
+    path=root/'controller.lock'
+    # A stale lock deliberately requires exact owner inspection, never blind removal.
+    with path.open('x') as f:
+        json.dump(dict(pid=os.getpid(),created=psutil.Process().create_time()),f)
+    try:yield
+    finally:path.unlink()
 
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--name',required=True)
-    p.add_argument('args',nargs=argparse.REMAINDER);a=p.parse_args();ledger=json.loads((a.root/'campaign.json').read_text())
+    p.add_argument('args',nargs=argparse.REMAINDER);a=p.parse_args()
+    with controller_lock(a.root):return run(a)
+
+
+def run(a):
+    ledger=json.loads((a.root/'campaign.json').read_text())
     if (a.root/'STOP').exists():raise RuntimeError('Human STOP preserved')
     if time.time()>ledger['stage_deadline']:raise RuntimeError('Research stage deadline; review evidence before extending')
     if any(r['name']==a.name for r in ledger['experiments']):raise RuntimeError('Existing identity requires exact explicit engineering resume')
