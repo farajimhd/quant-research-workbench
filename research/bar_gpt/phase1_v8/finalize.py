@@ -5,9 +5,9 @@ import argparse,json,time
 from pathlib import Path
 import numpy as np
 import torch
-from .model import Config,Autoencoder
+from .model import Config,Autoencoder,inverse
 from .data import load_data,cache
-from .evaluate import predict,measure,probes,summaries
+from .evaluate import predict,measure,evaluate,probes,summaries
 from .export import save,load
 from .runtime import preflight
 from ..phase1_v7.nonlinear_probe import probe
@@ -55,6 +55,16 @@ def main():
         _,tz,_,_=predict(model,data['train'],1024)
         result['full'],ez=measure(model,data[a.partition],rows[a.partition],1024,True)
         result['masked'],_=measure(model,data[a.partition],rows[a.partition],1024,False)
+        constant=inverse(model.input_mean[:18].expand(1,64,18)).cpu().numpy()
+        result['training_constant_full']=evaluate(np.broadcast_to(constant,(len(rows[a.partition]),64,18)),rows[a.partition])
+        _,_,hidden,_=predict(model,data[a.partition],1024,False)
+        visible=rows[a.partition]['valid'].astype(bool)&~hidden
+        control=np.empty_like(rows[a.partition]['values'],dtype=np.float64)
+        for j in range(18):
+            med=np.ma.median(np.ma.array(rows[a.partition]['values'][...,j],mask=~visible[...,j]),axis=1).filled(float(constant[0,0,j]))
+            control[...,j]=med[:,None]
+        result['visible_median_hidden']=evaluate(control,rows[a.partition],hidden)
+        del control,hidden,visible
         result['trained_linear']=probes(tz,ez,rows['train'],rows[a.partition])
         if a.nonlinear:result['trained_nonlinear']=probe(tz,ez,rows['train'],rows[a.partition],a.device)
         sy,_=summaries(rows['train']);ey,_=summaries(rows[a.partition])
