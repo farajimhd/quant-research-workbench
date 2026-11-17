@@ -37,8 +37,26 @@ def main():
     for name,h in proof['files'].items():
         if file_hash(root/name)!=h:raise ValueError(f'Immutable source changed: {name}')
     a.output.mkdir(parents=True,exist_ok=a.resume)
+    write_json(a.output/('resume-arguments.json' if a.resume else 'arguments.json'),{k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()})
     import psutil
     own=psutil.Process();write_json(a.output/'process.json',dict(pid=own.pid,created=own.create_time(),command=own.cmdline()))
+    if os.environ.get('COMPUTERNAME','').upper()!='DESKTOP-SAAI85T':raise RuntimeError('Full-run GPU authority is the workstation')
+    if psutil.virtual_memory().available<64*2**30 or psutil.disk_usage(str(a.output)).free<150*2**30:raise RuntimeError('Required RAM/disk reserve unavailable')
+    import subprocess
+    owners=subprocess.check_output(['nvidia-smi','--query-compute-apps=pid,process_name','--format=csv,noheader'],text=True)
+    desktop_names={'dwm.exe','shellhost.exe','crossdeviceresume.exe','startmenuexperiencehost.exe','searchhost.exe',
+        'explorer.exe','shellexperiencehost.exe','msedgewebview2.exe','lockapp.exe','logioptionsplus_agent.exe',
+        'textinputhost.exe','taskmgr.exe','chatgpt.exe','codex-computer-use-swift.exe','windowsterminal.exe'}
+    desktop=[];other=[]
+    for line in owners.splitlines():
+        fields=line.split(',',1)
+        if not fields[0].strip().isdigit():continue
+        pid=int(fields[0]);name=fields[1].strip().lower() if len(fields)>1 else ''
+        if pid==own.pid:continue
+        if pid==4 or (name.startswith(('c:\\windows\\','c:\\program files\\','c:\\program files (x86)\\')) and Path(name).name in desktop_names):desktop.append(dict(pid=pid,path=name))
+        else:other.append(pid)
+    write_json(a.output/'gpu-ownership.json',dict(desktop_clients=desktop,other_compute_pids=other))
+    if other:raise RuntimeError(f'GPU scheduling conflict: {other}')
     torch.set_num_threads(1);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
     torch.set_float32_matmul_precision('highest');torch.use_deterministic_algorithms(True)
     state=dict(state='running',started=time.time(),updated=time.time(),mode=a.mode,epochs=a.epochs)
@@ -85,7 +103,8 @@ def main():
                     from .full_train import train
                     result=train(a,manifest,status)
             status(state='complete' if a.mode!='train' else result,stage=str(result) if isinstance(result,str) else 'profile complete')
-            print(json.dumps(result),flush=True)
+            concise={k:v for k,v in result.items() if isinstance(v,(int,float,bool,str))} if isinstance(result,dict) else result
+            print(json.dumps(concise),flush=True)
     except BaseException as e:
         status(state='failed',stage='failed',error=f'{type(e).__name__}: {e}');raise
 

@@ -1,5 +1,6 @@
 """Full-population epochs with exact resume identity and bounded checkpoints."""
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 import itertools,json,math,time
 from pathlib import Path
@@ -20,6 +21,8 @@ def evaluate(model,manifest,args,status,limit=0):
     source=loader(manifest,args,'validation');device=None;model.eval();began=time.perf_counter()
     sums=torch.zeros(6,18,device='cuda',dtype=torch.float64);counts=sums.clone();logs=sums.clone()
     negative=nonfinite=violations=0;n=0;prices=PriceRelative()
+    reducers=[PriceRelative() for _ in range(4)];pending=[None]*4;pool=ThreadPoolExecutor(max_workers=4)
+    batches=0;steady_started=None;steady_n=0
     try:
         device=DeviceBatches(source,'cuda')
         while True:
@@ -37,16 +40,24 @@ def evaluate(model,manifest,args,status,limit=0):
             for f in range(6):
                 mask=valid&(fi==f)[:,None,None]
                 sums[f]+=torch.where(mask,e,0).sum((0,1));logs[f]+=torch.where(mask,le,0).sum((0,1));counts[f]+=mask.sum((0,1))
-            prices.add(e.transpose(1,2),truth.transpose(1,2),valid.transpose(1,2),fi)
+            lane=batches%4
+            if pending[lane] is not None:pending[lane].result()
+            cpu=[x.cpu() for x in (e.transpose(1,2),truth.transpose(1,2),valid.transpose(1,2),fi)]
+            pending[lane]=pool.submit(reducers[lane].add,*cpu);batches+=1
             n+=len(b.target);device.advance()
+            if batches==8:steady_started=time.perf_counter();steady_n=n
             status(stage='bounded validation profile' if limit else 'full validation',validation_done=n,validation_seconds=time.perf_counter()-began)
             if limit and n>=limit*args.batch_size:break
         if not limit and n!=manifest['counts']['validation']:raise ValueError(f'Incomplete validation: {n}')
+        for future in pending:
+            if future is not None:future.result()
+        for reducer in reducers:prices.merge(reducer)
         raw_mae=(sums/counts.clamp_min(1)).cpu();log_mae=(logs/counts.clamp_min(1)).cpu();counts=counts.cpu()
         result=dict(origins=n,full_population=not bool(limit),seconds=time.perf_counter()-began,nonfinite=nonfinite,negative=negative,
             structure_violations=violations,raw_mae={FRAME_NAMES[f]:{name:float(raw_mae[f,c]) if counts[f,c] else None for c,name in enumerate(CHANNELS)} for f in range(6)},
             log_mae=log_mae.tolist(),valid_counts=counts.long().tolist(),activity_log_mae=float(log_mae[:,ACTIVITY].mean()))
         result.update(prices.metrics('full_raw_mae',FRAME_NAMES,CHANNELS))
+        result['steady_windows_per_second']=(n-steady_n)/max(.001,time.perf_counter()-steady_started) if steady_started and n>steady_n else None
         rel=[v for k,v in result.items() if k.startswith('full_price_mape_pct/') and v is not None]
         result['balanced_price_mape_pct']=sum(rel)/len(rel)
         bands=[v for k,v in result.items() if k.startswith('full_price_mape_pct_by_price_band/') and v is not None]
@@ -55,6 +66,7 @@ def evaluate(model,manifest,args,status,limit=0):
         if nonfinite or negative or violations:raise FloatingPointError('Validation structural/native failure')
         return result
     finally:
+        pool.shutdown(wait=True)
         if device:device.close()
         close_loader(source)
 
