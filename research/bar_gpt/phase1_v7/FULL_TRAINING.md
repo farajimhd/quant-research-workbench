@@ -34,6 +34,15 @@ use batch 8192, prefetch four, one preparation thread per worker, 256-row CPU
 chunks, BF16 backbone, and FP32 export/readout. The 525K/s compute-only result is
 not a full-pipeline rate. Startup measured 42/22/12 seconds for 32/16/eight workers.
 
+The subsequent batch-4096 / 16-worker profile reached **160.5K windows/s** over
+4,194,304 windows, with 21.3-second startup. This is the launch default, with the
+same BF16/FP32 split and CUDA graphs. It is the fastest measured configuration,
+not a claim of a global optimum. Native validation uses four bounded CPU metric
+reducers; 2,233 price metrics agree with serial reduction to 1.98e-13 relative
+difference and all 108 raw MAEs agree exactly. A 131,072-window validation profile
+reported zero nonfinite, negative, and structural violations and approximately
+80.6K windows/s after warmup. This short prefix is not a population quality result.
+
 The pinned finalist's development price error was 0.73363% FP32 and 0.73407%
 BF16 with GPU preparation. No nonempty price band exceeded the qualification
 tolerance (5% relative increase plus 1e-5 absolute relative error); aggregate

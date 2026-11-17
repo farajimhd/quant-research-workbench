@@ -155,7 +155,11 @@ def train(args,manifest,status):
             write_json(args.output/f'validation-{epoch+1:03}.json',validation)
             improved=validation['selection_score']<best;best=min(best,validation['selection_score'])
             history.append(dict(epoch=epoch+1,step=step,score=validation['selection_score']))
-            if reporter:reporter.log({'validation/'+k:v for k,v in validation.items() if isinstance(v,(float,int))},step=max(step,reporter.step))
+            if reporter:
+                published={'validation/'+k:v for k,v in validation.items() if isinstance(v,(float,int))}
+                published.update({f'validation/raw_mae/{frame}/{channel}':value for frame,channels in validation['raw_mae'].items() for channel,value in channels.items() if value is not None})
+                published.update({f'validation/log_mae/{frame}/{channel}':validation['log_mae'][f][c] for f,frame in enumerate(FRAME_NAMES) for c,channel in enumerate(CHANNELS) if validation['valid_counts'][f][c]})
+                reporter.log(published,step=max(step,reporter.step))
             epoch+=1;cursor=epoch_done=0;phase='train';checkpoint()
             if improved:checkpoint('checkpoint_best.pt')
             status(latest_validation=dict(epoch=epoch,price_mape_pct=validation['balanced_price_mape_pct'],activity_log_mae=validation['activity_log_mae'],seconds=validation['seconds']))

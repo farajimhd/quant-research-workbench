@@ -9,7 +9,7 @@ from ..v5.shards.phase1_contract import write_json
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True)
     p.add_argument('--source-revision',required=True);p.add_argument('--deployment',type=Path,required=True)
-    p.add_argument('--batch-size',type=int,default=8192);p.add_argument('--workers',type=int,default=16)
+    p.add_argument('--batch-size',type=int,default=4096);p.add_argument('--workers',type=int,default=16)
     p.add_argument('--precision',choices=('fp32','bf16'),default='bf16');p.add_argument('--resume',action='store_true')
     p.add_argument('--preparation',choices=('cpu','gpu'),default='gpu')
     a=p.parse_args();setup=a.output.with_name(a.output.name+'-launcher');setup.mkdir(exist_ok=a.resume)

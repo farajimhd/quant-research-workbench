@@ -10,7 +10,7 @@ from ..v5.shards.phase1_contract import write_json,file_hash,digest
 
 def main():
     p=argparse.ArgumentParser()
-    p.add_argument('mode',choices=('qualify','engineering','compute','stream','validation-profile','train'))
+    p.add_argument('mode',choices=('qualify','engineering','diagnostics','compute','stream','validation-profile','train'))
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--deployment',type=Path,required=True)
     p.add_argument('--data',type=Path,default=Path(r'D:\TradingML\runtimes\bar_gpt\encoder-campaign2-20261117\dataset'))
@@ -67,10 +67,10 @@ def main():
     if aux['hash']!=digest({k:v for k,v in aux.items() if k!='hash'}):raise ValueError('Auxiliary dataset seal changed')
     names=['train.npy']
     if a.mode in ('qualify','engineering'):names+=['development.npy','tiny.npy']
-    elif a.mode=='train':names+=['development.npy']
+    elif a.mode in ('train','diagnostics'):names+=['development.npy']
     for name in names:
         if file_hash(a.data/name)!=aux['files'][name]:raise ValueError(f'Auxiliary data changed: {name}')
-    if a.mode in ('qualify','validation-profile') and file_hash(a.checkpoint)!='69d46de6c1ae6950292c90ae56f9f6cbe6619a11c1c772c8f4cbea65ae979dec':
+    if a.mode in ('qualify','validation-profile','diagnostics') and file_hash(a.checkpoint)!='69d46de6c1ae6950292c90ae56f9f6cbe6619a11c1c772c8f4cbea65ae979dec':
         raise ValueError('Pinned finalist checkpoint changed')
     write_json(a.output/'auxiliary-data.json',dict(hash=aux['hash'],files={n:aux['files'][n] for n in names}))
     write_json(a.output/'hardware.json',dict(host=os.environ.get('COMPUTERNAME'),gpu=torch.cuda.get_device_name(),
@@ -82,6 +82,11 @@ def main():
             if a.mode in ('qualify','compute','engineering'):
                 from . import full_profile
                 result=getattr(full_profile,a.mode)(a)
+            elif a.mode=='diagnostics':
+                from .full_profile import model
+                from .full_diagnostics import run
+                m=model();m.load_state_dict(torch.load(a.checkpoint,map_location='cpu',weights_only=False)['model'])
+                result=run(m,a,12000)
             else:
                 from ..v5.data_v3 import load_split
                 from ..v5.loader_index_v1 import attach
@@ -103,7 +108,7 @@ def main():
                     from .full_train import train
                     result=train(a,manifest,status)
             status(state='complete' if a.mode!='train' else result,stage=str(result) if isinstance(result,str) else 'profile complete')
-            concise={k:v for k,v in result.items() if isinstance(v,(int,float,bool,str))} if isinstance(result,dict) else result
+            concise={k:v for k,v in result.items() if '/' not in k and isinstance(v,(int,float,bool,str))} if isinstance(result,dict) else result
             print(json.dumps(concise),flush=True)
     except BaseException as e:
         status(state='failed',stage='failed',error=f'{type(e).__name__}: {e}');raise
