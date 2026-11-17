@@ -12,6 +12,7 @@ class EncoderOnly(nn.Module):
         super().__init__()
         self.config=model.config
         self.input_width=model.input_width
+        self.joint=model.joint
         self.backbone=model.backbone
         self.export=model.export
         self.register_buffer('log_mean',model.transform.mean.clone())

@@ -48,13 +48,25 @@ class Residual(nn.Module):
     def forward(self,x):return x+self.block(x)*.25
 
 
+def quote_geometry(logs,valid):
+    """Complete visible paired quotes only; canonical partial fields remain inputs."""
+    complete=valid[...,6:10].all(-1)&valid[...,12:16].all(-1)
+    bo,bh,bl,bc=logs[...,6:10].unbind(-1)
+    ao,ah,al,ac=logs[...,12:16].unbind(-1)
+    gaps=torch.stack((ao-bo,ah-torch.maximum(torch.maximum(ao,ac),bh),al-bl,ac-bc),-1)
+    mask=complete[...,None].expand_as(gaps)
+    if ((gaps<0)&mask).any():raise ValueError('Valid crossed source quote: joint representation is not applicable')
+    return torch.where(mask,gaps,0).sqrt(),mask
+
+
 class Autoencoder(nn.Module):
     def __init__(self,config,mean,scale):
         super().__init__();self.config=config;self.transform=Transform(mean,scale)
-        self.input_width=90 if config.variant=='geometry' else 54
+        self.joint=config.variant=='geometry_joint'
+        self.input_width=98 if self.joint else (90 if config.variant=='geometry' else 54)
         self.backbone=nn.Sequential(nn.Linear(64*self.input_width,config.width),nn.GELU(),
             *[Residual(config.width) for _ in range(config.layers)],nn.LayerNorm(config.width))
-        self.export=nn.Linear(config.width,config.embedding-21)
+        self.export=nn.Linear(config.width,config.embedding-(25 if self.joint else 21))
         self.decoder=nn.Linear(config.embedding,64*18)
         # Small shape residuals initially; nonzero wick roots retain gradients.
         nn.init.normal_(self.decoder.weight,std=.0005);nn.init.zeros_(self.decoder.bias)
@@ -66,7 +78,8 @@ class Autoencoder(nn.Module):
         centered=values.clone();centered[...,:18]=torch.where(m,mixed-refs[:,None],0)
         centered[...,PRICES]*=100
         source=torch.cat((torch.where(valid,centered,0),valid.float()),-1)
-        if self.config.variant=='geometry':
+        pair_refs=None
+        if self.config.variant in ('geometry','geometry_joint'):
             shaped=geometry(logs,m)
             for base in (0,6,12):shaped[...,base]-=refs[:,None,base]
             shaped[...,ACTIVITY]-=refs[:,None,ACTIVITY]
@@ -76,12 +89,16 @@ class Autoencoder(nn.Module):
                 shaped[...,base]*=100;shaped[...,base+3]*=100
                 shaped[...,base+1:base+3]*=10
             source=torch.cat((source,torch.where(gm,shaped,0),gm.float()),-1)
+        if self.joint:
+            pair,pm=quote_geometry(logs,m)
+            pair_refs=torch.where(pm,pair,0).sum(1)/pm.sum(1).clamp_min(1)
+            source=torch.cat((source,torch.where(pm,(pair-pair_refs[:,None])*100,0),pm.float()),-1)
         grid=source.new_zeros(len(values),64,self.input_width)
         grid.scatter_(1,positions[...,None].expand(-1,-1,self.input_width),source)
         learned=self.export(self.backbone(grid.flatten(1)))
         coverage=torch.stack((m[...,9].float().mean(1),m[...,15].float().mean(1),
             (m[...,9]&m[...,15]).float().mean(1)),1)
-        return torch.cat((refs,coverage,learned),-1)
+        return torch.cat((refs,coverage,pair_refs,learned),-1) if self.joint else torch.cat((refs,coverage,learned),-1)
 
     def decode(self,z):
         # Only exported z and fixed constants; no target metadata or input bypass.
@@ -94,6 +111,12 @@ class Autoencoder(nn.Module):
             columns[base+1]=torch.maximum(o,c)+(code[...,base+1]*.1+.01).square()
             columns[base+2]=torch.minimum(o,c)-(code[...,base+2]*.1+.01).square()
             for j in (base+4,base+5):columns[j]=(z[:,None,j]+code[...,j]).square()
+        if self.joint:
+            ao=columns[6]+(z[:,None,21]+code[...,12]*.01).square()
+            ac=columns[9]+(z[:,None,24]+code[...,15]*.01).square()
+            ah=torch.maximum(torch.maximum(ao,ac),columns[7])+(z[:,None,22]+code[...,13]*.01).square()
+            al=torch.minimum(torch.minimum(ao,ac),columns[8]+(z[:,None,23]+code[...,14]*.01).square())
+            columns[12:16]=[ao,ah,al,ac]
         return torch.stack(columns,-1)
 
     def forward(self,values,valid,positions):

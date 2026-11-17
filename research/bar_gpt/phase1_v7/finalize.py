@@ -60,7 +60,7 @@ def main():
             for full in (True,False):
                 pred,z,mask=predict(model,data[partition],bs,full)
                 metrics[partition+('_full' if full else '_masked')]=evaluate(pred,rows[partition],mask)
-                require_structured(metrics[partition+('_full' if full else '_masked')])
+                require_structured(metrics[partition+('_full' if full else '_masked')],model.joint)
                 if full:embeddings[partition]=z
                 if full and partition=='audit':
                     decoded,labels=summaries(dict(values=pred,valid=rows[partition]['valid']))

@@ -61,8 +61,9 @@ def evaluate(pred, rows, mask=None):
         balanced_activity_log_mae=act,selection_score=50*price+.05*worst+act)
 
 
-def require_structured(metrics):
+def require_structured(metrics,paired=False):
     failures=sum(f['nonfinite']+f['negative']+sum(f['structure'][side]['prediction'] for side in ('trade','bid','ask')) for f in metrics['frames'].values())
+    if paired:failures+=sum(f['structure']['crossed_close']['prediction'] for f in metrics['frames'].values())
     if failures:raise FloatingPointError(f'Structured decoder contract failed on {failures} valid predictions')
 
 

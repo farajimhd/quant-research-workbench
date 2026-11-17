@@ -11,6 +11,34 @@ from .export import EncoderOnly
 
 
 class Contracts(unittest.TestCase):
+    def test_joint_coordinate_inverse_oracle_diagnostic(self):
+        from .model import quote_geometry
+        model=Autoencoder(Config(variant='geometry_joint',width=32,embedding=64,layers=1),torch.zeros(18),torch.ones(18))
+        level=torch.linspace(-16,12,64).exp()
+        raw=torch.zeros(1,64,18)
+        for base in (0,6,12):
+            scale=1.001 if base==12 else 1.
+            raw[0,:,base:base+4]=level[:,None]*torch.tensor([1.,1.05,.95,1.01])*scale
+            raw[0,:,base+4:base+6]=torch.linspace(0,20,64).expm1()[:,None]
+        valid=torch.ones_like(raw,dtype=torch.bool);logs=Transform.logs(raw,valid).float()
+        x=torch.cat((logs,torch.zeros(1,64,9)),-1)
+        z=model.encode(x,torch.ones_like(x,dtype=torch.bool),torch.arange(64)[None])
+        code=torch.zeros_like(logs)
+        for base in (0,6,12):
+            o,h,l,c=logs[...,base:base+4].unbind(-1)
+            code[...,base]=(o-z[:,None,base])/.01
+            code[...,base+3]=(c-o)/.01
+            code[...,base+1]=((h-torch.maximum(o,c)).sqrt()-.01)/.1
+            code[...,base+2]=((torch.minimum(o,c)-l).sqrt()-.01)/.1
+            for j in (base+4,base+5):code[...,j]=logs[...,j].sqrt()-z[:,None,j]
+        pair,_=quote_geometry(logs,valid)
+        code[...,12:16]=(pair-z[:,None,21:25])/.01
+        # Explicit oracle-coordinate diagnostic, not trained reconstruction evidence.
+        with torch.no_grad():
+            model.decoder.weight.zero_();model.decoder.bias.copy_(code.flatten())
+        recovered=model.transform.inverse(model.decode(z))
+        torch.testing.assert_close(recovered,raw.double(),rtol=1e-4,atol=1e-5)
+
     def test_control_reporting_is_separate_from_model_acceptance(self):
         from .metrics import evaluate,require_structured
         rows=np.zeros(1,dtype=[('values','f4',(64,18)),('valid','u1',(64,18)),('timeframe_us','i8')])
@@ -29,7 +57,7 @@ class Contracts(unittest.TestCase):
         torch.testing.assert_close(out,raw.double(),rtol=2e-6,atol=1e-10)
 
     def test_embedding_only_and_hidden_independence(self):
-        for variant in ('canonical','geometry'):
+        for variant in ('canonical','geometry','geometry_joint'):
             model=Autoencoder(Config(variant=variant,width=64,layers=1),torch.zeros(18),torch.ones(18)).eval()
             x=torch.ones(2,64,27);v=torch.ones_like(x,dtype=torch.bool)
             data=dict(values=x,valid=v,target=x[...,:18].clone(),mask=v[...,:18].clone())
@@ -43,6 +71,7 @@ class Contracts(unittest.TestCase):
             torch.testing.assert_close(model.decode(z),out)
             raw=model.transform.inverse(out)
             self.assertTrue((raw[...,ACTIVITY]>=0).all())
+            if variant=='geometry_joint':self.assertTrue((raw[...,12:16]>=raw[...,6:10]).all())
             for base in (0,6,12):
                 o,h,l,c=raw[...,base:base+4].unbind(-1)
                 self.assertTrue((h>=torch.maximum(o,c)).all())

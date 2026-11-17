@@ -38,6 +38,20 @@ encoder capacity and masking; conclusions and exact identities live in the runti
 ledger. All-visible and masked reconstruction are separately reported. Masked
 evaluation is a stress test for all-visible-trained candidates.
 
+The final-slot `geometry_joint` revision addresses observed crossed quote outputs.
+Training source inspection found zero bid/ask crossings for each corresponding
+OHLC field. Four additional visible paired-quote root coordinates are exported
+inside the same embedding; centered paired coordinates and validity join the
+encoder input. There are 25 explicit coordinates and the remainder are learned.
+The single affine head predicts residual roots. Ask open/close are constructed
+above bid open/close, ask high above both ask body and bid high, and ask low between
+bid low and ask body. These equations enforce OHLC and paired-quote ordering by
+parameterization, with no post-hoc sorting or clipping of predictions or targets.
+Source crossed quotes fail closed; this model is inapplicable to a source contract
+that permits valid crossings. Partial quote fields remain in canonical inputs.
+This coordinated input/output revision replaces the planned seed replication;
+seed stability is therefore not established by this campaign.
+
 Run `python -B -m unittest research.bar_gpt.phase1_v7.test_contract` with
 `PYTHONDONTWRITEBYTECODE=1`. Use the versioned launcher for an immutable deployment;
 it requires dataset and campaign receipts and enforces bounded identities.

@@ -84,7 +84,7 @@ def save_checkpoint(path,model,opt,scheduler,gen,step,started,identity,best):
 def main(argv=None):
     p=argparse.ArgumentParser()
     p.add_argument('--data',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--source-revision',required=True);p.add_argument('--variant',choices=('canonical','geometry'),default='canonical')
+    p.add_argument('--source-revision',required=True);p.add_argument('--variant',choices=('canonical','geometry','geometry_joint'),default='canonical')
     p.add_argument('--minutes',type=float,default=20);p.add_argument('--steps',type=int,default=2400)
     p.add_argument('--width',type=int,default=1024);p.add_argument('--layers',type=int,default=3)
     p.add_argument('--embedding',type=int,default=256);p.add_argument('--decoder',type=int,default=256)
@@ -260,7 +260,7 @@ def main(argv=None):
             if step%500==0 or step==a.steps:
                 status('development validation',loss=last_loss)
                 begin=time.time();pred,z,_=predict(model,data['development'],bs)
-                metrics=evaluate(pred,rows['development']);require_structured(metrics);elapsed_eval=time.time()-begin
+                metrics=evaluate(pred,rows['development']);require_structured(metrics,model.joint);elapsed_eval=time.time()-begin
                 score=50*metrics['balanced_price_relative_mean']+metrics['balanced_activity_log_mae']+.05*metrics['worst_price_band_relative_mean']
                 record=dict(step=step,elapsed=time.time()-started,train_loss=last_loss,selection_score=score,
                     balanced_price_relative_mean=metrics['balanced_price_relative_mean'],activity_log_mae=metrics['balanced_activity_log_mae'],
@@ -281,7 +281,7 @@ def main(argv=None):
                 if time.time()>=deadline:raise TimeoutError('Deadline before complete evaluation')
                 pred,z,mask=predict(model,data[name],bs,full)
                 evaluations[name+('_full' if full else '_masked')]=evaluate(pred,rows[name],mask)
-                require_structured(evaluations[name+('_full' if full else '_masked')])
+                require_structured(evaluations[name+('_full' if full else '_masked')],model.joint)
                 if full:embeddings[name]=z
         information=probes(embeddings['train'],embeddings['development'],rows['train'],rows['development'])
         result=dict(state='complete',steps=step,planned_steps=a.steps,training_truncated=step<a.steps,
