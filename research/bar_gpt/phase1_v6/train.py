@@ -109,7 +109,7 @@ def main(argv=None):
         others=[];desktop=[]
         desktop_names={'dwm.exe','shellhost.exe','crossdeviceresume.exe','startmenuexperiencehost.exe',
             'searchhost.exe','explorer.exe','shellexperiencehost.exe','msedgewebview2.exe','lockapp.exe',
-            'logioptionsplus_agent.exe','textinputhost.exe','taskmgr.exe','chatgpt.exe','codex-computer-use-swift.exe'}
+            'logioptionsplus_agent.exe','textinputhost.exe','taskmgr.exe','chatgpt.exe','codex-computer-use-swift.exe','windowsterminal.exe'}
         for line in gpu.splitlines():
             fields=line.split(',',1)
             if not fields[0].strip().isdigit():continue
