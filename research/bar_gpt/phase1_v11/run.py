@@ -24,7 +24,7 @@ def main():
     p.add_argument('--learning-rate',type=float,default=.0003);p.add_argument('--reference-weight',type=float,default=1)
     p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
     p.add_argument('--readout',choices=['latents','include_reference'],default='latents')
-    p.add_argument('--tiny-steps',type=int,default=800);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
+    p.add_argument('--tiny-steps',type=int,default=2000);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
     p.add_argument('--resume-pretraining',action='store_true',help='Engineering retry before any research optimizer step; preserves original identity and deadline')
     p.add_argument('--probes',action='store_true',help='Reserve final evaluation time for frozen within-window information probes')
     a=p.parse_args();torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed)
@@ -62,17 +62,30 @@ def main():
     write_json(a.output/'wandb.json',dict(id=run.id,url=run.url))
     try:
         tinyrows=np.load(a.data/'tiny.npy',allow_pickle=False)[:4];tiny=cache(tinyrows,'cuda');m=make().train()
+        # Explicit synthetic easy-case test only: repeat each first market bar.
+        # Immutable source data and all scientific train/dev batches stay unchanged.
+        tiny['values'][...,:18]=tiny['values'][:,:1,:18].clone().expand(-1,64,-1)
+        tiny['valid'][...,:18]=tiny['valid'][:,:1,:18].clone().expand(-1,64,-1)
         opt=torch.optim.AdamW(m.parameters(),lr=.001,weight_decay=.01,fused=True)
         # Fixed four easy examples; random visibility remains active.
         replay=Replay(m,tiny['values'],tiny['valid']);initial=None
         for step in range(a.tiny_steps):
+            opt.param_groups[0]['lr']=1e-5+.00099*.5*(1+math.cos(math.pi*step/max(a.tiny_steps-1,1)))
             loss,norm,parts=replay(tiny['values'],tiny['valid']);opt.step()
             if not bool(torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Tiny nonfinite')
             if initial is None:initial=float(loss)
             if step%100==0:status(stage='tiny overfit',step=step,loss=float(loss))
-        tiny_result=dict(initial=initial,final=float(loss),ratio=float(loss)/initial)
+        from ..phase1_v10.model import select
+        from .transforms import PRICES
+        with torch.no_grad():
+            m.eval();x,v,pos,h=select(tiny['values'],tiny['valid'],16);prediction=m(x,v,pos)['logs']
+            error=torch.expm1(prediction[...,list(PRICES)]-tiny['values'][...,list(PRICES)]).abs()
+            keep=tiny['valid'][...,list(PRICES)]&h[...,None];error=error[keep]
+            tiny_price_mean=float(error.mean());tiny_price_p90=float(torch.quantile(error,.9))
+        tiny_result=dict(initial=initial,final=float(loss),ratio=float(loss)/initial,price_relative_mean=tiny_price_mean,price_relative_p90=tiny_price_p90,
+            scope='Synthetic constant-market bars copied from four certified tiny examples; canonical time metadata retained; scientific dataset unchanged.')
         write_json(a.output/'tiny.json',tiny_result)
-        if tiny_result['ratio']>.2:raise AssertionError('Tiny fit failed: '+str(tiny_result))
+        if tiny_result['ratio']>.2 or tiny_price_p90>.005:raise AssertionError('Tiny fit failed: '+str(tiny_result))
         del replay,opt,m;tiny=None;torch.cuda.empty_cache()
         status(stage='loading verified frozen subsets')
         rows={k:np.load(a.data/(k+'.npy'),allow_pickle=False) for k in ('train','development')}
