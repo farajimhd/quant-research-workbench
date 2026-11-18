@@ -172,3 +172,12 @@ It verifies the checkpoint hash remains unchanged. This is a model-pipeline
 benchmark, not a claim about full-dataset streaming throughput. The `probes`
 module supports an explicit `--audit` mode for pinned finalists; it retains
 the same training-only ridge fit and evaluates the sealed 2025/2026 partitions.
+
+`anchor_fit` diagnoses the linear accessibility of the latest observed bar in
+a frozen embedding. It fits only the existing 18-row readout using training
+embeddings and training source-valid input values. Its initialization artifact
+keeps the encoder byte-exact, fits that readout and initializes a fresh Phase 2
+network. It is not an optimizer-resume checkpoint or a forecasting result.
+Subsequent `train --freeze-encoder --freeze-reconstruction` experiments keep
+both the embedding and fitted readout fixed and learn the future head. No raw
+anchor, per-example reference or target-derived statistic enters inference.

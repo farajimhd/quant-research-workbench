@@ -53,6 +53,7 @@ def main():
     p.add_argument('--initial-checkpoint',type=Path)
     p.add_argument('--forecast-weight',type=float,default=1.)
     p.add_argument('--freeze-encoder',action='store_true')
+    p.add_argument('--freeze-reconstruction',action='store_true')
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
@@ -61,6 +62,7 @@ def main():
     if not 0<a.minutes<=60 or a.examples<=0 or a.tiny_steps<1 or not 0<=a.masked_reconstruction_probability<=1 or a.summary_weight<0 or a.price_huber_beta<=0:raise ValueError('Invalid finite experiment')
     if a.forecast_weight<0 or (a.forecast_weight==0 and (a.reconstruction_weight<=0 or a.summary_weight!=0)):raise ValueError('Invalid reconstruction pretext objective')
     if a.freeze_encoder and (not a.initial_checkpoint or a.anchor_mode!='learned' or a.forecast_weight<=0):raise ValueError('Frozen forecasting requires a pretrained learned-anchor encoder')
+    if a.freeze_reconstruction and not a.freeze_encoder:raise ValueError('Fixed reconstruction requires frozen encoder')
     started=time.time();deadline=started+a.minutes*60;preflight(a)
     torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
     torch.set_float32_matmul_precision('highest');step=0;progress={};wb=None
@@ -93,6 +95,9 @@ def main():
     if a.freeze_encoder:
         model.encoder.requires_grad_(False)
         frozen_state={k:v.detach().cpu().clone() for k,v in model.encoder.state_dict().items()}
+    if a.freeze_reconstruction:
+        model.reconstruction.requires_grad_(False)
+        frozen_reconstruction={k:v.detach().cpu().clone() for k,v in model.reconstruction.state_dict().items()}
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],
         parameters={k:v.tolist() for k,v in parameters.items()},seed=a.seed,examples=a.examples,minutes=a.minutes,lr=a.lr,
@@ -100,7 +105,7 @@ def main():
         masked_reconstruction_probability=a.masked_reconstruction_probability,masked_visible_bars=16,
         calibration_parent=calibration_parent,
         initialization=initialization,
-        forecast_weight=a.forecast_weight,freeze_encoder=a.freeze_encoder,
+        forecast_weight=a.forecast_weight,freeze_encoder=a.freeze_encoder,freeze_reconstruction=a.freeze_reconstruction,
         hypothesis=a.hypothesis,parent=a.parent,parameter_count=sum(v.numel() for v in model.parameters()),
         window_encoder_parameters=sum(v.numel() for v in model.encoder.parameters()),reconstruction_decoder_parameters=sum(v.numel() for v in model.reconstruction.parameters()),
         forecasting=('Direct next 64 observed 1s bars. Historical last-bar anchor is a declared causal control.' if a.anchor_mode=='historical' else
@@ -141,6 +146,7 @@ def main():
             status('profiling complete training step',profile_batch=bs)
             pm=JointModel(config,**parameters).to(a.device)
             if a.freeze_encoder:pm.encoder.requires_grad_(False);pm.encoder.eval()
+            if a.freeze_reconstruction:pm.reconstruction.requires_grad_(False)
             po=torch.optim.AdamW(pm.parameters(),lr=a.lr,fused=a.device=='cuda')
             for k in range(12):
                 if k==3:
@@ -224,6 +230,9 @@ def main():
         if a.freeze_encoder:
             for key,value in model.encoder.state_dict().items():torch.testing.assert_close(value.cpu(),frozen_state[key],rtol=0,atol=0)
             result['frozen_encoder_exactly_preserved']=True
+        if a.freeze_reconstruction:
+            for key,value in model.reconstruction.state_dict().items():torch.testing.assert_close(value.cpu(),frozen_reconstruction[key],rtol=0,atol=0)
+            result['frozen_reconstruction_exactly_preserved']=True
         result['forecast_head_trained']=a.forecast_weight>0
         write_json(a.output/'results.json',result);status('complete',seen=seen,planned_steps=steps)
         if wb:

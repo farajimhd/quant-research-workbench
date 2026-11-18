@@ -33,11 +33,11 @@ def main():
             record['metrics'][split]={k:v[k] for k in ('price_mae_skill','activity_mae_skill','price_session_bootstrap95','activity_session_bootstrap95','selection_score')}
             record['metrics'][split].update(reconstruction_price_relative=v['reconstruction']['balanced_price_relative_mean'],
                 reconstruction_activity_log=v['reconstruction']['balanced_activity_log_mae'],reconstruction_worst_price_group=v['reconstruction']['worst_price_band_relative_mean'])
-            for key in ('activity_history_mean_skill','activity_history_median_skill','history_mean_selection_score'):
+            for key in ('activity_history_mean_skill','activity_history_median_skill','history_mean_selection_score','price_flat_last_close_skill'):
                 if key in v:record['metrics'][split][key]=v[key]
             if 'session_errors' in v and 'history_mean_control' in v:
                 record['metrics'][split]['activity_strong_control_uncertainty']={k:activity_control_interval(v,k) for k in ('history_mean_control','history_median_control')}
-            for task in ('native_forecast','native_persistence','native_history_mean','native_history_median','reconstruction'):
+            for task in ('native_forecast','native_persistence','native_history_mean','native_history_median','native_flat_last_close','reconstruction'):
                 if task not in v:continue
                 for frame,f in v[task]['frames'].items():
                     for name,c in f['channels'].items():

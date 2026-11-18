@@ -32,6 +32,7 @@ def main():
         if time.monotonic()>deadline:raise TimeoutError('Profile deadline')
         torch.manual_seed(917);model=JointModel(config,**calibration).to(a.device);model.load_state_dict(state['model']);model.train()
         if identity.get('freeze_encoder'):model.encoder.requires_grad_(False);model.encoder.eval()
+        if identity.get('freeze_reconstruction'):model.reconstruction.requires_grad_(False)
         optimizer=torch.optim.AdamW(model.parameters(),lr=1e-5,fused=a.device=='cuda');generator=torch.Generator(device=a.device).manual_seed(917)
         loss=batch=parts=ix=None
         try:
