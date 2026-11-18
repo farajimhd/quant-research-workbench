@@ -25,11 +25,14 @@ def features(model,data,device,deadline=None):
     return np.concatenate(z),np.concatenate(targets),np.concatenate(masks)
 
 
-def fit(model,training):
+def fit(model,training,linear_only=False):
     z,target,valid=training;x=z.astype(np.float64);mean=x.mean(0);std=x.std(0);std=np.where(std>1e-8,std,1.)
     y=(target-model.reconstruction_mean.cpu().numpy())/model.reconstruction_scale.cpu().numpy()
-    standardized=(x-mean)/std;coefficients=np.zeros((18,x.shape[1]));bias=np.zeros(18);groups={}
-    for j in range(18):groups.setdefault(valid[:,j].tobytes(),[]).append(j)
+    standardized=(x-mean)/std
+    coefficients=model.reconstruction.weight[-54:-36].detach().cpu().numpy().astype(np.float64).copy()
+    bias=model.reconstruction.bias[-54:-36].detach().cpu().numpy().astype(np.float64).copy();groups={}
+    selected=(0,3,4,5,6,9,10,11,16,17) if linear_only else tuple(range(18))
+    for j in selected:groups.setdefault(valid[:,j].tobytes(),[]).append(j)
     for ids in groups.values():
         keep=valid[:,ids[0]]
         if keep.sum()<4:raise ValueError('Insufficient valid training anchors')
@@ -39,7 +42,7 @@ def fit(model,training):
     intercept=torch.tensor(bias,dtype=torch.float32,device=weights.device)
     if not torch.isfinite(weights).all() or not torch.isfinite(intercept).all():raise FloatingPointError('Nonfinite fitted anchor')
     with torch.no_grad():model.reconstruction.weight[-54:-36].copy_(weights);model.reconstruction.bias[-54:-36].copy_(intercept)
-    return dict(alpha=.001,training_counts=valid.sum(0).tolist(),fit='Training-only standardized Ridge; statistics folded into fixed linear weights. No reference input at inference.')
+    return dict(alpha=.001,fitted_channels=list(selected),training_counts=valid.sum(0).tolist(),fit='Training-only standardized Ridge; statistics folded into fixed linear weights. No reference input at inference.')
 
 
 @torch.no_grad()
@@ -66,6 +69,7 @@ def evaluate(model,extracted,raw_target=None,source_valid=None):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--data',type=Path,required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True);p.add_argument('--device',choices=('cpu','cuda'),default='cuda')
+    p.add_argument('--linear-only',action='store_true')
     a=p.parse_args();a.resume=False;preflight(a);started=time.time();torch.set_num_threads(8);torch.set_float32_matmul_precision('highest')
     state=torch.load(a.checkpoint,map_location='cpu',weights_only=False);identity=state['identity'];torch.manual_seed(identity['seed'])
     rows,manifest=load(a.data,('train','development','novel_development'))
@@ -81,11 +85,11 @@ def main():
         extracted[name]=features(model,cache(r),a.device,started+600)
     def report():return {k:evaluate(model,v,rows[k]['context'][:,7]['values'][:,-1],rows[k]['context'][:,7]['valid'][:,-1]) for k,v in extracted.items()}
     before=report();write_json(a.output/'progress.json',dict(stage='fitting training-only linear readout',elapsed=time.time()-started))
-    calibration=fit(model,extracted['train']);after=report()
+    calibration=fit(model,extracted['train'],a.linear_only);after=report()
     for key,value in model.encoder.state_dict().items():torch.testing.assert_close(value.cpu(),state['model']['encoder.'+key],rtol=0,atol=0)
     if time.time()>started+600:raise TimeoutError('Anchor fit deadline')
     identity={**identity,'source_revision':a.source_revision,'initialization_type':'Frozen parent encoder, training-fitted anchor, fresh temporal network',
-        'parent_checkpoint_sha256':file_hash(a.checkpoint),'anchor_fit':calibration}
+        'parent_checkpoint_sha256':file_hash(a.checkpoint),'parent_checkpoint_path':str(a.checkpoint),'parent_training_step':state['step'],'anchor_fit':calibration}
     torch.save(dict(model=model.state_dict(),identity=identity,step=0,initialization_only=True),a.output/'initialization.pt')
     write_json(a.output/'results.json',dict(state='complete',source_revision=a.source_revision,parent_checkpoint_sha256=file_hash(a.checkpoint),
         initialization_sha256=file_hash(a.output/'initialization.pt'),before=before,after=after,calibration=calibration,seconds=time.time()-started,encoder_parent_exact_match=True,

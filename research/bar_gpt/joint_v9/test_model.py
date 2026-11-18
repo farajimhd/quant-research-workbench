@@ -27,8 +27,9 @@ class ModelContract(unittest.TestCase):
         d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',linear_context=True,last_context=True,context_embedding=32,activity_basis=True)
         m=JointModel(c,**calibrate(d)).eval();before={k:v.clone() for k,v in m.encoder.state_dict().items()}
         extracted=features(m,{'x':d['x'],'valid':d['valid']},'cpu')
-        initial=evaluate(m,extracted);fit(m,extracted);after=evaluate(m,extracted)
+        initial=evaluate(m,extracted);original=m.reconstruction.weight.detach().clone();fit(m,extracted,linear_only=True);after=evaluate(m,extracted)
         self.assertLess(after['price_relative_mean'],initial['price_relative_mean'])
+        for j in (1,2,7,8,12,13,14,15):torch.testing.assert_close(m.reconstruction.weight[-54+j],original[-54+j],rtol=0,atol=0)
         for k,v in m.encoder.state_dict().items():torch.testing.assert_close(v,before[k],rtol=0,atol=0)
         with torch.no_grad():
             for p in m.encoder.parameters():p.zero_()
