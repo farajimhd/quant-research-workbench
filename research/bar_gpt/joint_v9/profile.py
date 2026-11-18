@@ -52,6 +52,11 @@ def main():
                 peak_bytes=torch.cuda.max_memory_allocated() if a.device=='cuda' else 0))
         except torch.cuda.OutOfMemoryError:
             results.append(dict(batch=bs,state='out-of-memory'))
+        except RuntimeError as error:
+            if 'Efficient attention cannot produce valid seed and offset outputs when the batch size exceeds (65535)' not in str(error):
+                raise
+            results.append(dict(batch=bs,state='unsupported-attention-batch',reason=str(error),
+                flattened_windows=16*bs,policy='No dropout, objective or model fallback; unsupported configuration is not a throughput result.'))
         finally:
             del loss,batch,parts,ix,model,optimizer
             if a.device=='cuda':torch.cuda.empty_cache()
