@@ -26,7 +26,9 @@ class Replay:
             with torch.cuda.stream(stream):
                 for _ in range(3):model.zero_grad(set_to_none=True);backward(model,self.batch)
             torch.cuda.current_stream().wait_stream(stream);model.zero_grad(set_to_none=True)
-            with torch.cuda.graph(self.graph,stream=stream):self.output=backward(model,self.batch)
+            # DataLoader pin-memory allocations may occur on another host thread.
+            # Capture remains strict for this thread; independent host pinning is allowed.
+            with torch.cuda.graph(self.graph,stream=stream,capture_error_mode='thread_local'):self.output=backward(model,self.batch)
             self.params=list(model.parameters());self.grads=[p.grad for p in self.params]
         finally:restore_rng(state)
 
@@ -51,7 +53,7 @@ class InferenceReplay:
             with torch.cuda.stream(stream):
                 for _ in range(3):forward(model,self.batch,visible,generator)
             torch.cuda.current_stream().wait_stream(stream)
-            with torch.cuda.graph(self.graph,stream=stream):self.output=forward(model,self.batch,visible,generator)
+            with torch.cuda.graph(self.graph,stream=stream,capture_error_mode='thread_local'):self.output=forward(model,self.batch,visible,generator)
         finally:generator.set_state(state)
 
     @torch.no_grad()
