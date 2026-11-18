@@ -156,3 +156,12 @@ future values, validity flags or timestamps. Attention operates on past window
 embeddings, causal ages and these fixed queries only; no autoregressive target
 feeding is used. Phase 1 and its reconstruction decoder are unchanged. Mean
 query features are used only for the compact Phase 2 probe diagnostic.
+
+`--activity-basis` uses square-root-of-log1p activity coordinates before
+visible-context centering, matching the squared activity readout. The visible
+mean in these coordinates and the visible latest values enter learned context
+projections; original log-level summaries remain available too. Prices retain
+their log-relative shape coordinates. This tests a confirmed expressivity
+restriction of a purely linear log-level context path with a squared decoder;
+performance gains must still be established experimentally. No true mean or
+reference is passed to either decoder.

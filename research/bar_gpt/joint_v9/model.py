@@ -26,6 +26,7 @@ class Config:
     last_context:bool=False
     context_embedding:int=0
     horizon_queries:bool=False
+    activity_basis:bool=False
 
 
 def structured(code):
@@ -91,6 +92,7 @@ class WindowEncoder(nn.Module):
             self.cls=nn.Parameter(torch.randn(1,1,w)*.01);self.backbone=attention(w,c.layers,c.dropout)
         if c.readout not in ('cls','flatten') or (c.readout=='flatten' and c.architecture in ('mlp','conv')):raise ValueError('Invalid attention readout')
         context_dim=90 if c.last_context else 54
+        if c.activity_basis:context_dim+=12 if c.last_context else 6
         self.context=nn.Linear(context_dim,w) if c.linear_context else nn.Sequential(nn.Linear(context_dim,w),nn.GELU())
         self.export=nn.Linear(w*(n+1) if c.readout=='flatten' else w*2,c.embedding)
         if c.context_embedding:
@@ -105,8 +107,19 @@ class WindowEncoder(nn.Module):
         if self.config.last_context:
             observed=v[:,-1,:18];last=torch.where(observed,x[:,-1,:18],mean[:,:18])
             summary=torch.cat((summary,(last-self.input_mean[:18])/self.input_scale[:18],observed.float()),-1)
+        if self.config.activity_basis:
+            # Fixed invertible activity coordinates match the squared decoder.
+            # All quantities here are nonnegative log1p values, never targets.
+            activity_valid=v[...,list(ACTIVITY)]
+            activity_values=torch.where(activity_valid,x[...,list(ACTIVITY)],0).sqrt()
+            activity_mean=activity_values.sum(1)/activity_valid.sum(1).clamp_min(1)
+            activity_mean=torch.where(activity_valid.any(1),activity_mean,self.input_mean[list(ACTIVITY)].sqrt())
+            basis=[activity_mean/4]
+            if self.config.last_context:basis.append(last[:,list(ACTIVITY)].sqrt()/4)
+            summary=torch.cat((summary,*basis),-1)
         factor=x.new_tensor([100 if i in PRICES else 1 for i in range(18)])
         market=torch.asinh((x[...,:18]-mean[:,None,:18])*factor)
+        if self.config.activity_basis:market[...,list(ACTIVITY)]=torch.asinh(activity_values-activity_mean[:,None])
         normalized=torch.cat((market,(x[...,18:]-self.input_mean[18:])/self.input_scale[18:]),-1)
         tokens=torch.cat((torch.where(v,normalized,0),v.float()),-1)
         c=self.config

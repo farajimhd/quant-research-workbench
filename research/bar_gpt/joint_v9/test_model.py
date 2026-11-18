@@ -22,6 +22,31 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_activity_basis_is_visible_only_and_learned(self):
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',linear_context=True,last_context=True,context_embedding=32,activity_basis=True)
+        m=JointModel(c,**calibrate(d)).eval();self.assertEqual(m.encoder.context.in_features,102)
+        v=d['valid'].clone();v[:,:,16:]=False;x=d['x'].clone();x[:,:,16:]+=100
+        torch.testing.assert_close(m.encode_windows(x,v),m.encode_windows(d['x'],v),rtol=0,atol=0)
+        o=m(d['x'],d['valid'],d['ages']);loss,_=objective(m,o,d);loss.backward()
+        self.assertTrue(torch.isfinite(m.encoder.context.weight.grad).all())
+        with torch.no_grad():
+            for p in m.encoder.parameters():p.zero_()
+            self.assertEqual(float(m.encode_windows(d['x'],d['valid']).abs().sum()),0)
+
+    def test_activity_coordinates_can_reconstruct_constant_levels(self):
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',linear_context=True,last_context=True,context_embedding=32,activity_basis=True)
+        m=JointModel(c,**calibrate(d)).eval();levels=torch.tensor([0.,1.,20.,40.])
+        x=d['x'].clone();v=d['valid'].clone();x[...,4]=levels[:,None,None];v[...,4]=True
+        with torch.no_grad():
+            for p in m.encoder.parameters():p.zero_()
+            m.encoder.context.weight[0,90]=4;m.encoder.context_export.weight[0,0]=1
+            m.reconstruction.weight.zero_();m.reconstruction.bias.zero_()
+            rows=torch.arange(64)*54+4
+            m.reconstruction.weight[rows,32]=1/m.reconstruction_scale[4]
+            m.reconstruction.bias[rows]=-m.reconstruction_mean[4]/m.reconstruction_scale[4]
+            predicted=m.reconstruct(m.encode_windows(x,v))[0][...,4]
+        torch.testing.assert_close(predicted,levels[:,None,None].expand_as(predicted),rtol=1e-6,atol=1e-5)
+
     def test_horizon_queries_are_fixed_and_export_exactly(self):
         d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',horizon_queries=True)
         m=JointModel(c,**calibrate(d)).eval();o=m(d['x'],d['valid'],d['ages'])
