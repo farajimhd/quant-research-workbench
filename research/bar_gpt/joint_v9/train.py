@@ -15,14 +15,16 @@ from ..v5.shards.phase1_contract import file_hash,write_json
 
 def loss_for(model,data,reconstruction_weight,masked_probability=0.,forecast_weight=1.):
     output=(model(data['x'],data['valid'],data['ages'],reconstruct=False) if forecast_weight else
-        dict(windows=model.encode_windows(data['x'],data['valid']),forecast=None,future_summary=None))
+        dict(windows=None,forecast=None,future_summary=None))
     z=output['windows']
     if masked_probability>0:
         shape=data['valid'].shape[:-1]
-        visible=torch.rand(shape,device=z.device).argsort(-1).argsort(-1)<16
-        masked=torch.rand((*shape[:2],1),device=z.device)<masked_probability
+        visible=torch.rand(shape,device=data['x'].device).argsort(-1).argsort(-1)<16
+        masked=torch.rand((*shape[:2],1),device=data['x'].device)<masked_probability
         v=data['valid']&(~masked|visible)[...,None]
         z=model.encode_windows(data['x'],v)
+    elif z is None:z=model.encode_windows(data['x'],data['valid'])
+    if output['windows'] is None:output['windows']=z
     detached=z.detach()
     # Same decoder training weight across candidates; lambda controls only the
     # reconstruction gradient entering the encoder. At zero it is a trained probe.

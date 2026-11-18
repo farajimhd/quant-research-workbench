@@ -129,6 +129,8 @@ def main():
         untrained={k:embeddings(model,d,a.device) for k,d in data.items()};model.load_state_dict(state['model'])
         trained={k:embeddings(model,d,a.device) for k,d in data.items()}
         result['runs'][name]=dict(checkpoint_sha256=file_hash(cp),features=c.embedding,window_features=16*c.embedding,encoder_training_dataset_hash=identity['dataset_hash'],
+            temporal_head_trained=identity.get('forecast_weight',1)>0,
+            interpretation=('Window embeddings are pretrained; joint features pass through an UNTRAINED temporal network.' if identity.get('forecast_weight',1)==0 else 'Window and temporal features from the trained checkpoint.'),
             untrained=fit_evaluate({k:v['joint'] for k,v in untrained.items()},targets,controls),trained=fit_evaluate({k:v['joint'] for k,v in trained.items()},targets,controls),
             untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets,controls),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets,controls),
             untrained_retention=fit_evaluate({k:v['windows'].reshape(-1,c.embedding) for k,v in untrained.items()},retention),
