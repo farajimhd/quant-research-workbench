@@ -17,6 +17,7 @@ class Config:
     patch:int=8
     dropout:float=.05
     precision:str='bf16'
+    summary_weight:float=0.
 
 
 def structured(code):
@@ -99,6 +100,7 @@ class JointModel(nn.Module):
         self.query=nn.Parameter(torch.randn(1,1,e)*.01);self.temporal=attention(e,c.global_layers,c.dropout)
         self.forecast=nn.Linear(e,64*18);nn.init.normal_(self.forecast.weight,std=.0001);nn.init.zeros_(self.forecast.bias)
         self.reconstruction=nn.Linear(e,64*54);nn.init.normal_(self.reconstruction.weight,std=.0005);nn.init.zeros_(self.reconstruction.bias)
+        if c.summary_weight>0:self.future_summary=nn.Linear(e,8)
 
     def encode_windows(self,x,valid):return self.encoder(x.reshape(-1,64,27),valid.reshape(-1,64,27)).reshape(len(x),16,-1)
 
@@ -116,7 +118,8 @@ class JointModel(nn.Module):
         delta=self.forecast(joint.float()).reshape(-1,64,18)
         # The only inverse anchor is the known historical bar, never a target reference.
         prediction=structured(anchor(x,valid,check=False)[:,None]+delta*self.forecast_scale)
-        return dict(forecast=prediction,windows=z,joint=joint.float(),reconstruction=self.reconstruct(z) if reconstruct else None)
+        return dict(forecast=prediction,windows=z,joint=joint.float(),reconstruction=self.reconstruct(z) if reconstruct else None,
+            future_summary=self.future_summary(joint.float()) if c.summary_weight>0 else None)
 
 
 def objective(model,output,data,reconstruction_weight=.1):
@@ -135,4 +138,15 @@ def objective(model,output,data,reconstruction_weight=.1):
         binary=F.binary_cross_entropy_with_logits(vl,v.float(),reduction='none')
         validity=.5*(torch.where(v,binary,0).sum()/v.sum().clamp_min(1)+torch.where(~v,binary,0).sum()/(~v).sum().clamp_min(1))
         reconstruction=.5*(.02*channels[list(PRICES)].mean()+channels[list(ACTIVITY)].mean())+.05*(time+validity)
-    return forecast+reconstruction_weight*reconstruction,dict(forecast=forecast,reconstruction=reconstruction)
+    auxiliary=forecast*0
+    if model.config.summary_weight>0:
+        y=data['target'];v=data['target_valid'];past=structured(anchor(data['x'],data['valid'],check=False))
+        values=[torch.diff(y[...,3],dim=1).square().mean(1).sqrt()/model.loss_scale[3],
+            (y[...,1].amax(1)-y[...,2].amin(1))/model.loss_scale[3]]
+        masks=[v[...,3].all(1),v[...,[1,2]].all(2).all(1)]
+        for j in ACTIVITY:
+            values.append((y[...,j].mean(1)-past[:,j])/model.loss_scale[j]);masks.append(v[...,j].all(1))
+        target=torch.stack(values,-1);mask=torch.stack(masks,-1)
+        error=F.smooth_l1_loss(output['future_summary'],target,reduction='none')
+        auxiliary=(torch.where(mask,error,0).sum(0)/mask.sum(0).clamp_min(1)).mean()
+    return forecast+reconstruction_weight*reconstruction+model.config.summary_weight*auxiliary,dict(forecast=forecast,reconstruction=reconstruction,future_summary=auxiliary)

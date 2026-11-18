@@ -45,3 +45,43 @@ tests, commit and push. Generated data, profiles, receipts, reports and bounded
 checkpoints remain in runtime. One GPU experiment at a time, with explicit
 per-experiment deadlines, frequent validation and graceful checkpointing.
 No full-data multi-day run or recurring scheduled automation is implicit.
+
+## Screening and qualification protocol
+
+The initial dataset has 9,600 training origins from 2,400 independent sessions.
+Development and ticker-held-out development each contain 960 origins. A nested
+training expansion keeps every original training record byte-exact and copies
+all holdout identities and payloads unchanged. Calibration is refit only on the
+expanded training partition and receives a new data/experiment identity.
+
+Matched forecast-only and joint runs train the same affine reconstruction head
+at weight 0.1. The reconstruction-weight argument controls gradients entering
+the encoder: zero trains a detached reconstruction probe. This avoids comparing
+a trained reconstruction decoder with an untrained one. Forecasting always sees
+completed history only; its persistence anchor is historical and declared.
+
+Optional masked reconstruction uses a separate encoder pass: selected windows
+retain sixteen random bars, with all features and metadata hidden at other
+positions. Full-history forecasting inputs remain intact. The reconstruction
+head still receives only learned latents; it never receives input references.
+Optional future-summary supervision predicts future realized volatility, range,
+and six activity changes from the joint embedding. It addresses information lost
+under the per-bar point-prediction objective, without introducing future inputs.
+
+The first six short screenings favor patch attention on forecasting, while
+convolution reconstructs prices better. Forecast improvements were in activity;
+none established price prediction skill over persistence. Initial frozen probes
+also found stronger volatility/range performance from simple raw summaries than
+the learned joint embedding. These observations motivate longer, broader-data,
+masked-reconstruction and auxiliary-summary comparisons; they are not a final
+architecture recommendation.
+
+`probes` compares identical training-only standardized ridge readouts of raw
+historical summaries, frozen joint embeddings, and concatenated frozen window
+embeddings, including untrained controls. The last comparison isolates whether
+the Phase 1 embeddings retain future-useful information before Phase 2 mixing.
+Feature dimensions are reported rather than treated as parameter-matched.
+`qualify` evaluates sealed audits only with explicit `--audit`, reports full and
+16-visible-bar reconstruction, and exports a standalone window encoder with an
+exact parity check. Checkpoints, dataset seals, conclusions and measurement
+reports live under the campaign runtime root.

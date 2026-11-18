@@ -13,9 +13,16 @@ from ..phase1_v8.runtime import preflight
 from ..v5.shards.phase1_contract import file_hash,write_json
 
 
-def loss_for(model,data,reconstruction_weight):
+def loss_for(model,data,reconstruction_weight,masked_probability=0.):
     output=model(data['x'],data['valid'],data['ages'],reconstruct=False)
-    z=output['windows'];detached=z.detach()
+    z=output['windows']
+    if masked_probability>0:
+        shape=data['valid'].shape[:-1]
+        visible=torch.rand(shape,device=z.device).argsort(-1).argsort(-1)<16
+        masked=torch.rand((*shape[:2],1),device=z.device)<masked_probability
+        v=data['valid']&(~masked|visible)[...,None]
+        z=model.encode_windows(data['x'],v)
+    detached=z.detach()
     # Same decoder training weight across candidates; lambda controls only the
     # reconstruction gradient entering the encoder. At zero it is a trained probe.
     output['reconstruction']=model.reconstruct(detached+(reconstruction_weight/.1)*(z-detached))
@@ -30,12 +37,13 @@ def main():
     p.add_argument('--layers',type=int,default=2);p.add_argument('--global-layers',type=int,default=2)
     p.add_argument('--patch',type=int,default=8);p.add_argument('--dropout',type=float,default=.05)
     p.add_argument('--precision',choices=('bf16','fp32'),default='bf16');p.add_argument('--reconstruction-weight',type=float,default=.1)
+    p.add_argument('--summary-weight',type=float,default=0.);p.add_argument('--masked-reconstruction-probability',type=float,default=0.)
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda');p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
     p.add_argument('--resume',action='store_true');a=p.parse_args()
-    if not 0<a.minutes<=60 or a.examples<=0 or a.tiny_steps<1:raise ValueError('Invalid finite experiment')
+    if not 0<a.minutes<=60 or a.examples<=0 or a.tiny_steps<1 or not 0<=a.masked_reconstruction_probability<=1 or a.summary_weight<0:raise ValueError('Invalid finite experiment')
     started=time.time();deadline=started+a.minutes*60;preflight(a)
     torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
     torch.set_float32_matmul_precision('highest');step=0;progress={};wb=None
@@ -45,12 +53,13 @@ def main():
         write_json(a.output/'progress.json',progress)
     status('verifying data and preparing causal cache')
     rows,manifest=load(a.data);cpu={k:cache(v) for k,v in rows.items()}
-    parameters=calibrate(cpu['train']);config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision)
+    parameters=calibrate(cpu['train']);config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight)
     model=JointModel(config,**parameters).to(a.device)
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],
         parameters={k:v.tolist() for k,v in parameters.items()},seed=a.seed,examples=a.examples,minutes=a.minutes,lr=a.lr,
         reconstruction_encoder_weight=a.reconstruction_weight,reconstruction_decoder_weight=.1,
+        masked_reconstruction_probability=a.masked_reconstruction_probability,masked_visible_bars=16,
         hypothesis=a.hypothesis,parent=a.parent,parameter_count=sum(v.numel() for v in model.parameters()),
         window_encoder_parameters=sum(v.numel() for v in model.encoder.parameters()),reconstruction_decoder_parameters=sum(v.numel() for v in model.reconstruction.parameters()),
         forecasting='Direct next 64 observed 1s bars. Historical-only last-bar anchor; future values/masks/clocks never prediction inputs.',
@@ -70,14 +79,14 @@ def main():
         b=batch(data['tiny'],torch.arange(4,device=a.device));first=None
         for k in range(a.tiny_steps):
             optimizer.param_groups[0]['lr']=.00001+.00099*.5*(1+np.cos(np.pi*k/max(1,a.tiny_steps-1)))
-            optimizer.zero_grad(set_to_none=True);loss,parts=loss_for(tiny,b,a.reconstruction_weight)
+            optimizer.zero_grad(set_to_none=True);loss,parts=loss_for(tiny,b,a.reconstruction_weight,a.masked_reconstruction_probability)
             if first is None:
                 first=float(parts['forecast'].detach());first_reconstruction=float(parts['reconstruction'].detach())
             if not torch.isfinite(loss):raise FloatingPointError('Nonfinite tiny fit')
             loss.backward();torch.nn.utils.clip_grad_norm_(tiny.parameters(),1.,error_if_nonfinite=True);optimizer.step()
             if k%100==0:status(tiny_step=k,tiny_forecast=float(parts['forecast'].detach()))
         tiny.eval()
-        with torch.no_grad():_,last=loss_for(tiny,b,a.reconstruction_weight)
+        with torch.no_grad():_,last=loss_for(tiny,b,a.reconstruction_weight,a.masked_reconstruction_probability)
         tiny_result=dict(initial_forecast=first,final_forecast=float(last['forecast']),ratio=float(last['forecast'])/max(first,1e-12),steps=a.tiny_steps,
             initial_reconstruction=first_reconstruction,final_reconstruction=float(last['reconstruction']),
             reconstruction_ratio=float(last['reconstruction'])/max(first_reconstruction,1e-12))
@@ -94,7 +103,7 @@ def main():
                     if a.device=='cuda':torch.cuda.synchronize();torch.cuda.reset_peak_memory_stats()
                     begin=time.perf_counter()
                 ids=torch.randint(len(rows['train']),(bs,),device=a.device,generator=pg);b=batch(data['train'],ids)
-                po.zero_grad(set_to_none=True);loss,_=loss_for(pm,b,a.reconstruction_weight)
+                po.zero_grad(set_to_none=True);loss,_=loss_for(pm,b,a.reconstruction_weight,a.masked_reconstruction_probability)
                 if not torch.isfinite(loss):raise FloatingPointError('Nonfinite profile')
                 loss.backward();torch.nn.utils.clip_grad_norm_(pm.parameters(),1.,error_if_nonfinite=True);po.step()
             if a.device=='cuda':torch.cuda.synchronize()
@@ -134,11 +143,11 @@ def main():
         while step<steps and time.time()<deadline-max(180,validation_seconds*4):
             if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():save();status('stopped');return
             model.train();n=min(bs,a.examples-seen);ids=torch.randint(len(rows['train']),(n,),device=a.device,generator=gen);b=batch(data['train'],ids)
-            opt.zero_grad(set_to_none=True);loss,parts=loss_for(model,b,a.reconstruction_weight)
+            opt.zero_grad(set_to_none=True);loss,parts=loss_for(model,b,a.reconstruction_weight,a.masked_reconstruction_probability)
             if not torch.isfinite(loss):raise FloatingPointError('Nonfinite training loss')
             loss.backward();torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True);opt.step();scheduler.step();step+=1;seen+=n
             if step%10==0:status('training',planned_steps=steps,seen=seen,origins_per_second=(seen-initial_seen)/max(time.time()-training,.001),
-                forecast_loss=float(parts['forecast'].detach()),reconstruction_loss=float(parts['reconstruction'].detach()),gpu_memory_bytes=torch.cuda.max_memory_allocated() if a.device=='cuda' else 0)
+                forecast_loss=float(parts['forecast'].detach()),reconstruction_loss=float(parts['reconstruction'].detach()),future_summary_loss=float(parts['future_summary'].detach()),gpu_memory_bytes=torch.cuda.max_memory_allocated() if a.device=='cuda' else 0)
             if step%interval==0 or step==steps:
                 begin=time.time();metrics={}
                 for partition in ('development','novel_development'):

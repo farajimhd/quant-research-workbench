@@ -8,6 +8,7 @@ import torch
 from sklearn.linear_model import Ridge
 from .data import load,cache,anchor
 from .model import Config,JointModel,structured
+from ..phase2_v1.data import sealed
 from ..phase1_v8.model import ACTIVITY
 from ..v5.shards.phase1_contract import write_json,file_hash
 
@@ -35,21 +36,28 @@ def summaries(d):
 
 @torch.no_grad()
 def embeddings(model,d):
-    model.eval();result=[]
+    model.eval();result=[];windows=[]
     for start in range(0,len(d['x']),128):
         o=model(d['x'][start:start+128],d['valid'][start:start+128],d['ages'][start:start+128],reconstruct=False)
         result.append(o['joint'].numpy())
-    return np.concatenate(result)
+        windows.append(o['windows'].flatten(1).numpy())
+    return dict(joint=np.concatenate(result),windows=np.concatenate(windows))
 
 
 def fit_evaluate(features,targets):
     train=features['train'];mean=train.mean(0);std=train.std(0);std=np.where(std>1e-7,std,1)
     x={k:(v-mean)/std for k,v in features.items()};names,y,valid=targets['train'];result={}
+    groups={}
+    for j in range(len(names)):groups.setdefault(valid[:,j].tobytes(),[]).append(j)
+    predictions={k:np.zeros((len(v),len(names))) for k,v in features.items()}
+    for ids in groups.values():
+        keep=valid[:,ids[0]];model=Ridge(alpha=100.,solver='cholesky').fit(x['train'][keep],y[keep][:,ids])
+        for split in features:predictions[split][:,ids]=model.predict(x[split])
     for j,name in enumerate(names):
-        keep=valid[:,j];baseline=float(y[keep,j].mean());model=Ridge(alpha=100.,solver='cholesky').fit(x['train'][keep],y[keep,j])
+        keep=valid[:,j];baseline=float(y[keep,j].mean())
         report={}
         for split in features:
-            _,truth,mask=targets[split];ix=mask[:,j];t=truth[ix,j];p=model.predict(x[split][ix]);err=p-t
+            _,truth,mask=targets[split];ix=mask[:,j];t=truth[ix,j];p=predictions[split][ix,j];err=p-t
             report[split]=dict(count=int(ix.sum()),mae=float(np.abs(err).mean()),rmse=float(np.sqrt(np.mean(err**2))),
                 r2=float(1-np.mean(err**2)/max(np.var(t),1e-20)),training_mean_mae=float(np.abs(t-baseline).mean()),
                 zero_mae=float(np.abs(t).mean()),prediction_variance=float(np.var(p)),target_variance=float(np.var(t)))
@@ -68,13 +76,16 @@ def main():
         labels=targets['train'][0],raw_summary=dict(features=raw['train'].shape[1],metrics=fit_evaluate(raw,targets)),runs={})
     for name in a.runs:
         cp=a.root/name/'best.pt';state=torch.load(cp,map_location='cpu',weights_only=False);identity=state['identity']
-        if identity['dataset_hash']!=manifest['hash']:raise ValueError('Dataset mismatch')
+        if identity['dataset_hash']!=manifest['hash']:
+            expanded=sealed(a.root/'dataset-expanded'/'manifest.json')
+            if expanded['hash']!=identity['dataset_hash'] or expanded.get('expansion',{}).get('base_hash')!=manifest['hash']:raise ValueError('Dataset mismatch: require byte-verified nested probe training and identical holdouts')
         c=Config(**identity['config']);parameters={k:torch.tensor(v) for k,v in identity['parameters'].items()}
         torch.manual_seed(identity['seed']);model=JointModel(c,**parameters)
         untrained={k:embeddings(model,d) for k,d in data.items()};model.load_state_dict(state['model'])
         trained={k:embeddings(model,d) for k,d in data.items()}
-        result['runs'][name]=dict(checkpoint_sha256=file_hash(cp),features=c.embedding,
-            untrained=fit_evaluate(untrained,targets),trained=fit_evaluate(trained,targets))
+        result['runs'][name]=dict(checkpoint_sha256=file_hash(cp),features=c.embedding,window_features=16*c.embedding,encoder_training_dataset_hash=identity['dataset_hash'],
+            untrained=fit_evaluate({k:v['joint'] for k,v in untrained.items()},targets),trained=fit_evaluate({k:v['joint'] for k,v in trained.items()},targets),
+            untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets))
         print(name,flush=True)
     result['label_eligibility']={k:{'total':len(v[1]),'valid':v[2].sum(0).tolist(),'rejected':(~v[2]).sum(0).tolist()} for k,v in targets.items()}
     write_json(a.output,result)

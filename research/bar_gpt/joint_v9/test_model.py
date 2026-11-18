@@ -22,6 +22,20 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_auxiliary_future_loss_and_masked_reconstruction_gradients(self):
+        from .train import loss_for
+        d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',summary_weight=.2),**calibrate(d))
+        loss,parts=loss_for(model,d,.1,1.);loss.backward()
+        self.assertGreater(float(parts['future_summary'].detach()),0)
+        self.assertTrue(torch.isfinite(model.future_summary.weight.grad).all())
+        self.assertTrue(torch.isfinite(model.encoder.export.weight.grad).all())
+        model.eval()
+        with torch.no_grad():
+            a=model(d['x'],d['valid'],d['ages'])['future_summary']
+            d['target']*=10;d['target_valid'][:]=False
+            b=model(d['x'],d['valid'],d['ages'])['future_summary']
+        torch.testing.assert_close(a,b,rtol=0,atol=0)
+
     def test_masked_encoder_has_no_hidden_reference(self):
         d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**calibrate(d)).eval()
         visible=d['valid'].clone();visible[:,:,16:]=False
