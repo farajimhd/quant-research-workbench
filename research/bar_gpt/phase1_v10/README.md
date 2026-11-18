@@ -236,3 +236,22 @@ The parent checkpoint SHA256 is
 The run uses all186,575,722 training windows and47,750,007 validation windows,
 including worker tails. Exact ownership and checkpoint proofs are in
 `verified-full-launch-qknorm.json`; initial failed-launch receipts remain intact.
+
+## Engineering resume: shuffled worker tails
+
+Epoch2 consumed all186,575,722 windows with zero exclusions and all eight lanes
+complete, but required22,779 updates versus epoch1's22,780. A constant epoch
+batch-count assertion incorrectly rejected that complete traversal. The failure
+receipt and original checkpoint are preserved; this is an engineering failure,
+not numerical divergence or evidence of omitted windows.
+
+The repair checks each epoch against that epoch's actual loader length and still
+requires the exact certified population. It retains the existing cosine update
+schedule and explicitly reaches1e-5 on the last batch of epoch100; worker-tail
+rounding no longer determines whether the final population is accepted.
+`--resume-contract-source` explicitly names the original scientific contract
+source for an audited engineering resume. All other contract fields, checkpoint
+hash, full-state hash, optimizer, RNG and traversal cursor must match exactly.
+The actual executable revision is recorded separately in checkpoints and an
+immutable engineering-resume receipt. Previously published W&B optimizer steps
+are not republished during recovery of updates beyond the durable checkpoint.

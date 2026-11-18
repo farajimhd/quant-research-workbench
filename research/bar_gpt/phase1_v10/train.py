@@ -17,6 +17,18 @@ from ..v5.data_v3 import close_loader
 from ..v5.shards.phase1_contract import write_json,FRAMES,CHANNELS
 
 
+def verify_traversal(windows,expected_windows,batches,expected_batches):
+    if windows!=expected_windows or batches!=expected_batches:
+        raise ValueError(f'Training traversal/population mismatch: windows {windows}/{expected_windows}, batches {batches}/{expected_batches}')
+
+
+def training_learning_rate(step,total,epoch,cursor,epoch_steps,epochs,peak,floor):
+    # Shuffling changes per-worker tail sizes, hence the exact update count.
+    # Preserve the original cosine trajectory on resume; pin its final endpoint.
+    if epoch==epochs-1 and cursor==epoch_steps-1:return floor
+    return learning_rate(step,total,peak,floor)
+
+
 def group_sum(values,valid,groups):
     # First reduce bars per example, then group only compact [B,18] rows.
     return groups@torch.where(valid,values,0).sum(1).double()
@@ -155,7 +167,7 @@ def train(a,manifest,status):
     del parent_optimizer
     prototype=loader(manifest,a,'train');steps_per_epoch=len(prototype);del prototype
     total_updates=steps_per_epoch*a.epochs
-    contract=dict(version='phase1-v10-2',architecture=asdict(model.config),source_revision=a.source_revision,
+    contract=dict(version='phase1-v10-2',architecture=asdict(model.config),source_revision=getattr(a,'resume_contract_source',None) or a.source_revision,
         split=manifest['manifest_hash'],calibration=read_calibration(a.calibration)['hash'],batch_size=a.batch_size,workers=a.workers,
         prefetch=a.prefetch,shard_prefetch=a.shard_prefetch,shard_prefetch_mib=a.shard_prefetch_mib,
         validation_batch_size=a.validation_batch_size,validation_workers=a.validation_workers,epochs=a.epochs,
@@ -171,15 +183,20 @@ def train(a,manifest,status):
         s=load_checkpoint(a.output/'checkpoint_last.pt',contract);model.load_state_dict(s['model']);optimizer.load_state_dict(s['optimizer']);restore_rng(s['rng'])
         epoch,step,cursor,origins,epoch_done,phase,best,history=(s[k] for k in ('epoch','step','batch_cursor','origins','epoch_done','phase','best','history'))
         development_best=s['development_best'];best_price=s['best_price']
+        write_json(a.output/f'engineering-resume-{time.time_ns()}.json',dict(source_revision=a.source_revision,
+            previous_execution_source=s.get('execution_source_revision',s['contract']['source_revision']),
+            contract_source=contract['source_revision'],checkpoint_proof=json.loads((a.output/'checkpoint_last.proof.json').read_text()),
+            policy='Exact scientific contract and full optimizer/RNG/traversal state; epoch-specific worker-tail count validation. Original cosine schedule retained, final update reaches its configured floor.'))
     else:write_json(a.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}))
     def checkpoint(name='checkpoint_last.pt'):
         save_checkpoint(a.output/name,dict(contract=contract,model=model.state_dict(),optimizer=optimizer.state_dict(),rng=rng_state(),
             epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,phase=phase,best=best,history=history,development_best=development_best,best_price=best_price,
+            execution_source_revision=a.source_revision,
             scheduler=dict(step=step,total_updates=total_updates,peak=a.learning_rate,floor=a.min_learning_rate)))
-        if reporter:
+        if reporter and step>=resume_report_floor:
             proof=json.loads((a.output/name).with_suffix('.proof.json').read_text())
             reporter.summary.update({'checkpoint/step':step,'checkpoint/sha256':proof['sha256'],'checkpoint/path':str(a.output/name)})
-    reporter=None;replay=None
+    reporter=None;replay=None;resume_report_floor=-1
     if a.wandb_mode=='online':
         from research.mlops.env import discover_env_files,load_env_files
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
@@ -188,11 +205,16 @@ def train(a,manifest,status):
         if a.resume and not identity:raise ValueError('Missing original W&B identity')
         reporter=wandb.init(project='bargpt-phase1-v10-full-mae',entity='mehdifaraji',name=a.output.name,
             id=identity['id'] if identity else None,resume='must' if identity else None,config=None if identity else contract,dir=str(a.output))
+        if a.resume:resume_report_floor=int(reporter.summary.get('optimizer_step',-1))
         if not identity:write_json(ip,dict(id=reporter.id,url=reporter.url,name=reporter.name))
+    def publish(metrics,at_step):
+        # Updates after the last durable checkpoint are deterministically replayed.
+        # Keep their original W&B rows instead of backtracking the step axis.
+        if at_step>resume_report_floor:report(reporter,metrics,at_step)
     try:
         if not a.resume:
             state=rng_state();status(stage='initial frozen development diagnostics')
-            d=diagnostics(model,a,0);restore_rng(state);report(reporter,d,0)
+            d=diagnostics(model,a,0);restore_rng(state);publish(d,0)
             best_price=d['development/masked/balanced_price_relative_mean']
             development_best=50*best_price+d['development/masked/balanced_activity_log_mae']+.05*d['development/masked/worst_price_band_relative_mean']
             checkpoint('checkpoint_development_best.pt');checkpoint()
@@ -202,6 +224,7 @@ def train(a,manifest,status):
         while epoch<a.epochs:
             if phase=='train':
                 model.train();source=loader(manifest,a,'train',epoch);device=None
+                epoch_steps=len(source)
                 status(stage='starting training loader',epoch=epoch+1,step=step,epoch_done=epoch_done,origins=origins)
                 try:
                     setup=time.perf_counter();state=rng_state();device=DeviceBatches(itertools.islice(source,cursor,None),'cuda');restore_rng(state)
@@ -210,7 +233,7 @@ def train(a,manifest,status):
                         if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():checkpoint();return 'stopped'
                         try:b=device.pop()
                         except StopIteration:break
-                        lr=learning_rate(step,total_updates,a.learning_rate,a.min_learning_rate);optimizer.param_groups[0]['lr']=lr
+                        lr=training_learning_rate(step,total_updates,epoch,cursor,epoch_steps,a.epochs,a.learning_rate,a.min_learning_rate);optimizer.param_groups[0]['lr']=lr
                         if replay and len(b.target)==a.batch_size:value,channels,norm=replay(b)
                         else:optimizer.zero_grad(set_to_none=True);value,channels,norm=backward(model,b)
                         device.advance()
@@ -229,9 +252,9 @@ def train(a,manifest,status):
                                 phase_loader_wait_fraction=(device.wait_seconds-initial_wait)/max(.001,now-began),gpu_mib=torch.cuda.memory_allocated()/2**20,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20)
                             status(stage='training',epoch=epoch+1,step=step,epoch_done=epoch_done,origins=origins,**metrics)
                             with (a.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
-                            report(reporter,{'train/'+k:v for k,v in metrics.items()},step)
+                            publish({'train/'+k:v for k,v in metrics.items()},step)
                         if step%a.diagnostic_every==0:
-                            state=rng_state();status(stage='frozen development diagnostics',step=step,epoch_done=epoch_done,origins=origins);d=diagnostics(model,a,step);restore_rng(state);report(reporter,d,step)
+                            state=rng_state();status(stage='frozen development diagnostics',step=step,epoch_done=epoch_done,origins=origins);d=diagnostics(model,a,step);restore_rng(state);publish(d,step)
                             price=d['development/masked/balanced_price_relative_mean']
                             if not math.isfinite(price) or price>max(10.,100*best_price):
                                 checkpoint('checkpoint_diagnostic_failure.pt')
@@ -242,7 +265,7 @@ def train(a,manifest,status):
                                 development_best=score;checkpoint('checkpoint_development_best.pt')
                         if step%a.checkpoint_every==0:checkpoint()
                         if a.max_updates and step>=a.max_updates:checkpoint();return 'qualification_complete'
-                    if epoch_done!=manifest['counts']['train'] or cursor!=steps_per_epoch:raise ValueError('Training traversal/population mismatch')
+                    verify_traversal(epoch_done,manifest['counts']['train'],cursor,epoch_steps)
                     phase='validation';checkpoint()
                 finally:
                     if device:device.close()
@@ -257,11 +280,11 @@ def train(a,manifest,status):
             for mode,metrics in validation['metrics'].items():
                 published.update({f'validation/{mode}/{k}':v for k,v in metrics.items() if isinstance(v,(int,float))})
                 for frame,channels in metrics['raw_mae'].items():published.update({f'validation/{mode}/raw_mae/{frame}/{k}':v for k,v in channels.items() if v is not None})
-            report(reporter,published,step)
+            publish(published,step)
             epoch+=1;cursor=epoch_done=0;phase='train';checkpoint()
             if improved:checkpoint('checkpoint_best.pt')
             status(latest_validation=dict(epoch=epoch,price_mape_pct=masked['balanced_price_mape_pct'],activity_log_mae=masked['activity_log_mae'],seconds=validation['seconds']))
-        if step!=total_updates:raise ValueError('Schedule endpoint mismatch')
+        if origins!=manifest['counts']['train']*a.epochs:raise ValueError('Completed training population mismatch')
         return 'complete'
     except KeyboardInterrupt:checkpoint();return 'interrupted'
     finally:
