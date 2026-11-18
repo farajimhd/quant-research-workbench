@@ -22,6 +22,11 @@ class Encoder(nn.Module):
         self.register_buffer('factor',torch.tensor([100. if j in PRICES else 1. for j in range(18)]))
         self.register_buffer('input_factor',torch.tensor([c.input_price_scale if j in PRICES else 1. for j in range(18)]),persistent=False)
         self.register_buffer('reference_factor',torch.tensor([100.,1.,1.]*3))
+        if c.backbone=='conv1d_v1':
+            from .encoder_conv1d_v1 import TemporalConvEncoder
+            if c.readout!='split_scale':raise ValueError('Conv1d retains split-scale readout')
+            self.convolution=TemporalConvEncoder(c.width,c.embedding,c.layers)
+            return
         if c.backbone=='mlp':
             if c.readout!='split_scale':raise ValueError('MLP ablation retains the learned split-scale readout')
             self.stem=nn.Linear(64*55+18,c.width)
@@ -51,12 +56,13 @@ class Encoder(nn.Module):
 
     def forward(self,x,v,positions):
         bars,ref,_,_=self.prepare(x,v);c=self.config
-        if c.backbone=='mlp':
+        if c.backbone in ('mlp','conv1d_v1'):
             # Fixed chronological slots contain ONLY selected bars. Explicit visibility
             # distinguishes a masked slot from an observed slot with invalid features.
             observed=torch.cat((bars,torch.ones_like(bars[...,:1])),-1)
             slots=bars.new_zeros((len(bars),64,55)).scatter(1,positions[...,None].expand(-1,-1,55),observed)
             if c.mlp_density_normalize:slots=slots*(c.visible/bars.shape[1])
+            if c.backbone=='conv1d_v1':return self.convolution(slots,ref,c.precision)
             with torch.autocast(x.device.type,dtype=torch.bfloat16,enabled=x.is_cuda and c.precision=='bf16'):
                 h=self.blocks(self.stem(torch.cat((slots.flatten(1),ref),-1)))
             return torch.cat((self.readout(h.float()),self.scale_projection(ref.float())),-1)

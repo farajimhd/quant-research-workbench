@@ -26,7 +26,7 @@ def main():
     p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
     p.add_argument('--readout',choices=['latents','include_reference','split_scale'],default='latents')
     p.add_argument('--width',type=int,default=384);p.add_argument('--layers',type=int,default=8)
-    p.add_argument('--backbone',choices=['transformer','mlp'],default='transformer');p.add_argument('--embedding',type=int,default=1024)
+    p.add_argument('--backbone',choices=['transformer','mlp','conv1d_v1'],default='transformer');p.add_argument('--embedding',type=int,default=1024)
     p.add_argument('--mlp-density-normalize',action='store_true')
     p.add_argument('--dropout',type=float,default=.05)
     p.add_argument('--input-price-scale',type=float,default=100)

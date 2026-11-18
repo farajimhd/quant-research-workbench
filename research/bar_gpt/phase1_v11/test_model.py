@@ -155,12 +155,12 @@ def test_full_raw_capture_optimizer_rng_resume_and_native_metrics():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA inference capture required')
-@pytest.mark.parametrize('backbone',['transformer','mlp'])
+@pytest.mark.parametrize('backbone',['transformer','mlp','conv1d_v1'])
 def test_validation_graph_preserves_private_rng_masks_and_predictions(backbone):
     from .full_step import InferenceReplay,forward
     from ..phase1_v7.full_data import prepare_raw
     b=prepare_raw(raw_rows(),native=True).to('cuda')
-    model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout='split_scale',backbone=backbone,mlp_density_normalize=True),parameters()).cuda().eval()
+    model=Autoencoder(Config(width=32,layers=6 if backbone=='conv1d_v1' else 1,embedding=64,dropout=0,readout='split_scale',backbone=backbone,mlp_density_normalize=True),parameters()).cuda().eval()
     generator=torch.Generator(device='cuda').manual_seed(731);state=generator.get_state()
     with torch.no_grad():expected=forward(model,b,16,generator)
     generator.set_state(state);graph=InferenceReplay(model,b,16,generator);actual=graph(b)
@@ -169,10 +169,12 @@ def test_validation_graph_preserves_private_rng_masks_and_predictions(backbone):
     previous=actual[3].clone();again=graph(b);assert not torch.equal(previous,again[3])
 
 
-def test_mlp512_slots_hidden_independence_and_decoder_contract():
+@pytest.mark.parametrize('backbone',['mlp','conv1d_v1'])
+def test_mlp512_slots_hidden_independence_and_decoder_contract(backbone):
     _,x,v=example();x=x.float();positions=torch.arange(0,64,4).expand(3,-1)
     a,va,p,h=select(x,v,16,positions=positions)
-    m=Autoencoder(Config(backbone='mlp',width=64,layers=2,embedding=512,readout='split_scale',dropout=0,visible_weight=.5,input_price_scale=10000),parameters()).eval()
+    m=Autoencoder(Config(backbone=backbone,width=64,layers=6 if backbone=='conv1d_v1' else 2,embedding=512,readout='split_scale',dropout=0,visible_weight=.5,input_price_scale=10000),parameters()).eval()
+    if backbone=='conv1d_v1':assert not any(isinstance(q,torch.nn.Linear) for q in m.encoder.modules())
     z=m.encoder(a,va,p);assert z.shape==(3,512)
     changed=x.clone();changed[h]=12345;other,ov,_,_=select(changed,v,16,positions=positions)
     torch.testing.assert_close(z,m.encoder(other,ov,p),rtol=0,atol=0)
@@ -187,11 +189,12 @@ def test_mlp512_slots_hidden_independence_and_decoder_contract():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA MLP replay required')
-def test_mlp_raw_graph_and_resume():
+@pytest.mark.parametrize('backbone',['mlp','conv1d_v1'])
+def test_mlp_raw_graph_and_resume(backbone):
     from .full_step import Replay
     from ..phase1_v7.full_data import prepare_raw
     from ..phase2_v2.train import rng_state,restore_rng
-    b=prepare_raw(raw_rows()).to('cuda');c=Config(backbone='mlp',width=64,layers=2,embedding=512,readout='split_scale',dropout=0,visible_weight=.5)
+    b=prepare_raw(raw_rows()).to('cuda');c=Config(backbone=backbone,width=64,layers=6 if backbone=='conv1d_v1' else 2,embedding=512,readout='split_scale',dropout=0,visible_weight=.5)
     m=Autoencoder(c,parameters()).cuda();opt=torch.optim.AdamW(m.parameters(),lr=.0001,fused=True);graph=Replay(m,b)
     graph(b);opt.step();saved=copy.deepcopy(dict(model=m.state_dict(),opt=opt.state_dict(),rng=rng_state()))
     expected=graph(b)[0].clone();opt.step()
