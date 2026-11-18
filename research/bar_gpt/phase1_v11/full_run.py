@@ -38,7 +38,7 @@ def main():
     if manifest['manifest_hash']!=frozen['source_split_hash']:raise ValueError('Full split differs from qualified source')
     manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}
     model=Autoencoder(Config(**parent['contract']['config']),calibration['parameters']).cuda();model.load_state_dict(parent['model'])
-    state=dict(state='running',started=time.time(),epochs=a.epochs,epoch_total=manifest['counts']['train'],validation_total=manifest['counts']['validation'])
+    state=dict(state='running',started=time.time(),epochs=a.epochs,qualification_limit=a.max_updates,epoch_total=manifest['counts']['train'],validation_total=manifest['counts']['validation'])
     def status(**kw):state.update(kw,updated=time.time());write_json(a.output/'status.json',state)
     write_json(a.output/'authority.json',dict(split_hash=manifest['manifest_hash'],counts=manifest['counts'],calibration_sha256=file_hash(a.calibration),parent_checkpoint_sha256=file_hash(a.checkpoint),
         scope='Every certified training window and every certified validation window; no population cap except explicit bounded --max-updates qualification.'))

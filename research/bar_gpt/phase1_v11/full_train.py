@@ -49,6 +49,7 @@ def train(model,parent,a,manifest,status):
             epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,phase=phase,best=best,development_best=development_best,history=history,
             execution_source=a.source_revision,scheduler=dict(step=step,total_updates=total_updates,peak=a.learning_rate,floor=a.min_learning_rate)))
         if step>=report_floor:run.summary.update({'checkpoint/step':step,'checkpoint/sha256':file_hash(a.output/name),'checkpoint/path':str(a.output/name),'optimizer_step':step})
+        status(step=step,epoch=min(epoch+1,a.epochs),epoch_done=epoch_done,origins=origins,last_checkpoint=str(a.output/name))
     development_rows=np.load(a.data/'development.npy',allow_pickle=False);development=cache(development_rows,'cuda')
     def diagnostics():
         state=rng_state();was=model.training
