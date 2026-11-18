@@ -47,3 +47,31 @@ checkpoint SHA256 is `d127ff43c78e96b030f1bdcc0b0fae6e6b845c5e7ae11558a11e4dfa6a
 W&B qualification IDs are `eeh64nmg` (512) and `bss9ducf` (256). No audit subset
 was consulted. Full training proceeds with 256 as explicitly requested, not as
 a claim that it dominates the 512-dimensional representation on every metric.
+
+## Full-pipeline measurements and selected launch
+
+Completed seed-17 profiles (training updates discarded):
+
+| Training batch | Workers | Windows | Windows/s | Loader wait / phase |
+|---|---:|---:|---:|---:|
+| 2048 | 16 | 10.24M | 146,934 | 0.719 / 69.69s |
+| 4096 | 16 | 12.288M | 173,720 | 0.487 / 70.73s |
+| 4096 | 32 | 12.288M | 172,297 | 0.454 / 71.32s |
+| 8192 | 32 | 12.288M | 148,720 | 0.228 / 82.63s |
+| 16384 | 32 | 12.288M | 128,328 | 0.112 / 95.75s |
+
+All use four prefetched batches, shard depth 32 and 256 MiB per-worker shard
+budget. Sixteen workers also start faster than 32 (about 38s versus 66-70s in these
+profiles). A sampled GPU utilization during the 4096/32 profile was 97%; unused
+GPU memory is not evidence that larger batches will improve throughput.
+
+Dual-mode validation profiles covered 3.2768M windows each: batch8192/workers8
+reached 53,926 steady windows/s, versus 51,463 for batch16384/workers16. Select
+8192/8 with inference graphs. These are throughput profiles, not full validation.
+
+Authorized full-run name: `full-t02-e256-100ep`. Select training4096/workers16,
+validation8192/workers8, the above bounded prefetch settings, all certified data,
+100 epochs, seed17, retained T02 optimizer and cosine1e-4 to1e-5. Checkpoint and
+development diagnostics every2500 updates. Runtime `launch-monitoring.json` and
+W&B establish actual launch/quality state; these profile rates are not a promise
+of identical sustained speed across every full-data epoch.
