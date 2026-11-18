@@ -30,6 +30,7 @@ def main():
     p.add_argument('--resume-pretraining',action='store_true',help='Engineering retry before any research optimizer step; preserves original identity and deadline')
     p.add_argument('--probes',action='store_true',help='Reserve final evaluation time for frozen within-window information probes')
     p.add_argument('--max-steps',type=int,default=0,help='Optional matched-update cap, within the wall deadline')
+    p.add_argument('--validate-seconds',type=float,default=150)
     a=p.parse_args();torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed)
     if a.mode=='prepare':print(prepare(a.data,a.output));return
     if not 0<a.train_minutes<a.minutes<=60:raise ValueError('Strict bounded experiment required')
@@ -146,7 +147,7 @@ def main():
                 if not bool(torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Training nonfinite')
                 status(stage='training',step=step,loss=float(loss),gradient_norm=float(norm),windows_per_second=step*bs/(time.monotonic()-train_start),batch=bs)
                 run.log({'train/loss':float(loss),'train/gradient_norm':float(norm),'train/lr':opt.param_groups[0]['lr']},step=step)
-            if time.monotonic()-lastval>150:
+            if time.monotonic()-lastval>a.validate_seconds:
                 # Fixed 1024-row learning curve; full frozen dev evaluated at end.
                 count=min(1024,len(rows['development']));small={k:v[:count] for k,v in data['development'].items()}
                 report=evaluate_model(m,small,rows['development'][:count],a.output,status)
