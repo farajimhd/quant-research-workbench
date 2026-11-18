@@ -57,6 +57,13 @@ prefixes, not sustained full-epoch throughput. Calibration, seed, samples, updat
 and batch size match the scientific M02 comparison; random trajectories are not
 identical because initialization differs and validation cadence is wall-clock based.
 
+The final C02 profile at batch 8192 / 16 workers reached 255,530 windows/s over
+8.192M windows (37.95s startup, 0.167s loader wait in 32.06s, 3.96 GiB reserved).
+This approximately matches the MLP's best historical full-pipeline profile,
+although C02 remains slower on the cached compute comparison. Batch 8192 is the
+fastest measured convolution pipeline configuration; any scientific full-training
+use would need its own explicit batch/optimizer contract.
+
 C02 improves the within-window return probe R2 to 0.466 (MLP 0.169; untrained C02
 -0.121), but activity, spread and volatility probes do not establish broad benefit.
 Predicted median price-scale mean error is 0.160%, with no dead embedding dimensions.
