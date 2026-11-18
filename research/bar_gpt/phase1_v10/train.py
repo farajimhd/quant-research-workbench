@@ -58,7 +58,7 @@ class Accumulator:
         raw=(self.sums/n).cpu();logs=(self.logs/n).cpu();counts=self.counts.cpu()
         result=dict(nonfinite=int(self.bad[0]),negative=int(self.bad[1]),structure_violations=int(self.bad[2]),
             raw_mae={FRAME_NAMES[f]:{name:float(raw[f,c]) if counts[f,c] else None for c,name in enumerate(CHANNELS)} for f in range(6)},
-            activity_log_mae=float(logs[:,ACTIVITY].mean()),log_mae=logs.tolist(),valid_counts=counts.long().tolist(),
+            activity_log_mae=float(logs[:,ACTIVITY][counts[:,ACTIVITY]>0].mean()),log_mae=logs.tolist(),valid_counts=counts.long().tolist(),
             zero_denominators=self.zero.long().cpu().tolist(),tiny_denominators=self.tiny.long().cpu().tolist(),
             prediction_variance=(self.p2/n-(self.ps/n).square()).cpu().tolist(),target_variance=(self.y2/n-(self.ys/n).square()).cpu().tolist(),
             time_standardized_mae=(self.time_sum/self.time_count.clamp_min(1)).cpu().tolist(),validity_confusion=dict(zip(('tp','fp','fn','tn'),self.confusion.cpu().tolist())))

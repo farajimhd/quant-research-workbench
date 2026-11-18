@@ -33,7 +33,7 @@ def render(root,width=120,height=35):
     state=s.get('state','unavailable');stage=s.get('stage','starting');active=state=='running'
     stale=active and time.time()-s.get('updated',0)>30
     validating='validation' in stage;training=stage=='training'
-    rows=[Text('BarGPT V7 · PHASE 1 · all 64 bars visible',style='bold bright_cyan'),
+    rows=[Text('BarGPT V10 | PHASE 1 MAE | random16 visible /48 hidden',style='bold bright_cyan'),
           Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,style='yellow' if stale else 'red' if state=='failed' else 'bold')]
     if s.get('error'):rows.append(Text(s['error'],style='red'))
     if s.get('read_warning'):rows.append(Text(s['read_warning'],style='yellow'))
@@ -59,14 +59,14 @@ def render(root,width=120,height=35):
     for label,key in (('Hidden-bar objective','loss'),('Price','price_loss'),('Activity','activity_loss')):metrics.add_row(label,number(s.get(key),5))
     rows.append(metrics)
     validation=s.get('completed_validation',{});raw=validation.get('raw_mae',{})
-    if height>=24:
+    if height>=28:
         table=Table('Hidden close MAE ($)','Trade','Bid','Ask',box=box.SIMPLE_HEAD,padding=(0,1))
         for frame in (('1s','1m','daily') if height<32 else ('100ms','1s','10s','1m','1h','daily')):
             table.add_row(frame,*(number(raw.get(frame,{}).get(k+'_close'),5) for k in ('trade','bid','ask')))
         rows.append(table)
     rows.append(Text(f'Completed full masked validation: epoch {s.get("completed_epoch","—")} · price MAPE {number(validation.get("balanced_price_mape_pct"),3)}% · activity log MAE {number(validation.get("activity_log_mae"),4)}',style='dim'))
     full=s.get('completed_validation_full',{})
-    rows.append(Text(f'All-visible price MAPE {number(full.get("balanced_price_mape_pct"),3)}% � activity log MAE {number(full.get("activity_log_mae"),4)}',style='dim'))
+    rows.append(Text(f'All-visible price MAPE {number(full.get("balanced_price_mape_pct"),3)}% | activity log MAE {number(full.get("activity_log_mae"),4)}',style='dim'))
     wait=s.get('phase_loader_wait_seconds');fraction=s.get('phase_loader_wait_fraction')
     rows.append(Text(f'Loader wait {number(wait,1)}s ({number(100*fraction if fraction is not None else None,1)}% of phase) · startup/replay {duration(s.get("phase_startup_seconds"))}',style='dim'))
     gpu=s.get('gpu_mib');capacity=s.get('memory_mib')

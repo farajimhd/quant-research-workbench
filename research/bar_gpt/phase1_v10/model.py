@@ -24,6 +24,9 @@ class Encoder(nn.Module):
     def __init__(self,c,mean,scale):
         super().__init__();self.config=c
         self.register_buffer('mean',mean.clone());self.register_buffer('scale',scale.clone())
+        self.register_buffer('activity_indices',torch.tensor(ACTIVITY))
+        self.register_buffer('price_indices',torch.tensor(PRICES))
+        self.register_buffer('relative_factor',torch.tensor([100. if i in PRICES else 1. for i in range(18)]))
         self.stem=nn.Linear(54,c.width);self.position=nn.Parameter(torch.randn(1,64,c.width)*.01)
         self.latents=nn.Parameter(torch.randn(1,c.latent_tokens,c.width)*.01)
         self.backbone=attention(c.width,c.layers,c.dropout)
@@ -40,16 +43,16 @@ class Encoder(nn.Module):
         mean=torch.where(count>0,mean,self.mean)
         observed=v[:,-1,:18];last=torch.where(observed,x[:,-1,:18],mean[:,:18])
         first=torch.where(v[:,0,:18],x[:,0,:18],mean[:,:18])
-        av=v[...,list(ACTIVITY)];activity=torch.where(av,x[...,list(ACTIVITY)],0).sqrt()
+        av=v[...,self.activity_indices];activity=torch.where(av,x[...,self.activity_indices],0).sqrt()
         am=activity.sum(1)/av.sum(1).clamp_min(1)
-        am=torch.where(av.any(1),am,self.mean[list(ACTIVITY)].sqrt())
-        factor=x.new_tensor([100 if i in PRICES else 1 for i in range(18)])
+        am=torch.where(av.any(1),am,self.mean[self.activity_indices].sqrt())
+        factor=self.relative_factor
         variance=torch.where(v[...,:18],(x[...,:18]-mean[:,None,:18]).square(),0).sum(1)/count[:,:18].clamp_min(1)
         summary=torch.cat(((mean-self.mean)/self.scale,v.float().mean(1),
-            (last-self.mean[:18])/self.scale[:18],observed.float(),am/4,last[:,list(ACTIVITY)].sqrt()/4,
+            (last-self.mean[:18])/self.scale[:18],observed.float(),am/4,last[:,self.activity_indices].sqrt()/4,
             variance.sqrt()*factor,(last-first)*factor),-1)
         market=torch.asinh((x[...,:18]-mean[:,None,:18])*factor)
-        market[...,list(ACTIVITY)]=torch.asinh(activity-am[:,None])
+        market[...,self.activity_indices]=torch.asinh(activity-am[:,None])
         normalized=torch.cat((market,(x[...,18:]-self.mean[18:])/self.scale[18:]),-1)
         tokens=torch.cat((torch.where(v,normalized,0),v.float()),-1)
         c=self.config
@@ -87,7 +90,7 @@ def select(values,valid,visible=16,generator=None,positions=None):
 
 def objective(model,output,target,valid,hidden):
     p,t,vl=output;mask=valid&hidden[...,None]
-    factor=p.new_tensor([100 if i in PRICES else 1 for i in range(18)])
+    factor=model.encoder.relative_factor
     loss=F.smooth_l1_loss((p-target[...,:18])*factor,torch.zeros_like(p),reduction='none')
     channel=torch.where(mask[...,:18],loss,0).sum((0,1))/mask[...,:18].sum((0,1)).clamp_min(1)
     tm=F.smooth_l1_loss(t,(target[...,18:]-model.input_mean[18:])/model.input_scale[18:],reduction='none')
@@ -95,7 +98,7 @@ def objective(model,output,target,valid,hidden):
     binary=F.binary_cross_entropy_with_logits(vl,valid.float(),reduction='none')
     positive=valid&hidden[...,None];negative=(~valid)&hidden[...,None]
     vm=.5*(torch.where(positive,binary,0).sum()/positive.sum().clamp_min(1)+torch.where(negative,binary,0).sum()/negative.sum().clamp_min(1))
-    value=.5*(model.config.price_scale*channel[list(PRICES)].mean()+channel[list(ACTIVITY)].mean())+.05*(tm+vm)
+    value=.5*(model.config.price_scale*channel[model.encoder.price_indices].mean()+channel[model.encoder.activity_indices].mean())+.05*(tm+vm)
     return value,channel
 
 
