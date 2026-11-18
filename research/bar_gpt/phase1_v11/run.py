@@ -24,10 +24,16 @@ def main():
     p.add_argument('--learning-rate',type=float,default=.0003);p.add_argument('--reference-weight',type=float,default=1)
     p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
     p.add_argument('--tiny-steps',type=int,default=800);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
+    p.add_argument('--resume-pretraining',action='store_true',help='Engineering retry before any research optimizer step; preserves original identity and deadline')
     a=p.parse_args();torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed)
     if a.mode=='prepare':print(prepare(a.data,a.output));return
     if not 0<a.train_minutes<a.minutes<=60:raise ValueError('Strict bounded experiment required')
-    a.device='cuda';a.resume=False;began=time.monotonic();preflight(a);deadline=began+a.minutes*60
+    a.device='cuda';a.resume=a.resume_pretraining;began=time.monotonic();preflight(a)
+    if a.resume:
+        if (a.output/'checkpoint_last.pt').exists():raise RuntimeError('Training-state resume not supported by this finite entry point')
+        clock=json.loads((a.output/'clock.json').read_text());began-=time.time()-clock['started']
+    else:write_json(a.output/'clock.json',dict(started=time.time()))
+    deadline=began+a.minutes*60
     def status(**kw):
         value=dict(elapsed_seconds=time.monotonic()-began,deadline_seconds=a.minutes*60,**kw)
         write_json(a.output/'progress.json',value);print(json.dumps(value),flush=True)
@@ -40,9 +46,15 @@ def main():
     contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
         hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,
         acceptance='Finite source-valid raw outputs; tiny fit; dev masked+all-visible competitive with visible-median control across timeframe/price bands; predicted-reference scale recovery; no hidden-reference bypass.')
-    write_json(a.output/'contract.json',contract)
+    if a.resume:
+        original=json.loads((a.output/'contract.json').read_text())
+        if original['config']!=contract['config'] or original['data_hash']!=contract['data_hash']:raise ValueError('Changed science cannot resume')
+        write_json(a.output/('engineering-'+a.source_revision[:9]+'.json'),dict(original_source=original['source_revision'],engineering_source=a.source_revision,reason='Remove host constant copies from CUDA graph capture; no scientific change'))
+        contract=original
+    else:write_json(a.output/'contract.json',contract)
     import wandb
-    run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',name=a.output.name,dir=str(a.output),config=contract)
+    identity=json.loads((a.output/'wandb.json').read_text())['id'] if a.resume else None
+    run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',name=a.output.name,dir=str(a.output),config=contract,id=identity,resume='must' if a.resume else None)
     write_json(a.output/'wandb.json',dict(id=run.id,url=run.url))
     try:
         tinyrows=np.load(a.data/'tiny.npy',allow_pickle=False)[:4];tiny=cache(tinyrows,'cuda');m=make().train()

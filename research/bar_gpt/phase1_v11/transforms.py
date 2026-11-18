@@ -5,6 +5,7 @@ For a partial OHLC, fill only absent fields from observed values to construct
 coordinates. Original source masks remain the reconstruction authority.
 """
 import torch
+from functools import lru_cache
 
 PRICES=tuple(i for b in (0,6,12) for i in range(b,b+4))
 ACTIVITY=tuple(i for b in (0,6,12) for i in (b+4,b+5))
@@ -13,10 +14,8 @@ REF_PRICES=(0,3,6)
 REF_ACTIVITY=(1,2,4,5,7,8)
 
 
-def ordered_fill(values,valid,paired=False):
-    # Complete the OHLC partial order using only observed prices. Missing values
-    # inherit their greatest observed predecessor, or the minimum observation.
-    # This also prevents an absent bid from perturbing a valid ask on inversion.
+@lru_cache(maxsize=8)
+def order_relation(paired,device):
     n=8 if paired else 4
     relation=[[i==j for j in range(n)] for i in range(n)]
     for b in range(0,n,4):
@@ -26,7 +25,12 @@ def ordered_fill(values,valid,paired=False):
     for k in range(n):
         for i in range(n):
             for j in range(n):relation[i][j]=relation[i][j] or (relation[i][k] and relation[k][j])
-    relation=torch.tensor(relation,device=values.device,dtype=torch.bool)
+    return torch.tensor(relation,device=device,dtype=torch.bool)
+
+
+def ordered_fill(values,valid,paired=False):
+    # Immutable device constant is initialized during warmup, before graph capture.
+    relation=order_relation(paired,values.device)
     bounds=torch.where(valid.unsqueeze(-2)&relation,values.unsqueeze(-2),float('-inf')).amax(-1)
     fallback=torch.where(valid,values,float('inf')).amin(-1,keepdim=True)
     fallback=torch.where(valid.any(-1,keepdim=True),fallback,0)

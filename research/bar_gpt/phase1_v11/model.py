@@ -14,6 +14,7 @@ class Encoder(nn.Module):
         for k in ('time_mean','time_scale','reference_mean','reference_scale'):
             self.register_buffer(k,torch.as_tensor(parameters[k],dtype=torch.float32).clone())
         self.register_buffer('factor',torch.tensor([100. if j in PRICES else 1. for j in range(18)]))
+        self.register_buffer('reference_factor',torch.tensor([100.,1.,1.]*3))
         self.stem=nn.Linear(54,c.width);self.reference_stem=nn.Linear(18,c.width)
         self.position=nn.Parameter(torch.randn(1,64,c.width)*.01)
         self.reference_type=nn.Parameter(torch.randn(1,1,c.width)*.01)
@@ -68,7 +69,7 @@ def objective(model,out,target,valid,hidden,visible_values,visible_valid):
     channels=torch.where(market,element,0).sum((0,1))/market.sum((0,1)).clamp_min(1)
     price=channels[list(PRICES)].mean();activity=channels[list(ACTIVITY)].mean()
     refs,rm=references(visible_values[...,:18],visible_valid[...,:18],model.encoder.reference_mean)
-    rf=refs.new_tensor([100.,1.,1.]*3);re=F.smooth_l1_loss((out['references']-refs)*rf,torch.zeros_like(refs),reduction='none')
+    rf=model.encoder.reference_factor;re=F.smooth_l1_loss((out['references']-refs)*rf,torch.zeros_like(refs),reduction='none')
     rp=masked_mean(re[:,REF_PRICES],rm[:,REF_PRICES]);ra=masked_mean(re[:,REF_ACTIVITY],rm[:,REF_ACTIVITY])
     if not c.center:rp=rp*0;ra=ra*0
     tc,cm=coordinates(target[...,:18],valid[...,:18]);tc=center(tc,refs if c.center else refs*0)
