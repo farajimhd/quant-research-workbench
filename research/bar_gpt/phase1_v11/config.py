@@ -17,4 +17,5 @@ class Config:
     input_price_scale:float=100.
     visible_weight:float=0.
     backbone:str='transformer'
+    mlp_density_normalize:bool=False
 

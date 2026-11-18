@@ -27,6 +27,7 @@ def main():
     p.add_argument('--readout',choices=['latents','include_reference','split_scale'],default='latents')
     p.add_argument('--width',type=int,default=384);p.add_argument('--layers',type=int,default=8)
     p.add_argument('--backbone',choices=['transformer','mlp'],default='transformer');p.add_argument('--embedding',type=int,default=1024)
+    p.add_argument('--mlp-density-normalize',action='store_true')
     p.add_argument('--dropout',type=float,default=.05)
     p.add_argument('--input-price-scale',type=float,default=100)
     p.add_argument('--visible-weight',type=float,default=0)
@@ -58,7 +59,7 @@ def main():
     if a.input_price_scale<=0:raise ValueError('Positive input scale required')
     if a.visible_weight<0:raise ValueError('Nonnegative observed reconstruction weight required')
     if a.embedding<=32:raise ValueError('Embedding must retain scale and shape capacity')
-    config=Config(width=a.width,layers=a.layers,embedding=a.embedding,backbone=a.backbone,dropout=a.dropout,reference_weight=a.reference_weight,precision=a.precision,readout=a.readout,input_price_scale=a.input_price_scale,visible_weight=a.visible_weight)
+    config=Config(width=a.width,layers=a.layers,embedding=a.embedding,backbone=a.backbone,mlp_density_normalize=a.mlp_density_normalize,dropout=a.dropout,reference_weight=a.reference_weight,precision=a.precision,readout=a.readout,input_price_scale=a.input_price_scale,visible_weight=a.visible_weight)
     def make():return Autoencoder(config,calibration['parameters']).cuda()
     contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
         hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,

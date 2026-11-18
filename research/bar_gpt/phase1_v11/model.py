@@ -56,6 +56,7 @@ class Encoder(nn.Module):
             # distinguishes a masked slot from an observed slot with invalid features.
             observed=torch.cat((bars,torch.ones_like(bars[...,:1])),-1)
             slots=bars.new_zeros((len(bars),64,55)).scatter(1,positions[...,None].expand(-1,-1,55),observed)
+            if c.mlp_density_normalize:slots=slots*(c.visible/bars.shape[1])
             with torch.autocast(x.device.type,dtype=torch.bfloat16,enabled=x.is_cuda and c.precision=='bf16'):
                 h=self.blocks(self.stem(torch.cat((slots.flatten(1),ref),-1)))
             return torch.cat((self.readout(h.float()),self.scale_projection(ref.float())),-1)

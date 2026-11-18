@@ -181,6 +181,8 @@ def test_mlp512_slots_hidden_independence_and_decoder_contract():
     loss,_=objective(m,out,x,v,h,a,va);loss.backward()
     assert all(q.grad is not None and torch.isfinite(q.grad).all() for q in m.parameters())
     assert m.encoder(x,v,torch.arange(64).expand(3,-1)).shape==(3,512)
+    m.config.mlp_density_normalize=True
+    torch.testing.assert_close(z,m.encoder(a,va,p),rtol=0,atol=0)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA MLP replay required')
