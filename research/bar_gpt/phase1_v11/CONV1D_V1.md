@@ -35,3 +35,40 @@ run identity. Runtime records live under `phase1-v11-conv512-20261118`.
 Wait for the MLP's complete epoch-2 validation before graceful handoff; preserve
 its optimizer, RNG, traversal checkpoint and logs for a later resume. A finite
 experiment is authorized; full-data continuation depends on measured quality.
+
+## Measured results (2026-11-18)
+
+Both candidates completed 19,984 updates and full frozen-development evaluation,
+including frozen information probes, without consulting the audit subset. The
+source snapshot is `dc6063ec3241019fa4279a7e18ddec12b6327611`. Twenty-two tests passed
+on both laptop and workstation. Exact commands, hashes, all-channel raw metrics,
+group regressions and pipeline profiles are retained in the runtime comparison.
+
+| Candidate | Encoder parameters | Masked price error | All-visible price error | Masked activity log MAE | All-visible activity log MAE | Cached windows/s |
+|---|---:|---:|---:|---:|---:|---:|
+| M02 MLP control | 6,264,384 | 1.2087% | 1.1403% | 0.74547 | 0.54794 | 343,121 |
+| C01 width 128 | 389,494 | 1.0922% | 1.1861% | 0.78830 | 0.74428 | 186,705 |
+| C02 width 64 | 134,070 | 1.1306% | 1.1073% | 0.79366 | 0.75547 | 251,984 |
+
+The unchanged decoder has 1,773,225 parameters. C02's complete model has 1,907,295.
+Its full-stream batch-2048/16-worker profile reached 230,924 windows/s over 6.144M
+windows, versus the historical MLP profile's 257,435 over 10.24M; these are bounded
+prefixes, not sustained full-epoch throughput. Calibration, seed, samples, updates
+and batch size match the scientific M02 comparison; random trajectories are not
+identical because initialization differs and validation cadence is wall-clock based.
+
+C02 improves the within-window return probe R2 to 0.466 (MLP 0.169; untrained C02
+-0.121), but activity, spread and volatility probes do not establish broad benefit.
+Predicted median price-scale mean error is 0.160%, with no dead embedding dimensions.
+Worst valid price-band mean error remains extreme: 611.52% versus MLP 607.83%.
+All-visible daily trade-count raw MAE doubles versus MLP (6159 versus 3062).
+No claim of forecasting improvement follows from these within-window probes.
+
+Retain both as research checkpoints; C02 is the faster convolutional candidate,
+but neither is an overall replacement for MLP. Do not launch a long convolutional
+full-data run based solely on the improved average price metric. MLP was gracefully
+paused only after complete epoch-2 validation; its checkpoint, optimizer, RNG and
+traversal state remain preserved. Its full-data validation is not the finite-subset
+MLP control shown above.
+
+W&B runs in `bargpt-phase1-v11-mlp512`: C01 `985nuab9`, C02 `nsa65fr1`.
