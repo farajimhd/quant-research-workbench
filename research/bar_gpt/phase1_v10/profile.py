@@ -124,3 +124,40 @@ def operators(a,status):
     table=prof.key_averages().table(sort_by='self_cuda_time_total',row_limit=30)
     (a.output/'operators.txt').write_text(table,encoding='utf-8')
     return dict(profile='operators.txt')
+
+
+def diagnose(a,status):
+    if not a.checkpoint:raise ValueError('Diagnostic checkpoint required')
+    saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
+    saved=load_checkpoint(a.checkpoint,saved['contract'])
+    rows=np.load(a.data/'development.npy',mmap_mode='r',allow_pickle=False)
+    model=make_model(a);model.load_state_dict(saved['model']);results={};worst=None
+    for precision in ('bf16','fp32'):
+        model.config.precision=precision;model.eval();groups=[]
+        for start in range(0,len(rows),256):
+            b=prepare_raw(rows[start:start+256],native=True).to('cuda')
+            with torch.no_grad():
+                out,x,v,h=forward(model,b,64)
+                errors=torch.where(v[...,:18],(out[0]-x[...,:18]).abs(),0).amax((1,2))
+                z=model.encoder(*select(x,v,64)[:3])
+            groups.extend((float(error),start+j) for j,error in enumerate(errors.cpu()))
+            status(stage='checkpoint numerical diagnosis',precision=precision,done=start+len(b.target),total=len(rows))
+        top=sorted(groups,reverse=True)[:12];results[precision]=dict(max_log_error=top[0][0],worst_examples=top)
+        if worst is None:worst=[i for _,i in top]
+    b=prepare_raw(rows[worst].copy(),native=True).to('cuda');activation={}
+    def hook(name):
+        def record(module,args,out):
+            if isinstance(out,torch.Tensor):activation[name]=dict(max=float(out.detach().abs().max()),finite=bool(torch.isfinite(out).all()))
+        return record
+    handles=[mod.register_forward_hook(hook(name)) for name,mod in model.named_modules() if isinstance(mod,(torch.nn.Linear,torch.nn.LayerNorm))]
+    gradient={}
+    for precision in ('bf16','fp32'):
+        model.config.precision=precision;model.train();model.zero_grad(set_to_none=True);torch.manual_seed(731)
+        out,x,v,h=forward(model,b,16)
+        from .model import objective
+        loss,_=objective(model,out,x,v,h);loss.backward()
+        norms=[(name,float(p.grad.double().norm()),float(p.grad.abs().max()),bool(torch.isfinite(p.grad).all())) for name,p in model.named_parameters() if p.grad is not None]
+        gradient[precision]=dict(loss=float(loss),top=sorted(norms,key=lambda x:x[1],reverse=True)[:12],activations=dict(activation))
+    for handle in handles:handle.remove()
+    result=dict(checkpoint=str(a.checkpoint),step=saved['step'],evaluations=results,gradient=gradient)
+    write_json(a.output/'diagnosis.json',result);return dict(step=saved['step'],evaluations=results)
