@@ -27,6 +27,7 @@ def main():
     p.add_argument('--tiny-steps',type=int,default=2000);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
     p.add_argument('--resume-pretraining',action='store_true',help='Engineering retry before any research optimizer step; preserves original identity and deadline')
     p.add_argument('--probes',action='store_true',help='Reserve final evaluation time for frozen within-window information probes')
+    p.add_argument('--max-steps',type=int,default=0,help='Optional matched-update cap, within the wall deadline')
     a=p.parse_args();torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed)
     if a.mode=='prepare':print(prepare(a.data,a.output));return
     if not 0<a.train_minutes<a.minutes<=60:raise ValueError('Strict bounded experiment required')
@@ -48,6 +49,7 @@ def main():
     def make():return Autoencoder(config,calibration['parameters']).cuda()
     contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
         hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,
+        max_steps=a.max_steps,
         acceptance='Finite source-valid raw outputs; tiny fit; dev masked+all-visible competitive with visible-median control across timeframe/price bands; predicted-reference scale recovery; no hidden-reference bypass.')
     if a.resume:
         original=json.loads((a.output/'contract.json').read_text())
@@ -112,8 +114,8 @@ def main():
         train_start=time.monotonic();train_end=min(train_start+a.train_minutes*60,deadline-240);step=0;history=[];bestscore=float('inf');lastval=train_start
         def checkpoint(name):
             save_checkpoint(a.output/name,dict(model=m.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),contract=contract,step=step,cursor=(0,step)))
-        while time.monotonic()<train_end:
-            progress=(time.monotonic()-train_start)/max(train_end-train_start,1)
+        while time.monotonic()<train_end and (not a.max_steps or step<a.max_steps):
+            progress=step/max(a.max_steps-1,1) if a.max_steps else (time.monotonic()-train_start)/max(train_end-train_start,1)
             opt.param_groups[0]['lr']=1e-5+.5*(a.learning_rate-1e-5)*(1+math.cos(math.pi*progress))
             ids=torch.randint(len(rows['train']),(bs,),device='cuda')
             loss,norm,parts=replay(data['train']['values'][ids],data['train']['valid'][ids]);opt.step();step+=1

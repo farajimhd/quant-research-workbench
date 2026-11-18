@@ -22,6 +22,11 @@ def main():
             if 'windows_per_second' in value:
                 speed=value['windows_per_second'];table.add_row('Speed',f'{speed:,.0f} windows/s')
                 if 'done' in value:table.add_row('Evaluation ETA',f"{(value['total']-value['done'])/max(speed,1):.0f} s")
+            try:
+                curve=json.loads((a.output/'learning-curves.json').read_text())[-1]
+                table.add_row('Latest dev · masked / full',f"{100*curve['masked']['balanced_price_relative_mean']:.2f}% / {100*curve['all_visible']['balanced_price_relative_mean']:.2f}% price error")
+                table.add_row('Reference · masked / full',f"{100*curve['masked']['reference_price_relative']['mean']:.2f}% / {100*curve['all_visible']['reference_price_relative']['mean']:.2f}% error")
+            except (OSError,ValueError,IndexError,KeyError):pass
             live.update(Panel(table,title='BarGPT V11 · median-centered MAE',border_style='cyan'))
             if value['stage']=='complete' or (a.output/'failure.json').exists():break
             time.sleep(1)
