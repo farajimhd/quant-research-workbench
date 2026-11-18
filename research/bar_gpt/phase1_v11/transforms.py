@@ -60,7 +60,7 @@ def median(values,valid,fallback):
 def references(logs,valid,fallback):
     # s references use actually observed closes, not imputed closes.
     ix=(3,4,5,9,10,11,15,16,17)
-    return median(logs[...,ix],valid[...,ix],fallback)
+    return median(torch.stack([logs[...,j] for j in ix],-1),torch.stack([valid[...,j] for j in ix],-1),fallback)
 
 
 def center(code,reference):

@@ -67,10 +67,11 @@ def objective(model,out,target,valid,hidden,visible_values,visible_valid):
     err=(out['logs']-target[...,:18])*model.encoder.factor
     element=F.smooth_l1_loss(err,torch.zeros_like(err),reduction='none')
     channels=torch.where(market,element,0).sum((0,1))/market.sum((0,1)).clamp_min(1)
-    price=channels[list(PRICES)].mean();activity=channels[list(ACTIVITY)].mean()
+    price=channels.reshape(3,6)[:,:4].mean();activity=channels.reshape(3,6)[:,4:].mean()
     refs,rm=references(visible_values[...,:18],visible_valid[...,:18],model.encoder.reference_mean)
     rf=model.encoder.reference_factor;re=F.smooth_l1_loss((out['references']-refs)*rf,torch.zeros_like(refs),reduction='none')
-    rp=masked_mean(re[:,REF_PRICES],rm[:,REF_PRICES]);ra=masked_mean(re[:,REF_ACTIVITY],rm[:,REF_ACTIVITY])
+    re=re.reshape(-1,3,3);rm=rm.reshape(-1,3,3)
+    rp=masked_mean(re[:,:,0],rm[:,:,0]);ra=masked_mean(re[:,:,1:],rm[:,:,1:])
     if not c.center:rp=rp*0;ra=ra*0
     tc,cm=coordinates(target[...,:18],valid[...,:18]);tc=center(tc,refs if c.center else refs*0)
     co=torch.stack([out['code'][...,j].abs() if j%6 in (2,3) else out['code'][...,j] for j in range(18)],-1)
