@@ -27,6 +27,8 @@ class Config:
     context_embedding:int=0
     horizon_queries:bool=False
     activity_basis:bool=False
+    summary_context:bool=False
+    context_width:int=0
 
 
 def structured(code):
@@ -93,12 +95,17 @@ class WindowEncoder(nn.Module):
         if c.readout not in ('cls','flatten') or (c.readout=='flatten' and c.architecture in ('mlp','conv')):raise ValueError('Invalid attention readout')
         context_dim=90 if c.last_context else 54
         if c.activity_basis:context_dim+=12 if c.last_context else 6
-        self.context=nn.Linear(context_dim,w) if c.linear_context else nn.Sequential(nn.Linear(context_dim,w),nn.GELU())
-        self.export=nn.Linear(w*(n+1) if c.readout=='flatten' else w*2,c.embedding)
+        if c.summary_context:
+            if not c.last_context:raise ValueError('Summary context requires visible latest context')
+            context_dim+=36
+        if c.context_width<0:raise ValueError('Invalid context width')
+        context_width=c.context_width or w;shape_width=w*n if c.readout=='flatten' else w
+        self.context=nn.Linear(context_dim,context_width) if c.linear_context else nn.Sequential(nn.Linear(context_dim,context_width),nn.GELU())
+        self.export=nn.Linear(shape_width+context_width,c.embedding)
         if c.context_embedding:
             if not 0<c.context_embedding<c.embedding:raise ValueError('Context latent must leave learned shape dimensions')
             self.export=nn.Linear(w*n if c.readout=='flatten' else w,c.embedding-c.context_embedding)
-            self.context_export=nn.Linear(w,c.context_embedding)
+            self.context_export=nn.Linear(context_width,c.context_embedding)
 
     def forward(self,x,v):
         mean=torch.where(v,x,0).sum(1)/v.sum(1).clamp_min(1)
@@ -118,6 +125,10 @@ class WindowEncoder(nn.Module):
             if self.config.last_context:basis.append(last[:,list(ACTIVITY)].sqrt()/4)
             summary=torch.cat((summary,*basis),-1)
         factor=x.new_tensor([100 if i in PRICES else 1 for i in range(18)])
+        if self.config.summary_context:
+            variance=torch.where(v[...,:18],(x[...,:18]-mean[:,None,:18]).square(),0).sum(1)/v[...,:18].sum(1).clamp_min(1)
+            first=torch.where(v[:,0,:18],x[:,0,:18],mean[:,:18])
+            summary=torch.cat((summary,variance.sqrt()*factor,(last-first)*factor),-1)
         market=torch.asinh((x[...,:18]-mean[:,None,:18])*factor)
         if self.config.activity_basis:market[...,list(ACTIVITY)]=torch.asinh(activity_values-activity_mean[:,None])
         normalized=torch.cat((market,(x[...,18:]-self.input_mean[18:])/self.input_scale[18:]),-1)

@@ -181,3 +181,13 @@ network. It is not an optimizer-resume checkpoint or a forecasting result.
 Subsequent `train --freeze-encoder --freeze-reconstruction` experiments keep
 both the embedding and fitted readout fixed and learn the future head. No raw
 anchor, per-example reference or target-derived statistic enters inference.
+
+The final hybrid candidate can add `--summary-context --context-width 160`:
+visible-only market standard deviations and first-to-last changes enter the
+learned context projection alongside existing means, latest values and masks.
+Prices use fixed 100× log units and activity uses log1p units. Nothing is clipped
+or forwarded separately to the decoder. A 512-dimensional export can reserve
+160 learned context dimensions and 352 attention-shape dimensions while keeping
+one affine reconstruction layer. This is an explicitly combined candidate,
+motivated by the stronger raw-summary probes, visibility mismatch and scale
+readout diagnostics; it is not a transformation-only ablation.

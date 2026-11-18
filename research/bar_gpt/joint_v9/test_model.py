@@ -22,6 +22,17 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_summary_hybrid_has_no_hidden_value_or_reference_bypass(self):
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',linear_context=True,last_context=True,context_embedding=32,activity_basis=True,summary_context=True,context_width=48)
+        m=JointModel(c,**calibrate(d)).eval();self.assertEqual(m.encoder.context.in_features,138)
+        x=d['x'].clone();v=d['valid'].clone();v[:,:,16:]=False;x[:,:,16:]=-100
+        torch.testing.assert_close(m.encode_windows(x,v),m.encode_windows(d['x'],v),rtol=0,atol=0)
+        o=m(d['x'],d['valid'],d['ages']);loss,_=objective(m,o,d);loss.backward()
+        self.assertTrue(torch.isfinite(m.encoder.context.weight.grad).all())
+        with torch.no_grad():
+            for p in m.encoder.parameters():p.zero_()
+            self.assertEqual(float(m.encode_windows(d['x'],d['valid']).abs().sum()),0)
+
     def test_anchor_fit_uses_only_training_embeddings_and_freezes_encoder(self):
         from .anchor_fit import features,fit,evaluate
         d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',linear_context=True,last_context=True,context_embedding=32,activity_basis=True)
