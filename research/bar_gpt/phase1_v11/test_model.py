@@ -1,4 +1,6 @@
 import torch
+import copy
+import pytest
 from .model import Config,Autoencoder,select,objective
 from .transforms import coordinates,references,center,decode,inverse
 
@@ -34,9 +36,19 @@ def test_even_median_valid_zero_and_fallback():
     m,a=median(x,v,torch.tensor([10.,11.]));assert torch.equal(m,torch.tensor([[3.,11.]]));assert a.tolist()==[[True,False]]
 
 
-def test_hidden_targets_cannot_change_embedding_or_references():
+def test_all_partial_bid_ask_combinations():
+    raw,x,v=example();raw=raw[:1].repeat(4,1,1);x=x[:1].repeat(4,1,1);v=v[:1].repeat(4,1,1)
+    for pattern in range(256):
+        row,bar=divmod(pattern,64)
+        for j,k in enumerate((6,7,8,9,12,13,14,15)):v[row,bar,k]=bool((pattern>>j)&1)
+    code,_=coordinates(x[...,:18],v[...,:18]);ref,_=references(x,v,torch.zeros(9))
+    restored=inverse(decode(center(code,ref),ref));torch.testing.assert_close(restored[v[...,:18]],raw[v[...,:18]],rtol=1e-12,atol=1e-12)
+
+
+@pytest.mark.parametrize('readout',['latents','include_reference'])
+def test_hidden_targets_cannot_change_embedding_or_references(readout):
     _,x,v=example();x=x.float();positions=torch.arange(0,64,4).expand(3,-1)
-    a,va,pos,h=select(x,v,16,positions=positions);model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0),parameters()).eval()
+    a,va,pos,h=select(x,v,16,positions=positions);model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout=readout),parameters()).eval()
     z=model.encoder(a,va,pos);ref=model.encoder.prepare(a,va)[2]
     changed=x.clone();changed[h]=1234.;b,vb,_,_=select(changed,v,16,positions=positions)
     assert torch.equal(z,model.encoder(b,vb,pos));assert torch.equal(ref,model.encoder.prepare(b,vb)[2])
@@ -54,3 +66,26 @@ def test_finite_backward_and_export_independence():
         assert (logs[...,b+1]>=torch.maximum(logs[...,b],logs[...,b+3])).all()
         assert (logs[...,b+2]<=torch.minimum(logs[...,b],logs[...,b+3])).all()
         assert (logs[...,b+4:b+6]>=0).all()
+
+
+def test_optimizer_rng_resume_parity():
+    from ..phase2_v2.train import rng_state,restore_rng
+    from .step import backward
+    _,x,v=example();x=x.float();c=Config(width=32,layers=1,embedding=64,dropout=.05)
+    model=Autoencoder(c,parameters());opt=torch.optim.AdamW(model.parameters(),lr=.001)
+    backward(model,x,v);opt.step()
+    saved=copy.deepcopy(dict(model=model.state_dict(),optimizer=opt.state_dict(),rng=rng_state()))
+    opt.zero_grad(set_to_none=True);expected=backward(model,x,v)[0];opt.step()
+    other=Autoencoder(c,parameters());other.load_state_dict(saved['model']);second=torch.optim.AdamW(other.parameters(),lr=.001);second.load_state_dict(saved['optimizer'])
+    restore_rng(saved['rng']);actual=backward(other,x,v)[0];second.step()
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
+    for p,q in zip(model.parameters(),other.parameters()):torch.testing.assert_close(p,q,rtol=0,atol=0)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required for real capture')
+def test_cuda_graph_random16_backward():
+    from .step import Replay
+    _,x,v=example();x=x.float().cuda();v=v.cuda()
+    model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0),parameters()).cuda()
+    replay=Replay(model,x,v);a=replay(x,v)[0].clone();b=replay(x,v)[0].clone()
+    assert torch.isfinite(a)&torch.isfinite(b)

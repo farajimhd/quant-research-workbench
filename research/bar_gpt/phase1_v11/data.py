@@ -4,15 +4,23 @@ from pathlib import Path
 import numpy as np
 import torch
 from ..phase1_v8.data import cache,statistics,batch
-from ..v5.shards.phase1_contract import file_hash,write_json
+from ..v5.shards.phase1_contract import file_hash,write_json,digest
 from .transforms import coordinates,references,center,decode,inverse
 
 
 def verify(root,parts=('train','development','tiny')):
     m=json.loads((root/'manifest.json').read_text())
+    if digest({k:v for k,v in m.items() if k!='hash'})!=m['hash']:raise ValueError('Dataset manifest seal changed')
+    split=Path('D:/TradingML/runtimes/bar_gpt/phase1-v6-cohort-balanced-v4/split.json')
+    if file_hash(split)!=m['source_split_file_sha256']:raise ValueError('Corrected balanced split changed')
+    authority=json.loads(split.read_text())
+    if authority['manifest_hash']!=m['source_split_hash']:raise ValueError('Split identity differs')
     for part in parts:
         for name in (part+'.npy',part+'-identities.json'):
             if name in m['files'] and file_hash(root/name)!=m['files'][name]:raise ValueError('Data hash: '+name)
+    if 'train' in parts:
+        identities=json.loads((root/'train-identities.json').read_text())
+        if not all(r['end_us']<authority['cutoff_us'] for r in identities):raise ValueError('Training identity crosses chronological cutoff')
     return m
 
 

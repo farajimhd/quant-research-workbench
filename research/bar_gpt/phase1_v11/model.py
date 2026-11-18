@@ -38,7 +38,10 @@ class Encoder(nn.Module):
         with torch.autocast(x.device.type,dtype=torch.bfloat16,enabled=x.is_cuda and c.precision=='bf16'):
             h=self.stem(bars)+self.position[0,positions]
             r=self.reference_stem(ref).unsqueeze(1)+self.reference_type
-            h=self.blocks(torch.cat((self.latents.expand(len(x),-1,-1),r,h),1))[:,:c.latent_tokens]
+            h=self.blocks(torch.cat((self.latents.expand(len(x),-1,-1),r,h),1))
+            if c.readout=='latents':h=h[:,:c.latent_tokens]
+            elif c.readout=='include_reference':h=torch.cat((h[:,:c.latent_tokens-1],h[:,c.latent_tokens:c.latent_tokens+1]),1)
+            else:raise ValueError('Unknown fixed embedding readout')
         return self.readout(h.float().flatten(1))
 
 

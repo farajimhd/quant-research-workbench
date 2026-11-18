@@ -13,4 +13,5 @@ class Config:
     reference_weight:float=1.
     center:bool=True
     input_asinh:bool=True
+    readout:str='latents'
 

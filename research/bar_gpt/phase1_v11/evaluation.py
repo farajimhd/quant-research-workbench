@@ -8,7 +8,7 @@ from .transforms import references,decode,inverse,REF_PRICES,REF_ACTIVITY
 
 
 @torch.no_grad()
-def evaluate_model(model,data,rows,output,status,controls=False):
+def evaluate_model(model,data,rows,output,status,controls=False,constant_logs=None):
     model.eval();result={};device=data['values'].device
     for mode in ('masked','all_visible'):
         started=time.monotonic();generator=torch.Generator(device=device).manual_seed(314159)
@@ -31,5 +31,8 @@ def evaluate_model(model,data,rows,output,status,controls=False):
         metrics['embedding']=dict(mean_variance=float(variance.mean()),minimum_variance=float(variance.min()),dead_dimensions=int((variance<1e-8).sum()))
         metrics['oracle_true_visible_reference_DIAGNOSTIC_ONLY']=evaluate(np.concatenate(oracles),rows,mask)
         if controls:metrics['visible_median_control']=evaluate(np.concatenate(baseline),rows,mask)
+        if controls and constant_logs is not None:
+            constant=inverse(torch.tensor(constant_logs)).cpu().numpy()
+            metrics['training_constant_control']=evaluate(np.broadcast_to(constant,pred.shape),rows,mask)
         metrics['seconds']=time.monotonic()-started;metrics['windows_per_second']=len(rows)/metrics['seconds'];result[mode]=metrics
     return result

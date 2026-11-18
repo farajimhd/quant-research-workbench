@@ -23,8 +23,10 @@ def main():
     p.add_argument('--minutes',type=float,default=18);p.add_argument('--train-minutes',type=float,default=12)
     p.add_argument('--learning-rate',type=float,default=.0003);p.add_argument('--reference-weight',type=float,default=1)
     p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
+    p.add_argument('--readout',choices=['latents','include_reference'],default='latents')
     p.add_argument('--tiny-steps',type=int,default=800);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
     p.add_argument('--resume-pretraining',action='store_true',help='Engineering retry before any research optimizer step; preserves original identity and deadline')
+    p.add_argument('--probes',action='store_true',help='Reserve final evaluation time for frozen within-window information probes')
     a=p.parse_args();torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed)
     if a.mode=='prepare':print(prepare(a.data,a.output));return
     if not 0<a.train_minutes<a.minutes<=60:raise ValueError('Strict bounded experiment required')
@@ -32,6 +34,7 @@ def main():
     if a.resume:
         if (a.output/'checkpoint_last.pt').exists():raise RuntimeError('Training-state resume not supported by this finite entry point')
         clock=json.loads((a.output/'clock.json').read_text());began-=time.time()-clock['started']
+        if (a.output/'failure.json').exists():(a.output/'failure.json').rename(a.output/f'engineering-failure-{time.time_ns()}.json')
     else:write_json(a.output/'clock.json',dict(started=time.time()))
     deadline=began+a.minutes*60
     def status(**kw):
@@ -41,7 +44,7 @@ def main():
         if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():raise InterruptedError('Human STOP')
     calibration=json.loads(a.calibration.read_text());manifest=verify(a.data)
     if calibration['data_hash']!=manifest['hash']:raise ValueError('Calibration provenance mismatch')
-    config=Config(reference_weight=a.reference_weight,precision=a.precision)
+    config=Config(reference_weight=a.reference_weight,precision=a.precision,readout=a.readout)
     def make():return Autoencoder(config,calibration['parameters']).cuda()
     contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
         hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,
@@ -55,6 +58,7 @@ def main():
     import wandb
     identity=json.loads((a.output/'wandb.json').read_text())['id'] if a.resume else None
     run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',name=a.output.name,dir=str(a.output),config=contract,id=identity,resume='must' if a.resume else None)
+    if a.resume:run.summary['failure']=None
     write_json(a.output/'wandb.json',dict(id=run.id,url=run.url))
     try:
         tinyrows=np.load(a.data/'tiny.npy',allow_pickle=False)[:4];tiny=cache(tinyrows,'cuda');m=make().train()
@@ -83,7 +87,7 @@ def main():
                 torch.cuda.synchronize();start=time.monotonic();torch.cuda.reset_peak_memory_stats()
                 for _ in range(15):loss,norm,_=replay(x,v);opt.step()
                 torch.cuda.synchronize();seconds=time.monotonic()-start
-                result=dict(batch=bs,windows_per_second=bs*15/seconds,startup_seconds=startup,peak_mib=torch.cuda.max_memory_allocated()/2**20)
+                result=dict(batch=bs,windows_per_second=bs*15/seconds,startup_seconds=startup,peak_mib=torch.cuda.max_memory_allocated()/2**20,reserved_mib=torch.cuda.memory_reserved()/2**20)
             except torch.cuda.OutOfMemoryError:result=dict(batch=bs,error='out_of_memory')
             finally:del replay,opt,m;torch.cuda.empty_cache()
             profile.append(result);write_json(a.output/'profile.json',profile);status(stage='GPU cached pipeline profile',latest=result)
@@ -115,8 +119,23 @@ def main():
                 for mode in report:run.log({f'dev/{mode}/price_relative':report[mode]['balanced_price_relative_mean'],f'dev/{mode}/activity_log':report[mode]['balanced_activity_log_mae']},step=step)
                 checkpoint('checkpoint_last.pt');m.train();lastval=time.monotonic()
         checkpoint('checkpoint_last.pt');del replay
-        report=evaluate_model(m,data['development'],rows['development'],a.output,status,controls=True)
+        report=evaluate_model(m,data['development'],rows['development'],a.output,status,controls=True,constant_logs=calibration['constant_logs'])
         write_json(a.output/'development.json',report)
+        count=min(2048,len(rows['train']));train_report=evaluate_model(m,{k:v[:count] for k,v in data['train'].items()},rows['train'][:count],a.output,status)
+        write_json(a.output/'training-evaluation.json',train_report)
+        if a.probes:
+            from .probes import compare
+            status(stage='frozen information probes');torch.manual_seed(a.seed);untrained=make()
+            probe_report=compare(m,untrained,data,rows);write_json(a.output/'probes.json',probe_report);del untrained
+            for variant,values in probe_report.items():
+                if variant in ('trained','untrained_same_architecture','raw_summary_control'):
+                    run.log({f'probes/{variant}/{label}/r2':metrics['r2'] for label,metrics in values.items()},step=step)
+        for mode,metrics in report.items():
+            logs={f'final/{mode}/{key}':metrics[key] for key in ('balanced_price_relative_mean','balanced_activity_log_mae','worst_price_band_relative_mean')}
+            for frame,record in metrics['frames'].items():
+                for channel,values in record['channels'].items():
+                    if values['mae'] is not None:logs[f'raw_mae/{mode}/{frame}/{channel}']=values['mae']
+            run.log(logs,step=step)
         # Full final checkpoint and matching metrics are always paired.
         result=dict(state='complete',step=step,seconds=time.monotonic()-began,training_wall_seconds=time.monotonic()-train_start,
             tiny=tiny_result,best_profile=best,masked_price=report['masked']['balanced_price_relative_mean'],all_visible_price=report['all_visible']['balanced_price_relative_mean'],
@@ -124,6 +143,7 @@ def main():
             checkpoint_sha256=file_hash(a.output/'checkpoint_last.pt'),audit_consulted=False)
         write_json(a.output/'result.json',result);run.summary.update(result);status(stage='complete',result=result)
     except BaseException as exc:
+        if isinstance(exc,(InterruptedError,TimeoutError)) and 'train_start' in locals():checkpoint('checkpoint_last.pt')
         write_json(a.output/'failure.json',dict(error=repr(exc),seconds=time.monotonic()-began));run.summary['failure']=repr(exc);raise
     finally:run.finish()
 
