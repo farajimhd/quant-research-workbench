@@ -11,13 +11,17 @@ from ..phase1_v5_raw.panel import duration
 
 
 def read(root):
+    if (root/'active-run.json').exists():
+        identity=json.loads((root/'active-run.json').read_text())['name']
+        if Path(identity).name!=identity:raise ValueError('Active run must be a direct child')
+        root=root/identity
     try:s=json.loads((root/'status.json').read_text())
     except (OSError,ValueError):return dict(state='unavailable',stage='waiting for readable status')
     for name in ('hardware','resume-arguments','arguments'):
         try:
             data=json.loads((root/(name+'.json')).read_text())
             if 'memory_bytes' in data:data['memory_mib']=data['memory_bytes']/2**20
-            for k in ('memory_mib','batch_size','validation_batch_size','workers','validation_workers','prefetch','epochs'):
+            for k in ('memory_mib','batch_size','validation_batch_size','workers','validation_workers','prefetch','epochs','stress_seconds'):
                 if k in data:s.setdefault(k,data[k])
         except (OSError,ValueError):pass
     files=sorted(root.glob('validation-[0-9][0-9][0-9].json'))
@@ -25,6 +29,11 @@ def read(root):
         try:
             validation=json.loads(files[-1].read_text());s['completed_validation']=validation['metrics']['masked'];s['completed_validation_full']=validation['metrics']['all_visible'];s['completed_epoch']=int(files[-1].stem[-3:])
         except (OSError,ValueError):pass
+    try:
+        dev=json.loads((root/'development-latest.json').read_text())
+        s['development_step']=dev['step'];s['development_price']={mode:100*dev[mode]['balanced_price_relative_mean'] for mode in ('masked','all_visible')}
+    except (OSError,ValueError,KeyError):pass
+    s['run_name']=root.name
     return s
 
 
@@ -37,6 +46,16 @@ def render(root,width=120,height=35):
           Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,style='yellow' if stale else 'red' if state=='failed' else 'bold')]
     if s.get('error'):rows.append(Text(s['error'],style='red'))
     if s.get('read_warning'):rows.append(Text(s['read_warning'],style='yellow'))
+    if s.get('mode')=='stress':
+        elapsed=max(0,time.time()-s.get('started',time.time()));step=s.get('step',0);total=s.get('total')
+        rows.append(Text(s.get('run_name','Long-horizon qualification')))
+        bars=Table.grid(expand=True);bars.add_column(width=20);bars.add_column(ratio=1);bars.add_column(width=18,justify='right')
+        bars.add_row('Optimizer updates',BlockBar(step,total),f'{number(step)}/{number(total)}');rows.append(bars)
+        rows.append(Text(f'Elapsed {duration(elapsed)} / deadline {duration(s.get("stress_seconds"))} | loss {number(s.get("loss"),5)} | gradient norm {number(s.get("gradient_norm"),3)}'))
+        dev=s.get('development_price',{})
+        rows.append(Text(f'Frozen development step {number(s.get("development_step"))}: price MAPE masked {number(dev.get("masked"),3)}% / all-visible {number(dev.get("all_visible"),3)}%'))
+        rows.append(Text('Training-only cache stress test; not a completed full-data epoch.',style='dim'))
+        return Group(*rows)
     bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=15);bars.add_column(ratio=1);bars.add_column(width=24,justify='right')
     epoch=s.get('epoch',0);total=s.get('epoch_total');done=s.get('epoch_done',0);epochs=s.get('epochs',100)
     complete_epochs=epochs if state=='complete' else max(0,epoch-1)
@@ -65,6 +84,8 @@ def render(root,width=120,height=35):
             table.add_row(frame,*(number(raw.get(frame,{}).get(k+'_close'),5) for k in ('trade','bid','ask')))
         rows.append(table)
     rows.append(Text(f'Completed full masked validation: epoch {s.get("completed_epoch","—")} · price MAPE {number(validation.get("balanced_price_mape_pct"),3)}% · activity log MAE {number(validation.get("activity_log_mae"),4)}',style='dim'))
+    dev=s.get('development_price',{})
+    if dev:rows.append(Text(f'Frozen development step {number(s.get("development_step"))}: masked/all-visible price {number(dev.get("masked"),3)}% / {number(dev.get("all_visible"),3)}%',style='dim'))
     full=s.get('completed_validation_full',{})
     rows.append(Text(f'All-visible price MAPE {number(full.get("balanced_price_mape_pct"),3)}% | activity log MAE {number(full.get("activity_log_mae"),4)}',style='dim'))
     wait=s.get('phase_loader_wait_seconds');fraction=s.get('phase_loader_wait_fraction')
