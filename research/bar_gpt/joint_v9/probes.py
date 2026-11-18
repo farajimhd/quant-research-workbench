@@ -138,6 +138,14 @@ def main():
             untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets,controls),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets,controls),
             untrained_retention=fit_evaluate({k:v['windows'].reshape(-1,c.embedding) for k,v in untrained.items()},retention),
             trained_retention=fit_evaluate({k:v['windows'].reshape(-1,c.embedding) for k,v in trained.items()},retention))
+        if c.context_embedding:
+            # The architecture defines this component before evaluation. Use the
+            # same fixed training-only readout, without selecting latent columns.
+            context=lambda values:{k:v['windows'].reshape(-1,16,c.embedding)[...,-c.context_embedding:].reshape(len(v['windows']),-1) for k,v in values.items()}
+            result['runs'][name].update(context_features=16*c.context_embedding,
+                context_probe_interpretation='Prespecified learned context component only; same Ridge alpha and training split. Diagnostic of readout dimension, not a tuned replacement model.',
+                trained_context=fit_evaluate(context(trained),targets,controls),
+                untrained_context=fit_evaluate(context(untrained),targets,controls))
         print(name,flush=True)
     result['label_eligibility']={k:{'total':len(v[1]),'valid':v[2].sum(0).tolist(),'rejected':(~v[2]).sum(0).tolist()} for k,v in targets.items()}
     write_json(a.output,result)
