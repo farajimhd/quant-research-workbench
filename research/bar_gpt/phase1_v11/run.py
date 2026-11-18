@@ -72,6 +72,9 @@ def main():
     run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',name=a.output.name,dir=str(a.output),config=contract,id=identity,resume='must' if a.resume else None)
     if a.resume:run.summary['failure']=None
     write_json(a.output/'wandb.json',dict(id=run.id,url=run.url))
+    def log(metrics,step):
+        # Several evaluations share one optimizer step; never write a closed SDK row.
+        run.log(dict(metrics,optimizer_step=step),step=max(step,run.step))
     run_exit=0
     try:
         tinyrows=np.load(a.data/'tiny.npy',allow_pickle=False)[:4];tiny=cache(tinyrows,'cuda');m=make().train()
@@ -150,7 +153,7 @@ def main():
             if step%50==0:
                 if not bool(torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Training nonfinite')
                 status(stage='training',step=step,loss=float(loss),gradient_norm=float(norm),windows_per_second=step*bs/(time.monotonic()-train_start),batch=bs)
-                run.log({'train/loss':float(loss),'train/gradient_norm':float(norm),'train/lr':opt.param_groups[0]['lr']},step=step)
+                log({'train/loss':float(loss),'train/gradient_norm':float(norm),'train/lr':opt.param_groups[0]['lr']},step)
             if time.monotonic()-lastval>a.validate_seconds:
                 # Fixed 1024-row learning curve; full frozen dev evaluated at end.
                 count=min(1024,len(rows['development']));small={k:v[:count] for k,v in data['development'].items()}
@@ -159,7 +162,7 @@ def main():
                 history.append(record);write_json(a.output/'learning-curves.json',history)
                 score=report['masked']['selection_score']
                 if score<bestscore:bestscore=score;checkpoint('checkpoint_best.pt')
-                for mode in report:run.log({f'dev/{mode}/price_relative':report[mode]['balanced_price_relative_mean'],f'dev/{mode}/activity_log':report[mode]['balanced_activity_log_mae']},step=step)
+                for mode in report:log({f'dev/{mode}/price_relative':report[mode]['balanced_price_relative_mean'],f'dev/{mode}/activity_log':report[mode]['balanced_activity_log_mae']},step)
                 checkpoint('checkpoint_last.pt');m.train();lastval=time.monotonic()
         checkpoint('checkpoint_last.pt');del replay
         report=evaluate_model(m,data['development'],rows['development'],a.output,status,controls=True,constant_logs=calibration['constant_logs'])
@@ -172,13 +175,13 @@ def main():
             probe_report=compare(m,untrained,data,rows);write_json(a.output/'probes.json',probe_report);del untrained
             for variant,values in probe_report.items():
                 if variant in ('trained','untrained_same_architecture','raw_summary_control'):
-                    run.log({f'probes/{variant}/{label}/r2':metrics['r2'] for label,metrics in values.items()},step=step)
+                    log({f'probes/{variant}/{label}/r2':metrics['r2'] for label,metrics in values.items()},step)
         for mode,metrics in report.items():
             logs={f'final/{mode}/{key}':metrics[key] for key in ('balanced_price_relative_mean','balanced_activity_log_mae','worst_price_band_relative_mean')}
             for frame,record in metrics['frames'].items():
                 for channel,values in record['channels'].items():
                     if values['mae'] is not None:logs[f'raw_mae/{mode}/{frame}/{channel}']=values['mae']
-            run.log(logs,step=step)
+            log(logs,step)
         # Full final checkpoint and matching metrics are always paired.
         result=dict(state='complete',step=step,seconds=time.monotonic()-began,training_wall_seconds=time.monotonic()-train_start,
             tiny=tiny_result,best_profile=best,masked_price=report['masked']['balanced_price_relative_mean'],all_visible_price=report['all_visible']['balanced_price_relative_mean'],

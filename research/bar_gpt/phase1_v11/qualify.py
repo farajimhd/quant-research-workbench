@@ -19,7 +19,8 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--calibration',type=Path,required=True);p.add_argument('--checkpoints',type=Path,nargs='+',required=True)
     p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
-    p.add_argument('--probes',action='store_true');p.add_argument('--audit',action='store_true');a=p.parse_args()
+    p.add_argument('--probes',action='store_true');p.add_argument('--audit',action='store_true')
+    p.add_argument('--historical-v10',type=Path);p.add_argument('--historical-calibration',type=Path);a=p.parse_args()
     a.device='cuda';a.resume=False;preflight(a);torch.set_num_threads(4);started=time.monotonic()
     def status(**kw):
         if time.monotonic()-started>1200:raise TimeoutError('Twenty-minute checkpoint comparison deadline')
@@ -58,6 +59,16 @@ def main():
             results.append(summary);run.log({k:v for k,v in summary.items() if isinstance(v,(int,float))},step=i)
             artifact=wandb.Artifact(identity,type='evaluation');artifact.add_file(str(a.output/(identity+'.json')));run.log_artifact(artifact)
             del model,saved;torch.cuda.empty_cache()
+        if a.historical_v10:
+            if not a.historical_calibration:raise ValueError('Pinned historical calibration required')
+            from .historical import compare_v10
+            record=compare_v10(a.historical_v10,a.historical_calibration,data,rows,status,a.probes)
+            write_json(a.output/'historical-v10.json',record)
+            artifact=wandb.Artifact('historical-v10-epoch4',type='evaluation');artifact.add_file(str(a.output/'historical-v10.json'));run.log_artifact(artifact)
+            summary=dict(identity='historical-v10-epoch4',checkpoint_sha256=record['checkpoint_sha256'],step=record['training_step'])
+            for mode in ('masked','all_visible'):
+                for key in ('balanced_price_relative_mean','balanced_activity_log_mae','worst_price_band_relative_mean'):summary[mode+'/'+key]=record[mode][key]
+            results.append(summary);run.log({k:v for k,v in summary.items() if isinstance(v,(int,float))},step=len(a.checkpoints))
         write_json(a.output/'result.json',dict(state='complete',seconds=time.monotonic()-started,results=results,audit_consulted=a.audit));status(stage='complete',results=results)
     finally:run.finish()
 
