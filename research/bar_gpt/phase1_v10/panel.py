@@ -23,7 +23,7 @@ def read(root):
         try:
             data=json.loads((root/(name+'.json')).read_text())
             if 'memory_bytes' in data:data['memory_mib']=data['memory_bytes']/2**20
-            for k in ('memory_mib','batch_size','validation_batch_size','workers','validation_workers','prefetch','epochs','stress_seconds'):
+            for k in ('memory_mib','batch_size','validation_batch_size','workers','validation_workers','prefetch','epochs','stress_seconds','max_updates'):
                 if k in data:s.setdefault(k,data[k])
         except (OSError,ValueError):pass
     files=sorted(root.glob('validation-[0-9][0-9][0-9].json'))
@@ -48,16 +48,19 @@ def render(root,width=120,height=35):
           Text(('STALE · ' if stale else '')+state.upper()+' · '+stage,style='yellow' if stale else 'red' if state=='failed' else 'bold')]
     if s.get('error'):rows.append(Text(s['error'],style='red'))
     if s.get('read_warning'):rows.append(Text(s['read_warning'],style='yellow'))
-    if s.get('mode')=='stress':
-        elapsed=max(0,time.time()-s.get('started',time.time()));step=s.get('step',0);total=s.get('total')
+    if s.get('mode')=='stress' or s.get('max_updates'):
+        stress=s.get('mode')=='stress'
+        elapsed=max(0,time.time()-s.get('started',time.time()));step=s.get('step',0);total=s.get('total') if stress else s['max_updates']
         rows.append(Text(s.get('run_name','Long-horizon qualification')))
         bars=Table.grid(expand=True);bars.add_column(width=20);bars.add_column(ratio=1);bars.add_column(width=18,justify='right')
         bars.add_row('Optimizer updates',BlockBar(step,total),f'{number(step)}/{number(total)}');rows.append(bars)
-        rows.append(Text(f'Elapsed {duration(elapsed)} / deadline {duration(s.get("stress_seconds"))} | loss {number(s.get("loss"),5)} | gradient norm {number(s.get("gradient_norm"),3)}'))
+        timing=f'Elapsed {duration(elapsed)} / deadline {duration(s.get("stress_seconds"))}' if stress else f'Elapsed {duration(elapsed)} | {number(s.get("windows_per_second"))} windows/s'
+        rows.append(Text(f'{timing} | loss {number(s.get("loss"),5)} | gradient norm {number(s.get("gradient_norm"),3)}'))
         dev=s.get('development_price',{})
         rows.append(Text(f'Frozen development step {number(s.get("development_step"))}: price MAPE masked {number(dev.get("masked"),3)}% / all-visible {number(dev.get("all_visible"),3)}%'))
-        rows.append(Text('Training-only cache stress test; not a completed full-data epoch.',style='dim'))
+        rows.append(Text('Training-only cache stress test; not a completed full-data epoch.' if stress else 'Bounded full-data prefix qualification; not the100-epoch production run.',style='dim'))
         return Group(*rows)
+    if s.get('run_name'):rows.append(Text(s['run_name'],style='dim'))
     bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=15);bars.add_column(ratio=1);bars.add_column(width=24,justify='right')
     epoch=s.get('epoch',0);total=s.get('epoch_total');done=s.get('epoch_done',0);epochs=s.get('epochs',100)
     complete_epochs=epochs if state=='complete' else max(0,epoch-1)

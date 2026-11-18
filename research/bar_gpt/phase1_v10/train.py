@@ -231,7 +231,7 @@ def train(a,manifest,status):
                             with (a.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
                             report(reporter,{'train/'+k:v for k,v in metrics.items()},step)
                         if step%a.diagnostic_every==0:
-                            state=rng_state();status(stage='frozen development diagnostics');d=diagnostics(model,a,step);restore_rng(state);report(reporter,d,step)
+                            state=rng_state();status(stage='frozen development diagnostics',step=step,epoch_done=epoch_done,origins=origins);d=diagnostics(model,a,step);restore_rng(state);report(reporter,d,step)
                             price=d['development/masked/balanced_price_relative_mean']
                             if not math.isfinite(price) or price>max(10.,100*best_price):
                                 checkpoint('checkpoint_diagnostic_failure.pt')

@@ -185,3 +185,20 @@ this handoff. This does not prove a batch-composition defect; the optimizer-stat
 comparison changed only that state, and the fresh path is being checked longer.
 The full replacement uses the parent's learned weights, a fresh optimizer/RNG,
 and a new100-epoch full-data schedule and identity.
+
+
+The longer fresh-optimizer batch ablation selected batch8192. With the same
+qualified parent, seed17, eight deterministic shard lanes and exactly2,097,152
+full-stream windows (1024 updates at2048 versus256 at8192), all-visible price
+error was4.867% versus2.043%; activity log MAE0.6792 versus0.6624. These are
+bounded-prefix development results, not a completed full epoch. Larger batches
+still show some price variation; continuing full validation is required.
+GPU-resident optimizer throughput at8192 is37.25K windows/s versus41.51K at2048.
+The approximately10% throughput tradeoff is deliberate for the observed quality
+benefit. Validation batch16384 and eight prefetched workers are retained.
+
+Additional roundtrip qualification covered all67606 training-subset windows:
+maximum positive-target relative transform/inverse error2.861e-6; every valid
+zero activity value reconstructed exactly. Raw absolute floors differ by scale
+and are preserved for every channel in`all-training-transform-roundtrip.json`.
+No source example was clipped or removed.
