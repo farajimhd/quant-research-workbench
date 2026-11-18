@@ -16,9 +16,13 @@ def read(path):
 
 def render(root):
     ledger=read(root/'campaign.json');name=ledger.get('current_experiment','dataset');p=read(root/name/'progress.json')
+    manifest=read(root/name/'manifest.json');config=manifest.get('config',{})
     stage=p.get('stage','preparing');stale=stage not in ('complete','failed','stopped') and time.time()-p.get('updated',time.time())>30
     rows=[Text('BarGPT V9 · CAUSAL MULTISCALE FORECASTING',style='bold cyan'),Text(f'{name} · {stage}'+(' · stale' if stale else ''),style='yellow' if stale else 'bold'),
         Text('16 past windows → next 64 observed 1s bars · future inputs forbidden',style='dim')]
+    if manifest:
+        dependency='embedding-only forecast' if config.get('anchor_mode','historical')=='learned' else 'historical-anchor CONTROL'
+        rows.append(Text(f'{dependency} · {config.get("embedding")} dimensions/window · encoder {manifest.get("window_encoder_parameters",0)/1e6:.2f}M parameters',style='cyan'))
     bars=Table.grid(expand=True,padding=(0,1));bars.add_column(width=17);bars.add_column(ratio=1);bars.add_column(width=21,justify='right')
     bars.add_row('Optimizer updates',BlockBar(p.get('step',0),p.get('planned_steps')),f'{number(p.get("step"))}/{number(p.get("planned_steps"))}')
     bars.add_row('Elapsed / limit',BlockBar(p.get('elapsed',0),p.get('limit_seconds')),f'{duration(p.get("elapsed"))}/{duration(p.get("limit_seconds"))}')

@@ -42,6 +42,7 @@ def main():
     p.add_argument('--readout',choices=('cls','flatten'),default='cls');p.add_argument('--linear-context',action='store_true')
     p.add_argument('--reconstruction-price-scale',type=float,default=.02)
     p.add_argument('--anchor-mode',choices=('historical','learned'),default='historical')
+    p.add_argument('--last-context',action='store_true')
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
@@ -65,7 +66,7 @@ def main():
         calibration_parent=dict(manifest_sha256=file_hash(a.calibration_manifest),dataset_hash=prior['dataset_hash'],source_revision=prior['source_revision'])
     else:parameters=calibrate(cpu['train'])
     config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight,a.price_huber_beta,
-        a.readout,a.linear_context,a.reconstruction_price_scale,a.anchor_mode)
+        a.readout,a.linear_context,a.reconstruction_price_scale,a.anchor_mode,a.last_context)
     model=JointModel(config,**parameters).to(a.device)
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],

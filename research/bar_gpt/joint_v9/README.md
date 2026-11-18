@@ -89,7 +89,34 @@ historical summaries, frozen joint embeddings, and concatenated frozen window
 embeddings, including untrained controls. The last comparison isolates whether
 the Phase 1 embeddings retain future-useful information before Phase 2 mixing.
 Feature dimensions are reported rather than treated as parameter-matched.
+CPU FP32 probes are screening diagnostics; final deployment-precision probes
+use `--device cuda --source-revision <immutable revision>` under the same GPU
+ownership guard. They also test within-window scale and shape retention, which
+distinguishes missing information from an inadequately fitted reconstruction head.
 `qualify` evaluates sealed audits only with explicit `--audit`, reports full and
 16-visible-bar reconstruction, and exports a standalone window encoder with an
 exact parity check. Checkpoints, dataset seals, conclusions and measurement
 reports live under the campaign runtime root.
+
+## Input and export dimensions
+
+Each bar has 18 log/log1p market values and nine existing time features. Appending
+their 27 validity flags gives 54 token-input channels. An eight-bar patch has
+432 inputs and is projected to the attention width. This is a learned patch
+projection, not additional source data. A separate FP32 learned context path
+receives 27 window means and 27 coverage fractions; the optional last-context
+ablation also receives the latest visible market values and their 18 flags
+(90 context inputs total). Hidden-bar values cannot enter either path.
+
+The export projection produces the fixed-size learned window embedding from
+the context path and either the attention summary token or all patch tokens.
+No coordinates are copied into reserved embedding slots. One affine decoder
+predicts 64x54 outputs: 18 structured market coordinates, nine time features,
+and 27 source-valid logits. Fixed training-only inverse transforms recover raw
+market units. The reconstruction decoder can be discarded.
+
+The standalone `EmbeddingForecaster` consumes sixteen window embeddings and
+their causal ages. It contains ordered multiscale attention, a lightweight
+future head, and an 18-coordinate learned anchor head. It contains neither the
+window encoder nor the Phase 1 reconstruction decoder, and accepts no raw
+historical bar or external reference. Export checks exact prediction parity.

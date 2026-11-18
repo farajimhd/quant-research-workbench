@@ -23,6 +23,7 @@ class Config:
     linear_context:bool=False
     reconstruction_price_scale:float=.02
     anchor_mode:str='historical'
+    last_context:bool=False
 
 
 def structured(code):
@@ -86,13 +87,17 @@ class WindowEncoder(nn.Module):
             self.stem=nn.Linear(dim,w);self.position=nn.Parameter(torch.randn(1,n+1,w)*.01)
             self.cls=nn.Parameter(torch.randn(1,1,w)*.01);self.backbone=attention(w,c.layers,c.dropout)
         if c.readout not in ('cls','flatten') or (c.readout=='flatten' and c.architecture in ('mlp','conv')):raise ValueError('Invalid attention readout')
-        self.context=nn.Linear(54,w) if c.linear_context else nn.Sequential(nn.Linear(54,w),nn.GELU())
+        context_dim=90 if c.last_context else 54
+        self.context=nn.Linear(context_dim,w) if c.linear_context else nn.Sequential(nn.Linear(context_dim,w),nn.GELU())
         self.export=nn.Linear(w*(n+1) if c.readout=='flatten' else w*2,c.embedding)
 
     def forward(self,x,v):
         mean=torch.where(v,x,0).sum(1)/v.sum(1).clamp_min(1)
         mean=torch.where(v.any(1),mean,self.input_mean)
         summary=torch.cat(((mean-self.input_mean)/self.input_scale,v.float().mean(1)),-1)
+        if self.config.last_context:
+            observed=v[:,-1,:18];last=torch.where(observed,x[:,-1,:18],mean[:,:18])
+            summary=torch.cat((summary,(last-self.input_mean[:18])/self.input_scale[:18],observed.float()),-1)
         factor=x.new_tensor([100 if i in PRICES else 1 for i in range(18)])
         market=torch.asinh((x[...,:18]-mean[:,None,:18])*factor)
         normalized=torch.cat((market,(x[...,18:]-self.input_mean[18:])/self.input_scale[18:]),-1)

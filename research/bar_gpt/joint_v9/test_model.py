@@ -24,7 +24,7 @@ def examples(n=4):
 class ModelContract(unittest.TestCase):
     def test_forecast_only_embeddings_with_learned_anchor(self):
         from unittest.mock import patch
-        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned')
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',last_context=True,linear_context=True)
         model=JointModel(c,**calibrate(d)).eval()
         with torch.no_grad(),patch('research.bar_gpt.joint_v9.model.anchor',side_effect=AssertionError('Raw anchor forbidden')):
             out=model(d['x'],d['valid'],d['ages'])
@@ -65,7 +65,7 @@ class ModelContract(unittest.TestCase):
         torch.testing.assert_close(a,b,rtol=0,atol=0)
 
     def test_masked_encoder_has_no_hidden_reference(self):
-        d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**calibrate(d)).eval()
+        d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',last_context=True),**calibrate(d)).eval()
         visible=d['valid'].clone();visible[:,:,16:]=False
         changed=d['x'].clone();changed[:,:,16:]+=12345
         with torch.no_grad():
