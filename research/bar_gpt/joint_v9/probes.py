@@ -104,18 +104,21 @@ def fit_evaluate(features,targets,controls=None):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--runs',nargs='+',required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--data',type=Path)
+    p.add_argument('--audit',action='store_true')
     p.add_argument('--device',choices=('cpu','cuda'),default='cpu');p.add_argument('--source-revision');a=p.parse_args();torch.set_num_threads(8)
     if a.output.exists():raise FileExistsError('Preserve immutable probe report')
     if a.device=='cuda':
         if not a.source_revision:raise ValueError('GPU probes require immutable source identity')
         preflight(SimpleNamespace(output=a.output.parent/('owner-'+a.output.stem),device='cuda',resume=False,source_revision=a.source_revision))
     torch.set_float32_matmul_precision('highest')
-    rows,manifest=load(a.data or a.root/'dataset',('train','development','novel_development'))
+    partitions=('train','audit_2025','audit_2026') if a.audit else ('train','development','novel_development')
+    rows,manifest=load(a.data or a.root/'dataset',partitions)
     data={k:cache(v) for k,v in rows.items()};targets={k:labels(v) for k,v in data.items()}
     controls={k:causal_controls(v) for k,v in data.items()}
     retention={k:window_labels(v) for k,v in data.items()}
     raw={k:summaries(v) for k,v in data.items()}
     result=dict(dataset_hash=manifest['hash'],device=a.device,source_revision=a.source_revision,
+        evaluation_scope='Sealed finalist audit; same fixed training-only ridge procedure' if a.audit else 'Development screening',
         precision='Configured CUDA autocast' if a.device=='cuda' else 'CPU FP32 screening',method='Frozen encoder. Ridge alpha=100, standardized using training only, no tuning on validation. All eligible future labels, rejection counts explicit.',
         labels=targets['train'][0],raw_summary=dict(features=raw['train'].shape[1],metrics=fit_evaluate(raw,targets,controls),
             window_retention=fit_evaluate({k:v.reshape(-1,90) for k,v in raw.items()},retention)),runs={})
