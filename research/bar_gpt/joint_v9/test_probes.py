@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from .test_model import examples
 from .data import cache
-from .probes import labels,summaries
+from .probes import labels,summaries,fit_evaluate
 from .launch import controller_lock
 from .data import calibrate
 from .model import Config,JointModel
@@ -12,6 +12,12 @@ from ..v5.shards.phase1_contract import digest,file_hash,write_json
 
 
 class ProbeContract(unittest.TestCase):
+    def test_single_label_validity_groups_keep_output_dimension(self):
+        x=np.arange(16,dtype=np.float32).reshape(8,2);y=np.stack((x[:,0],x[:,1]),1)
+        mask=np.ones((8,2),bool);mask[0,1]=False
+        result=fit_evaluate({'train':x,'development':x},{k:(['a','b'],y,mask) for k in ('train','development')})
+        self.assertEqual(result['a']['development']['count'],8);self.assertEqual(result['b']['development']['count'],7)
+
     def test_six_frame_transfer_reads_only_sealed_payload(self):
         d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32'),**calibrate(d)).eval()
         rows=examples()['context'].reshape(-1).copy();rows['timeframe_us'][::2]=100000

@@ -66,7 +66,7 @@ def fit_evaluate(features,targets):
     predictions={k:np.zeros((len(v),len(names))) for k,v in features.items()}
     for ids in groups.values():
         keep=valid[:,ids[0]];model=Ridge(alpha=100.,solver='cholesky').fit(x['train'][keep],y[keep][:,ids])
-        for split in features:predictions[split][:,ids]=model.predict(x[split])
+        for split in features:predictions[split][:,ids]=model.predict(x[split]).reshape(len(x[split]),len(ids))
     for j,name in enumerate(names):
         keep=valid[:,j];baseline=float(y[keep,j].mean())
         report={}
