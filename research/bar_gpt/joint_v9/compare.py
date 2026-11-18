@@ -16,7 +16,7 @@ def main():
             reconstruction_decoder_parameters=m['reconstruction_decoder_parameters'],examples=result['examples'],steps=result['step'],
             seconds=result['elapsed_seconds'],profile=best,checkpoint_sha256=result['checkpoint_sha256'],
             reconstruction_weight=m['reconstruction_encoder_weight'],masked_probability=m.get('masked_reconstruction_probability',0),
-            forecast_dependency=m['config'].get('anchor_mode','historical'),
+            forecast_dependency=(m['config'].get('anchor_mode','historical') if result.get('forecast_head_trained',True) else 'UNTRAINED pretext head'),
             decision=decisions.get(folder.name,'Pending evidence review'),metrics={})
         for split,v in result['evaluations'].items():
             record['metrics'][split]={k:v[k] for k in ('price_mae_skill','activity_mae_skill','price_session_bootstrap95','activity_session_bootstrap95','selection_score')}

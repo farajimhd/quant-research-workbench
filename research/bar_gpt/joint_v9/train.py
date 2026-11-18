@@ -13,8 +13,9 @@ from ..phase1_v8.runtime import preflight
 from ..v5.shards.phase1_contract import file_hash,write_json
 
 
-def loss_for(model,data,reconstruction_weight,masked_probability=0.):
-    output=model(data['x'],data['valid'],data['ages'],reconstruct=False)
+def loss_for(model,data,reconstruction_weight,masked_probability=0.,forecast_weight=1.):
+    output=(model(data['x'],data['valid'],data['ages'],reconstruct=False) if forecast_weight else
+        dict(windows=model.encode_windows(data['x'],data['valid']),forecast=None,future_summary=None))
     z=output['windows']
     if masked_probability>0:
         shape=data['valid'].shape[:-1]
@@ -26,7 +27,8 @@ def loss_for(model,data,reconstruction_weight,masked_probability=0.):
     # Same decoder training weight across candidates; lambda controls only the
     # reconstruction gradient entering the encoder. At zero it is a trained probe.
     output['reconstruction']=model.reconstruct(detached+(reconstruction_weight/.1)*(z-detached))
-    return objective(model,output,data,.1)
+    _,parts=objective(model,output,data,.1)
+    return forecast_weight*parts['forecast']+.1*parts['reconstruction']+model.config.summary_weight*parts['future_summary'],parts
 
 
 def main():
@@ -44,12 +46,16 @@ def main():
     p.add_argument('--anchor-mode',choices=('historical','learned'),default='historical')
     p.add_argument('--last-context',action='store_true')
     p.add_argument('--initial-checkpoint',type=Path)
+    p.add_argument('--forecast-weight',type=float,default=1.)
+    p.add_argument('--freeze-encoder',action='store_true')
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda');p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
     p.add_argument('--resume',action='store_true');a=p.parse_args()
     if not 0<a.minutes<=60 or a.examples<=0 or a.tiny_steps<1 or not 0<=a.masked_reconstruction_probability<=1 or a.summary_weight<0 or a.price_huber_beta<=0:raise ValueError('Invalid finite experiment')
+    if a.forecast_weight<0 or (a.forecast_weight==0 and (a.reconstruction_weight<=0 or a.summary_weight!=0)):raise ValueError('Invalid reconstruction pretext objective')
+    if a.freeze_encoder and (not a.initial_checkpoint or a.anchor_mode!='learned' or a.forecast_weight<=0):raise ValueError('Frozen forecasting requires a pretrained learned-anchor encoder')
     started=time.time();deadline=started+a.minutes*60;preflight(a)
     torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
     torch.set_float32_matmul_precision('highest');step=0;progress={};wb=None
@@ -79,6 +85,9 @@ def main():
         initialization=dict(checkpoint_sha256=file_hash(a.initial_checkpoint),parent_step=initial['step'],parent_source_revision=prior['source_revision'],
             policy='New scientific experiment: parent model weights only, fresh optimizer, scheduler and seeded traversal. Not an engineering resume.')
         del initial
+    if a.freeze_encoder:
+        model.encoder.requires_grad_(False)
+        frozen_state={k:v.detach().cpu().clone() for k,v in model.encoder.state_dict().items()}
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],
         parameters={k:v.tolist() for k,v in parameters.items()},seed=a.seed,examples=a.examples,minutes=a.minutes,lr=a.lr,
@@ -86,12 +95,13 @@ def main():
         masked_reconstruction_probability=a.masked_reconstruction_probability,masked_visible_bars=16,
         calibration_parent=calibration_parent,
         initialization=initialization,
+        forecast_weight=a.forecast_weight,freeze_encoder=a.freeze_encoder,
         hypothesis=a.hypothesis,parent=a.parent,parameter_count=sum(v.numel() for v in model.parameters()),
         window_encoder_parameters=sum(v.numel() for v in model.encoder.parameters()),reconstruction_decoder_parameters=sum(v.numel() for v in model.reconstruction.parameters()),
         forecasting=('Direct next 64 observed 1s bars. Historical last-bar anchor is a declared causal control.' if a.anchor_mode=='historical' else
             'Direct next 64 observed 1s bars. Last-bar anchor decoded from learned window embedding; Phase 2 receives only embeddings and causal ages.')+' Future values/masks/clocks never prediction inputs.',
         reconstruction='All 16 input windows from learned window latents only. No input/reference decoder bypass. Lambda zero means detached trained reconstruction probe.',
-        selection='Average development and unseen-ticker development balanced price/activity MAE ratios versus causal persistence; inspect confidence intervals, groups and reconstruction jointly.',
+        selection=('Development balanced reconstruction selection score; forecasting head is untrained, not a forecasting candidate.' if a.forecast_weight==0 else 'Average development and unseen-ticker development balanced price/activity MAE ratios versus causal persistence; inspect confidence intervals, groups and reconstruction jointly.'),
         sampling='Uniform frozen origins, up to four per session; training-only calibration, unweighted grouped evaluation.',
         acceptance='Tiny future overfit, finite valid outputs, native and persistence/mean controls, paired session confidence intervals; reconstruction improvement is supporting evidence, not future skill proof.')
     if a.resume:
@@ -106,31 +116,33 @@ def main():
         b=batch(data['tiny'],torch.arange(4,device=a.device));first=None
         for k in range(a.tiny_steps):
             optimizer.param_groups[0]['lr']=.00001+.00099*.5*(1+np.cos(np.pi*k/max(1,a.tiny_steps-1)))
-            optimizer.zero_grad(set_to_none=True);loss,parts=loss_for(tiny,b,a.reconstruction_weight,a.masked_reconstruction_probability)
+            optimizer.zero_grad(set_to_none=True);loss,parts=loss_for(tiny,b,a.reconstruction_weight,a.masked_reconstruction_probability,a.forecast_weight)
             if first is None:
                 first=float(parts['forecast'].detach());first_reconstruction=float(parts['reconstruction'].detach())
             if not torch.isfinite(loss):raise FloatingPointError('Nonfinite tiny fit')
             loss.backward();torch.nn.utils.clip_grad_norm_(tiny.parameters(),1.,error_if_nonfinite=True);optimizer.step()
             if k%100==0:status(tiny_step=k,tiny_forecast=float(parts['forecast'].detach()))
         tiny.eval()
-        with torch.no_grad():_,last=loss_for(tiny,b,a.reconstruction_weight,a.masked_reconstruction_probability)
+        with torch.no_grad():_,last=loss_for(tiny,b,a.reconstruction_weight,a.masked_reconstruction_probability,a.forecast_weight)
         tiny_result=dict(initial_forecast=first,final_forecast=float(last['forecast']),ratio=float(last['forecast'])/max(first,1e-12),steps=a.tiny_steps,
             initial_reconstruction=first_reconstruction,final_reconstruction=float(last['reconstruction']),
             reconstruction_ratio=float(last['reconstruction'])/max(first_reconstruction,1e-12))
         write_json(a.output/'tiny-fit.json',tiny_result)
-        if tiny_result['ratio']>.2 and tiny_result['final_forecast']>.01:raise RuntimeError('Tiny future fit failed; diagnose before scaling')
+        if a.forecast_weight>0 and tiny_result['ratio']>.2 and tiny_result['final_forecast']>.01:raise RuntimeError('Tiny future fit failed; diagnose before scaling')
         if a.reconstruction_weight>0 and tiny_result['reconstruction_ratio']>.5:raise RuntimeError('Tiny reconstruction failed to halve error; diagnose before scaling')
         del tiny,optimizer
         profile=[];pg=torch.Generator(device=a.device).manual_seed(917)
         for bs in a.batch_sizes:
             status('profiling complete training step',profile_batch=bs)
-            pm=JointModel(config,**parameters).to(a.device);po=torch.optim.AdamW(pm.parameters(),lr=a.lr,fused=a.device=='cuda')
+            pm=JointModel(config,**parameters).to(a.device)
+            if a.freeze_encoder:pm.encoder.requires_grad_(False);pm.encoder.eval()
+            po=torch.optim.AdamW(pm.parameters(),lr=a.lr,fused=a.device=='cuda')
             for k in range(12):
                 if k==3:
                     if a.device=='cuda':torch.cuda.synchronize();torch.cuda.reset_peak_memory_stats()
                     begin=time.perf_counter()
                 ids=torch.randint(len(rows['train']),(bs,),device=a.device,generator=pg);b=batch(data['train'],ids)
-                po.zero_grad(set_to_none=True);loss,_=loss_for(pm,b,a.reconstruction_weight,a.masked_reconstruction_probability)
+                po.zero_grad(set_to_none=True);loss,_=loss_for(pm,b,a.reconstruction_weight,a.masked_reconstruction_probability,a.forecast_weight)
                 if not torch.isfinite(loss):raise FloatingPointError('Nonfinite profile')
                 loss.backward();torch.nn.utils.clip_grad_norm_(pm.parameters(),1.,error_if_nonfinite=True);po.step()
             if a.device=='cuda':torch.cuda.synchronize()
@@ -169,8 +181,10 @@ def main():
         training=time.time();initial_seen=seen;validation_seconds=0
         while step<steps and time.time()<deadline-max(180,validation_seconds*4):
             if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():save();status('stopped');return
-            model.train();n=min(bs,a.examples-seen);ids=torch.randint(len(rows['train']),(n,),device=a.device,generator=gen);b=batch(data['train'],ids)
-            opt.zero_grad(set_to_none=True);loss,parts=loss_for(model,b,a.reconstruction_weight,a.masked_reconstruction_probability)
+            model.train();
+            if a.freeze_encoder:model.encoder.eval()
+            n=min(bs,a.examples-seen);ids=torch.randint(len(rows['train']),(n,),device=a.device,generator=gen);b=batch(data['train'],ids)
+            opt.zero_grad(set_to_none=True);loss,parts=loss_for(model,b,a.reconstruction_weight,a.masked_reconstruction_probability,a.forecast_weight)
             if not torch.isfinite(loss):raise FloatingPointError('Nonfinite training loss')
             loss.backward();torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True);opt.step();scheduler.step();step+=1;seen+=n
             if step%10==0:status('training',planned_steps=steps,seen=seen,origins_per_second=(seen-initial_seen)/max(time.time()-training,.001),
@@ -180,7 +194,7 @@ def main():
                 for partition in ('development','novel_development'):
                     status('validation '+partition)
                     metrics[partition]=measure(model,data[partition],rows[partition],identities[partition],128,True,status)
-                validation_seconds=time.time()-begin;score=np.mean([r['selection_score'] for r in metrics.values()])
+                validation_seconds=time.time()-begin;score=np.mean([r['reconstruction']['selection_score'] if a.forecast_weight==0 else r['selection_score'] for r in metrics.values()])
                 record=dict(step=step,examples=seen,elapsed=time.time()-started,selection_score=float(score),validation_seconds=validation_seconds,
                     metrics={k:{n:v[n] for n in ('price_mae_skill','activity_mae_skill','selection_score')} for k,v in metrics.items()},
                     reconstruction={k:v['reconstruction']['balanced_price_relative_mean'] for k,v in metrics.items()})
@@ -201,6 +215,11 @@ def main():
         result=dict(state='complete',step=step,examples=seen,planned_examples=a.examples,truncated=seen<a.examples,elapsed_seconds=time.time()-started,
             train_evaluation='Fixed random up to 1024 training origins; full development sets',evaluations=results,checkpoint_sha256=file_hash(a.output/'best.pt'))
         if time.time()>deadline:raise TimeoutError('Incomplete final evaluation')
+
+        if a.freeze_encoder:
+            for key,value in model.encoder.state_dict().items():torch.testing.assert_close(value.cpu(),frozen_state[key],rtol=0,atol=0)
+            result['frozen_encoder_exactly_preserved']=True
+        result['forecast_head_trained']=a.forecast_weight>0
         write_json(a.output/'results.json',result);status('complete',seen=seen,planned_steps=steps)
         if wb:
             wb.summary.update({'result/state':'complete','result/checkpoint_sha256':result['checkpoint_sha256'],'result/seconds':result['elapsed_seconds']})

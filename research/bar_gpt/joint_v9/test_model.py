@@ -22,6 +22,18 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_reconstruction_pretext_has_no_future_gradient(self):
+        from .train import loss_for
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned')
+        model=JointModel(c,**calibrate(d)).eval()
+        loss,_=loss_for(model,d,1.,forecast_weight=0.)
+        changed={**d,'target':d['target']+10,'target_valid':~d['target_valid']}
+        other,_=loss_for(model,changed,1.,forecast_weight=0.)
+        torch.testing.assert_close(loss,other,rtol=0,atol=0)
+        loss.backward()
+        self.assertGreater(float(model.encoder.export.weight.grad.abs().sum()),0)
+        self.assertIsNone(model.forecast.weight.grad)
+
     def test_forecast_only_embeddings_with_learned_anchor(self):
         from unittest.mock import patch
         d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',last_context=True,linear_context=True)

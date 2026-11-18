@@ -127,3 +127,18 @@ their causal ages. It contains ordered multiscale attention, a lightweight
 future head, and an 18-coordinate learned anchor head. It contains neither the
 window encoder nor the Phase 1 reconstruction decoder, and accepts no raw
 historical bar or external reference. Export checks exact prediction parity.
+# Reconstruction-first comparison
+
+`--forecast-weight 0 --reconstruction-weight 1` trains only the window
+encoder and its single affine reconstruction decoder. Future targets and the
+temporal forecasting network are not used by this training loss. Checkpoint
+selection uses development reconstruction; its untrained forecasting outputs
+are diagnostic only. Masked reconstruction remains independently configurable.
+
+For a separate frozen-encoder forecasting experiment, use
+`--initial-checkpoint <pretext-best.pt> --freeze-encoder` with the same model,
+calibration and data configuration. This creates a new optimizer and schedule;
+it is not an engineering resume. The encoder runs in evaluation mode during
+training, receives no gradients, and its final state is checked byte-exactly
+against initialization. The forecasting and learned anchor readouts can train.
+Only this second stage and frozen probes establish future-task performance.

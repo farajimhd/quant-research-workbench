@@ -183,14 +183,17 @@ class EmbeddingForecaster(nn.Module):
 
 
 def objective(model,output,data,reconstruction_weight=.1):
-    error=(output['forecast']-data['target'])/model.loss_scale
-    valid=data['target_valid'];loss=F.smooth_l1_loss(error,torch.zeros_like(error),reduction='none')
-    if model.config.price_huber_beta!=1:
-        price=error.new_tensor([i in PRICES for i in range(18)],dtype=torch.bool)
-        robust=F.smooth_l1_loss(error,torch.zeros_like(error),reduction='none',beta=model.config.price_huber_beta)
-        loss=torch.where(price,robust,loss)
-    channel=torch.where(valid,loss,0).sum((0,1))/valid.sum((0,1)).clamp_min(1)
-    forecast=.5*(channel[list(PRICES)].mean()+channel[list(ACTIVITY)].mean())
+    if output['forecast'] is None:
+        forecast=output['windows'].sum()*0
+    else:
+        error=(output['forecast']-data['target'])/model.loss_scale
+        valid=data['target_valid'];loss=F.smooth_l1_loss(error,torch.zeros_like(error),reduction='none')
+        if model.config.price_huber_beta!=1:
+            price=error.new_tensor([i in PRICES for i in range(18)],dtype=torch.bool)
+            robust=F.smooth_l1_loss(error,torch.zeros_like(error),reduction='none',beta=model.config.price_huber_beta)
+            loss=torch.where(price,robust,loss)
+        channel=torch.where(valid,loss,0).sum((0,1))/valid.sum((0,1)).clamp_min(1)
+        forecast=.5*(channel[list(PRICES)].mean()+channel[list(ACTIVITY)].mean())
     reconstruction=forecast*0
     if output['reconstruction'] is not None and reconstruction_weight:
         p,t,vl=output['reconstruction'];x=data['x'];v=data['valid']
