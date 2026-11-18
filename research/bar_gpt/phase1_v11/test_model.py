@@ -152,3 +152,17 @@ def test_full_raw_capture_optimizer_rng_resume_and_native_metrics():
         m.eval();out,x,v,h=forward(m,b,16);acc=Accumulator(16);acc.add(m,out,x,v,h,b);result=acc.finish()
         reference=evaluate(inverse(out['logs']).cpu().numpy(),rows,h.cpu().numpy()[...,None])
     assert result['raw_mae']['1s']['trade_close']==pytest.approx(reference['frames']['1000000']['channels']['trade_close']['mae'])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA inference capture required')
+def test_validation_graph_preserves_private_rng_masks_and_predictions():
+    from .full_step import InferenceReplay,forward
+    from ..phase1_v7.full_data import prepare_raw
+    b=prepare_raw(raw_rows(),native=True).to('cuda')
+    model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout='split_scale'),parameters()).cuda().eval()
+    generator=torch.Generator(device='cuda').manual_seed(731);state=generator.get_state()
+    with torch.no_grad():expected=forward(model,b,16,generator)
+    generator.set_state(state);graph=InferenceReplay(model,b,16,generator);actual=graph(b)
+    assert torch.equal(expected[3],actual[3])
+    torch.testing.assert_close(expected[0]['logs'],actual[0]['logs'],rtol=1e-5,atol=1e-6)
+    previous=actual[3].clone();again=graph(b);assert not torch.equal(previous,again[3])

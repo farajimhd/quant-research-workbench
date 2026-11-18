@@ -8,7 +8,7 @@ from ..phase1_v7.full_data import loader
 from ..phase1_v5_raw.engine import DeviceBatches,FRAME_NAMES
 from ..v5.data_v3 import close_loader
 from ..v5.shards.phase1_contract import FRAMES,write_json
-from .full_step import forward
+from .full_step import forward,InferenceReplay
 from .transforms import references
 
 
@@ -39,7 +39,7 @@ class Accumulator(NativeAccumulator):
 @torch.no_grad()
 def evaluate(model,manifest,a,status,limit=0):
     model.eval();source=loader(manifest,a,'validation');device=None;acc={name:Accumulator(n) for name,n in (('masked',16),('all_visible',64))}
-    generator=torch.Generator(device='cuda').manual_seed(731);started=time.perf_counter();n=0;recent=deque();stopped=False
+    generator=torch.Generator(device='cuda').manual_seed(731);started=time.perf_counter();n=0;recent=deque();stopped=False;graphs={}
     try:
         device=DeviceBatches(source,'cuda');startup=time.perf_counter()-started;wait=device.wait_seconds
         for i in range(limit or 2**63-1):
@@ -47,7 +47,11 @@ def evaluate(model,manifest,a,status,limit=0):
             try:b=device.pop()
             except StopIteration:break
             for mode,visible in (('masked',16),('all_visible',64)):
-                out,x,v,h=forward(model,b,visible,generator);acc[mode].add(model,out,x,v,h,b)
+                if getattr(a,'validation_graphs',False) and len(b.target)==(a.validation_batch_size or a.batch_size):
+                    if mode not in graphs:graphs[mode]=InferenceReplay(model,b,visible,generator)
+                    out,x,v,h=graphs[mode](b)
+                else:out,x,v,h=forward(model,b,visible,generator)
+                acc[mode].add(model,out,x,v,h,b)
             device.advance();n+=len(b.target);now=time.perf_counter();recent.append((now,n))
             while len(recent)>2 and now-recent[0][0]>60:recent.popleft()
             rate=(n-recent[0][1])/max(.001,now-recent[0][0]) if len(recent)>1 else 0

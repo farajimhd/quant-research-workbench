@@ -24,7 +24,7 @@ def train(model,parent,a,manifest,status):
     contract=dict(version='phase1-v11-full-1',config=vars(model.config),source_revision=a.resume_contract_source or a.source_revision,
         split_hash=manifest['manifest_hash'],calibration_sha256=file_hash(a.calibration),batch_size=a.batch_size,workers=a.workers,prefetch=a.prefetch,
         shard_prefetch=a.shard_prefetch,shard_prefetch_mib=a.shard_prefetch_mib,validation_batch_size=a.validation_batch_size,validation_workers=a.validation_workers,
-        epochs=a.epochs,seed=a.seed,learning_rate=a.learning_rate,min_learning_rate=a.min_learning_rate,total_updates=total_updates,steps_per_epoch=steps_per_epoch,
+        validation_graphs=a.validation_graphs,epochs=a.epochs,seed=a.seed,learning_rate=a.learning_rate,min_learning_rate=a.min_learning_rate,total_updates=total_updates,steps_per_epoch=steps_per_epoch,
         weight_decay=.01,gradient_clip=1.,initialization_checkpoint=str(a.checkpoint),initialization_sha256=file_hash(a.checkpoint),retain_optimizer=a.retain_optimizer,
         sampling='Every certified training window; original chronological split, deterministic shuffled worker lanes, all tails retained.',
         decoder_dependency='Exported learned embedding only; all nine references predicted; visible-only median computation.',

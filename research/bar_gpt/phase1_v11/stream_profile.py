@@ -23,6 +23,7 @@ def main():
     p.add_argument('--workers',type=int,default=16);p.add_argument('--batch-size',type=int,default=1024);p.add_argument('--steps',type=int,default=100)
     p.add_argument('--mode',choices=['training','validation'],default='training');p.add_argument('--learning-rate',type=float,default=1e-5)
     p.add_argument('--validation-batch-size',type=int,default=0);p.add_argument('--validation-workers',type=int,default=-1)
+    p.add_argument('--validation-graphs',action='store_true')
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--shard-prefetch',type=int,default=16);p.add_argument('--shard-prefetch-mib',type=int,default=64)
     a=p.parse_args();a.device='cuda';a.resume=False;a.seed=110731;a.preparation='raw_gpu'
     if not 0<=a.workers<=32 or not 1<=a.prefetch<=4 or not 10<=a.steps<=500:raise ValueError('Bounded profile required')
@@ -41,7 +42,9 @@ def main():
             write_json(a.output/'progress.json',kw)
         result=evaluate(m,manifest,a,status,limit=a.steps)
         if result is None:raise InterruptedError('Validation profile stopped')
-        result.update(state='complete',windows_per_second=result['windows']/result['seconds'],source_revision=a.source_revision,checkpoint_sha256=file_hash(a.checkpoint),workers=a.workers,batch=a.validation_batch_size or a.batch_size)
+        result.update(state='complete',windows_per_second=result['windows']/result['seconds'],steady_windows_per_second=result['windows']/max(.001,result['seconds']-result['startup_seconds']),
+            total_wall_seconds=time.monotonic()-started,validation_graphs=a.validation_graphs,reserved_mib=torch.cuda.memory_reserved()/2**20,
+            source_revision=a.source_revision,checkpoint_sha256=file_hash(a.checkpoint),workers=a.workers,batch=a.validation_batch_size or a.batch_size)
         write_json(a.output/'result.json',result);print(json.dumps({k:v for k,v in result.items() if k!='metrics'}),flush=True);return
     opt=torch.optim.AdamW(m.parameters(),lr=a.learning_rate,fused=True);source=loader(manifest,a,'train');device=None
     try:

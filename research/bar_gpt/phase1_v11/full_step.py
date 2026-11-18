@@ -38,3 +38,27 @@ class Replay:
             copied.add(dest.data_ptr())
         for p,g in zip(self.params,self.grads):p.grad=g
         self.graph.replay();return self.output
+
+
+class InferenceReplay:
+    """Fixed batch size only; registered private RNG retains fresh random masks."""
+    @torch.no_grad()
+    def __init__(self,model,b,visible,generator):
+        self.batch=b.map(lambda x:x.clone());self.graph=torch.cuda.CUDAGraph();stream=torch.cuda.Stream()
+        self.graph.register_generator_state(generator)
+        stream.wait_stream(torch.cuda.current_stream());state=generator.get_state()
+        try:
+            with torch.cuda.stream(stream):
+                for _ in range(3):forward(model,self.batch,visible,generator)
+            torch.cuda.current_stream().wait_stream(stream)
+            with torch.cuda.graph(self.graph,stream=stream):self.output=forward(model,self.batch,visible,generator)
+        finally:generator.set_state(state)
+
+    @torch.no_grad()
+    def __call__(self,b):
+        copied=set()
+        for name in ('grid','slots','valid','frames'):
+            dest=getattr(self.batch,name)
+            if dest.data_ptr() not in copied:dest.copy_(getattr(b,name),non_blocking=True)
+            copied.add(dest.data_ptr())
+        self.graph.replay();return self.output
