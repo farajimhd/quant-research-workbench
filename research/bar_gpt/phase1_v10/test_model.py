@@ -113,3 +113,13 @@ def test_stable_clip_finite_extreme_gradients():
     p=torch.nn.Parameter(torch.zeros(2));p.grad=torch.tensor([1e30,-1e30])
     norm=stable_clip([p]);assert torch.isfinite(norm) and torch.isfinite(p.grad).all()
     torch.testing.assert_close(p.grad.norm(),torch.tensor(1.),rtol=1e-6,atol=1e-6)
+
+
+def test_stable_clip_matches_double_reference():
+    from .step import stable_clip
+    torch.manual_seed(17);parameters=[torch.nn.Parameter(torch.zeros(n)) for n in (17,321,55)]
+    for p in parameters:p.grad=torch.randn_like(p)*100
+    original=[p.grad.clone() for p in parameters]
+    expected=torch.cat([g.double() for g in original]).norm()
+    actual=stable_clip(parameters);torch.testing.assert_close(actual,expected,rtol=1e-12,atol=1e-12)
+    for p,g in zip(parameters,original):torch.testing.assert_close(p.grad,g*(1/(expected+1e-6)).float(),rtol=1e-6,atol=1e-8)
