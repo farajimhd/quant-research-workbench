@@ -18,6 +18,27 @@ class Config:
     dropout:float=.05
     precision:str='bf16'
     price_scale:float=.02
+    attention:str='standard'
+
+
+class NormalizedAttentionBlock(nn.Module):
+    """Bounded QK logits; raw inputs/targets and value channels are not clipped."""
+    def __init__(self,width,dropout):
+        super().__init__();self.heads=width//32;self.dropout=dropout
+        self.norm1=nn.LayerNorm(width);self.norm2=nn.LayerNorm(width)
+        self.qkv=nn.Linear(width,3*width);self.projection=nn.Linear(width,width)
+        self.linear1=nn.Linear(width,4*width);self.linear2=nn.Linear(4*width,width)
+        nn.init.xavier_uniform_(self.qkv.weight);nn.init.zeros_(self.qkv.bias)
+
+    def forward(self,h):
+        b,t,w=h.shape
+        q,k,v=self.qkv(self.norm1(h)).reshape(b,t,3,self.heads,32).permute(2,0,3,1,4).unbind(0)
+        q=F.normalize(q.float(),dim=-1,eps=1e-6).to(q.dtype)
+        k=F.normalize(k.float(),dim=-1,eps=1e-6).to(k.dtype)
+        a=F.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout if self.training else 0.,scale=8.)
+        h=h+F.dropout(self.projection(a.transpose(1,2).reshape(b,t,w)),self.dropout,self.training)
+        y=self.linear2(F.dropout(F.gelu(self.linear1(self.norm2(h))),self.dropout,self.training))
+        return h+F.dropout(y,self.dropout,self.training)
 
 
 class Encoder(nn.Module):
@@ -29,11 +50,14 @@ class Encoder(nn.Module):
         self.register_buffer('relative_factor',torch.tensor([100. if i in PRICES else 1. for i in range(18)]))
         self.stem=nn.Linear(54,c.width);self.position=nn.Parameter(torch.randn(1,64,c.width)*.01)
         self.latents=nn.Parameter(torch.randn(1,c.latent_tokens,c.width)*.01)
-        self.backbone=attention(c.width,c.layers,c.dropout)
-        # TransformerEncoder clones its prototype; independently initialize QKV.
-        for block in self.backbone.layers:
-            nn.init.xavier_uniform_(block.self_attn.in_proj_weight)
-            if block.self_attn.in_proj_bias is not None:nn.init.zeros_(block.self_attn.in_proj_bias)
+        if c.attention=='qknorm':
+            self.backbone=nn.Sequential(*[NormalizedAttentionBlock(c.width,c.dropout) for _ in range(c.layers)],nn.LayerNorm(c.width))
+        elif c.attention=='standard':
+            self.backbone=attention(c.width,c.layers,c.dropout)
+            for block in self.backbone.layers:
+                nn.init.xavier_uniform_(block.self_attn.in_proj_weight)
+                if block.self_attn.in_proj_bias is not None:nn.init.zeros_(block.self_attn.in_proj_bias)
+        else:raise ValueError('Unknown attention contract')
         self.shape=nn.Linear(c.latent_tokens*c.width,c.embedding-c.context)
         self.context=nn.Sequential(nn.Linear(138,c.context),nn.Linear(c.context,c.context))
 

@@ -2,7 +2,7 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
-import itertools,json,time
+import itertools,json,time,sys,math
 from pathlib import Path
 import numpy as np
 import torch
@@ -131,7 +131,7 @@ def train(a,manifest,status):
     model=make_model(a);optimizer=torch.optim.AdamW(model.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True)
     prototype=loader(manifest,a,'train');steps_per_epoch=len(prototype);del prototype
     total_updates=steps_per_epoch*a.epochs
-    contract=dict(version='phase1-v10-1',architecture=asdict(model.config),source_revision=a.source_revision,
+    contract=dict(version='phase1-v10-2',architecture=asdict(model.config),source_revision=a.source_revision,
         split=manifest['manifest_hash'],calibration=read_calibration(a.calibration)['hash'],batch_size=a.batch_size,workers=a.workers,
         prefetch=a.prefetch,shard_prefetch=a.shard_prefetch,shard_prefetch_mib=a.shard_prefetch_mib,
         validation_batch_size=a.validation_batch_size,validation_workers=a.validation_workers,epochs=a.epochs,
@@ -142,14 +142,15 @@ def train(a,manifest,status):
         decoder_dependency='Only learned embedding; no copied references, raw bypass or target statistics',
         encoder_parameters=sum(p.numel() for p in model.encoder.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()),
         initialization='fresh seed17 unless exact engineering resume',torch=str(torch.__version__))
-    epoch=step=cursor=origins=epoch_done=0;phase='train';best=float('inf');history=[]
+    epoch=step=cursor=origins=epoch_done=0;phase='train';best=float('inf');history=[];development_best=float('inf');best_price=float('inf')
     if a.resume:
         s=load_checkpoint(a.output/'checkpoint_last.pt',contract);model.load_state_dict(s['model']);optimizer.load_state_dict(s['optimizer']);restore_rng(s['rng'])
         epoch,step,cursor,origins,epoch_done,phase,best,history=(s[k] for k in ('epoch','step','batch_cursor','origins','epoch_done','phase','best','history'))
+        development_best=s['development_best'];best_price=s['best_price']
     else:write_json(a.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}))
     def checkpoint(name='checkpoint_last.pt'):
         save_checkpoint(a.output/name,dict(contract=contract,model=model.state_dict(),optimizer=optimizer.state_dict(),rng=rng_state(),
-            epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,phase=phase,best=best,history=history,
+            epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,phase=phase,best=best,history=history,development_best=development_best,best_price=best_price,
             scheduler=dict(step=step,total_updates=total_updates,peak=a.learning_rate,floor=a.min_learning_rate)))
         if reporter:
             proof=json.loads((a.output/name).with_suffix('.proof.json').read_text())
@@ -168,6 +169,7 @@ def train(a,manifest,status):
         if not a.resume:
             checkpoint();state=rng_state();status(stage='initial frozen development diagnostics')
             d=diagnostics(model,a,0);restore_rng(state);report(reporter,d,0)
+            best_price=d['development/masked/balanced_price_relative_mean']
         if a.cuda_graph:
             rows=np.load(a.data/'train.npy',mmap_mode='r',allow_pickle=False)
             example=prepare_raw(rows[:a.batch_size]).to('cuda');model.train();replay=make_replay(model,example);del example
@@ -186,7 +188,11 @@ def train(a,manifest,status):
                         if replay and len(b.target)==a.batch_size:value,channels,norm=replay(b)
                         else:optimizer.zero_grad(set_to_none=True);value,channels,norm=backward(model,b)
                         device.advance()
-                        if not (torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('Nonfinite loss/gradient before update')
+                        if not (torch.isfinite(value)&torch.isfinite(norm)):
+                            torch.save({name:getattr(b,name).detach().cpu() for name in ('grid','slots','valid','frames')},a.output/'failure-batch.pt')
+                            checkpoint('checkpoint_diagnostic_failure.pt')
+                            status(stage='nonfinite update rejected',step=step,failed_update=step+1,loss=float(value),gradient_norm=float(norm))
+                            raise FloatingPointError('Nonfinite loss/gradient before update; diagnostic checkpoint and batch preserved')
                         optimizer.step();step+=1;cursor+=1;origins+=len(b.target);epoch_done+=len(b.target);seen+=len(b.target)
                         if step%20==0:
                             now=time.perf_counter();recent.append((now,seen))
@@ -201,6 +207,14 @@ def train(a,manifest,status):
                         if step%a.checkpoint_every==0:checkpoint()
                         if step%a.diagnostic_every==0:
                             state=rng_state();status(stage='frozen development diagnostics');d=diagnostics(model,a,step);restore_rng(state);report(reporter,d,step)
+                            price=d['development/masked/balanced_price_relative_mean']
+                            if not math.isfinite(price) or price>max(10.,100*best_price):
+                                checkpoint('checkpoint_diagnostic_failure.pt')
+                                raise FloatingPointError('Catastrophic development reconstruction; prior best checkpoint preserved')
+                            best_price=min(best_price,price)
+                            score=50*price+d['development/masked/balanced_activity_log_mae']+.05*d['development/masked/worst_price_band_relative_mean']
+                            if score<development_best:
+                                development_best=score;checkpoint('checkpoint_development_best.pt')
                         if a.max_updates and step>=a.max_updates:checkpoint();return 'qualification_complete'
                     if epoch_done!=manifest['counts']['train'] or cursor!=steps_per_epoch:raise ValueError('Training traversal/population mismatch')
                     phase='validation';checkpoint()
@@ -225,4 +239,4 @@ def train(a,manifest,status):
         return 'complete'
     except KeyboardInterrupt:checkpoint();return 'interrupted'
     finally:
-        if reporter:reporter.finish()
+        if reporter:reporter.finish(exit_code=1 if sys.exc_info()[0] is not None else 0)

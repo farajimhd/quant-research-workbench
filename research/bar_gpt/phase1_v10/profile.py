@@ -131,6 +131,7 @@ def diagnose(a,status):
     saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
     saved=load_checkpoint(a.checkpoint,saved['contract'])
     rows=np.load(a.data/'development.npy',mmap_mode='r',allow_pickle=False)
+    a.attention=saved['contract']['architecture'].get('attention','standard')
     model=make_model(a);model.load_state_dict(saved['model']);results={};worst=None
     for precision in ('bf16','fp32'):
         model.config.precision=precision;model.eval();groups=[]
@@ -157,7 +158,34 @@ def diagnose(a,status):
         from .model import objective
         loss,_=objective(model,out,x,v,h);loss.backward()
         norms=[(name,float(p.grad.double().norm()),float(p.grad.abs().max()),bool(torch.isfinite(p.grad).all())) for name,p in model.named_parameters() if p.grad is not None]
-        gradient[precision]=dict(loss=float(loss),top=sorted(norms,key=lambda x:x[1],reverse=True)[:12],activations=dict(activation))
+        gradient[precision]=dict(loss=float(loss.detach()),top=sorted(norms,key=lambda x:x[1],reverse=True)[:12],activations=dict(activation))
     for handle in handles:handle.remove()
     result=dict(checkpoint=str(a.checkpoint),step=saved['step'],evaluations=results,gradient=gradient)
     write_json(a.output/'diagnosis.json',result);return dict(step=saved['step'],evaluations=results)
+
+
+def stress(a,status):
+    from .train import diagnostics
+    rows=np.load(a.data/'train.npy',allow_pickle=False);data=prepare_raw(rows).to('cuda')
+    model=make_model(a).train();optimizer=torch.optim.AdamW(model.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True)
+    example=data.map(lambda x:x[:a.batch_size] if x.numel() else x);replay=make_replay(model,example)
+    began=time.perf_counter();history=[];best=float('inf')
+    for step in range(a.steps):
+        if time.perf_counter()-began>a.stress_seconds:raise TimeoutError('Stress deadline; incomplete test is not a pass')
+        ids=torch.randint(len(rows),(a.batch_size,),device='cuda')
+        b=data.map(lambda x:x.index_select(0,ids) if x.numel() else x)
+        loss,channels,norm=replay(b)
+        if not (torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Stress nonfinite loss/gradient')
+        optimizer.step()
+        if (step+1)%100==0:status(stage='bounded long-horizon stability test',step=step+1,total=a.steps,loss=float(loss),gradient_norm=float(norm))
+        if (step+1)%5000==0 or step+1==a.steps:
+            state=rng_state();d=diagnostics(model,a,step+1);restore_rng(state)
+            score=50*d['development/masked/balanced_price_relative_mean']+d['development/masked/balanced_activity_log_mae']
+            weights=max(float(p.detach().abs().max()) for p in model.parameters())
+            record=dict(step=step+1,loss=float(loss),gradient_norm=float(norm),max_parameter=weights,**d);history.append(record)
+            write_json(a.output/'stress-history.json',history);print(record,flush=True)
+            if score<best:
+                best=score;save_checkpoint(a.output/'checkpoint_best.pt',dict(model=model.state_dict(),optimizer=optimizer.state_dict(),rng=rng_state(),contract=dict(test='long-horizon stability',config=vars(model.config)),step=step+1,cursor=(0,step+1)))
+            if d['development/masked/balanced_price_relative_mean']>10:raise FloatingPointError('Stress catastrophic reconstruction')
+    result=dict(steps=a.steps,seconds=time.perf_counter()-began,best_score=best,final=history[-1],scope='Training-only67606-window cache, random batches and random16 visible bars; not full training.')
+    write_json(a.output/'stress.json',result);return result

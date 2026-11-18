@@ -12,17 +12,18 @@ from ..v5.shards.phase1_contract import write_json,file_hash,digest
 
 
 def make_model(a):
-    return Autoencoder(Config(width=a.width,layers=a.layers,embedding=a.embedding,context=a.context,precision=a.precision),
+    return Autoencoder(Config(width=a.width,layers=a.layers,embedding=a.embedding,context=a.context,precision=a.precision,attention=a.attention),
                        read_calibration(a.calibration)['parameters']).to(a.device)
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('mode',choices=('engineering','compute','operators','diagnose','stream','validation-profile','train'))
+    p=argparse.ArgumentParser();p.add_argument('mode',choices=('engineering','compute','operators','diagnose','stress','stream','validation-profile','train'))
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--calibration',type=Path,required=True);p.add_argument('--checkpoint',type=Path)
     p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
     p.add_argument('--split',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v6-cohort-balanced-v4/split.json'))
     p.add_argument('--device',choices=('cuda','cpu'),default='cuda');p.add_argument('--precision',choices=('bf16','fp32'),default='bf16')
+    p.add_argument('--attention',choices=('standard','qknorm'),default='qknorm');p.add_argument('--stress-seconds',type=int,default=1200)
     p.add_argument('--width',type=int,default=384);p.add_argument('--layers',type=int,default=6)
     p.add_argument('--embedding',type=int,default=768);p.add_argument('--context',type=int,default=192)
     p.add_argument('--batch-size',type=int,default=2048);p.add_argument('--batches',nargs='+',type=int,default=[512,1024,2048,4096,8192])
@@ -56,7 +57,7 @@ def main():
     try:
         with lease(a.output):
             status(stage='verifying certified authority')
-            if a.mode in ('engineering','compute','operators','diagnose'):
+            if a.mode in ('engineering','compute','operators','diagnose','stress'):
                 from . import profile
                 result=getattr(profile,a.mode)(a,status)
             else:

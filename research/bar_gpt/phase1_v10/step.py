@@ -11,11 +11,20 @@ def forward(model,b,visible=16,generator=None):
     return output,values,valid,hidden
 
 
+def stable_clip(parameters):
+    grads=[p.grad for p in parameters if p.grad is not None]
+    # FP64 accumulation prevents overflow of a norm of finite FP32 gradients.
+    norm=torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(g,2,dtype=torch.float64) for g in grads]))
+    coefficient=(1./(norm+1e-6)).clamp(max=1.).float()
+    torch._foreach_mul_(grads,coefficient)
+    return norm
+
+
 def backward(model,b):
     output,target,valid,hidden=forward(model,b,model.config.visible)
     value,channel=objective(model,output,target,valid,hidden)
     value.backward()
-    norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=False)
+    norm=stable_clip(model.parameters())
     return value.detach(),channel.detach(),norm
 
 

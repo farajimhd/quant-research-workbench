@@ -97,3 +97,19 @@ def test_compact_native_group_reduction():
     actual=group_sum(x,v,groups)
     expected=torch.stack([torch.where(v&(frames==f)[:,None,None],x,0).sum((0,1)) for f in range(6)])
     torch.testing.assert_close(actual,expected,rtol=1e-12,atol=1e-7)
+
+
+def test_qknorm_shapes_and_gradients():
+    x,v,p=sample();m=Autoencoder(Config(width=32,layers=2,embedding=64,context=24,attention='qknorm'),p)
+    a,b,pos,h=select(x,v);loss,_=objective(m,m(a,b,pos),x,v,h);loss.backward()
+    assert all(t.grad is not None and torch.isfinite(t.grad).all() for t in m.parameters())
+    with torch.no_grad():
+        for block in list(m.encoder.backbone)[:-1]:block.qkv.weight.mul_(1000)
+    assert all(torch.isfinite(y).all() for y in m(a,b,pos))
+
+
+def test_stable_clip_finite_extreme_gradients():
+    from .step import stable_clip
+    p=torch.nn.Parameter(torch.zeros(2));p.grad=torch.tensor([1e30,-1e30])
+    norm=stable_clip([p]);assert torch.isfinite(norm) and torch.isfinite(p.grad).all()
+    torch.testing.assert_close(p.grad.norm(),torch.tensor(1.),rtol=1e-6,atol=1e-6)

@@ -120,3 +120,35 @@ its prior XML and new wrapper are preserved in the runtime setup root.
 per-profile results, launch ownership receipts and W&B readback are runtime
 records. Full training quality is still being measured; qualification is not
 proof of forecasting usefulness or completion of100 epochs.
+
+
+## Overnight intervention: numerical instability
+
+The first full run failed after completed step61160; its step60000 checkpoint,
+logs and W&B identity5rklsuk2 remain preserved. This run did not complete one
+full epoch. Frozen development error had already become catastrophic at60000.
+The pinned diagnostic copy SHA256 is
+`f73322b926fb3e615bb1b25e73cb67151823a042aa73a4bae463a5cf9d08aa14`.
+All trainer/loader owners exited before diagnosis used the GPU.
+
+Confirmed: first-layer QKV weight norm grew to1185, feed-forward activations
+reached roughly73000, and gradients could be extremely large despite modest
+batch loss. FP32 evaluation reproduces essentially the same bad native outputs
+as BF16; changing output precision alone does not repair the trained model.
+The specific causal contribution of batch noise versus unbounded attention
+logits is not yet isolated. No invalid source data or hidden-reference shortcut
+was established by this evidence.
+
+The next candidate explicitly changes attention to normalize each learned query
+and key in FP32 and use scale8 dot products (bounded attention logits, without
+clipping source values, targets or value vectors). The standard attention path
+remains available for reproducing the first run. Gradient norm accumulation is
+now FP64 so finite FP32 gradients cannot overflow the clipping norm. Before a
+replacement full launch, require actual GPU qualification and a long-horizon
+training-only cache stress test. This architecture change gets a new identity;
+it is not a silent optimizer resume. Larger batches will be reprofiled.
+
+The trainer now retains a rolling best-development checkpoint, preserves a
+rejected nonfinite batch plus a diagnostic checkpoint, stops on catastrophic
+balanced development price errors, and marks exceptional W&B exits as failures.
+A diagnostic failure checkpoint is evidence, not an approved resume candidate.
