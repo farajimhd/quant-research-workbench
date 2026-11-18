@@ -67,6 +67,7 @@ def main():
     run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',name=a.output.name,dir=str(a.output),config=contract,id=identity,resume='must' if a.resume else None)
     if a.resume:run.summary['failure']=None
     write_json(a.output/'wandb.json',dict(id=run.id,url=run.url))
+    run_exit=0
     try:
         tinyrows=np.load(a.data/'tiny.npy',allow_pickle=False)[:4];tiny=cache(tinyrows,'cuda');m=make().train()
         # Explicit synthetic easy-case test only: repeat each first market bar.
@@ -180,9 +181,10 @@ def main():
             checkpoint_sha256=file_hash(a.output/'checkpoint_last.pt'),audit_consulted=False)
         write_json(a.output/'result.json',result);run.summary.update(result);status(stage='complete',result=result)
     except BaseException as exc:
+        run_exit=1
         if isinstance(exc,(InterruptedError,TimeoutError)) and 'train_start' in locals():checkpoint('checkpoint_last.pt')
         write_json(a.output/'failure.json',dict(error=repr(exc),seconds=time.monotonic()-began));run.summary['failure']=repr(exc);raise
-    finally:run.finish()
+    finally:run.finish(exit_code=run_exit)
 
 
 if __name__=='__main__':main()

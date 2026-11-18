@@ -13,6 +13,7 @@ from ..v5.data_v3 import load_split,close_loader
 from ..v5.loader_index_v1 import attach
 from ..phase1_v8.runtime import preflight
 from ..v5.shards.phase1_contract import write_json,file_hash
+from ..phase2_v2.train import load_checkpoint
 
 
 def main():
@@ -26,6 +27,7 @@ def main():
     preflight(a);torch.set_num_threads(4);started=time.monotonic()
     manifest=load_split(a.split);manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}
     calibration=json.loads(a.calibration.read_text());saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
+    saved=load_checkpoint(a.checkpoint,saved['contract'])
     if saved['contract']['calibration_sha256']!=file_hash(a.calibration):raise ValueError('Calibration differs')
     frozen=json.loads(Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset/manifest.json').read_text())
     if frozen['hash']!=saved['contract']['data_hash'] or frozen['source_split_hash']!=manifest['manifest_hash']:raise ValueError('Full split/calibration dependency differs')
