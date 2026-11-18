@@ -17,7 +17,7 @@ def make_model(a):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('mode',choices=('engineering','compute','stream','validation-profile','train'))
+    p=argparse.ArgumentParser();p.add_argument('mode',choices=('engineering','compute','operators','stream','validation-profile','train'))
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--calibration',type=Path,required=True)
     p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
@@ -56,7 +56,7 @@ def main():
     try:
         with lease(a.output):
             status(stage='verifying certified authority')
-            if a.mode in ('engineering','compute'):
+            if a.mode in ('engineering','compute','operators'):
                 from . import profile
                 result=getattr(profile,a.mode)(a,status)
             else:

@@ -77,7 +77,7 @@ def compute(a,status):
                     opt.step()
                 torch.cuda.synchronize();seconds=time.perf_counter()-began
                 result=dict(batch=bs,graph=graph,state='complete',windows_per_second=bs*a.steps/seconds,seconds=seconds,
-                            startup_seconds=startup,peak_mib=torch.cuda.max_memory_allocated()/2**20,loss=float(loss))
+                            startup_seconds=startup,peak_mib=torch.cuda.max_memory_allocated()/2**20,reserved_mib=torch.cuda.memory_reserved()/2**20,loss=float(loss))
             except torch.cuda.OutOfMemoryError:result=dict(batch=bs,graph=graph,state='out-of-memory')
             finally:
                 del m,opt,b,replay
@@ -105,9 +105,22 @@ def stream(a,manifest,status):
             if i%20==0:status(stage='profiling full certified stream',step=i,profile_total=a.steps+8,loss=float(loss))
         torch.cuda.synchronize();seconds=time.perf_counter()-began
         result=dict(windows=seen,seconds=seconds,windows_per_second=seen/seconds,startup_seconds=startup,
-            loader_wait_seconds=device.wait_seconds-wait,peak_mib=torch.cuda.max_memory_allocated()/2**20,
+            loader_wait_seconds=device.wait_seconds-wait,peak_mib=torch.cuda.max_memory_allocated()/2**20,reserved_mib=torch.cuda.memory_reserved()/2**20,
             batch=a.batch_size,workers=a.workers,prefetch=a.prefetch,cuda_graph=a.cuda_graph)
         write_json(a.output/'stream.json',result);return result
     finally:
         if device:device.close()
         close_loader(source)
+
+
+def operators(a,status):
+    rows=np.load(a.data/'train.npy',mmap_mode='r',allow_pickle=False)
+    m=make_model(a).train();b=prepare_raw(rows[:a.batch_size]).to('cuda')
+    opt=torch.optim.AdamW(m.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True)
+    for _ in range(5):opt.zero_grad(set_to_none=True);backward(m,b);opt.step()
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU,torch.profiler.ProfilerActivity.CUDA]) as prof:
+        for _ in range(5):opt.zero_grad(set_to_none=True);backward(m,b);opt.step()
+        torch.cuda.synchronize()
+    table=prof.key_averages().table(sort_by='self_cuda_time_total',row_limit=30)
+    (a.output/'operators.txt').write_text(table,encoding='utf-8')
+    return dict(profile='operators.txt')

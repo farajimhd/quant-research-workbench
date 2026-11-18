@@ -88,7 +88,7 @@ def evaluate(model,manifest,a,status,limit=0):
             status(stage='bounded validation profile' if limit else 'masked + all-visible full validation',validation_done=n,
                 validation_total=total,validation_windows_per_second=rate,validation_eta_seconds=(max(0,total-n)/rate if rate else None),
                 phase_startup_seconds=startup,phase_loader_wait_seconds=device.wait_seconds-wait,
-                phase_loader_wait_fraction=(device.wait_seconds-wait)/max(.001,now-started-startup),gpu_mib=torch.cuda.memory_allocated()/2**20)
+                phase_loader_wait_fraction=(device.wait_seconds-wait)/max(.001,now-started-startup),gpu_mib=torch.cuda.memory_allocated()/2**20,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20)
         if not stopped and not limit and n!=manifest['counts']['validation']:raise ValueError(f'Incomplete validation {n}')
         if stopped and not n:return None
         results={k:v.finish() for k,v in acc.items()}
@@ -181,7 +181,7 @@ def train(a,manifest,status):
                             metrics=dict(loss=float(value),price_loss=float(channels[list(PRICES)].mean()),activity_loss=float(channels[list(ACTIVITY)].mean()),
                                 gradient_norm=float(norm),learning_rate=lr,windows_per_second=(seen-recent[0][1])/max(.001,now-recent[0][0]),
                                 phase_startup_seconds=startup,phase_loader_wait_seconds=device.wait_seconds-initial_wait,
-                                phase_loader_wait_fraction=(device.wait_seconds-initial_wait)/max(.001,now-began),gpu_mib=torch.cuda.memory_allocated()/2**20)
+                                phase_loader_wait_fraction=(device.wait_seconds-initial_wait)/max(.001,now-began),gpu_mib=torch.cuda.memory_allocated()/2**20,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20)
                             status(stage='training',epoch=epoch+1,step=step,epoch_done=epoch_done,origins=origins,**metrics)
                             with (a.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
                             report(reporter,{'train/'+k:v for k,v in metrics.items()},step)
