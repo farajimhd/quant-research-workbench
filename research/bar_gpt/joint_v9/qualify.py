@@ -46,7 +46,8 @@ def main():
     if manifest['hash']!=identity['dataset_hash']:raise ValueError('Dataset identity mismatch')
     config=Config(**identity['config']);parameters={k:torch.tensor(v) for k,v in identity['parameters'].items()}
     model=JointModel(config,**parameters).to(a.device);model.load_state_dict(state['model']);model.eval()
-    report=dict(run=a.run,checkpoint_sha256=file_hash(cp),source_revision=a.source_revision,dataset_hash=manifest['hash'],evaluations={})
+    report=dict(run=a.run,checkpoint_sha256=file_hash(cp),source_revision=a.source_revision,dataset_hash=manifest['hash'],device=a.device,
+        precision='Configured CUDA precision' if a.device=='cuda' else 'CPU FP32 diagnostic',evaluations={})
     for partition,r in rows.items():
         d={k:v.to(a.device) for k,v in cache(r).items()};identities=json.loads((dataset/(partition+'-identities.json')).read_text())
         begin=time.time();report['evaluations'][partition]=measure(model,d,r,identities)

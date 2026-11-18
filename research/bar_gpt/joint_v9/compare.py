@@ -22,7 +22,10 @@ def main():
             record['metrics'][split]={k:v[k] for k in ('price_mae_skill','activity_mae_skill','price_session_bootstrap95','activity_session_bootstrap95','selection_score')}
             record['metrics'][split].update(reconstruction_price_relative=v['reconstruction']['balanced_price_relative_mean'],
                 reconstruction_activity_log=v['reconstruction']['balanced_activity_log_mae'],reconstruction_worst_price_group=v['reconstruction']['worst_price_band_relative_mean'])
-            for task in ('native_forecast','native_persistence','reconstruction'):
+            for key in ('activity_history_mean_skill','activity_history_median_skill','history_mean_selection_score'):
+                if key in v:record['metrics'][split][key]=v[key]
+            for task in ('native_forecast','native_persistence','native_history_mean','native_history_median','reconstruction'):
+                if task not in v:continue
                 for frame,f in v[task]['frames'].items():
                     for name,c in f['channels'].items():
                         channels.append(dict(run=folder.name,split=split,task=task,timeframe_us=frame,channel=name,count=c['count'],mae=c['mae'],

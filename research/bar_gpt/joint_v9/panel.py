@@ -36,6 +36,8 @@ def render(root):
     for partition,metrics in latest.items():
         price=100*metrics['price_mae_skill'];activity=100*metrics['activity_mae_skill'];recon=100*metrics['reconstruction']['balanced_price_relative_mean']
         rows.append(Text(f'{partition}: forecast skill vs persistence · price {price:+.2f}% · activity {activity:+.2f}% · reconstruction price {recon:.3f}%',style='green' if price>0 and activity>0 else 'yellow'))
+        if 'activity_history_mean_skill' in metrics:
+            rows.append(Text(f'  Activity vs historical mean / median: {100*metrics["activity_history_mean_skill"]:+.2f}% / {100*metrics["activity_history_median_skill"]:+.2f}%',style='dim'))
     rows.append(Text(f'{sum(r.get("state")=="complete" for r in ledger.get("experiments",[]))} complete · {sum(r.get("state")=="failed" for r in ledger.get("experiments",[]))} failed · {ledger.get("state","")}',style='dim'))
     if p.get('error'):rows.append(Text(p['error'],style='red'))
     return Group(*rows)

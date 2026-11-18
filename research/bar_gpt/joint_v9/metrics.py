@@ -2,7 +2,7 @@
 import numpy as np
 import time
 import torch
-from .data import anchor
+from .data import anchor,historical_mean_anchor
 from .model import structured
 from ..phase1_v8.model import inverse,PRICES,ACTIVITY
 from ..phase1_v7.metrics import evaluate as native_metrics,require_structured
@@ -53,7 +53,7 @@ def skill(prediction,target,valid,baseline,scale,identities):
 
 @torch.no_grad()
 def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status=None):
-    model.eval();pred=[];past=[];means=[];recon=[];zs=[];metadata=[];started=time.perf_counter()
+    model.eval();pred=[];past=[];means=[];rolling=[];medians=[];recon=[];zs=[];metadata=[];started=time.perf_counter()
     for start in range(0,len(rows),batch_size):
         d={k:v[start:start+batch_size] for k,v in data.items()}
         o=model(d['x'],d['valid'],d['ages'],reconstruct=reconstruction)
@@ -61,6 +61,8 @@ def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status
         if not torch.isfinite(p).all():raise FloatingPointError('Nonfinite forecast')
         pred.append(p.cpu().numpy());past.append(structured(base[:,None]).expand(-1,64,-1).cpu().numpy())
         means.append(structured(base[:,None]+model.mean_future_delta).cpu().numpy());zs.append(o['joint'].cpu().numpy())
+        rolling.append(structured(historical_mean_anchor(d['x'],d['valid']))[:,None].expand(-1,64,-1).cpu().numpy())
+        medians.append(structured(historical_mean_anchor(d['x'],d['valid'],'median'))[:,None].expand(-1,64,-1).cpu().numpy())
         if reconstruction:
             recon.append(inverse(o['reconstruction'][0]).cpu().numpy())
             _,t,vl=o['reconstruction'];v=d['valid'];tv=v[...,18:]
@@ -74,10 +76,19 @@ def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status
     p=np.concatenate(pred);baseline=np.concatenate(past);mean=np.concatenate(means);target=data['target'].cpu().numpy();valid=data['target_valid'].cpu().numpy()
     result=skill(p,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
     result['training_mean_control']=skill(mean,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
+    history_mean=np.concatenate(rolling)
+    result['history_mean_control']=skill(history_mean,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
+    result['activity_history_mean_skill']=1-result['activity_normalized_mae']/max(result['history_mean_control']['activity_normalized_mae'],1e-12)
+    result['history_mean_selection_score']=.5*(1-result['price_mae_skill']+1-result['activity_history_mean_skill'])
+    history_median=np.concatenate(medians)
+    result['history_median_control']=skill(history_median,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
+    result['activity_history_median_skill']=1-result['activity_normalized_mae']/max(result['history_median_control']['activity_normalized_mae'],1e-12)
     future=future_rows(rows)
     result['native_forecast']=native_metrics(inverse(torch.from_numpy(p)).numpy(),future)
     require_structured(result['native_forecast'],paired=True)
     result['native_persistence']=native_metrics(inverse(torch.from_numpy(baseline)).numpy(),future)
+    result['native_history_mean']=native_metrics(inverse(torch.from_numpy(history_mean)).numpy(),future)
+    result['native_history_median']=native_metrics(inverse(torch.from_numpy(history_median)).numpy(),future)
     if reconstruction:
         result['reconstruction']=native_metrics(np.concatenate(recon).reshape(-1,64,18),rows['context'].reshape(-1))
         require_structured(result['reconstruction'],paired=True)

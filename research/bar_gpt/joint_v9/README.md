@@ -58,6 +58,13 @@ comparisons. The latter verifies that the original training dataset is retained
 byte-exact and records the calibration manifest hash; no validation statistics
 are used.
 
+Forecast evaluation includes last-bar persistence and stronger historical-window
+log-activity mean/median controls. A high R-squared for future activity change
+from the latest bar can mostly reflect the known latest-bar value; therefore
+probes also report actual future activity levels and changes from historical
+means, with causal-control errors. These labels are explicit summaries of the
+certified future bars, not invented trading outcomes.
+
 Matched forecast-only and joint runs train the same affine reconstruction head
 at weight 0.1. The reconstruction-weight argument controls gradients entering
 the encoder: zero trains a detached reconstruction probe. This avoids comparing

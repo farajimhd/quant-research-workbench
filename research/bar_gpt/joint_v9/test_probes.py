@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 from .test_model import examples
 from .data import cache
-from .probes import labels,summaries,fit_evaluate
+from .probes import labels,summaries,fit_evaluate,causal_controls
 from .launch import controller_lock
 from .data import calibrate
 from .model import Config,JointModel
@@ -35,8 +35,9 @@ class ProbeContract(unittest.TestCase):
         rows['future']['values']*=2
         second=cache(rows)
         np.testing.assert_array_equal(features,summaries(second))
+        np.testing.assert_array_equal(causal_controls(first),causal_controls(second))
         self.assertFalse(np.array_equal(y,labels(second)[1]))
-        self.assertEqual(len(names),11);self.assertEqual(v.shape,y.shape)
+        self.assertEqual(len(names),23);self.assertEqual(v.shape,y.shape)
         first['target_valid'][0,0,4]=False
         self.assertFalse(labels(first)[2][0,3])
 

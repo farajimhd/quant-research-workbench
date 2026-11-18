@@ -33,6 +33,20 @@ def anchor(x,valid,check=True):
     return code[:,0]
 
 
+def historical_mean_anchor(x,valid,statistic='mean'):
+    """Strong causal control: last prices, recent-window mean log activity."""
+    result=anchor(x,valid,check=False)
+    for j in (4,5,10,11,16,17):
+        v=valid[:,7,:,j]
+        if statistic=='median':
+            mean=torch.nanmedian(torch.where(v,x[:,7,:,j],float('nan')),dim=1).values
+            mean=torch.where(v.any(1),mean,0)
+        elif statistic=='mean':mean=torch.where(v,x[:,7,:,j],0).sum(1)/v.sum(1).clamp_min(1)
+        else:raise ValueError('Unknown causal activity control')
+        result[:,j]=mean.sqrt()
+    return result
+
+
 def cache(rows):
     c=window_cache(rows['context'].reshape(-1))
     x=c['values'].reshape(len(rows),16,64,27);v=c['valid'].reshape_as(x)

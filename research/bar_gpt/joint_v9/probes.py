@@ -7,7 +7,7 @@ import numpy as np
 import torch
 from types import SimpleNamespace
 from sklearn.linear_model import Ridge
-from .data import load,cache,anchor
+from .data import load,cache,anchor,historical_mean_anchor
 from .model import Config,JointModel,structured
 from ..phase2_v1.data import sealed
 from ..phase1_v8.runtime import preflight
@@ -22,10 +22,28 @@ def labels(d):
     masks=[v[:,h-1,3] for h in (1,16,64)]
     for j in ACTIVITY:
         names.append('mean_log_activity_change_'+str(j));values.append(y[:,:,j].mean(1)-past[:,j]);masks.append(v[:,:,j].all(1))
+    history=structured(historical_mean_anchor(d['x'],d['valid'])).numpy()
+    for relative in (False,True):
+        for j in ACTIVITY:
+            names.append(('mean_log_activity_from_history_mean_' if relative else 'mean_log_activity_level_')+str(j))
+            values.append(y[:,:,j].mean(1)-(history[:,j] if relative else 0));masks.append(v[:,:,j].all(1))
     names+=['future_close_realized_volatility','future_trade_log_range']
     values += [np.sqrt(np.mean(np.diff(y[:,:,3],axis=1)**2,axis=1)),y[:,:,1].max(1)-y[:,:,2].min(1)]
     masks += [v[:,:,3].all(1),v[:,:,[1,2]].all((1,2))]
     return names,np.stack(values,1),np.stack(masks,1)
+
+
+def causal_controls(d):
+    x=d['x'];v=d['valid'];past=structured(anchor(x,v)).numpy();history=structured(historical_mean_anchor(x,v)).numpy()
+    zero=np.zeros(len(x),dtype=np.float32);values=[zero,zero,zero]
+    values += [history[:,j]-past[:,j] for j in ACTIVITY]
+    values += [history[:,j] for j in ACTIVITY]+[zero for _ in ACTIVITY]
+    returns=torch.diff(x[:,7,:,3],dim=1);valid=v[:,7,1:,3]&v[:,7,:-1,3]
+    vol=(torch.where(valid,returns.square(),0).sum(1)/valid.sum(1).clamp_min(1)).sqrt()
+    high=torch.where(v[:,7,:,1],x[:,7,:,1],-float('inf')).amax(1)
+    low=torch.where(v[:,7,:,2],x[:,7,:,2],float('inf')).amin(1)
+    spread=torch.where(v[:,7,:,1].any(1)&v[:,7,:,2].any(1),high-low,0)
+    return np.stack(values+[vol.numpy(),spread.numpy()],1)
 
 
 def summaries(d):
@@ -58,7 +76,7 @@ def embeddings(model,d,device='cpu'):
     return dict(joint=np.concatenate(result),windows=np.concatenate(windows))
 
 
-def fit_evaluate(features,targets):
+def fit_evaluate(features,targets,controls=None):
     train=features['train'];mean=train.mean(0);std=train.std(0);std=np.where(std>1e-7,std,1)
     x={k:(v-mean)/std for k,v in features.items()};names,y,valid=targets['train'];result={}
     groups={}
@@ -75,6 +93,10 @@ def fit_evaluate(features,targets):
             report[split]=dict(count=int(ix.sum()),mae=float(np.abs(err).mean()),rmse=float(np.sqrt(np.mean(err**2))),
                 r2=float(1-np.mean(err**2)/max(np.var(t),1e-20)),training_mean_mae=float(np.abs(t-baseline).mean()),
                 zero_mae=float(np.abs(t).mean()),prediction_variance=float(np.var(p)),target_variance=float(np.var(t)))
+            if controls is not None:
+                control=controls[split][ix,j];baseline_error=float(np.abs(t-control).mean())
+                report[split].update(causal_mae=baseline_error,mae_skill_vs_causal=float(1-np.abs(err).mean()/baseline_error) if baseline_error>0 else None,
+                    causal_r2=float(1-np.mean((control-t)**2)/max(np.var(t),1e-20)))
         result[name]=report
     return result
 
@@ -90,11 +112,12 @@ def main():
     torch.set_float32_matmul_precision('highest')
     rows,manifest=load(a.data or a.root/'dataset',('train','development','novel_development'))
     data={k:cache(v) for k,v in rows.items()};targets={k:labels(v) for k,v in data.items()}
+    controls={k:causal_controls(v) for k,v in data.items()}
     retention={k:window_labels(v) for k,v in data.items()}
     raw={k:summaries(v) for k,v in data.items()}
     result=dict(dataset_hash=manifest['hash'],device=a.device,source_revision=a.source_revision,
         precision='Configured CUDA autocast' if a.device=='cuda' else 'CPU FP32 screening',method='Frozen encoder. Ridge alpha=100, standardized using training only, no tuning on validation. All eligible future labels, rejection counts explicit.',
-        labels=targets['train'][0],raw_summary=dict(features=raw['train'].shape[1],metrics=fit_evaluate(raw,targets),
+        labels=targets['train'][0],raw_summary=dict(features=raw['train'].shape[1],metrics=fit_evaluate(raw,targets,controls),
             window_retention=fit_evaluate({k:v.reshape(-1,90) for k,v in raw.items()},retention)),runs={})
     for name in a.runs:
         cp=a.root/name/'best.pt';state=torch.load(cp,map_location='cpu',weights_only=False);identity=state['identity']
@@ -106,8 +129,8 @@ def main():
         untrained={k:embeddings(model,d,a.device) for k,d in data.items()};model.load_state_dict(state['model'])
         trained={k:embeddings(model,d,a.device) for k,d in data.items()}
         result['runs'][name]=dict(checkpoint_sha256=file_hash(cp),features=c.embedding,window_features=16*c.embedding,encoder_training_dataset_hash=identity['dataset_hash'],
-            untrained=fit_evaluate({k:v['joint'] for k,v in untrained.items()},targets),trained=fit_evaluate({k:v['joint'] for k,v in trained.items()},targets),
-            untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets),
+            untrained=fit_evaluate({k:v['joint'] for k,v in untrained.items()},targets,controls),trained=fit_evaluate({k:v['joint'] for k,v in trained.items()},targets,controls),
+            untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets,controls),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets,controls),
             untrained_retention=fit_evaluate({k:v['windows'].reshape(-1,c.embedding) for k,v in untrained.items()},retention),
             trained_retention=fit_evaluate({k:v['windows'].reshape(-1,c.embedding) for k,v in trained.items()},retention))
         print(name,flush=True)
