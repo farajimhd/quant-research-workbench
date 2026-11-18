@@ -63,3 +63,60 @@ The `panel` module preserves the V5-style operational layout with training and
 validation speed/ETA, loader wait, batch/concurrency, GPU memory, LR and full
 validation results. It labels the16-visible/48-hidden training contract explicitly.
 No claim of fastest full-stream configuration is made before profiling.
+
+
+## Workstation qualification and full launch, 2026-11-17
+
+Pinned runnable source: `31e35f7f7b69f2897cfdd063e33106575f224d08`.
+Encoder11,643,840 parameters; affine decoder2,657,664. Nine local tests passed.
+Actual default BF16/CUDA-graph tiny overfit:4.49610 to0.007408 after800 updates;
+optimizer/RNG next-update continuation and standalone encoder parity passed.
+The real certified loader trainer resumed its verified step40 checkpoint and
+advanced to60 with unchanged model/data/schedule contract. These qualification
+weights are not used to initialize full training.
+
+Measured complete optimizer throughput (windows/second, short GPU-resident
+profiles): graph batch256=35.5K,512=45.3K,1024=50.9K,2048=48.5K,
+4096=44.5K,8192=43.8K,16384=44.1K. Full certified stream at batch1024,
+eight workers/prefetch4 sustained50.15K over1.536million windows; loader
+wait0.157s/30.63s and startup10.59s. Sixteen workers/prefetch2 sustained50.10K,
+with startup21.00s. Larger batches/workers did not improve training throughput.
+This larger encoder is slower than the historical150K/s narrow raw model.
+
+Validation profiles include both visibility modes and complete native metrics.
+Batch4096 measured25.1K steady windows/s; batch16384 measured27.5K. A compact
+per-example grouped reduction retained all native results within1e-8 relative
+tolerance on identical163840 windows. Batch32768 brought little additional
+speed. Selected train/validation batches1024/16384, eight workers, prefetch4,
+shard prefetch16/64MiB, one preparation thread/worker. CUDA graphs/fused AdamW,
+BF16 attention and IEEE FP32 readout are retained. Graph-pool memory is reported
+as reserved alongside active tensor memory; small active allocation alone does
+not describe total GPU usage.
+
+Full run: `phase1-v10-d384-l6-e768-mae16-100ep-20261117`, under workstation
+`D:/TradingML/runtimes/bar_gpt/phase1-v10-full-setup-20261117/`.
+W&B run: https://wandb.ai/mehdifaraji/bargpt-phase1-v10-full-mae/runs/5rklsuk2 .
+100 full epochs;182207 optimizer updates/epoch including worker tails,
+18,220,700 total updates. Rolling verified checkpoints and fixed-development
+learning points every5000 updates; complete47,750,007-window validation after
+every186,575,722-window training epoch. Full validation is not replaced by the
+small development diagnostics. The user additionally authorized an active
+eight-hour overnight watch with checkpoint-preserving engineering repairs or
+explicitly identified scientific restarts; this is not scheduled automation.
+
+Exact workstation launch (refuses an existing output; use `--resume` on the
+launcher only for the same verified contract and preserved identity):
+
+```powershell
+Set-Location D:\TradingML\codes\bargpt-phase1-v10-31e35f7f7
+$env:PYTHONDONTWRITEBYTECODE='1'
+& C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -m research.bar_gpt.phase1_v10.launch --output D:\TradingML\runtimes\bar_gpt\phase1-v10-full-setup-20261117\phase1-v10-d384-l6-e768-mae16-100ep-20261117 -- --source-revision 31e35f7f7b69f2897cfdd063e33106575f224d08 --calibration D:\TradingML\runtimes\bar_gpt\phase1-v10-full-setup-20261117\calibration.json --batch-size 1024 --validation-batch-size 16384 --workers 8 --prefetch 4 --epochs 100 --learning-rate 0.001 --min-learning-rate 0.00001 --checkpoint-every 5000 --diagnostic-every 5000 --wandb-mode online
+```
+
+The actual durable controller was launched once through Win32_Process.Create,
+not a scheduled trainer. The existing triggerless manual panel task was reused;
+its prior XML and new wrapper are preserved in the runtime setup root.
+`qualification-ledger.json`, `overnight-monitor.json`, deployment seals,
+per-profile results, launch ownership receipts and W&B readback are runtime
+records. Full training quality is still being measured; qualification is not
+proof of forecasting usefulness or completion of100 epochs.
