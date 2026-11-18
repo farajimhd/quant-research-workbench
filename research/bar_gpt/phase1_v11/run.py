@@ -1,0 +1,119 @@
+"""Finite, deadline-guarded V11 qualification and research runner."""
+import os
+os.environ.update(PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
+import argparse,copy,json,math,time
+from pathlib import Path
+import numpy as np
+import torch
+from .config import Config
+from .model import Autoencoder
+from .data import verify,prepare,cache
+from .step import backward,Replay
+from .evaluation import evaluate_model
+from ..phase1_v8.runtime import preflight
+from ..phase2_v2.train import save_checkpoint,rng_state
+from ..v5.shards.phase1_contract import write_json,file_hash
+
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('mode',choices=['prepare','experiment'])
+    p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--calibration',type=Path)
+    p.add_argument('--source-revision',default='');p.add_argument('--seed',type=int,default=110731)
+    p.add_argument('--minutes',type=float,default=18);p.add_argument('--train-minutes',type=float,default=12)
+    p.add_argument('--learning-rate',type=float,default=.0003);p.add_argument('--reference-weight',type=float,default=1)
+    p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
+    p.add_argument('--tiny-steps',type=int,default=800);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
+    a=p.parse_args();torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed)
+    if a.mode=='prepare':print(prepare(a.data,a.output));return
+    if not 0<a.train_minutes<a.minutes<=60:raise ValueError('Strict bounded experiment required')
+    a.device='cuda';a.resume=False;began=time.monotonic();preflight(a);deadline=began+a.minutes*60
+    def status(**kw):
+        value=dict(elapsed_seconds=time.monotonic()-began,deadline_seconds=a.minutes*60,**kw)
+        write_json(a.output/'progress.json',value);print(json.dumps(value),flush=True)
+        if time.monotonic()>deadline:raise TimeoutError('Experiment deadline: incomplete, never qualified')
+        if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():raise InterruptedError('Human STOP')
+    calibration=json.loads(a.calibration.read_text());manifest=verify(a.data)
+    if calibration['data_hash']!=manifest['hash']:raise ValueError('Calibration provenance mismatch')
+    config=Config(reference_weight=a.reference_weight,precision=a.precision)
+    def make():return Autoencoder(config,calibration['parameters']).cuda()
+    contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
+        hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,
+        acceptance='Finite source-valid raw outputs; tiny fit; dev masked+all-visible competitive with visible-median control across timeframe/price bands; predicted-reference scale recovery; no hidden-reference bypass.')
+    write_json(a.output/'contract.json',contract)
+    import wandb
+    run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',name=a.output.name,dir=str(a.output),config=contract)
+    write_json(a.output/'wandb.json',dict(id=run.id,url=run.url))
+    try:
+        tinyrows=np.load(a.data/'tiny.npy',allow_pickle=False)[:4];tiny=cache(tinyrows,'cuda');m=make().train()
+        opt=torch.optim.AdamW(m.parameters(),lr=.001,weight_decay=.01,fused=True)
+        # Fixed four easy examples; random visibility remains active.
+        replay=Replay(m,tiny['values'],tiny['valid']);initial=None
+        for step in range(a.tiny_steps):
+            loss,norm,parts=replay(tiny['values'],tiny['valid']);opt.step()
+            if not bool(torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Tiny nonfinite')
+            if initial is None:initial=float(loss)
+            if step%100==0:status(stage='tiny overfit',step=step,loss=float(loss))
+        tiny_result=dict(initial=initial,final=float(loss),ratio=float(loss)/initial)
+        write_json(a.output/'tiny.json',tiny_result)
+        if tiny_result['ratio']>.2:raise AssertionError('Tiny fit failed: '+str(tiny_result))
+        del replay,opt,m;tiny=None;torch.cuda.empty_cache()
+        status(stage='loading verified frozen subsets')
+        rows={k:np.load(a.data/(k+'.npy'),allow_pickle=False) for k in ('train','development')}
+        data={k:cache(r,'cuda') for k,r in rows.items()}
+        profile=[]
+        for bs in a.batches:
+            m=make().train();opt=torch.optim.AdamW(m.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True);replay=None
+            try:
+                x=data['train']['values'][:bs];v=data['train']['valid'][:bs];startup=time.monotonic();replay=Replay(m,x,v)
+                startup=time.monotonic()-startup
+                for _ in range(3):loss,norm,_=replay(x,v);opt.step()
+                torch.cuda.synchronize();start=time.monotonic();torch.cuda.reset_peak_memory_stats()
+                for _ in range(15):loss,norm,_=replay(x,v);opt.step()
+                torch.cuda.synchronize();seconds=time.monotonic()-start
+                result=dict(batch=bs,windows_per_second=bs*15/seconds,startup_seconds=startup,peak_mib=torch.cuda.max_memory_allocated()/2**20)
+            except torch.cuda.OutOfMemoryError:result=dict(batch=bs,error='out_of_memory')
+            finally:del replay,opt,m;torch.cuda.empty_cache()
+            profile.append(result);write_json(a.output/'profile.json',profile);status(stage='GPU cached pipeline profile',latest=result)
+        best=max((r for r in profile if 'windows_per_second' in r),key=lambda r:r['windows_per_second']);bs=best['batch']
+        torch.manual_seed(a.seed);m=make().train();opt=torch.optim.AdamW(m.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True)
+        replay=Replay(m,data['train']['values'][:bs],data['train']['valid'][:bs])
+        contract['batch']=bs;contract['encoder_parameters']=sum(p.numel() for p in m.encoder.parameters());contract['decoder_parameters']=sum(p.numel() for p in m.parameters())-contract['encoder_parameters']
+        write_json(a.output/'contract.json',contract);run.config.update(contract,allow_val_change=True)
+        train_start=time.monotonic();train_end=min(train_start+a.train_minutes*60,deadline-240);step=0;history=[];bestscore=float('inf');lastval=train_start
+        def checkpoint(name):
+            save_checkpoint(a.output/name,dict(model=m.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),contract=contract,step=step,cursor=(0,step)))
+        while time.monotonic()<train_end:
+            progress=(time.monotonic()-train_start)/max(train_end-train_start,1)
+            opt.param_groups[0]['lr']=1e-5+.5*(a.learning_rate-1e-5)*(1+math.cos(math.pi*progress))
+            ids=torch.randint(len(rows['train']),(bs,),device='cuda')
+            loss,norm,parts=replay(data['train']['values'][ids],data['train']['valid'][ids]);opt.step();step+=1
+            if step%50==0:
+                if not bool(torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Training nonfinite')
+                status(stage='training',step=step,loss=float(loss),gradient_norm=float(norm),windows_per_second=step*bs/(time.monotonic()-train_start),batch=bs)
+                run.log({'train/loss':float(loss),'train/gradient_norm':float(norm),'train/lr':opt.param_groups[0]['lr']},step=step)
+            if time.monotonic()-lastval>150:
+                # Fixed 1024-row learning curve; full frozen dev evaluated at end.
+                count=min(1024,len(rows['development']));small={k:v[:count] for k,v in data['development'].items()}
+                report=evaluate_model(m,small,rows['development'][:count],a.output,status)
+                record=dict(step=step,train_loss=float(loss),seconds=time.monotonic()-train_start,**{mode:{k:v for k,v in metrics.items() if k in ('balanced_price_relative_mean','balanced_activity_log_mae','reference_price_relative')} for mode,metrics in report.items()})
+                history.append(record);write_json(a.output/'learning-curves.json',history)
+                score=report['masked']['selection_score']
+                if score<bestscore:bestscore=score;checkpoint('checkpoint_best.pt')
+                for mode in report:run.log({f'dev/{mode}/price_relative':report[mode]['balanced_price_relative_mean'],f'dev/{mode}/activity_log':report[mode]['balanced_activity_log_mae']},step=step)
+                checkpoint('checkpoint_last.pt');m.train();lastval=time.monotonic()
+        checkpoint('checkpoint_last.pt');del replay
+        report=evaluate_model(m,data['development'],rows['development'],a.output,status,controls=True)
+        write_json(a.output/'development.json',report)
+        # Full final checkpoint and matching metrics are always paired.
+        result=dict(state='complete',step=step,seconds=time.monotonic()-began,training_wall_seconds=time.monotonic()-train_start,
+            tiny=tiny_result,best_profile=best,masked_price=report['masked']['balanced_price_relative_mean'],all_visible_price=report['all_visible']['balanced_price_relative_mean'],
+            masked_activity=report['masked']['balanced_activity_log_mae'],masked_reference_price=report['masked']['reference_price_relative'],
+            checkpoint_sha256=file_hash(a.output/'checkpoint_last.pt'),audit_consulted=False)
+        write_json(a.output/'result.json',result);run.summary.update(result);status(stage='complete',result=result)
+    except BaseException as exc:
+        write_json(a.output/'failure.json',dict(error=repr(exc),seconds=time.monotonic()-began));run.summary['failure']=repr(exc);raise
+    finally:run.finish()
+
+
+if __name__=='__main__':main()
