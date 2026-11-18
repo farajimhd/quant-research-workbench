@@ -25,7 +25,8 @@ def main():
     p.add_argument('--validation-batch-size',type=int,default=0);p.add_argument('--validation-workers',type=int,default=-1)
     p.add_argument('--validation-graphs',action='store_true')
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--shard-prefetch',type=int,default=16);p.add_argument('--shard-prefetch-mib',type=int,default=64)
-    a=p.parse_args();a.device='cuda';a.resume=False;a.seed=110731;a.preparation='raw_gpu'
+    p.add_argument('--seed',type=int,default=110731,help='Use the intended full-run seed for representative traversal profiling')
+    a=p.parse_args();a.device='cuda';a.resume=False;a.preparation='raw_gpu'
     if not 0<=a.workers<=32 or not 1<=a.prefetch<=4 or not 10<=a.steps<=5000:raise ValueError('Bounded profile required')
     preflight(a);torch.set_num_threads(4);torch.manual_seed(a.seed);started=time.monotonic()
     manifest=load_split(a.split);manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}
@@ -44,7 +45,7 @@ def main():
         if result is None:raise InterruptedError('Validation profile stopped')
         result.update(state='complete',windows_per_second=result['windows']/result['seconds'],steady_windows_per_second=result['windows']/max(.001,result['seconds']-result['startup_seconds']),
             total_wall_seconds=time.monotonic()-started,validation_graphs=a.validation_graphs,reserved_mib=torch.cuda.memory_reserved()/2**20,
-            source_revision=a.source_revision,checkpoint_sha256=file_hash(a.checkpoint),workers=a.workers,batch=a.validation_batch_size or a.batch_size)
+            source_revision=a.source_revision,checkpoint_sha256=file_hash(a.checkpoint),workers=a.workers,batch=a.validation_batch_size or a.batch_size,seed=a.seed)
         write_json(a.output/'result.json',result);print(json.dumps({k:v for k,v in result.items() if k!='metrics'}),flush=True);return
     opt=torch.optim.AdamW(m.parameters(),lr=a.learning_rate,fused=True);source=loader(manifest,a,'train');device=None
     try:
@@ -61,7 +62,7 @@ def main():
         torch.cuda.synchronize();seconds=time.monotonic()-begin
         result=dict(state='complete',windows=windows,seconds=seconds,windows_per_second=windows/seconds,startup_seconds=startup,
             loader_wait_seconds=device.wait_seconds-wait,workers=a.workers,prefetch=a.prefetch,batch=a.batch_size,reserved_mib=torch.cuda.memory_reserved()/2**20,
-            source_revision=a.source_revision,checkpoint_sha256=file_hash(a.checkpoint),split_hash=manifest['manifest_hash'],scope='Bounded prefix of full certified training stream; updates discarded, checkpoint unchanged.')
+            source_revision=a.source_revision,checkpoint_sha256=file_hash(a.checkpoint),split_hash=manifest['manifest_hash'],seed=a.seed,scope='Bounded prefix of full certified training stream; updates discarded, checkpoint unchanged.')
         write_json(a.output/'result.json',result);print(json.dumps(result),flush=True)
     finally:
         if device:device.close()
