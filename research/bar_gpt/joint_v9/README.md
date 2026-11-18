@@ -62,7 +62,11 @@ Matched forecast-only and joint runs train the same affine reconstruction head
 at weight 0.1. The reconstruction-weight argument controls gradients entering
 the encoder: zero trains a detached reconstruction probe. This avoids comparing
 a trained reconstruction decoder with an untrained one. Forecasting always sees
-completed history only; its persistence anchor is historical and declared.
+completed history only. Historical-anchor runs are explicitly conditional
+forecasting controls, not evidence that an embedding preserves absolute scale.
+For a recommendation, the stricter `--anchor-mode learned` path must decode its
+anchor from the learned latest-window embedding. Its Phase 2 method accepts only
+the sixteen embeddings and causal ages and rejects external anchor inputs.
 
 Optional masked reconstruction uses a separate encoder pass: selected windows
 retain sixteen random bars, with all features and metadata hidden at other

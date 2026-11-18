@@ -16,6 +16,7 @@ def main():
             reconstruction_decoder_parameters=m['reconstruction_decoder_parameters'],examples=result['examples'],steps=result['step'],
             seconds=result['elapsed_seconds'],profile=best,checkpoint_sha256=result['checkpoint_sha256'],
             reconstruction_weight=m['reconstruction_encoder_weight'],masked_probability=m.get('masked_reconstruction_probability',0),
+            forecast_dependency=m['config'].get('anchor_mode','historical'),
             decision=decisions.get(folder.name,'Pending evidence review'),metrics={})
         for split,v in result['evaluations'].items():
             record['metrics'][split]={k:v[k] for k in ('price_mae_skill','activity_mae_skill','price_session_bootstrap95','activity_session_bootstrap95','selection_score')}
@@ -35,12 +36,13 @@ def main():
             writer=csv.DictWriter(f,fieldnames=list(channels[0]));writer.writeheader();writer.writerows(channels)
     lines=['# V9 campaign comparison','',
         'Forecast skill is percentage error reduction versus the causal last-bar predictor. Positive is better. Reconstruction is mean price-relative error, not forecasting skill. Development and unseen-ticker development are shown separately. Best checkpoints are selected within each run; final optimizer steps can differ from the selected checkpoint.',
-        '', '| Run | Price skill dev / novel | Activity skill dev / novel | Reconstruction dev / novel | Seconds | Profile origins/s |',
-        '|---|---:|---:|---:|---:|---:|']
+        '', 'Historical-anchor runs are causal conditional controls. They are not eligible for the final embedding-only forecasting recommendation. Learned-anchor runs decode the reference from the exported embedding.',
+        '', '| Run | Forecast anchor | Price skill dev / novel | Activity skill dev / novel | Reconstruction dev / novel | Seconds | Profile origins/s |',
+        '|---|---|---:|---:|---:|---:|---:|']
     for r in records:
         d=r['metrics']['development'];n=r['metrics']['novel_development']
         pair=lambda key:f'{100*d[key]:.2f}% / {100*n[key]:.2f}%'
-        lines.append(f"| {r['name']} | {pair('price_mae_skill')} | {pair('activity_mae_skill')} | {pair('reconstruction_price_relative')} | {r['seconds']:.1f} | {r['profile']['origins_per_second']:.0f} |")
+        lines.append(f"| {r['name']} | {r['forecast_dependency']} | {pair('price_mae_skill')} | {pair('activity_mae_skill')} | {pair('reconstruction_price_relative')} | {r['seconds']:.1f} | {r['profile']['origins_per_second']:.0f} |")
     lines+=['','Each forecast example contains sixteen 64-bar windows. Profile throughput includes complete optimizer steps; experiment seconds also include preparation, tiny fit, profiling and evaluation. Different data, batch, update and parameter budgets must not be treated as isolated architecture effects.','',
         'Native units, all 18 channels, denominator counts and nonfinite counts: `all-channel-comparison.csv`. Full price bands, quantiles, structure, variance, confidence intervals and controls remain in each immutable `results.json`.','', '## Decisions','']
     lines += [f"- **{r['name']}**: {r['decision']}" for r in records]

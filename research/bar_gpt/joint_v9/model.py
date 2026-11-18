@@ -22,6 +22,7 @@ class Config:
     readout:str='cls'
     linear_context:bool=False
     reconstruction_price_scale:float=.02
+    anchor_mode:str='historical'
 
 
 def structured(code):
@@ -46,6 +47,21 @@ def attention(width,layers,dropout):
         for child in block.modules():
             if isinstance(child,nn.Linear):child.reset_parameters()
     return result
+
+
+def setup_temporal(owner,c):
+    e=c.embedding
+    owner.frame=nn.Embedding(5,e);owner.slot=nn.Embedding(16,e);owner.age=nn.Sequential(nn.Linear(2,e),nn.GELU(),nn.Linear(e,e))
+    owner.register_buffer('frame_ids',torch.tensor([0]*8+[1]*4+[2]*2+[3,4]));owner.register_buffer('slot_ids',torch.arange(16))
+    owner.query=nn.Parameter(torch.randn(1,1,e)*.01);owner.temporal=attention(e,c.global_layers,c.dropout)
+    owner.forecast=nn.Linear(e,64*18);nn.init.normal_(owner.forecast.weight,std=.0001);nn.init.zeros_(owner.forecast.bias)
+
+
+def mix_windows(owner,z,ages):
+    c=owner.config
+    with torch.autocast(z.device.type,dtype=torch.bfloat16,enabled=c.precision=='bf16' and z.device.type=='cuda'):
+        token=z+owner.frame(owner.frame_ids)[None]+owner.slot(owner.slot_ids)[None]+owner.age(ages)
+        return owner.temporal(torch.cat((owner.query.expand(len(z),-1,-1),token),1))[:,0].float()
 
 
 class ConvBlock(nn.Module):
@@ -101,10 +117,7 @@ class JointModel(nn.Module):
         for k,v in parameters.items():self.register_buffer(k,v.clone())
         self.encoder=WindowEncoder(c,self.input_mean,self.input_scale)
         e=c.embedding
-        self.frame=nn.Embedding(5,e);self.slot=nn.Embedding(16,e);self.age=nn.Sequential(nn.Linear(2,e),nn.GELU(),nn.Linear(e,e))
-        self.register_buffer('frame_ids',torch.tensor([0]*8+[1]*4+[2]*2+[3,4]));self.register_buffer('slot_ids',torch.arange(16))
-        self.query=nn.Parameter(torch.randn(1,1,e)*.01);self.temporal=attention(e,c.global_layers,c.dropout)
-        self.forecast=nn.Linear(e,64*18);nn.init.normal_(self.forecast.weight,std=.0001);nn.init.zeros_(self.forecast.bias)
+        setup_temporal(self,c)
         self.reconstruction=nn.Linear(e,64*54);nn.init.normal_(self.reconstruction.weight,std=.0005);nn.init.zeros_(self.reconstruction.bias)
         if c.summary_weight>0:self.future_summary=nn.Linear(e,8)
 
@@ -117,15 +130,51 @@ class JointModel(nn.Module):
 
     def forward(self,x,valid,ages,reconstruct=True):
         # This signature accepts only completed history. Targets/clocks are not arguments.
-        z=self.encode_windows(x,valid);c=self.config
-        with torch.autocast(x.device.type,dtype=torch.bfloat16,enabled=c.precision=='bf16' and x.device.type=='cuda'):
-            token=z+self.frame(self.frame_ids)[None]+self.slot(self.slot_ids)[None]+self.age(ages)
-            joint=self.temporal(torch.cat((self.query.expand(len(x),-1,-1),token),1))[:,0]
+        z=self.encode_windows(x,valid)
+        historical=anchor(x,valid,check=False) if self.config.anchor_mode=='historical' else None
+        output=self.forecast_from_embeddings(z,ages,historical)
+        output.update(windows=z,reconstruction=self.reconstruct(z) if reconstruct else None)
+        return output
+
+    def forecast_from_embeddings(self,z,ages,historical_anchor=None):
+        """Learned-anchor mode requires only window latents and causal ages."""
+        c=self.config
+        if c.anchor_mode=='learned':
+            if historical_anchor is not None:raise ValueError('Learned-anchor mode forbids external reference inputs')
+            output=F.linear(z[:,7].float(),self.reconstruction.weight[-54:-36],self.reconstruction.bias[-54:-36])
+            reference=output*self.reconstruction_scale+self.reconstruction_mean
+        elif c.anchor_mode=='historical' and historical_anchor is not None:reference=historical_anchor
+        else:raise ValueError('Historical control requires an explicit past-only anchor; learned mode accepts no raw input')
+        joint=mix_windows(self,z,ages)
         delta=self.forecast(joint.float()).reshape(-1,64,18)
-        # The only inverse anchor is the known historical bar, never a target reference.
-        prediction=structured(anchor(x,valid,check=False)[:,None]+delta*self.forecast_scale)
-        return dict(forecast=prediction,windows=z,joint=joint.float(),reconstruction=self.reconstruct(z) if reconstruct else None,
+        prediction=structured(reference[:,None]+delta*self.forecast_scale)
+        return dict(forecast=prediction,joint=joint.float(),
             future_summary=self.future_summary(joint.float()) if c.summary_weight>0 else None)
+
+
+class EmbeddingForecaster(nn.Module):
+    """Standalone Phase 2: no raw inputs, window encoder, or reconstruction decoder."""
+    def __init__(self,c,reconstruction_mean,reconstruction_scale,forecast_scale):
+        super().__init__();self.config=c
+        if c.anchor_mode!='learned':raise ValueError('Only learned-anchor models can export embedding-only forecasting')
+        for k,v in dict(reconstruction_mean=reconstruction_mean,reconstruction_scale=reconstruction_scale,forecast_scale=forecast_scale).items():self.register_buffer(k,v.clone())
+        setup_temporal(self,c);self.anchor_head=nn.Linear(c.embedding,18)
+        if c.summary_weight>0:self.future_summary=nn.Linear(c.embedding,8)
+
+    @classmethod
+    def from_model(cls,model):
+        result=cls(model.config,model.reconstruction_mean,model.reconstruction_scale,model.forecast_scale).to(model.forecast.weight.device)
+        for name in ('frame','slot','age','temporal','forecast'):getattr(result,name).load_state_dict(getattr(model,name).state_dict())
+        with torch.no_grad():
+            result.query.copy_(model.query);result.anchor_head.weight.copy_(model.reconstruction.weight[-54:-36]);result.anchor_head.bias.copy_(model.reconstruction.bias[-54:-36])
+        if model.config.summary_weight>0:result.future_summary.load_state_dict(model.future_summary.state_dict())
+        return result
+
+    def forward(self,z,ages):
+        joint=mix_windows(self,z,ages);reference=self.anchor_head(z[:,7].float())*self.reconstruction_scale+self.reconstruction_mean
+        delta=self.forecast(joint).reshape(-1,64,18)
+        return dict(forecast=structured(reference[:,None]+delta*self.forecast_scale),joint=joint,
+            future_summary=self.future_summary(joint) if self.config.summary_weight>0 else None)
 
 
 def objective(model,output,data,reconstruction_weight=.1):

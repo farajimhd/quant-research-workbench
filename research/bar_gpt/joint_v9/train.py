@@ -41,6 +41,7 @@ def main():
     p.add_argument('--price-huber-beta',type=float,default=1.);p.add_argument('--calibration-manifest',type=Path)
     p.add_argument('--readout',choices=('cls','flatten'),default='cls');p.add_argument('--linear-context',action='store_true')
     p.add_argument('--reconstruction-price-scale',type=float,default=.02)
+    p.add_argument('--anchor-mode',choices=('historical','learned'),default='historical')
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
@@ -64,7 +65,7 @@ def main():
         calibration_parent=dict(manifest_sha256=file_hash(a.calibration_manifest),dataset_hash=prior['dataset_hash'],source_revision=prior['source_revision'])
     else:parameters=calibrate(cpu['train'])
     config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight,a.price_huber_beta,
-        a.readout,a.linear_context,a.reconstruction_price_scale)
+        a.readout,a.linear_context,a.reconstruction_price_scale,a.anchor_mode)
     model=JointModel(config,**parameters).to(a.device)
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],
@@ -74,7 +75,8 @@ def main():
         calibration_parent=calibration_parent,
         hypothesis=a.hypothesis,parent=a.parent,parameter_count=sum(v.numel() for v in model.parameters()),
         window_encoder_parameters=sum(v.numel() for v in model.encoder.parameters()),reconstruction_decoder_parameters=sum(v.numel() for v in model.reconstruction.parameters()),
-        forecasting='Direct next 64 observed 1s bars. Historical-only last-bar anchor; future values/masks/clocks never prediction inputs.',
+        forecasting=('Direct next 64 observed 1s bars. Historical last-bar anchor is a declared causal control.' if a.anchor_mode=='historical' else
+            'Direct next 64 observed 1s bars. Last-bar anchor decoded from learned window embedding; Phase 2 receives only embeddings and causal ages.')+' Future values/masks/clocks never prediction inputs.',
         reconstruction='All 16 input windows from learned window latents only. No input/reference decoder bypass. Lambda zero means detached trained reconstruction probe.',
         selection='Average development and unseen-ticker development balanced price/activity MAE ratios versus causal persistence; inspect confidence intervals, groups and reconstruction jointly.',
         sampling='Uniform frozen origins, up to four per session; training-only calibration, unweighted grouped evaluation.',

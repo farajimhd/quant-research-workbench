@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from .dataset import SAMPLE
 from .data import cache,calibrate,anchor
-from .model import Config,JointModel,structured,objective
+from .model import Config,JointModel,structured,objective,EmbeddingForecaster
 from ..phase1_v8.test_contract import sample
 from ..phase1_v8.model import coordinates
 
@@ -22,6 +22,23 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_forecast_only_embeddings_with_learned_anchor(self):
+        from unittest.mock import patch
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned')
+        model=JointModel(c,**calibrate(d)).eval()
+        with torch.no_grad(),patch('research.bar_gpt.joint_v9.model.anchor',side_effect=AssertionError('Raw anchor forbidden')):
+            out=model(d['x'],d['valid'],d['ages'])
+            decoded=model.forecast_from_embeddings(out['windows'],d['ages'])
+            torch.testing.assert_close(out['forecast'],decoded['forecast'],rtol=0,atol=0)
+            standalone=EmbeddingForecaster.from_model(model).eval()
+            torch.testing.assert_close(standalone(out['windows'],d['ages'])['forecast'],decoded['forecast'],rtol=0,atol=0)
+            self.assertFalse(hasattr(standalone,'encoder'));self.assertFalse(hasattr(standalone,'reconstruction'))
+            for value in model.encoder.parameters():value.zero_()
+            a=model(d['x'],d['valid'],d['ages'])['forecast']
+            b=model(d['x']+100,d['valid'],d['ages'])['forecast']
+            torch.testing.assert_close(a,b,rtol=0,atol=0)
+            with self.assertRaises(ValueError):model.forecast_from_embeddings(out['windows'],d['ages'],torch.zeros(4,18))
+
     def test_flat_patch_readout_and_learned_linear_scale_path(self):
         d=cache(examples())
         for readout,linear in [('flatten',False),('cls',True),('flatten',True)]:

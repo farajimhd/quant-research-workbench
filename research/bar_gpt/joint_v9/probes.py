@@ -5,10 +5,12 @@ import argparse,json
 from pathlib import Path
 import numpy as np
 import torch
+from types import SimpleNamespace
 from sklearn.linear_model import Ridge
 from .data import load,cache,anchor
 from .model import Config,JointModel,structured
 from ..phase2_v1.data import sealed
+from ..phase1_v8.runtime import preflight
 from ..phase1_v8.model import ACTIVITY
 from ..v5.shards.phase1_contract import write_json,file_hash
 
@@ -35,12 +37,12 @@ def summaries(d):
 
 
 @torch.no_grad()
-def embeddings(model,d):
+def embeddings(model,d,device='cpu'):
     model.eval();result=[];windows=[]
     for start in range(0,len(d['x']),128):
-        o=model(d['x'][start:start+128],d['valid'][start:start+128],d['ages'][start:start+128],reconstruct=False)
-        result.append(o['joint'].numpy())
-        windows.append(o['windows'].flatten(1).numpy())
+        o=model(d['x'][start:start+128].to(device),d['valid'][start:start+128].to(device),d['ages'][start:start+128].to(device),reconstruct=False)
+        result.append(o['joint'].cpu().numpy())
+        windows.append(o['windows'].flatten(1).cpu().numpy())
     return dict(joint=np.concatenate(result),windows=np.concatenate(windows))
 
 
@@ -67,12 +69,18 @@ def fit_evaluate(features,targets):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--root',type=Path,required=True);p.add_argument('--runs',nargs='+',required=True)
-    p.add_argument('--output',type=Path,required=True);p.add_argument('--data',type=Path);a=p.parse_args();torch.set_num_threads(8)
+    p.add_argument('--output',type=Path,required=True);p.add_argument('--data',type=Path)
+    p.add_argument('--device',choices=('cpu','cuda'),default='cpu');p.add_argument('--source-revision');a=p.parse_args();torch.set_num_threads(8)
     if a.output.exists():raise FileExistsError('Preserve immutable probe report')
+    if a.device=='cuda':
+        if not a.source_revision:raise ValueError('GPU probes require immutable source identity')
+        preflight(SimpleNamespace(output=a.output.parent/('owner-'+a.output.stem),device='cuda',resume=False,source_revision=a.source_revision))
+    torch.set_float32_matmul_precision('highest')
     rows,manifest=load(a.data or a.root/'dataset',('train','development','novel_development'))
     data={k:cache(v) for k,v in rows.items()};targets={k:labels(v) for k,v in data.items()}
     raw={k:summaries(v) for k,v in data.items()}
-    result=dict(dataset_hash=manifest['hash'],method='Frozen encoder. Ridge alpha=100, standardized using training only, no tuning on validation. All eligible future labels, rejection counts explicit.',
+    result=dict(dataset_hash=manifest['hash'],device=a.device,source_revision=a.source_revision,
+        precision='Configured CUDA autocast' if a.device=='cuda' else 'CPU FP32 screening',method='Frozen encoder. Ridge alpha=100, standardized using training only, no tuning on validation. All eligible future labels, rejection counts explicit.',
         labels=targets['train'][0],raw_summary=dict(features=raw['train'].shape[1],metrics=fit_evaluate(raw,targets)),runs={})
     for name in a.runs:
         cp=a.root/name/'best.pt';state=torch.load(cp,map_location='cpu',weights_only=False);identity=state['identity']
@@ -80,9 +88,9 @@ def main():
             expanded=sealed(a.root/'dataset-expanded'/'manifest.json')
             if expanded['hash']!=identity['dataset_hash'] or expanded.get('expansion',{}).get('base_hash')!=manifest['hash']:raise ValueError('Dataset mismatch: require byte-verified nested probe training and identical holdouts')
         c=Config(**identity['config']);parameters={k:torch.tensor(v) for k,v in identity['parameters'].items()}
-        torch.manual_seed(identity['seed']);model=JointModel(c,**parameters)
-        untrained={k:embeddings(model,d) for k,d in data.items()};model.load_state_dict(state['model'])
-        trained={k:embeddings(model,d) for k,d in data.items()}
+        torch.manual_seed(identity['seed']);model=JointModel(c,**parameters).to(a.device)
+        untrained={k:embeddings(model,d,a.device) for k,d in data.items()};model.load_state_dict(state['model'])
+        trained={k:embeddings(model,d,a.device) for k,d in data.items()}
         result['runs'][name]=dict(checkpoint_sha256=file_hash(cp),features=c.embedding,window_features=16*c.embedding,encoder_training_dataset_hash=identity['dataset_hash'],
             untrained=fit_evaluate({k:v['joint'] for k,v in untrained.items()},targets),trained=fit_evaluate({k:v['joint'] for k,v in trained.items()},targets),
             untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets))

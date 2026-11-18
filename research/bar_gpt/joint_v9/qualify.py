@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 import numpy as np
 from .data import load,cache
-from .model import Config,JointModel,WindowEncoder
+from .model import Config,JointModel,WindowEncoder,EmbeddingForecaster
 from .metrics import measure,masked_reconstruction,reconstruction_controls
 from ..phase1_v8.runtime import preflight
 from ..v5.shards.phase1_contract import write_json,file_hash
@@ -61,6 +61,16 @@ def main():
     x=d['x'][:2].reshape(-1,64,27);v=d['valid'][:2].reshape(-1,64,27)
     with torch.no_grad():torch.testing.assert_close(standalone(x,v),model.encoder(x,v),rtol=0,atol=0)
     torch.save(package,a.output/'window-encoder.pt');report['encoder_sha256']=file_hash(a.output/'window-encoder.pt')
+    if config.anchor_mode=='learned':
+        forecaster=EmbeddingForecaster.from_model(model).eval()
+        with torch.no_grad():
+            z=model.encode_windows(d['x'][:2],d['valid'][:2]);ages=d['ages'][:2]
+            torch.testing.assert_close(forecaster(z,ages)['forecast'],model.forecast_from_embeddings(z,ages)['forecast'],rtol=0,atol=0)
+        phase2=dict(version='joint-v9-embedding-forecaster-1',config=identity['config'],
+            calibration={k:getattr(model,k).cpu() for k in ('reconstruction_mean','reconstruction_scale','forecast_scale')},
+            state={k:v.cpu() for k,v in forecaster.state_dict().items()},checkpoint_sha256=file_hash(cp),
+            contract='Input 16 learned window embeddings and 16x2 causal ages only. No raw bars, no true reference, no Phase 1 reconstruction decoder. Apply fixed inverse(logs) for 18 raw-unit features.')
+        torch.save(phase2,a.output/'embedding-forecaster.pt');report['forecaster_sha256']=file_hash(a.output/'embedding-forecaster.pt')
     if a.phase1_data:report['phase1_transfer']=phase1_transfer(model,a.phase1_data,a.device)
     report.update(elapsed_seconds=time.time()-started,export_parity='exact on final partition examples',state='complete')
     write_json(a.output/'results.json',report)
