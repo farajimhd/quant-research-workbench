@@ -17,6 +17,11 @@ from ..v5.data_v3 import close_loader
 from ..v5.shards.phase1_contract import write_json,FRAMES,CHANNELS
 
 
+def group_sum(values,valid,groups):
+    # First reduce bars per example, then group only compact [B,18] rows.
+    return groups@torch.where(valid,values,0).sum(1).double()
+
+
 class Accumulator:
     def __init__(self):
         self.sums=torch.zeros(6,18,device='cuda',dtype=torch.float64);self.counts=self.sums.clone();self.logs=self.sums.clone()
@@ -36,11 +41,12 @@ class Accumulator:
             self.bad[2]+=(((h<torch.maximum(o,c))|(l>torch.minimum(o,c)))&v[...,base:base+4].all(-1)).sum()
         self.bad[2]+=((raw[...,6:10]>raw[...,12:16])&v[...,6:10]&v[...,12:16]).sum()
         fi=(b.frames[:,None]==torch.tensor(FRAMES,device='cuda')).long().argmax(1)
-        for f in range(6):
-            mask=v&(fi==f)[:,None,None]
-            for dest,source in ((self.sums,error),(self.logs,loge),(self.ps,raw),(self.ys,truth),(self.p2,raw.square()),(self.y2,truth.square())):
-                dest[f]+=torch.where(mask,source,0).sum((0,1))
-            self.counts[f]+=mask.sum((0,1));self.zero[f]+=(mask&(truth==0)).sum((0,1));self.tiny[f]+=(mask&(truth>0)&(truth<=1e-12)).sum((0,1))
+        groups=torch.nn.functional.one_hot(fi,6).T.double()
+        for dest,source in ((self.sums,error),(self.logs,loge),(self.ps,raw),(self.ys,truth),(self.p2,raw.square()),(self.y2,truth.square())):
+            dest+=group_sum(source,v,groups)
+        self.counts+=groups@v.sum(1).double()
+        self.zero+=groups@(v&(truth==0)).sum(1).double()
+        self.tiny+=groups@(v&(truth>0)&(truth<=1e-12)).sum(1).double()
         tv=valid[...,18:]&hidden[...,None];te=(t-(values[...,18:]-model.input_mean[18:])/model.input_scale[18:]).abs()
         self.time_sum+=torch.where(tv,te,0).sum((0,1));self.time_count+=tv.sum((0,1))
         vv=vl>0;eligible=hidden[...,None]

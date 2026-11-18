@@ -71,3 +71,29 @@ def test_native_price_bands():
     r=relative.metrics('raw_mae',('100ms','1s','10s','1m','1h','daily'),tuple(str(i) for i in range(18)))
     assert r['price_relative_counts_by_price_band/below_0.1/100ms/0']==1
     assert abs(r['price_mape_pct/100ms/0']-1)<1e-12
+
+
+def test_panel_states_and_validation_speed():
+    import io,time
+    from rich.console import Console
+    from .panel import render
+    for width,height in ((80,24),(120,35)):
+        for state,stage in (('running','training'),('running','masked + all-visible full validation'),('failed','failed')):
+            stream=io.StringIO();console=Console(file=stream,width=width,height=height)
+            data=dict(state=state,stage=stage,updated=time.time(),validation_windows_per_second=12345,
+                      validation_eta_seconds=90,validation_total=47750007,validation_done=10000,
+                      epoch_total=186575722,epoch_done=20000,epoch=1,batch_size=1024,workers=8,prefetch=4)
+            console.print(render(data,width,height));text=stream.getvalue()
+            assert 'BarGPT V10' in text and len(text.splitlines())<=height
+            if 'validation' in stage:assert '12,345 windows/s' in text
+
+
+def test_compact_native_group_reduction():
+    from .train import group_sum
+    torch.manual_seed(7)
+    x=torch.randn(19,64,18,dtype=torch.float64)*1e6;v=torch.rand(19,64,18)>.2
+    x[~v]=float('nan');frames=torch.arange(19)%6
+    groups=torch.nn.functional.one_hot(frames,6).T.double()
+    actual=group_sum(x,v,groups)
+    expected=torch.stack([torch.where(v&(frames==f)[:,None,None],x,0).sum((0,1)) for f in range(6)])
+    torch.testing.assert_close(actual,expected,rtol=1e-12,atol=1e-7)
