@@ -165,3 +165,10 @@ their log-relative shape coordinates. This tests a confirmed expressivity
 restriction of a purely linear log-level context path with a squared decoder;
 performance gains must still be established experimentally. No true mean or
 reference is passed to either decoder.
+
+The `profile` module sweeps cached training batches on disposable checkpoint
+copies, with finite checks, gradient clipping and optimizer work included.
+It verifies the checkpoint hash remains unchanged. This is a model-pipeline
+benchmark, not a claim about full-dataset streaming throughput. The `probes`
+module supports an explicit `--audit` mode for pinned finalists; it retains
+the same training-only ridge fit and evaluates the sealed 2025/2026 partitions.
