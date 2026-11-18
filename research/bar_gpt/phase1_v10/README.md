@@ -168,9 +168,20 @@ metrics are preserved under the runtime setup root.
 `--initialize-checkpoint` permits the verified training-only stability parent,
 requires identical architecture and frozen transform buffers, and pins its hash,
 source and training subset identity in the new full-run contract. It transfers
-learned weights and, by default, the verified compatible AdamW state;
-`--no-initialize-optimizer` is an explicit fresh-optimizer ablation. The full run
+learned weights with a fresh optimizer by default; `--initialize-optimizer`
+is the explicitly evaluated optimizer-retention ablation. The full run
 receives fresh RNG/traversal and its own100 complete epochs/cosine schedule.
 Initialization policy is part of its contract. This is a new scientific identity, not a
 resume of the failed standard-attention run. Exact engineering resumes still
 require an unchanged full-run contract and W&B identity.
+
+
+The exact full-data prefix handoff ablation selected a fresh optimizer. Starting
+from the identical65000-step parent, source9a6b8c0d1, batch2048, same seed and
+204800 full-stream windows: retained AdamW state produced12.394% all-visible
+price error at100 updates; fresh AdamW produced1.854% (initial1.366%). Activity
+log MAE was0.8878 versus0.6807. Retained optimizer initialization is rejected for
+this handoff. This does not prove a batch-composition defect; the optimizer-state
+comparison changed only that state, and the fresh path is being checked longer.
+The full replacement uses the parent's learned weights, a fresh optimizer/RNG,
+and a new100-epoch full-data schedule and identity.

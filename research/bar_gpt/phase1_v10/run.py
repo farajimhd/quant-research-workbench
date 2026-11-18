@@ -20,7 +20,7 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('mode',choices=('engineering','compute','operators','diagnose','stress','stream','validation-profile','train'))
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--calibration',type=Path,required=True);p.add_argument('--checkpoint',type=Path);p.add_argument('--initialize-checkpoint',type=Path)
-    p.add_argument('--initialize-optimizer',action=argparse.BooleanOptionalAction,default=True)
+    p.add_argument('--initialize-optimizer',action=argparse.BooleanOptionalAction,default=False)
     p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
     p.add_argument('--split',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v6-cohort-balanced-v4/split.json'))
     p.add_argument('--device',choices=('cuda','cpu'),default='cuda');p.add_argument('--precision',choices=('bf16','fp32'),default='bf16')
