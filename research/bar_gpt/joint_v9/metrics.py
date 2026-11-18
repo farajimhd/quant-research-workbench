@@ -5,7 +5,7 @@ import torch
 from .data import anchor
 from .model import structured
 from ..phase1_v8.model import inverse,PRICES,ACTIVITY
-from ..phase1_v7.metrics import evaluate as native_metrics
+from ..phase1_v7.metrics import evaluate as native_metrics,require_structured
 from ..v5.shards.phase1_contract import SAMPLE_DTYPE
 
 
@@ -75,9 +75,11 @@ def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status
     result['training_mean_control']=skill(mean,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
     future=future_rows(rows)
     result['native_forecast']=native_metrics(inverse(torch.from_numpy(p)).numpy(),future)
+    require_structured(result['native_forecast'],paired=True)
     result['native_persistence']=native_metrics(inverse(torch.from_numpy(baseline)).numpy(),future)
     if reconstruction:
         result['reconstruction']=native_metrics(np.concatenate(recon).reshape(-1,64,18),rows['context'].reshape(-1))
+        require_structured(result['reconstruction'],paired=True)
         result['reconstruction_metadata']=dict(time_mae=(sum(x['time_sum'] for x in metadata)/np.maximum(sum(x['time_count'] for x in metadata),1)).tolist(),
             time_valid_counts=sum(x['time_count'] for x in metadata).tolist(),validity_confusion={k:sum(x[k] for x in metadata) for k in ('tp','tn','fp','fn')})
     result['joint_embedding_variance']=np.var(np.concatenate(zs),axis=0).tolist()
@@ -94,5 +96,5 @@ def masked_reconstruction(model,data,rows,batch_size=128,seed=917):
         visible=torch.from_numpy(ranks<16).to(v.device)
         z=model.encode_windows(x,v&visible[...,None]);p=model.reconstruct(z)[0]
         pred.append(inverse(p).cpu().numpy())
-    return dict(visible_bars=16,seed=seed,masking='All 27 input feature validities hidden for 48 bars. Original source-valid targets retained. No copied references.',
-        native=native_metrics(np.concatenate(pred).reshape(-1,64,18),rows['context'].reshape(-1)))
+    native=native_metrics(np.concatenate(pred).reshape(-1,64,18),rows['context'].reshape(-1));require_structured(native,paired=True)
+    return dict(visible_bars=16,seed=seed,masking='All 27 input feature validities hidden for 48 bars. Original source-valid targets retained. No copied references.',native=native)
