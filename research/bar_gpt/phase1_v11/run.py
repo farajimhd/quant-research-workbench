@@ -36,6 +36,7 @@ def main():
         if (a.output/'checkpoint_last.pt').exists():raise RuntimeError('Training-state resume not supported by this finite entry point')
         clock=json.loads((a.output/'clock.json').read_text());began-=time.time()-clock['started']
         if (a.output/'failure.json').exists():(a.output/'failure.json').rename(a.output/f'engineering-failure-{time.time_ns()}.json')
+        if (a.output/'tiny.json').exists():(a.output/'tiny.json').rename(a.output/f'tiny-previous-{time.time_ns()}.json')
     else:write_json(a.output/'clock.json',dict(started=time.time()))
     deadline=began+a.minutes*60
     def status(**kw):
@@ -86,6 +87,18 @@ def main():
             tiny_price_mean=float(error.mean());tiny_price_p90=float(torch.quantile(error,.9))
         tiny_result=dict(initial=initial,final=float(loss),ratio=float(loss)/initial,price_relative_mean=tiny_price_mean,price_relative_p90=tiny_price_p90,
             scope='Synthetic constant-market bars copied from four certified tiny examples; canonical time metadata retained; scientific dataset unchanged.')
+        from .transforms import references,decode
+        diagnostics={};original_precision=config.precision
+        with torch.no_grad():
+            for precision in ('bf16','fp32'):
+                config.precision=precision;m.eval();out=m(x,v,pos)
+                ref,rv=references(x[...,:18],v[...,:18],m.encoder.reference_mean)
+                for kind,logs in (('predicted',out['logs']),('oracle_visible_reference_DIAGNOSTIC',decode(out['code'],ref))):
+                    e=torch.expm1(logs[...,list(PRICES)]-tiny['values'][...,list(PRICES)]).abs()[keep]
+                    diagnostics[precision+'/'+kind]=dict(mean=float(e.mean()),p90=float(torch.quantile(e,.9)))
+            config.precision=original_precision
+        tiny_result['diagnostics']=diagnostics
+        save_checkpoint(a.output/'checkpoint_tiny.pt',dict(model=m.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),contract=contract,step=a.tiny_steps,cursor=(0,a.tiny_steps)))
         write_json(a.output/'tiny.json',tiny_result)
         if tiny_result['ratio']>.2 or tiny_price_p90>.005:raise AssertionError('Tiny fit failed: '+str(tiny_result))
         del replay,opt,m;tiny=None;torch.cuda.empty_cache()
