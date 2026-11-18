@@ -26,7 +26,7 @@ def main():
     p.add_argument('--validation-graphs',action='store_true')
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--shard-prefetch',type=int,default=16);p.add_argument('--shard-prefetch-mib',type=int,default=64)
     a=p.parse_args();a.device='cuda';a.resume=False;a.seed=110731;a.preparation='raw_gpu'
-    if not 0<=a.workers<=32 or not 1<=a.prefetch<=4 or not 10<=a.steps<=500:raise ValueError('Bounded profile required')
+    if not 0<=a.workers<=32 or not 1<=a.prefetch<=4 or not 10<=a.steps<=5000:raise ValueError('Bounded profile required')
     preflight(a);torch.set_num_threads(4);torch.manual_seed(a.seed);started=time.monotonic()
     manifest=load_split(a.split);manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}
     calibration=json.loads(a.calibration.read_text());saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False)

@@ -5,7 +5,7 @@ from ..v5.shards.phase1_contract import write_json
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--runs',type=Path,nargs='+',required=True);p.add_argument('--source-revision',required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--runs',type=Path,nargs='+',required=True);p.add_argument('--source-revision',required=True);p.add_argument('--project',default='bargpt-phase1-v11-median');a=p.parse_args()
     import wandb
     for root in a.runs:
         result=json.loads((root/'result.json').read_text())
@@ -21,7 +21,7 @@ def main():
             for variant in ('trained','untrained_same_architecture','raw_summary_control'):
                 for label,value in probes[variant].items():
                     for metric in ('mae','r2'):metrics[f'probes/{variant}/{label}/{metric}']=value[metric]
-        run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',id=identity['id'],resume='must',dir=str(root))
+        run=wandb.init(entity='mehdifaraji',project=a.project,id=identity['id'],resume='must',dir=str(root))
         try:
             run.log(dict(metrics,optimizer_step=step,postrun_evaluation_backfill=True),step=max(run.step,step+1));run.summary.update(metrics)
             run.summary.update(dict(log_repair_source=a.source_revision,log_repair='Complete evaluation/probe metrics and artifacts; no model/optimizer updates or scientific change.',failure=None))
