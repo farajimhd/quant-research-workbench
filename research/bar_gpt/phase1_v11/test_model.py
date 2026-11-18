@@ -45,7 +45,7 @@ def test_all_partial_bid_ask_combinations():
     restored=inverse(decode(center(code,ref),ref));torch.testing.assert_close(restored[v[...,:18]],raw[v[...,:18]],rtol=1e-12,atol=1e-12)
 
 
-@pytest.mark.parametrize('readout',['latents','include_reference'])
+@pytest.mark.parametrize('readout',['latents','include_reference','split_scale'])
 def test_hidden_targets_cannot_change_embedding_or_references(readout):
     _,x,v=example();x=x.float();positions=torch.arange(0,64,4).expand(3,-1)
     a,va,pos,h=select(x,v,16,positions=positions);model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout=readout),parameters()).eval()
@@ -83,9 +83,22 @@ def test_optimizer_rng_resume_parity():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required for real capture')
-def test_cuda_graph_random16_backward():
+@pytest.mark.parametrize('readout',['latents','split_scale'])
+def test_cuda_graph_random16_backward(readout):
     from .step import Replay
     _,x,v=example();x=x.float().cuda();v=v.cuda()
-    model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0),parameters()).cuda()
+    model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout=readout),parameters()).cuda()
     replay=Replay(model,x,v);a=replay(x,v)[0].clone();b=replay(x,v)[0].clone()
     assert torch.isfinite(a)&torch.isfinite(b)
+
+
+def test_split_scale_is_learned_embedding_and_token_count_invariant():
+    _,x,v=example();x=x.float();x[...,:18]=x[:,:1,:18].clone().expand(-1,64,-1)
+    m=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout='split_scale'),parameters()).eval()
+    a,va,p,h=select(x,v,16);z=m.encoder(a,va,p)
+    full=m.encoder(x,v,torch.arange(64).expand(len(x),-1))
+    torch.testing.assert_close(z[:,-32:],full[:,-32:],rtol=0,atol=0)
+    torch.testing.assert_close(m.decode(z)['references'],m.decode(full)['references'],rtol=0,atol=0)
+    loss,_=objective(m,m.decode(z),x,v,h,a,va);loss.backward()
+    assert m.encoder.scale_projection.weight.grad is not None
+    assert m.reference_head.weight.grad is not None

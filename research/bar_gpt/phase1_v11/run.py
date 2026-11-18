@@ -23,7 +23,7 @@ def main():
     p.add_argument('--minutes',type=float,default=18);p.add_argument('--train-minutes',type=float,default=12)
     p.add_argument('--learning-rate',type=float,default=.0003);p.add_argument('--reference-weight',type=float,default=1)
     p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
-    p.add_argument('--readout',choices=['latents','include_reference'],default='latents')
+    p.add_argument('--readout',choices=['latents','include_reference','split_scale'],default='latents')
     p.add_argument('--width',type=int,default=384);p.add_argument('--layers',type=int,default=8)
     p.add_argument('--dropout',type=float,default=.05)
     p.add_argument('--tiny-steps',type=int,default=2000);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])

@@ -20,7 +20,8 @@ class Encoder(nn.Module):
         self.reference_type=nn.Parameter(torch.randn(1,1,c.width)*.01)
         self.latents=nn.Parameter(torch.randn(1,c.latent_tokens,c.width)*.01)
         self.blocks=nn.Sequential(*[NormalizedAttentionBlock(c.width,c.dropout) for _ in range(c.layers)],nn.LayerNorm(c.width))
-        self.readout=nn.Linear(c.latent_tokens*c.width,c.embedding)
+        self.readout=nn.Linear(c.latent_tokens*c.width,c.embedding-(32 if c.readout=='split_scale' else 0))
+        if c.readout=='split_scale':self.scale_projection=nn.Linear(18,32)
 
     def prepare(self,x,v):
         code,cm=coordinates(x[...,:18],v[...,:18]);ref,rv=references(x[...,:18],v[...,:18],self.reference_mean)
@@ -39,22 +40,24 @@ class Encoder(nn.Module):
             h=self.stem(bars)+self.position[0,positions]
             r=self.reference_stem(ref).unsqueeze(1)+self.reference_type
             h=self.blocks(torch.cat((self.latents.expand(len(x),-1,-1),r,h),1))
-            if c.readout=='latents':h=h[:,:c.latent_tokens]
+            if c.readout in ('latents','split_scale'):h=h[:,:c.latent_tokens]
             elif c.readout=='include_reference':h=torch.cat((h[:,:c.latent_tokens-1],h[:,c.latent_tokens:c.latent_tokens+1]),1)
             else:raise ValueError('Unknown fixed embedding readout')
-        return self.readout(h.float().flatten(1))
+        z=self.readout(h.float().flatten(1))
+        if c.readout=='split_scale':z=torch.cat((z,self.scale_projection(ref.float())),-1)
+        return z
 
 
 class Autoencoder(nn.Module):
     def __init__(self,c,parameters):
         super().__init__();self.config=c;self.encoder=Encoder(c,parameters)
-        self.decoder=nn.Linear(c.embedding,64*54);self.reference_head=nn.Linear(c.embedding,9)
+        self.decoder=nn.Linear(c.embedding,64*54);self.reference_head=nn.Linear(32 if c.readout=='split_scale' else c.embedding,9)
         nn.init.normal_(self.decoder.weight,std=.0005);nn.init.zeros_(self.decoder.bias)
         nn.init.normal_(self.reference_head.weight,std=.0005)
         with torch.no_grad():self.reference_head.bias.copy_(self.encoder.reference_mean)
 
     def decode(self,z):
-        y=self.decoder(z.float()).reshape(-1,64,54);ref=self.reference_head(z.float())
+        y=self.decoder(z.float()).reshape(-1,64,54);ref=self.reference_head(z[:,-32:].float() if self.config.readout=='split_scale' else z.float())
         if not self.config.center:ref=ref*0
         code=y[...,:18]/self.encoder.factor
         return dict(logs=decode(code,ref),code=code,references=ref,time=y[...,18:27],validity=y[...,27:])
