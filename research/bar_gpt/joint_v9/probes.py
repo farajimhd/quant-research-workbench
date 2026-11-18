@@ -36,6 +36,18 @@ def summaries(d):
     return torch.cat((mean,variance.sqrt(),last-first,last,v.float().mean(2)),2).flatten(1).numpy()
 
 
+def window_labels(d):
+    x=d['x'].reshape(-1,64,27);v=d['valid'].reshape_as(x)
+    names=['log_price_scale','log_activity_scale','window_log_return','return_volatility','log_range','log_quote_spread','log_trade_count']
+    def average(value,mask):return torch.where(mask,value,0).sum(1)/mask.sum(1).clamp_min(1)
+    returns=torch.diff(x[...,3],dim=1);rv=v[:,1:,3]&v[:,:-1,3];quotes=v[...,9]&v[...,15]
+    values=[average(x[...,3],v[...,3]),average(x[...,4],v[...,4]),x[:,-1,3]-x[:,0,3],
+        average(returns.square(),rv).sqrt(),torch.where(v[...,1],x[...,1],-float('inf')).amax(1)-torch.where(v[...,2],x[...,2],float('inf')).amin(1),
+        average(x[...,15]-x[...,9],quotes),average(x[...,5],v[...,5])]
+    masks=[v[...,3].any(1),v[...,4].any(1),v[:,-1,3]&v[:,0,3],rv.any(1),v[...,1].any(1)&v[...,2].any(1),quotes.any(1),v[...,5].any(1)]
+    return names,torch.stack(values,1).numpy(),torch.stack(masks,1).numpy()
+
+
 @torch.no_grad()
 def embeddings(model,d,device='cpu'):
     model.eval();result=[];windows=[]
@@ -78,10 +90,12 @@ def main():
     torch.set_float32_matmul_precision('highest')
     rows,manifest=load(a.data or a.root/'dataset',('train','development','novel_development'))
     data={k:cache(v) for k,v in rows.items()};targets={k:labels(v) for k,v in data.items()}
+    retention={k:window_labels(v) for k,v in data.items()}
     raw={k:summaries(v) for k,v in data.items()}
     result=dict(dataset_hash=manifest['hash'],device=a.device,source_revision=a.source_revision,
         precision='Configured CUDA autocast' if a.device=='cuda' else 'CPU FP32 screening',method='Frozen encoder. Ridge alpha=100, standardized using training only, no tuning on validation. All eligible future labels, rejection counts explicit.',
-        labels=targets['train'][0],raw_summary=dict(features=raw['train'].shape[1],metrics=fit_evaluate(raw,targets)),runs={})
+        labels=targets['train'][0],raw_summary=dict(features=raw['train'].shape[1],metrics=fit_evaluate(raw,targets),
+            window_retention=fit_evaluate({k:v.reshape(-1,90) for k,v in raw.items()},retention)),runs={})
     for name in a.runs:
         cp=a.root/name/'best.pt';state=torch.load(cp,map_location='cpu',weights_only=False);identity=state['identity']
         if identity['dataset_hash']!=manifest['hash']:
@@ -93,7 +107,9 @@ def main():
         trained={k:embeddings(model,d,a.device) for k,d in data.items()}
         result['runs'][name]=dict(checkpoint_sha256=file_hash(cp),features=c.embedding,window_features=16*c.embedding,encoder_training_dataset_hash=identity['dataset_hash'],
             untrained=fit_evaluate({k:v['joint'] for k,v in untrained.items()},targets),trained=fit_evaluate({k:v['joint'] for k,v in trained.items()},targets),
-            untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets))
+            untrained_windows=fit_evaluate({k:v['windows'] for k,v in untrained.items()},targets),trained_windows=fit_evaluate({k:v['windows'] for k,v in trained.items()},targets),
+            untrained_retention=fit_evaluate({k:v['windows'].reshape(-1,c.embedding) for k,v in untrained.items()},retention),
+            trained_retention=fit_evaluate({k:v['windows'].reshape(-1,c.embedding) for k,v in trained.items()},retention))
         print(name,flush=True)
     result['label_eligibility']={k:{'total':len(v[1]),'valid':v[2].sum(0).tolist(),'rejected':(~v[2]).sum(0).tolist()} for k,v in targets.items()}
     write_json(a.output,result)
