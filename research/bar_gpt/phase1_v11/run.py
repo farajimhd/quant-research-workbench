@@ -26,6 +26,7 @@ def main():
     p.add_argument('--readout',choices=['latents','include_reference','split_scale'],default='latents')
     p.add_argument('--width',type=int,default=384);p.add_argument('--layers',type=int,default=8)
     p.add_argument('--dropout',type=float,default=.05)
+    p.add_argument('--input-price-scale',type=float,default=100)
     p.add_argument('--tiny-steps',type=int,default=2000);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
     p.add_argument('--resume-pretraining',action='store_true',help='Engineering retry before any research optimizer step; preserves original identity and deadline')
     p.add_argument('--probes',action='store_true',help='Reserve final evaluation time for frozen within-window information probes')
@@ -51,7 +52,8 @@ def main():
     if calibration['data_hash']!=manifest['hash']:raise ValueError('Calibration provenance mismatch')
     if a.width%32 or not 1<=a.layers<=24:raise ValueError('Invalid attention width/depth')
     if not 0<=a.dropout<1:raise ValueError('Invalid dropout')
-    config=Config(width=a.width,layers=a.layers,dropout=a.dropout,reference_weight=a.reference_weight,precision=a.precision,readout=a.readout)
+    if a.input_price_scale<=0:raise ValueError('Positive input scale required')
+    config=Config(width=a.width,layers=a.layers,dropout=a.dropout,reference_weight=a.reference_weight,precision=a.precision,readout=a.readout,input_price_scale=a.input_price_scale)
     def make():return Autoencoder(config,calibration['parameters']).cuda()
     contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
         hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,

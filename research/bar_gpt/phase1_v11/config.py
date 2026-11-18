@@ -14,4 +14,5 @@ class Config:
     center:bool=True
     input_asinh:bool=True
     readout:str='latents'
+    input_price_scale:float=100.
 

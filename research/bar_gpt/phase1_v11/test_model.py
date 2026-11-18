@@ -102,3 +102,12 @@ def test_split_scale_is_learned_embedding_and_token_count_invariant():
     loss,_=objective(m,m.decode(z),x,v,h,a,va);loss.backward()
     assert m.encoder.scale_projection.weight.grad is not None
     assert m.reference_head.weight.grad is not None
+
+
+def test_basispoint_input_conditioning_preserves_transform_and_output_units():
+    _,x,v=example();x=x.float();code,cm=coordinates(x[...,:18],v[...,:18]);ref,_=references(x,v,torch.zeros(9))
+    m=Autoencoder(Config(width=32,layers=1,embedding=64,input_price_scale=10000),parameters())
+    relative=center(code,ref);conditioned=torch.asinh(relative*m.encoder.input_factor)
+    torch.testing.assert_close(torch.sinh(conditioned)/m.encoder.input_factor,relative,rtol=2e-6,atol=2e-6)
+    assert m.encoder.factor[0]==100 and m.encoder.input_factor[0]==10000
+    a,va,pos,h=select(x,v);loss,_=objective(m,m(a,va,pos),x,v,h,a,va);loss.backward();assert torch.isfinite(loss)

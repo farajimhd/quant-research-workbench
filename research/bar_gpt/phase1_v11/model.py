@@ -14,6 +14,7 @@ class Encoder(nn.Module):
         for k in ('time_mean','time_scale','reference_mean','reference_scale'):
             self.register_buffer(k,torch.as_tensor(parameters[k],dtype=torch.float32).clone())
         self.register_buffer('factor',torch.tensor([100. if j in PRICES else 1. for j in range(18)]))
+        self.register_buffer('input_factor',torch.tensor([c.input_price_scale if j in PRICES else 1. for j in range(18)]),persistent=False)
         self.register_buffer('reference_factor',torch.tensor([100.,1.,1.]*3))
         self.stem=nn.Linear(54,c.width);self.reference_stem=nn.Linear(18,c.width)
         self.position=nn.Parameter(torch.randn(1,64,c.width)*.01)
@@ -26,7 +27,7 @@ class Encoder(nn.Module):
     def prepare(self,x,v):
         code,cm=coordinates(x[...,:18],v[...,:18]);ref,rv=references(x[...,:18],v[...,:18],self.reference_mean)
         if not self.config.center:ref=torch.zeros_like(ref)
-        z=center(code,ref)*self.factor
+        z=center(code,ref)*self.input_factor
         if self.config.input_asinh:z=torch.asinh(z)
         t=(x[...,18:]-self.time_mean)/self.time_scale
         values=torch.cat((torch.where(cm,z,0),torch.where(v[...,18:],t,0)),dim=-1)
