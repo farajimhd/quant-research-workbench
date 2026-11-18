@@ -255,3 +255,43 @@ hash, full-state hash, optimizer, RNG and traversal cursor must match exactly.
 The actual executable revision is recorded separately in checkpoints and an
 immutable engineering-resume receipt. Previously published W&B optimizer steps
 are not republished during recovery of updates beyond the durable checkpoint.
+
+## Overnight watch: three full validations
+
+The replacement completed three complete training/validation cycles without a
+numerical failure. Each validation covers all47,750,007 windows in both modes.
+The worker-tail repair resumed the same W&B93pkdlqt identity from step45056;
+25 repeated logged updates matched the original loss, price/activity loss,
+gradient norm and learning rate exactly (zero differences). Cursor replay took
+1419.15 seconds. Source1b8e468630f23597d3a4a910ae6fa70478e76c56 is the current
+executable; the original scientific contract source remains65d57183f.
+
+| Full epoch | Masked price MAPE % | All-visible price MAPE % | Masked activity log MAE | All-visible activity log MAE |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1.4740 | 1.3515 | 0.66918 | 0.61208 |
+| 2 | 1.5363 | 1.4101 | 0.67673 | 0.61736 |
+| 3 | 1.5837 | 1.4962 | 0.65290 | 0.59258 |
+
+All three report zero nonfinite, negative and structural violations. These gains
+are mixed: epoch3 activity and native trade-close MAE improve, but balanced
+price-relative error worsens, particularly daily bars. All-visible1m trade-close
+MAE improves from$0.9125 to$0.5350, daily from$10.1437 to$7.5274;100ms worsens
+from$0.6449 to$0.7064. The worst all-visible band, below$0.10 hourly trade-close,
+improves from129.88% to107.40% mean error but remains unacceptable as uniform
+scale recovery. No difficult valid observations were removed.
+
+Epoch1 remains best by the declared full-validation selection score. Its pinned
+checkpoint is under the active run as`checkpoint_watch_best_full_epoch001.pt`,
+SHA256`5dbc2b117f99c3eaf9469ff7bbc2252107edb0f2dcac0482c3554693f589b268`.
+Training continues because there are measurable activity/native-unit gains;
+price fluctuation remains unresolved. This is not completion of100 epochs or
+proof of improved forecasting. Runtime records include full-validation-comparison,
+intervention-02, engineering-replay-parity, watch-pinned-checkpoint and the
+monitoring learning curves. Training is approximately35–38K windows/s;
+paired full validation takes31.0 minutes at about25.7K windows/s.
+
+For an engineering resume, use the original launch arguments above with the
+current executable source1b8e468630f23597d3a4a910ae6fa70478e76c56 and append
+`--resume --resume-contract-source 65d57183f914f8196bff909cfd95ebf69baef86b`.
+First verify the exact prior owner has exited and preserve all STOP markers.
+Do not run this command while the existing trainer owns the run.
