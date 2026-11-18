@@ -12,9 +12,11 @@ from ..phase1_v5_raw.panel import duration
 
 def read(root):
     if (root/'active-run.json').exists():
-        identity=json.loads((root/'active-run.json').read_text())['name']
-        if Path(identity).name!=identity:raise ValueError('Active run must be a direct child')
-        root=root/identity
+        try:
+            identity=json.loads((root/'active-run.json').read_text())['name']
+            if Path(identity).name!=identity:raise ValueError('Active run must be a direct child')
+            root=root/identity
+        except (OSError,ValueError,KeyError):return dict(state='unavailable',stage='waiting for readable active-run identity')
     try:s=json.loads((root/'status.json').read_text())
     except (OSError,ValueError):return dict(state='unavailable',stage='waiting for readable status')
     for name in ('hardware','resume-arguments','arguments'):

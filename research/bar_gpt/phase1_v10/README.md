@@ -152,3 +152,25 @@ The trainer now retains a rolling best-development checkpoint, preserves a
 rejected nonfinite batch plus a diagnostic checkpoint, stops on catastrophic
 balanced development price errors, and marks exceptional W&B exits as failures.
 A diagnostic failure checkpoint is evidence, not an approved resume candidate.
+
+
+Normalized-attention qualification completed65000 optimizer updates at constant
+1e-3 on the training-only67606-window cache, random batches256 and fresh16-bar
+masks, in616.33 seconds. No finite-gradient guard fired. The selected65000-step
+checkpoint has masked/all-visible development price error1.427%/1.366%, and
+activity log MAE0.7298/0.6874. The all-visible input-median control on the exact
+same development windows has1.888% price error and0.7376 activity log MAE.
+Worst price-band errors remain large (a singleton valid1m bid-low group accounts
+for the largest error); no example was dropped. These are development findings,
+not full-population validation or forecasting evidence. The control and detailed
+metrics are preserved under the runtime setup root.
+
+`--initialize-checkpoint` permits the verified training-only stability parent,
+requires identical architecture and frozen transform buffers, and pins its hash,
+source and training subset identity in the new full-run contract. It transfers
+learned weights and, by default, the verified compatible AdamW state;
+`--no-initialize-optimizer` is an explicit fresh-optimizer ablation. The full run
+receives fresh RNG/traversal and its own100 complete epochs/cosine schedule.
+Initialization policy is part of its contract. This is a new scientific identity, not a
+resume of the failed standard-attention run. Exact engineering resumes still
+require an unchanged full-run contract and W&B identity.

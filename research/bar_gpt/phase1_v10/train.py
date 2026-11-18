@@ -127,8 +127,32 @@ def diagnostics(model,a,step):
     return metrics
 
 
+def initialize(model,a):
+    if not a.initialize_checkpoint:return dict(mode='fresh',seed=a.seed),None
+    path=a.initialize_checkpoint
+    parent=torch.load(path,map_location='cpu',weights_only=False)
+    parent=load_checkpoint(path,parent['contract'])
+    if parent['contract'].get('test')!='long-horizon stability':raise ValueError('Only the qualified training-only parent is allowed')
+    if parent['contract']['config']!=asdict(model.config):raise ValueError('Initialization architecture differs')
+    original=json.loads((path.parent/'arguments.json').read_text())
+    if original['mode']!='stress' or Path(original['data']).resolve()!=a.data.resolve():raise ValueError('Parent training data authority differs')
+    if read_calibration(Path(original['calibration']))['hash']!=read_calibration(a.calibration)['hash']:raise ValueError('Parent calibration differs')
+    for name in ('input_mean','input_scale','output_mean','output_scale'):
+        if not torch.equal(parent['model'][name],model.state_dict()[name].cpu()):raise ValueError('Parent transform buffer differs')
+    proof=json.loads(path.with_suffix('.proof.json').read_text())
+    if not a.resume:model.load_state_dict(parent['model'])
+    if a.initialize_optimizer:
+        for group in parent['optimizer']['param_groups']:
+            if group['weight_decay']!=.01 or tuple(group['betas'])!=(.9,.999) or group['eps']!=1e-8 or group['amsgrad']:raise ValueError('Parent optimizer differs')
+    return dict(mode='qualified training-only parent; fresh RNG and100-epoch full-data traversal/schedule',optimizer='retained' if a.initialize_optimizer else 'fresh',
+                path=str(path),sha256=proof['sha256'],parent_step=parent['step'],source_revision=original['source_revision'],
+                training_subset_hash=read_calibration(a.calibration)['training_dataset_hash']),parent['optimizer'] if a.initialize_optimizer else None
+
+
 def train(a,manifest,status):
-    model=make_model(a);optimizer=torch.optim.AdamW(model.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True)
+    model=make_model(a);initialization,parent_optimizer=initialize(model,a);optimizer=torch.optim.AdamW(model.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True)
+    if parent_optimizer is not None and not a.resume:optimizer.load_state_dict(parent_optimizer)
+    del parent_optimizer
     prototype=loader(manifest,a,'train');steps_per_epoch=len(prototype);del prototype
     total_updates=steps_per_epoch*a.epochs
     contract=dict(version='phase1-v10-2',architecture=asdict(model.config),source_revision=a.source_revision,
@@ -141,7 +165,7 @@ def train(a,manifest,status):
         sampling='Every certified training window, deterministic ordered shuffled shard lanes, all worker tails retained',
         decoder_dependency='Only learned embedding; no copied references, raw bypass or target statistics',
         encoder_parameters=sum(p.numel() for p in model.encoder.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()),
-        initialization='fresh seed17 unless exact engineering resume',torch=str(torch.__version__))
+        initialization=initialization,torch=str(torch.__version__))
     epoch=step=cursor=origins=epoch_done=0;phase='train';best=float('inf');history=[];development_best=float('inf');best_price=float('inf')
     if a.resume:
         s=load_checkpoint(a.output/'checkpoint_last.pt',contract);model.load_state_dict(s['model']);optimizer.load_state_dict(s['optimizer']);restore_rng(s['rng'])
@@ -167,9 +191,11 @@ def train(a,manifest,status):
         if not identity:write_json(ip,dict(id=reporter.id,url=reporter.url,name=reporter.name))
     try:
         if not a.resume:
-            checkpoint();state=rng_state();status(stage='initial frozen development diagnostics')
+            state=rng_state();status(stage='initial frozen development diagnostics')
             d=diagnostics(model,a,0);restore_rng(state);report(reporter,d,0)
             best_price=d['development/masked/balanced_price_relative_mean']
+            development_best=50*best_price+d['development/masked/balanced_activity_log_mae']+.05*d['development/masked/worst_price_band_relative_mean']
+            checkpoint('checkpoint_development_best.pt');checkpoint()
         if a.cuda_graph:
             rows=np.load(a.data/'train.npy',mmap_mode='r',allow_pickle=False)
             example=prepare_raw(rows[:a.batch_size]).to('cuda');model.train();replay=make_replay(model,example);del example
@@ -204,7 +230,6 @@ def train(a,manifest,status):
                             status(stage='training',epoch=epoch+1,step=step,epoch_done=epoch_done,origins=origins,**metrics)
                             with (a.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
                             report(reporter,{'train/'+k:v for k,v in metrics.items()},step)
-                        if step%a.checkpoint_every==0:checkpoint()
                         if step%a.diagnostic_every==0:
                             state=rng_state();status(stage='frozen development diagnostics');d=diagnostics(model,a,step);restore_rng(state);report(reporter,d,step)
                             price=d['development/masked/balanced_price_relative_mean']
@@ -215,6 +240,7 @@ def train(a,manifest,status):
                             score=50*price+d['development/masked/balanced_activity_log_mae']+.05*d['development/masked/worst_price_band_relative_mean']
                             if score<development_best:
                                 development_best=score;checkpoint('checkpoint_development_best.pt')
+                        if step%a.checkpoint_every==0:checkpoint()
                         if a.max_updates and step>=a.max_updates:checkpoint();return 'qualification_complete'
                     if epoch_done!=manifest['counts']['train'] or cursor!=steps_per_epoch:raise ValueError('Training traversal/population mismatch')
                     phase='validation';checkpoint()
