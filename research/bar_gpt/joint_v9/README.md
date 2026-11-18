@@ -142,3 +142,9 @@ it is not an engineering resume. The encoder runs in evaluation mode during
 training, receives no gradients, and its final state is checked byte-exactly
 against initialization. The forecasting and learned anchor readouts can train.
 Only this second stage and frozen probes establish future-task performance.
+
+`--context-embedding 128` optionally separates a learned scale/context readout
+from the learned attention-shape readout within the same fixed-size embedding.
+Both paths contain trainable projections; neither copies input references into
+latent slots. Zeroing the encoder makes the entire embedding zero and forecasts
+input-independent. The reconstruction decoder remains one affine layer.

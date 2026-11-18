@@ -24,6 +24,7 @@ class Config:
     reconstruction_price_scale:float=.02
     anchor_mode:str='historical'
     last_context:bool=False
+    context_embedding:int=0
 
 
 def structured(code):
@@ -90,6 +91,10 @@ class WindowEncoder(nn.Module):
         context_dim=90 if c.last_context else 54
         self.context=nn.Linear(context_dim,w) if c.linear_context else nn.Sequential(nn.Linear(context_dim,w),nn.GELU())
         self.export=nn.Linear(w*(n+1) if c.readout=='flatten' else w*2,c.embedding)
+        if c.context_embedding:
+            if not 0<c.context_embedding<c.embedding:raise ValueError('Context latent must leave learned shape dimensions')
+            self.export=nn.Linear(w*n if c.readout=='flatten' else w,c.embedding-c.context_embedding)
+            self.context_export=nn.Linear(w,c.context_embedding)
 
     def forward(self,x,v):
         mean=torch.where(v,x,0).sum(1)/v.sum(1).clamp_min(1)
@@ -113,6 +118,7 @@ class WindowEncoder(nn.Module):
                 hidden=sequence[:,1:].flatten(1) if c.readout=='flatten' else sequence[:,0]
         # Absolute-scale path/readout remain FP32; BF16 is confined to shape attention.
         context=self.context(summary)
+        if c.context_embedding:return torch.cat((self.export(hidden.float()),self.context_export(context.float())),-1)
         return self.export(torch.cat((hidden.float(),context.float()),-1))
 
 

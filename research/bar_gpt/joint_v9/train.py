@@ -45,6 +45,7 @@ def main():
     p.add_argument('--reconstruction-price-scale',type=float,default=.02)
     p.add_argument('--anchor-mode',choices=('historical','learned'),default='historical')
     p.add_argument('--last-context',action='store_true')
+    p.add_argument('--context-embedding',type=int,default=0)
     p.add_argument('--initial-checkpoint',type=Path)
     p.add_argument('--forecast-weight',type=float,default=1.)
     p.add_argument('--freeze-encoder',action='store_true')
@@ -73,7 +74,7 @@ def main():
         calibration_parent=dict(manifest_sha256=file_hash(a.calibration_manifest),dataset_hash=prior['dataset_hash'],source_revision=prior['source_revision'])
     else:parameters=calibrate(cpu['train'])
     config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight,a.price_huber_beta,
-        a.readout,a.linear_context,a.reconstruction_price_scale,a.anchor_mode,a.last_context)
+        a.readout,a.linear_context,a.reconstruction_price_scale,a.anchor_mode,a.last_context,a.context_embedding)
     model=JointModel(config,**parameters).to(a.device)
     initialization=None
     if a.initial_checkpoint:

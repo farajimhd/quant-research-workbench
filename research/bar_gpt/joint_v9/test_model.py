@@ -22,6 +22,18 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_separate_learned_context_export(self):
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',readout='flatten',linear_context=True,last_context=True,context_embedding=32)
+        m=JointModel(c,**calibrate(d)).eval();out=m(d['x'],d['valid'],d['ages'])
+        self.assertEqual(out['windows'].shape,(4,16,64))
+        loss,_=objective(m,out,d);loss.backward()
+        self.assertGreater(float(m.encoder.context_export.weight.grad.abs().sum()),0)
+        with torch.no_grad():
+            for p in m.encoder.parameters():p.zero_()
+            z=m.encode_windows(d['x'],d['valid']);self.assertEqual(float(z.abs().sum()),0)
+            a=m(d['x'],d['valid'],d['ages'])['forecast'];b=m(d['x']+1,d['valid'],d['ages'])['forecast']
+            torch.testing.assert_close(a,b,rtol=0,atol=0)
+
     def test_reconstruction_pretext_has_no_future_gradient(self):
         from .train import loss_for
         d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned')
