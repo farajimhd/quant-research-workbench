@@ -29,6 +29,7 @@ def skill(prediction,target,valid,baseline,scale,identities):
         groups={}
         for i,item in enumerate(identities):groups.setdefault(item['ticker']+'|'+item['session'],[]).append(i)
         ga=np.array([a[ix].mean() for ix in groups.values()]);gb=np.array([b[ix].mean() for ix in groups.values()])
+        result.setdefault('session_errors',{})[label]=[dict(session=key,model_mae=float(a[ix].mean()),baseline_mae=float(b[ix].mean()),origins=len(ix)) for key,ix in groups.items()]
         rng=np.random.default_rng(917);indices=rng.integers(len(ga),size=(500,len(ga)))
         boot=1-ga[indices].mean(1)/np.maximum(gb[indices].mean(1),1e-12)
         result[label+'_session_bootstrap95']=np.quantile(boot,[.025,.975]).tolist()
@@ -98,3 +99,25 @@ def masked_reconstruction(model,data,rows,batch_size=128,seed=917):
         pred.append(inverse(p).cpu().numpy())
     native=native_metrics(np.concatenate(pred).reshape(-1,64,18),rows['context'].reshape(-1));require_structured(native,paired=True)
     return dict(visible_bars=16,seed=seed,masking='All 27 input feature validities hidden for 48 bars. Original source-valid targets retained. No copied references.',native=native)
+
+
+@torch.no_grad()
+def reconstruction_controls(model,data,rows,batch_size=128,seed=917):
+    """Explicit input-reading controls, never connections in the learned decoder."""
+    constant=inverse(structured(model.reconstruction_mean)).cpu().numpy()
+    count=len(rows)*16;targets=rows['context'].reshape(-1)
+    result=dict(training_constant=native_metrics(np.broadcast_to(constant,(count,64,18)),targets),
+        policy='Constant uses frozen training-only coordinates. Median controls read visible historical input directly; they are reconstruction controls, not exported representations.')
+    for masked in (False,True):
+        rng=np.random.default_rng(seed);pred=[]
+        for start in range(0,len(rows),batch_size):
+            x=data['x'][start:start+batch_size,...,:18];v=data['valid'][start:start+batch_size,...,:18]
+            if masked:
+                visible=rng.random(tuple(v.shape[:-1])).argsort(-1).argsort(-1)<16
+                v=v&torch.from_numpy(visible).to(v.device)[...,None]
+            median=torch.nanmedian(torch.where(v,x,float('nan')),dim=2).values
+            median=torch.where(torch.isfinite(median),median,model.input_mean[:18])
+            pred.append(inverse(median).cpu().numpy())
+        values=np.concatenate(pred).reshape(-1,18)
+        result['visible_median_16' if masked else 'visible_median_64']=native_metrics(np.broadcast_to(values[:,None],(count,64,18)),targets)
+    return result

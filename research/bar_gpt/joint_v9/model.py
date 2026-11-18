@@ -19,6 +19,9 @@ class Config:
     precision:str='bf16'
     summary_weight:float=0.
     price_huber_beta:float=1.
+    readout:str='cls'
+    linear_context:bool=False
+    reconstruction_price_scale:float=.02
 
 
 def structured(code):
@@ -66,8 +69,9 @@ class WindowEncoder(nn.Module):
             dim=128 if c.architecture=='variable' else 54*(1 if c.architecture=='bar' else c.patch)
             self.stem=nn.Linear(dim,w);self.position=nn.Parameter(torch.randn(1,n+1,w)*.01)
             self.cls=nn.Parameter(torch.randn(1,1,w)*.01);self.backbone=attention(w,c.layers,c.dropout)
-        self.context=nn.Sequential(nn.Linear(54,w),nn.GELU())
-        self.export=nn.Linear(w*2,c.embedding)
+        if c.readout not in ('cls','flatten') or (c.readout=='flatten' and c.architecture in ('mlp','conv')):raise ValueError('Invalid attention readout')
+        self.context=nn.Linear(54,w) if c.linear_context else nn.Sequential(nn.Linear(54,w),nn.GELU())
+        self.export=nn.Linear(w*(n+1) if c.readout=='flatten' else w*2,c.embedding)
 
     def forward(self,x,v):
         mean=torch.where(v,x,0).sum(1)/v.sum(1).clamp_min(1)
@@ -84,7 +88,8 @@ class WindowEncoder(nn.Module):
             else:
                 if c.architecture=='variable':tokens=torch.cat((torch.where(v,normalized,0).transpose(1,2),v.float().transpose(1,2)),-1)
                 else:tokens=tokens.reshape(len(x),-1,54*(1 if c.architecture=='bar' else c.patch))
-                tokens=self.stem(tokens);hidden=self.backbone(torch.cat((self.cls.expand(len(x),-1,-1),tokens),1)+self.position)[:,0]
+                tokens=self.stem(tokens);sequence=self.backbone(torch.cat((self.cls.expand(len(x),-1,-1),tokens),1)+self.position)
+                hidden=sequence[:,1:].flatten(1) if c.readout=='flatten' else sequence[:,0]
         # Absolute-scale path/readout remain FP32; BF16 is confined to shape attention.
         context=self.context(summary)
         return self.export(torch.cat((hidden.float(),context.float()),-1))
@@ -142,7 +147,7 @@ def objective(model,output,data,reconstruction_weight=.1):
         time=torch.where(v[...,18:],time,0).sum()/v[...,18:].sum().clamp_min(1)
         binary=F.binary_cross_entropy_with_logits(vl,v.float(),reduction='none')
         validity=.5*(torch.where(v,binary,0).sum()/v.sum().clamp_min(1)+torch.where(~v,binary,0).sum()/(~v).sum().clamp_min(1))
-        reconstruction=.5*(.02*channels[list(PRICES)].mean()+channels[list(ACTIVITY)].mean())+.05*(time+validity)
+        reconstruction=.5*(model.config.reconstruction_price_scale*channels[list(PRICES)].mean()+channels[list(ACTIVITY)].mean())+.05*(time+validity)
     auxiliary=forecast*0
     if model.config.summary_weight>0:
         y=data['target'];v=data['target_valid'];past=structured(anchor(data['x'],data['valid'],check=False))

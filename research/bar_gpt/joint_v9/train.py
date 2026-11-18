@@ -39,6 +39,8 @@ def main():
     p.add_argument('--precision',choices=('bf16','fp32'),default='bf16');p.add_argument('--reconstruction-weight',type=float,default=.1)
     p.add_argument('--summary-weight',type=float,default=0.);p.add_argument('--masked-reconstruction-probability',type=float,default=0.)
     p.add_argument('--price-huber-beta',type=float,default=1.);p.add_argument('--calibration-manifest',type=Path)
+    p.add_argument('--readout',choices=('cls','flatten'),default='cls');p.add_argument('--linear-context',action='store_true')
+    p.add_argument('--reconstruction-price-scale',type=float,default=.02)
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
@@ -61,7 +63,8 @@ def main():
         parameters={k:torch.tensor(v) for k,v in prior['parameters'].items()}
         calibration_parent=dict(manifest_sha256=file_hash(a.calibration_manifest),dataset_hash=prior['dataset_hash'],source_revision=prior['source_revision'])
     else:parameters=calibrate(cpu['train'])
-    config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight,a.price_huber_beta)
+    config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight,a.price_huber_beta,
+        a.readout,a.linear_context,a.reconstruction_price_scale)
     model=JointModel(config,**parameters).to(a.device)
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],

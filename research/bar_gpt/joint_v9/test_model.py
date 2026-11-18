@@ -22,6 +22,17 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_flat_patch_readout_and_learned_linear_scale_path(self):
+        d=cache(examples())
+        for readout,linear in [('flatten',False),('cls',True),('flatten',True)]:
+            c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',readout=readout,linear_context=linear)
+            model=JointModel(c,**calibrate(d));o=model(d['x'],d['valid'],d['ages']);loss,_=objective(model,o,d,.1);loss.backward()
+            self.assertEqual(o['windows'].shape,(4,16,64));self.assertTrue(torch.isfinite(model.encoder.export.weight.grad).all())
+            with torch.no_grad():
+                for value in model.encoder.parameters():value.zero_()
+                z=model.encode_windows(d['x'],d['valid']);torch.testing.assert_close(z,torch.zeros_like(z),rtol=0,atol=0)
+                p=model.reconstruct(z)[0];torch.testing.assert_close(p,p[:1,:1].expand_as(p),rtol=0,atol=0)
+
     def test_auxiliary_future_loss_and_masked_reconstruction_gradients(self):
         from .train import loss_for
         d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',summary_weight=.2,price_huber_beta=.05),**calibrate(d))
