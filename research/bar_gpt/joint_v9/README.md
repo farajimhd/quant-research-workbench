@@ -1,5 +1,8 @@
 # Joint V9: choose representations by future-task generalization
 
+Completed campaign evidence, pinned artifacts, limitations and reproduction:
+[CAMPAIGN_FINDINGS.md](CAMPAIGN_FINDINGS.md).
+
 The primary criterion is leakage-safe future-bar prediction; held-out input
 reconstruction is a supporting metric and a hypothesis about forecast
 generalization, not a substitute for measuring it. The preceding V8 MLP is a
