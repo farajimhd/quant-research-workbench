@@ -22,6 +22,17 @@ def examples(n=4):
 
 
 class ModelContract(unittest.TestCase):
+    def test_horizon_queries_are_fixed_and_export_exactly(self):
+        d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',horizon_queries=True)
+        m=JointModel(c,**calibrate(d)).eval();o=m(d['x'],d['valid'],d['ages'])
+        self.assertEqual(o['forecast'].shape,(4,64,18));self.assertEqual(o['joint'].shape,(4,64))
+        self.assertEqual(m.query.shape,(1,64,64));self.assertEqual(m.forecast.out_features,18)
+        f=EmbeddingForecaster.from_model(m).eval()
+        torch.testing.assert_close(f(o['windows'],d['ages'])['forecast'],o['forecast'],rtol=0,atol=0)
+        changed={**d,'target':d['target']+100,'target_valid':~d['target_valid']}
+        torch.testing.assert_close(m(changed['x'],changed['valid'],changed['ages'])['forecast'],o['forecast'],rtol=0,atol=0)
+        loss,_=objective(m,o,d);loss.backward();self.assertTrue(torch.isfinite(m.query.grad).all())
+
     def test_separate_learned_context_export(self):
         d=cache(examples());c=Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',anchor_mode='learned',readout='flatten',linear_context=True,last_context=True,context_embedding=32)
         m=JointModel(c,**calibrate(d)).eval();out=m(d['x'],d['valid'],d['ages'])

@@ -59,7 +59,7 @@ def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status
         o=model(d['x'],d['valid'],d['ages'],reconstruct=reconstruction)
         p=o['forecast'];base=anchor(d['x'],d['valid'],check=False)
         if model.config.anchor_mode=='learned':
-            delta=model.forecast(o['joint'].float()).reshape(-1,64,18)*model.forecast_scale
+            delta=o['future_codes']
             anchor_diagnostic.append(structured(base[:,None]+delta).cpu().numpy())
         if not torch.isfinite(p).all():raise FloatingPointError('Nonfinite forecast')
         pred.append(p.cpu().numpy());past.append(structured(base[:,None]).expand(-1,64,-1).cpu().numpy())

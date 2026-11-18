@@ -10,9 +10,10 @@ The actual Phase 2 input is sixteen 64-bar windows: 8×1s, 4×10s, 2×1m, 1×1h,
 1×daily. Labels are the next 64 observed 1s bars inside the same source block.
 Every completed context end must be <= origin; every label end must be > origin.
 Labels, their masks, timestamps and any future-derived statistics are never
-prediction inputs. Historical input-only persistence anchors may parameterize
-forecast residuals, but reconstruction must recover absolute scale through the
-learned embedding and cannot use those anchors as a decoder bypass.
+prediction inputs. Historical input-only persistence anchors are conditional
+controls only. Recommendation candidates must recover absolute scale through
+learned embeddings for both reconstruction and forecasting. Neither decoder
+may receive raw reference values outside the exported representation.
 
 The dataset builder uses the sealed all-published Phase 2 certificate and hashes
 every selected source payload through the existing reader. It preserves source
@@ -148,3 +149,10 @@ from the learned attention-shape readout within the same fixed-size embedding.
 Both paths contain trainable projections; neither copies input references into
 latent slots. Zeroing the encoder makes the entire embedding zero and forecasts
 input-independent. The reconstruction decoder remains one affine layer.
+
+`--horizon-queries` replaces the single Phase 2 pooled query with 64 learned,
+fixed horizon queries and a shared 18-channel readout. Queries contain no
+future values, validity flags or timestamps. Attention operates on past window
+embeddings, causal ages and these fixed queries only; no autoregressive target
+feeding is used. Phase 1 and its reconstruction decoder are unchanged. Mean
+query features are used only for the compact Phase 2 probe diagnostic.

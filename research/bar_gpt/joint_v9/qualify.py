@@ -47,7 +47,7 @@ def main():
     config=Config(**identity['config']);parameters={k:torch.tensor(v) for k,v in identity['parameters'].items()}
     model=JointModel(config,**parameters).to(a.device);model.load_state_dict(state['model']);model.eval()
     report=dict(run=a.run,checkpoint_sha256=file_hash(cp),source_revision=a.source_revision,dataset_hash=manifest['hash'],device=a.device,
-        precision='Configured CUDA precision' if a.device=='cuda' else 'CPU FP32 diagnostic',evaluations={})
+        precision='Configured CUDA precision' if a.device=='cuda' else 'CPU FP32 diagnostic',forecast_head_trained=identity.get('forecast_weight',1)>0,evaluations={})
     for partition,r in rows.items():
         d={k:v.to(a.device) for k,v in cache(r).items()};identities=json.loads((dataset/(partition+'-identities.json')).read_text())
         begin=time.time();report['evaluations'][partition]=measure(model,d,r,identities)
@@ -62,7 +62,7 @@ def main():
     x=d['x'][:2].reshape(-1,64,27);v=d['valid'][:2].reshape(-1,64,27)
     with torch.no_grad():torch.testing.assert_close(standalone(x,v),model.encoder(x,v),rtol=0,atol=0)
     torch.save(package,a.output/'window-encoder.pt');report['encoder_sha256']=file_hash(a.output/'window-encoder.pt')
-    if config.anchor_mode=='learned':
+    if config.anchor_mode=='learned' and report['forecast_head_trained']:
         forecaster=EmbeddingForecaster.from_model(model).eval()
         with torch.no_grad():
             z=model.encode_windows(d['x'][:2],d['valid'][:2]);ages=d['ages'][:2]

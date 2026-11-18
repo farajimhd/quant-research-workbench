@@ -25,6 +25,7 @@ class Config:
     anchor_mode:str='historical'
     last_context:bool=False
     context_embedding:int=0
+    horizon_queries:bool=False
 
 
 def structured(code):
@@ -55,15 +56,16 @@ def setup_temporal(owner,c):
     e=c.embedding
     owner.frame=nn.Embedding(5,e);owner.slot=nn.Embedding(16,e);owner.age=nn.Sequential(nn.Linear(2,e),nn.GELU(),nn.Linear(e,e))
     owner.register_buffer('frame_ids',torch.tensor([0]*8+[1]*4+[2]*2+[3,4]));owner.register_buffer('slot_ids',torch.arange(16))
-    owner.query=nn.Parameter(torch.randn(1,1,e)*.01);owner.temporal=attention(e,c.global_layers,c.dropout)
-    owner.forecast=nn.Linear(e,64*18);nn.init.normal_(owner.forecast.weight,std=.0001);nn.init.zeros_(owner.forecast.bias)
+    owner.query=nn.Parameter(torch.randn(1,64 if c.horizon_queries else 1,e)*.01);owner.temporal=attention(e,c.global_layers,c.dropout)
+    owner.forecast=nn.Linear(e,18 if c.horizon_queries else 64*18);nn.init.normal_(owner.forecast.weight,std=.0001);nn.init.zeros_(owner.forecast.bias)
 
 
 def mix_windows(owner,z,ages):
     c=owner.config
     with torch.autocast(z.device.type,dtype=torch.bfloat16,enabled=c.precision=='bf16' and z.device.type=='cuda'):
         token=z+owner.frame(owner.frame_ids)[None]+owner.slot(owner.slot_ids)[None]+owner.age(ages)
-        return owner.temporal(torch.cat((owner.query.expand(len(z),-1,-1),token),1))[:,0].float()
+        result=owner.temporal(torch.cat((owner.query.expand(len(z),-1,-1),token),1))
+        return (result[:,:64] if c.horizon_queries else result[:,0]).float()
 
 
 class ConvBlock(nn.Module):
@@ -158,8 +160,9 @@ class JointModel(nn.Module):
         else:raise ValueError('Historical control requires an explicit past-only anchor; learned mode accepts no raw input')
         joint=mix_windows(self,z,ages)
         delta=self.forecast(joint.float()).reshape(-1,64,18)
+        joint=joint.mean(1) if c.horizon_queries else joint
         prediction=structured(reference[:,None]+delta*self.forecast_scale)
-        return dict(forecast=prediction,joint=joint.float(),
+        return dict(forecast=prediction,joint=joint.float(),future_codes=delta*self.forecast_scale,
             future_summary=self.future_summary(joint.float()) if c.summary_weight>0 else None)
 
 
@@ -184,7 +187,8 @@ class EmbeddingForecaster(nn.Module):
     def forward(self,z,ages):
         joint=mix_windows(self,z,ages);reference=self.anchor_head(z[:,7].float())*self.reconstruction_scale+self.reconstruction_mean
         delta=self.forecast(joint).reshape(-1,64,18)
-        return dict(forecast=structured(reference[:,None]+delta*self.forecast_scale),joint=joint,
+        joint=joint.mean(1) if self.config.horizon_queries else joint
+        return dict(forecast=structured(reference[:,None]+delta*self.forecast_scale),joint=joint,future_codes=delta*self.forecast_scale,
             future_summary=self.future_summary(joint) if self.config.summary_weight>0 else None)
 
 
