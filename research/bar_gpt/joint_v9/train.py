@@ -43,6 +43,7 @@ def main():
     p.add_argument('--reconstruction-price-scale',type=float,default=.02)
     p.add_argument('--anchor-mode',choices=('historical','learned'),default='historical')
     p.add_argument('--last-context',action='store_true')
+    p.add_argument('--initial-checkpoint',type=Path)
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
@@ -68,12 +69,23 @@ def main():
     config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight,a.price_huber_beta,
         a.readout,a.linear_context,a.reconstruction_price_scale,a.anchor_mode,a.last_context)
     model=JointModel(config,**parameters).to(a.device)
+    initialization=None
+    if a.initial_checkpoint:
+        initial=torch.load(a.initial_checkpoint,map_location=a.device,weights_only=False)
+        prior=initial['identity']
+        if Config(**prior['config'])!=config or prior['dataset_hash']!=manifest['hash'] or prior['parameters']!={k:v.tolist() for k,v in parameters.items()}:
+            raise ValueError('Fine-tuning requires identical architecture, dataset and calibration')
+        model.load_state_dict(initial['model'])
+        initialization=dict(checkpoint_sha256=file_hash(a.initial_checkpoint),parent_step=initial['step'],parent_source_revision=prior['source_revision'],
+            policy='New scientific experiment: parent model weights only, fresh optimizer, scheduler and seeded traversal. Not an engineering resume.')
+        del initial
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],
         parameters={k:v.tolist() for k,v in parameters.items()},seed=a.seed,examples=a.examples,minutes=a.minutes,lr=a.lr,
         reconstruction_encoder_weight=a.reconstruction_weight,reconstruction_decoder_weight=.1,
         masked_reconstruction_probability=a.masked_reconstruction_probability,masked_visible_bars=16,
         calibration_parent=calibration_parent,
+        initialization=initialization,
         hypothesis=a.hypothesis,parent=a.parent,parameter_count=sum(v.numel() for v in model.parameters()),
         window_encoder_parameters=sum(v.numel() for v in model.encoder.parameters()),reconstruction_decoder_parameters=sum(v.numel() for v in model.reconstruction.parameters()),
         forecasting=('Direct next 64 observed 1s bars. Historical last-bar anchor is a declared causal control.' if a.anchor_mode=='historical' else
@@ -126,9 +138,9 @@ def main():
             del pm,po
         bs=max(profile,key=lambda x:x['origins_per_second'])['batch']
         write_json(a.output/'profile.json',dict(configurations=profile,selected_batch=bs,precision=a.precision,includes_finite_and_clip=True))
-        status('untrained development control')
+        status('parent initialization development control' if a.initial_checkpoint else 'untrained development control')
         control=measure(model,data['development'],rows['development'],identities['development'],128,False)
-        write_json(a.output/'untrained-control.json',control)
+        write_json(a.output/('initialization-control.json' if a.initial_checkpoint else 'untrained-control.json'),control)
     else:bs=json.loads((a.output/'profile.json').read_text())['selected_batch']
     steps=int(np.ceil(a.examples/bs));interval=max(1,steps//8)
     opt=torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=.01,fused=a.device=='cuda')
