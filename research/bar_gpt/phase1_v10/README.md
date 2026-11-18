@@ -202,3 +202,37 @@ maximum positive-target relative transform/inverse error2.861e-6; every valid
 zero activity value reconstructed exactly. Raw absolute floors differ by scale
 and are preserved for every channel in`all-training-transform-roundtrip.json`.
 No source example was clipped or removed.
+
+## Qualified replacement full run
+
+The replacement is `phase1-v10q-d384-e768-b8192-mae16-100ep-20261117`,
+W&B https://wandb.ai/mehdifaraji/bargpt-phase1-v10-full-mae/runs/93pkdlqt.
+Its immutable source is `65d57183f914f8196bff909cfd95ebf69baef86b`.
+Live ownership, eight loader workers, advancing W&B counters and the step1024
+checkpoint SHA256 were independently verified. Early throughput is about37K
+windows/s, GPU compute utilization100%, loader waiting about0.04%; this does
+not establish sustained quality improvement. Initial development price errors
+are above the qualified parent. The overnight watch continues.
+
+Run from `D:\TradingML\codes\bargpt-phase1-v10-65d57183f` on the workstation:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+$root='D:\TradingML\runtimes\bar_gpt\phase1-v10-full-setup-20261117'
+& C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -u -m research.bar_gpt.phase1_v10.run train `
+  --output "$root\phase1-v10q-d384-e768-b8192-mae16-100ep-20261117" `
+  --source-revision 65d57183f914f8196bff909cfd95ebf69baef86b `
+  --calibration "$root\calibration.json" --attention qknorm `
+  --initialize-checkpoint "$root\qknorm-stress-65000\checkpoint_best.pt" `
+  --no-initialize-optimizer --batch-size 8192 --validation-batch-size 16384 `
+  --workers 8 --prefetch 4 --epochs 100 `
+  --learning-rate .001 --min-learning-rate .00001 `
+  --checkpoint-every 512 --diagnostic-every 512 --wandb-mode online
+```
+
+This is the original launch command, not a command to duplicate a live owner.
+The parent checkpoint SHA256 is
+`d99c2994effc3b689c967af1d61740e11cfb37821c5d039859759ce230683620`.
+The run uses all186,575,722 training windows and47,750,007 validation windows,
+including worker tails. Exact ownership and checkpoint proofs are in
+`verified-full-launch-qknorm.json`; initial failed-launch receipts remain intact.
