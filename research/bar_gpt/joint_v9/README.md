@@ -51,8 +51,12 @@ No full-data multi-day run or recurring scheduled automation is implicit.
 The initial dataset has 9,600 training origins from 2,400 independent sessions.
 Development and ticker-held-out development each contain 960 origins. A nested
 training expansion keeps every original training record byte-exact and copies
-all holdout identities and payloads unchanged. Calibration is refit only on the
-expanded training partition and receives a new data/experiment identity.
+all holdout identities and payloads unchanged. Expanded-data runs receive a new
+data/experiment identity. Calibration can be refit on training only, or frozen
+from an explicitly named original training calibration for controlled expansion
+comparisons. The latter verifies that the original training dataset is retained
+byte-exact and records the calibration manifest hash; no validation statistics
+are used.
 
 Matched forecast-only and joint runs train the same affine reconstruction head
 at weight 0.1. The reconstruction-weight argument controls gradients entering

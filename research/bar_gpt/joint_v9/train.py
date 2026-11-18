@@ -38,12 +38,13 @@ def main():
     p.add_argument('--patch',type=int,default=8);p.add_argument('--dropout',type=float,default=.05)
     p.add_argument('--precision',choices=('bf16','fp32'),default='bf16');p.add_argument('--reconstruction-weight',type=float,default=.1)
     p.add_argument('--summary-weight',type=float,default=0.);p.add_argument('--masked-reconstruction-probability',type=float,default=0.)
+    p.add_argument('--price-huber-beta',type=float,default=1.);p.add_argument('--calibration-manifest',type=Path)
     p.add_argument('--examples',type=int,default=262144);p.add_argument('--minutes',type=float,default=45)
     p.add_argument('--batch-sizes',type=int,nargs='+',default=[32,64,128,256]);p.add_argument('--lr',type=float,default=.0003)
     p.add_argument('--seed',type=int,default=17);p.add_argument('--tiny-steps',type=int,default=600)
     p.add_argument('--device',choices=('cpu','cuda'),default='cuda');p.add_argument('--wandb-mode',choices=('online','disabled'),default='online')
     p.add_argument('--resume',action='store_true');a=p.parse_args()
-    if not 0<a.minutes<=60 or a.examples<=0 or a.tiny_steps<1 or not 0<=a.masked_reconstruction_probability<=1 or a.summary_weight<0:raise ValueError('Invalid finite experiment')
+    if not 0<a.minutes<=60 or a.examples<=0 or a.tiny_steps<1 or not 0<=a.masked_reconstruction_probability<=1 or a.summary_weight<0 or a.price_huber_beta<=0:raise ValueError('Invalid finite experiment')
     started=time.time();deadline=started+a.minutes*60;preflight(a)
     torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
     torch.set_float32_matmul_precision('highest');step=0;progress={};wb=None
@@ -53,13 +54,21 @@ def main():
         write_json(a.output/'progress.json',progress)
     status('verifying data and preparing causal cache')
     rows,manifest=load(a.data);cpu={k:cache(v) for k,v in rows.items()}
-    parameters=calibrate(cpu['train']);config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight)
+    calibration_parent=None
+    if a.calibration_manifest:
+        prior=json.loads(a.calibration_manifest.read_text())
+        if prior['dataset_hash'] not in (manifest['hash'],manifest.get('expansion',{}).get('base_hash')):raise ValueError('Calibration must come from same or byte-exact retained training subset')
+        parameters={k:torch.tensor(v) for k,v in prior['parameters'].items()}
+        calibration_parent=dict(manifest_sha256=file_hash(a.calibration_manifest),dataset_hash=prior['dataset_hash'],source_revision=prior['source_revision'])
+    else:parameters=calibrate(cpu['train'])
+    config=Config(a.architecture,a.width,a.embedding,a.layers,a.global_layers,a.patch,a.dropout,a.precision,a.summary_weight,a.price_huber_beta)
     model=JointModel(config,**parameters).to(a.device)
     identities={name:json.loads((a.data/(name+'-identities.json')).read_text()) for name in ('train','development','novel_development')}
     identity=dict(version='joint-v9-1',config=asdict(config),source_revision=a.source_revision,dataset_hash=manifest['hash'],
         parameters={k:v.tolist() for k,v in parameters.items()},seed=a.seed,examples=a.examples,minutes=a.minutes,lr=a.lr,
         reconstruction_encoder_weight=a.reconstruction_weight,reconstruction_decoder_weight=.1,
         masked_reconstruction_probability=a.masked_reconstruction_probability,masked_visible_bars=16,
+        calibration_parent=calibration_parent,
         hypothesis=a.hypothesis,parent=a.parent,parameter_count=sum(v.numel() for v in model.parameters()),
         window_encoder_parameters=sum(v.numel() for v in model.encoder.parameters()),reconstruction_decoder_parameters=sum(v.numel() for v in model.reconstruction.parameters()),
         forecasting='Direct next 64 observed 1s bars. Historical-only last-bar anchor; future values/masks/clocks never prediction inputs.',
@@ -148,7 +157,7 @@ def main():
             loss.backward();torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True);opt.step();scheduler.step();step+=1;seen+=n
             if step%10==0:status('training',planned_steps=steps,seen=seen,origins_per_second=(seen-initial_seen)/max(time.time()-training,.001),
                 forecast_loss=float(parts['forecast'].detach()),reconstruction_loss=float(parts['reconstruction'].detach()),future_summary_loss=float(parts['future_summary'].detach()),gpu_memory_bytes=torch.cuda.max_memory_allocated() if a.device=='cuda' else 0)
-            if step%interval==0 or step==steps:
+            if step%interval==0 or step in (128,256) or step==steps:
                 begin=time.time();metrics={}
                 for partition in ('development','novel_development'):
                     status('validation '+partition)
@@ -161,7 +170,7 @@ def main():
                 write_json(a.output/'development-latest.json',metrics)
                 if score<best:best=float(score);save('best.pt')
                 save()
-                if wb:wb.log({'selection/score':score,'loss/forecast':float(parts['forecast'].detach()),'loss/reconstruction':float(parts['reconstruction'].detach()),
+                if wb:wb.log({'selection/score':score,'loss/forecast':float(parts['forecast'].detach()),'loss/reconstruction':float(parts['reconstruction'].detach()),'loss/future_summary':float(parts['future_summary'].detach()),
                     **{k+'/'+n:v[n] for k,v in metrics.items() for n in ('price_mae_skill','activity_mae_skill','selection_score')},
                     **{k+'/reconstruction_price_relative':v['reconstruction']['balanced_price_relative_mean'] for k,v in metrics.items()}},step=step)
         save();model.load_state_dict(torch.load(a.output/'best.pt',map_location=a.device,weights_only=False)['model']);results={}

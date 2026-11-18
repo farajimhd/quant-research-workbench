@@ -24,7 +24,7 @@ def examples(n=4):
 class ModelContract(unittest.TestCase):
     def test_auxiliary_future_loss_and_masked_reconstruction_gradients(self):
         from .train import loss_for
-        d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',summary_weight=.2),**calibrate(d))
+        d=cache(examples());model=JointModel(Config(width=32,embedding=64,layers=1,global_layers=1,dropout=0,precision='fp32',summary_weight=.2,price_huber_beta=.05),**calibrate(d))
         loss,parts=loss_for(model,d,.1,1.);loss.backward()
         self.assertGreater(float(parts['future_summary'].detach()),0)
         self.assertTrue(torch.isfinite(model.future_summary.weight.grad).all())
