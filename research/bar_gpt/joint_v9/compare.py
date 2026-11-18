@@ -1,7 +1,18 @@
 """Rebuild comparable scalar and all-channel evidence from immutable run outputs."""
 import argparse,csv,json
+import numpy as np
 from pathlib import Path
 from ..v5.shards.phase1_contract import write_json
+
+
+def activity_control_interval(metrics,control):
+    """Paired session bootstrap versus a stronger causal control, not last-bar."""
+    model=metrics['session_errors']['activity'];base=metrics[control]['session_errors']['activity']
+    if [r['session'] for r in model]!=[r['session'] for r in base]:raise ValueError('Unpaired session controls')
+    a=np.array([r['model_mae'] for r in model]);b=np.array([r['model_mae'] for r in base])
+    indices=np.random.default_rng(917).integers(len(a),size=(5000,len(a)))
+    skill=1-a[indices].mean(1)/np.maximum(b[indices].mean(1),1e-12)
+    return dict(session_weighted_skill=float(1-a.mean()/max(b.mean(),1e-12)),bootstrap95=np.quantile(skill,[.025,.975]).tolist(),sessions=len(a))
 
 
 def main():
@@ -24,6 +35,8 @@ def main():
                 reconstruction_activity_log=v['reconstruction']['balanced_activity_log_mae'],reconstruction_worst_price_group=v['reconstruction']['worst_price_band_relative_mean'])
             for key in ('activity_history_mean_skill','activity_history_median_skill','history_mean_selection_score'):
                 if key in v:record['metrics'][split][key]=v[key]
+            if 'session_errors' in v and 'history_mean_control' in v:
+                record['metrics'][split]['activity_strong_control_uncertainty']={k:activity_control_interval(v,k) for k in ('history_mean_control','history_median_control')}
             for task in ('native_forecast','native_persistence','native_history_mean','native_history_median','reconstruction'):
                 if task not in v:continue
                 for frame,f in v[task]['frames'].items():
