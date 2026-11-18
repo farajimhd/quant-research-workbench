@@ -122,7 +122,9 @@ def diagnostics(model,a,step):
             predictions.append(inverse(out[0]).cpu().numpy());masks.append((v[...,:18]&h[...,None]).cpu().numpy())
         result[mode]=native(np.concatenate(predictions),rows,np.concatenate(masks));require_structured(result[mode],paired=True)
     write_json(a.output/'development-latest.json',result);model.train(m)
-    return {f'development/{mode}/{k}':result[mode][k] for mode in ('masked','all_visible') for k in ('balanced_price_relative_mean','balanced_activity_log_mae','worst_price_band_relative_mean')}
+    metrics={f'development/{mode}/{k}':result[mode][k] for mode in ('masked','all_visible') for k in ('balanced_price_relative_mean','balanced_activity_log_mae','worst_price_band_relative_mean')}
+    with (a.output/'development-history.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,updated=time.time(),**metrics))+'\n')
+    return metrics
 
 
 def train(a,manifest,status):
@@ -149,6 +151,9 @@ def train(a,manifest,status):
         save_checkpoint(a.output/name,dict(contract=contract,model=model.state_dict(),optimizer=optimizer.state_dict(),rng=rng_state(),
             epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,phase=phase,best=best,history=history,
             scheduler=dict(step=step,total_updates=total_updates,peak=a.learning_rate,floor=a.min_learning_rate)))
+        if reporter:
+            proof=json.loads((a.output/name).with_suffix('.proof.json').read_text())
+            reporter.summary.update({'checkpoint/step':step,'checkpoint/sha256':proof['sha256'],'checkpoint/path':str(a.output/name)})
     reporter=None;replay=None
     if a.wandb_mode=='online':
         from research.mlops.env import discover_env_files,load_env_files
@@ -160,7 +165,9 @@ def train(a,manifest,status):
             id=identity['id'] if identity else None,resume='must' if identity else None,config=None if identity else contract,dir=str(a.output))
         if not identity:write_json(ip,dict(id=reporter.id,url=reporter.url,name=reporter.name))
     try:
-        if not a.resume:checkpoint()
+        if not a.resume:
+            checkpoint();state=rng_state();status(stage='initial frozen development diagnostics')
+            d=diagnostics(model,a,0);restore_rng(state);report(reporter,d,0)
         if a.cuda_graph:
             rows=np.load(a.data/'train.npy',mmap_mode='r',allow_pickle=False)
             example=prepare_raw(rows[:a.batch_size]).to('cuda');model.train();replay=make_replay(model,example);del example
