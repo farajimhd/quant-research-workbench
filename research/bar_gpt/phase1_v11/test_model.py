@@ -155,11 +155,12 @@ def test_full_raw_capture_optimizer_rng_resume_and_native_metrics():
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA inference capture required')
-def test_validation_graph_preserves_private_rng_masks_and_predictions():
+@pytest.mark.parametrize('backbone',['transformer','mlp'])
+def test_validation_graph_preserves_private_rng_masks_and_predictions(backbone):
     from .full_step import InferenceReplay,forward
     from ..phase1_v7.full_data import prepare_raw
     b=prepare_raw(raw_rows(),native=True).to('cuda')
-    model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout='split_scale'),parameters()).cuda().eval()
+    model=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,readout='split_scale',backbone=backbone,mlp_density_normalize=True),parameters()).cuda().eval()
     generator=torch.Generator(device='cuda').manual_seed(731);state=generator.get_state()
     with torch.no_grad():expected=forward(model,b,16,generator)
     generator.set_state(state);graph=InferenceReplay(model,b,16,generator);actual=graph(b)
