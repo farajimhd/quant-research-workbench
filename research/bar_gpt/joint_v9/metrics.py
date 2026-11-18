@@ -53,11 +53,14 @@ def skill(prediction,target,valid,baseline,scale,identities):
 
 @torch.no_grad()
 def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status=None):
-    model.eval();pred=[];past=[];means=[];rolling=[];medians=[];recon=[];zs=[];metadata=[];started=time.perf_counter()
+    model.eval();pred=[];past=[];means=[];rolling=[];medians=[];recon=[];zs=[];metadata=[];anchor_diagnostic=[];started=time.perf_counter()
     for start in range(0,len(rows),batch_size):
         d={k:v[start:start+batch_size] for k,v in data.items()}
         o=model(d['x'],d['valid'],d['ages'],reconstruct=reconstruction)
         p=o['forecast'];base=anchor(d['x'],d['valid'],check=False)
+        if model.config.anchor_mode=='learned':
+            delta=model.forecast(o['joint'].float()).reshape(-1,64,18)*model.forecast_scale
+            anchor_diagnostic.append(structured(base[:,None]+delta).cpu().numpy())
         if not torch.isfinite(p).all():raise FloatingPointError('Nonfinite forecast')
         pred.append(p.cpu().numpy());past.append(structured(base[:,None]).expand(-1,64,-1).cpu().numpy())
         means.append(structured(base[:,None]+model.mean_future_delta).cpu().numpy());zs.append(o['joint'].cpu().numpy())
@@ -75,6 +78,10 @@ def measure(model,data,rows,identities,batch_size=128,reconstruction=True,status
             status(evaluation_done=done,evaluation_total=len(rows),evaluation_origins_per_second=done/max(elapsed,1e-9),evaluation_eta_seconds=(len(rows)-done)*elapsed/done)
     p=np.concatenate(pred);baseline=np.concatenate(past);mean=np.concatenate(means);target=data['target'].cpu().numpy();valid=data['target_valid'].cpu().numpy()
     result=skill(p,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
+    if anchor_diagnostic:
+        result['diagnostic_known_past_anchor']=dict(
+            policy='Diagnostic only: true historical anchor outside embedding; same predicted future shape. Ineligible for embedding-only recommendation.',
+            metrics=skill(np.concatenate(anchor_diagnostic),target,valid,baseline,model.loss_scale.cpu().numpy(),identities))
     result['training_mean_control']=skill(mean,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
     history_mean=np.concatenate(rolling)
     result['history_mean_control']=skill(history_mean,target,valid,baseline,model.loss_scale.cpu().numpy(),identities)
