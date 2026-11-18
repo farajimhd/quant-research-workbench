@@ -113,6 +113,16 @@ def test_basispoint_input_conditioning_preserves_transform_and_output_units():
     a,va,pos,h=select(x,v);loss,_=objective(m,m(a,va,pos),x,v,h,a,va);loss.backward();assert torch.isfinite(loss)
 
 
+@pytest.mark.parametrize('visible_weight',[0,.5])
+def test_source_invalid_targets_never_enter_reconstruction_loss(visible_weight):
+    _,x,v=example();x=x.float();v[...,10]=False;v[...,24]=False
+    m=Autoencoder(Config(width=32,layers=1,embedding=64,dropout=0,visible_weight=visible_weight),parameters())
+    a,va,p,h=select(x,v,16);out=m(a,va,p);before,_=objective(m,out,x,v,h,a,va)
+    changed=x.clone();changed[~v]=123456.;after,_=objective(m,out,changed,v,h,a,va)
+    torch.testing.assert_close(before,after,rtol=0,atol=0);after.backward()
+    assert all(p.grad is not None and torch.isfinite(p.grad).all() for p in m.parameters())
+
+
 def raw_rows():
     import numpy as np
     from ..v5.shards.phase1_contract import SAMPLE_DTYPE

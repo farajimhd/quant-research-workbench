@@ -15,4 +15,5 @@ class Config:
     input_asinh:bool=True
     readout:str='latents'
     input_price_scale:float=100.
+    visible_weight:float=0.
 

@@ -89,4 +89,12 @@ def objective(model,out,target,valid,hidden,visible_values,visible_valid):
     ve=F.binary_cross_entropy_with_logits(out['validity'],valid.float(),reduction='none')
     validity=.5*(masked_mean(ve,valid&hidden[...,None])+masked_mean(ve,(~valid)&hidden[...,None]))
     total=.5*(price+activity)+c.reference_weight*(rp+.25*ra)+.05*(coordinate+timing+validity)
-    return total,dict(price=price,activity=activity,reference_price=rp,reference_activity=ra,coordinate=coordinate,time=timing,validity=validity)
+    visible=total*0
+    if c.visible_weight:
+        known=~hidden;vm=valid[...,:18]&known[...,None]
+        vc=torch.where(vm,element,0).sum((0,1))/vm.sum((0,1)).clamp_min(1)
+        vp=vc.reshape(3,6)[:,:4].mean();va=vc.reshape(3,6)[:,4:].mean()
+        vcoord=masked_mean(ce,cm&known[...,None]);vt=masked_mean(te,valid[...,18:]&known[...,None])
+        vv=.5*(masked_mean(ve,valid&known[...,None])+masked_mean(ve,(~valid)&known[...,None]))
+        visible=.5*(vp+va)+.05*(vcoord+vt+vv);total=total+c.visible_weight*visible
+    return total,dict(price=price,activity=activity,reference_price=rp,reference_activity=ra,coordinate=coordinate,time=timing,validity=validity,visible=visible)
