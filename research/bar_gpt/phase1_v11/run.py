@@ -24,6 +24,8 @@ def main():
     p.add_argument('--learning-rate',type=float,default=.0003);p.add_argument('--reference-weight',type=float,default=1)
     p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
     p.add_argument('--readout',choices=['latents','include_reference'],default='latents')
+    p.add_argument('--width',type=int,default=384);p.add_argument('--layers',type=int,default=8)
+    p.add_argument('--dropout',type=float,default=.05)
     p.add_argument('--tiny-steps',type=int,default=2000);p.add_argument('--batches',type=int,nargs='+',default=[256,1024,2048,4096])
     p.add_argument('--resume-pretraining',action='store_true',help='Engineering retry before any research optimizer step; preserves original identity and deadline')
     p.add_argument('--probes',action='store_true',help='Reserve final evaluation time for frozen within-window information probes')
@@ -46,7 +48,9 @@ def main():
         if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists():raise InterruptedError('Human STOP')
     calibration=json.loads(a.calibration.read_text());manifest=verify(a.data)
     if calibration['data_hash']!=manifest['hash']:raise ValueError('Calibration provenance mismatch')
-    config=Config(reference_weight=a.reference_weight,precision=a.precision,readout=a.readout)
+    if a.width%32 or not 1<=a.layers<=24:raise ValueError('Invalid attention width/depth')
+    if not 0<=a.dropout<1:raise ValueError('Invalid dropout')
+    config=Config(width=a.width,layers=a.layers,dropout=a.dropout,reference_weight=a.reference_weight,precision=a.precision,readout=a.readout)
     def make():return Autoencoder(config,calibration['parameters']).cuda()
     contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
         hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,
@@ -55,7 +59,7 @@ def main():
     if a.resume:
         original=json.loads((a.output/'contract.json').read_text())
         if original['config']!=contract['config'] or original['data_hash']!=contract['data_hash']:raise ValueError('Changed science cannot resume')
-        write_json(a.output/('engineering-'+a.source_revision[:9]+'.json'),dict(original_source=original['source_revision'],engineering_source=a.source_revision,reason='Remove host constant copies from CUDA graph capture; no scientific change'))
+        write_json(a.output/('engineering-'+a.source_revision[:9]+'.json'),dict(original_source=original['source_revision'],engineering_source=a.source_revision,reason='Pretraining engineering/qualification retry; see archived failure, tiny diagnostics and launcher arguments. Scientific training state has not started.'))
         contract=original
     else:write_json(a.output/'contract.json',contract)
     import wandb
@@ -85,7 +89,7 @@ def main():
             error=torch.expm1(prediction[...,list(PRICES)]-tiny['values'][...,list(PRICES)]).abs()
             keep=tiny['valid'][...,list(PRICES)]&h[...,None];error=error[keep]
             tiny_price_mean=float(error.mean());tiny_price_p90=float(torch.quantile(error,.9))
-        tiny_result=dict(initial=initial,final=float(loss),ratio=float(loss)/initial,price_relative_mean=tiny_price_mean,price_relative_p90=tiny_price_p90,
+        tiny_result=dict(steps=a.tiny_steps,initial=initial,final=float(loss),ratio=float(loss)/initial,price_relative_mean=tiny_price_mean,price_relative_p90=tiny_price_p90,
             scope='Synthetic constant-market bars copied from four certified tiny examples; canonical time metadata retained; scientific dataset unchanged.')
         from .transforms import references,decode
         diagnostics={};original_precision=config.precision
@@ -125,6 +129,11 @@ def main():
         contract['batch']=bs;contract['encoder_parameters']=sum(p.numel() for p in m.encoder.parameters());contract['decoder_parameters']=sum(p.numel() for p in m.parameters())-contract['encoder_parameters']
         write_json(a.output/'contract.json',contract);run.config.update(contract,allow_val_change=True)
         train_start=time.monotonic();train_end=min(train_start+a.train_minutes*60,deadline-240);step=0;history=[];bestscore=float('inf');lastval=train_start
+        if a.max_steps:
+            planned=min(a.max_steps,int(max(train_end-train_start-20,0)*best['windows_per_second']/bs*.9))
+            if planned<=0:raise TimeoutError('Insufficient time for planned training and final evaluation')
+            contract['requested_max_steps']=a.max_steps;contract['planned_max_steps']=planned;a.max_steps=planned
+            write_json(a.output/'contract.json',contract);run.config.update(contract,allow_val_change=True)
         def checkpoint(name):
             save_checkpoint(a.output/name,dict(model=m.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),contract=contract,step=step,cursor=(0,step)))
         while time.monotonic()<train_end and (not a.max_steps or step<a.max_steps):
