@@ -166,3 +166,33 @@ def test_validation_graph_preserves_private_rng_masks_and_predictions():
     assert torch.equal(expected[3],actual[3])
     torch.testing.assert_close(expected[0]['logs'],actual[0]['logs'],rtol=1e-5,atol=1e-6)
     previous=actual[3].clone();again=graph(b);assert not torch.equal(previous,again[3])
+
+
+def test_mlp512_slots_hidden_independence_and_decoder_contract():
+    _,x,v=example();x=x.float();positions=torch.arange(0,64,4).expand(3,-1)
+    a,va,p,h=select(x,v,16,positions=positions)
+    m=Autoencoder(Config(backbone='mlp',width=64,layers=2,embedding=512,readout='split_scale',dropout=0,visible_weight=.5,input_price_scale=10000),parameters()).eval()
+    z=m.encoder(a,va,p);assert z.shape==(3,512)
+    changed=x.clone();changed[h]=12345;other,ov,_,_=select(changed,v,16,positions=positions)
+    torch.testing.assert_close(z,m.encoder(other,ov,p),rtol=0,atol=0)
+    # Reordering selected observations while retaining positions leaves slot input unchanged.
+    torch.testing.assert_close(z,m.encoder(a.flip(1),va.flip(1),p.flip(1)),rtol=0,atol=0)
+    out=m.decode(z);assert out['logs'].shape==(3,64,18) and out['references'].shape==(3,9)
+    loss,_=objective(m,out,x,v,h,a,va);loss.backward()
+    assert all(q.grad is not None and torch.isfinite(q.grad).all() for q in m.parameters())
+    assert m.encoder(x,v,torch.arange(64).expand(3,-1)).shape==(3,512)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA MLP replay required')
+def test_mlp_raw_graph_and_resume():
+    from .full_step import Replay
+    from ..phase1_v7.full_data import prepare_raw
+    from ..phase2_v2.train import rng_state,restore_rng
+    b=prepare_raw(raw_rows()).to('cuda');c=Config(backbone='mlp',width=64,layers=2,embedding=512,readout='split_scale',dropout=0,visible_weight=.5)
+    m=Autoencoder(c,parameters()).cuda();opt=torch.optim.AdamW(m.parameters(),lr=.0001,fused=True);graph=Replay(m,b)
+    graph(b);opt.step();saved=copy.deepcopy(dict(model=m.state_dict(),opt=opt.state_dict(),rng=rng_state()))
+    expected=graph(b)[0].clone();opt.step()
+    other=Autoencoder(c,parameters()).cuda();other.load_state_dict(saved['model']);second=torch.optim.AdamW(other.parameters(),lr=.0001,fused=True);second.load_state_dict(saved['opt'])
+    restore_rng(saved['rng']);again=Replay(other,b);actual=again(b)[0];second.step()
+    torch.testing.assert_close(expected,actual,rtol=1e-5,atol=1e-6)
+    for p,q in zip(m.parameters(),other.parameters()):torch.testing.assert_close(p,q,rtol=1e-5,atol=1e-6)

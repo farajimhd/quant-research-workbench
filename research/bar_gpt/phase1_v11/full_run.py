@@ -25,6 +25,7 @@ def main():
     p.add_argument('--validation-batch-size',type=int,default=2048);p.add_argument('--validation-workers',type=int,default=16)
     p.add_argument('--validation-graphs',action='store_true')
     p.add_argument('--epochs',type=int,default=100);p.add_argument('--learning-rate',type=float,default=1e-3);p.add_argument('--min-learning-rate',type=float,default=1e-5)
+    p.add_argument('--wandb-project',default='bargpt-phase1-v11-full')
     p.add_argument('--seed',type=int,default=17);p.add_argument('--checkpoint-every',type=int,default=1000);p.add_argument('--diagnostic-every',type=int,default=5000)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--retain-optimizer',action='store_true');p.add_argument('--resume',action='store_true');p.add_argument('--resume-contract-source')
     a=p.parse_args();a.device='cuda';a.preparation='raw_gpu'

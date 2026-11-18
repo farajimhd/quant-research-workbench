@@ -8,6 +8,12 @@ from .transforms import coordinates,references,center,decode,PRICES,ACTIVITY,REF
 from ..phase1_v10.model import NormalizedAttentionBlock,select
 
 
+class ResidualMLP(nn.Module):
+    def __init__(self,width,dropout):
+        super().__init__();self.network=nn.Sequential(nn.LayerNorm(width),nn.Linear(width,2*width),nn.GELU(),nn.Dropout(dropout),nn.Linear(2*width,width))
+    def forward(self,x):return x+self.network(x)
+
+
 class Encoder(nn.Module):
     def __init__(self,c,parameters):
         super().__init__();self.config=c
@@ -16,6 +22,14 @@ class Encoder(nn.Module):
         self.register_buffer('factor',torch.tensor([100. if j in PRICES else 1. for j in range(18)]))
         self.register_buffer('input_factor',torch.tensor([c.input_price_scale if j in PRICES else 1. for j in range(18)]),persistent=False)
         self.register_buffer('reference_factor',torch.tensor([100.,1.,1.]*3))
+        if c.backbone=='mlp':
+            if c.readout!='split_scale':raise ValueError('MLP ablation retains the learned split-scale readout')
+            self.stem=nn.Linear(64*55+18,c.width)
+            self.blocks=nn.Sequential(*[ResidualMLP(c.width,c.dropout) for _ in range(c.layers)],nn.LayerNorm(c.width))
+            self.readout=nn.Linear(c.width,c.embedding-32)
+            self.scale_projection=nn.Linear(18,32)
+            return
+        if c.backbone!='transformer':raise ValueError('Unknown encoder backbone')
         self.stem=nn.Linear(54,c.width);self.reference_stem=nn.Linear(18,c.width)
         self.position=nn.Parameter(torch.randn(1,64,c.width)*.01)
         self.reference_type=nn.Parameter(torch.randn(1,1,c.width)*.01)
@@ -37,6 +51,14 @@ class Encoder(nn.Module):
 
     def forward(self,x,v,positions):
         bars,ref,_,_=self.prepare(x,v);c=self.config
+        if c.backbone=='mlp':
+            # Fixed chronological slots contain ONLY selected bars. Explicit visibility
+            # distinguishes a masked slot from an observed slot with invalid features.
+            observed=torch.cat((bars,torch.ones_like(bars[...,:1])),-1)
+            slots=bars.new_zeros((len(bars),64,55)).scatter(1,positions[...,None].expand(-1,-1,55),observed)
+            with torch.autocast(x.device.type,dtype=torch.bfloat16,enabled=x.is_cuda and c.precision=='bf16'):
+                h=self.blocks(self.stem(torch.cat((slots.flatten(1),ref),-1)))
+            return torch.cat((self.readout(h.float()),self.scale_projection(ref.float())),-1)
         with torch.autocast(x.device.type,dtype=torch.bfloat16,enabled=x.is_cuda and c.precision=='bf16'):
             h=self.stem(bars)+self.position[0,positions]
             r=self.reference_stem(ref).unsqueeze(1)+self.reference_type

@@ -38,7 +38,7 @@ def train(model,parent,a,manifest,status):
     import wandb
     identity_path=a.output/'wandb-identity.json';identity=json.loads(identity_path.read_text()) if identity_path.exists() else None
     if a.resume and not identity:raise ValueError('Original W&B identity required')
-    run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-full',name=a.output.name,id=identity['id'] if identity else None,resume='must' if identity else None,
+    run=wandb.init(entity='mehdifaraji',project=a.wandb_project,name=a.output.name,id=identity['id'] if identity else None,resume='must' if identity else None,
         dir=str(a.output),config=None if identity else contract)
     if not identity:write_json(identity_path,dict(id=run.id,url=run.url))
     report_floor=int(run.summary.get('optimizer_step',-1)) if a.resume else -1

@@ -20,11 +20,13 @@ def main():
     p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
     p.add_argument('--output',type=Path,required=True);p.add_argument('--calibration',type=Path)
     p.add_argument('--source-revision',default='');p.add_argument('--seed',type=int,default=110731)
+    p.add_argument('--wandb-project',default='bargpt-phase1-v11-median')
     p.add_argument('--minutes',type=float,default=18);p.add_argument('--train-minutes',type=float,default=12)
     p.add_argument('--learning-rate',type=float,default=.0003);p.add_argument('--reference-weight',type=float,default=1)
     p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--hypothesis',default='Median scale survives attention bottleneck with separately weighted reference recovery.')
     p.add_argument('--readout',choices=['latents','include_reference','split_scale'],default='latents')
     p.add_argument('--width',type=int,default=384);p.add_argument('--layers',type=int,default=8)
+    p.add_argument('--backbone',choices=['transformer','mlp'],default='transformer');p.add_argument('--embedding',type=int,default=1024)
     p.add_argument('--dropout',type=float,default=.05)
     p.add_argument('--input-price-scale',type=float,default=100)
     p.add_argument('--visible-weight',type=float,default=0)
@@ -55,7 +57,8 @@ def main():
     if not 0<=a.dropout<1:raise ValueError('Invalid dropout')
     if a.input_price_scale<=0:raise ValueError('Positive input scale required')
     if a.visible_weight<0:raise ValueError('Nonnegative observed reconstruction weight required')
-    config=Config(width=a.width,layers=a.layers,dropout=a.dropout,reference_weight=a.reference_weight,precision=a.precision,readout=a.readout,input_price_scale=a.input_price_scale,visible_weight=a.visible_weight)
+    if a.embedding<=32:raise ValueError('Embedding must retain scale and shape capacity')
+    config=Config(width=a.width,layers=a.layers,embedding=a.embedding,backbone=a.backbone,dropout=a.dropout,reference_weight=a.reference_weight,precision=a.precision,readout=a.readout,input_price_scale=a.input_price_scale,visible_weight=a.visible_weight)
     def make():return Autoencoder(config,calibration['parameters']).cuda()
     contract=dict(version=11,source_revision=a.source_revision,config=vars(config),seed=a.seed,data_hash=manifest['hash'],calibration_sha256=file_hash(a.calibration),
         hypothesis=a.hypothesis,learning_rate=a.learning_rate,deadline_seconds=a.minutes*60,training_seconds=a.train_minutes*60,
@@ -69,7 +72,7 @@ def main():
     else:write_json(a.output/'contract.json',contract)
     import wandb
     identity=json.loads((a.output/'wandb.json').read_text())['id'] if a.resume else None
-    run=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v11-median',name=a.output.name,dir=str(a.output),config=contract,id=identity,resume='must' if a.resume else None)
+    run=wandb.init(entity='mehdifaraji',project=a.wandb_project,name=a.output.name,dir=str(a.output),config=contract,id=identity,resume='must' if a.resume else None)
     if a.resume:run.summary['failure']=None
     write_json(a.output/'wandb.json',dict(id=run.id,url=run.url))
     def log(metrics,step):
