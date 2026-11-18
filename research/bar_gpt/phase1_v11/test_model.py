@@ -111,3 +111,34 @@ def test_basispoint_input_conditioning_preserves_transform_and_output_units():
     torch.testing.assert_close(torch.sinh(conditioned)/m.encoder.input_factor,relative,rtol=2e-6,atol=2e-6)
     assert m.encoder.factor[0]==100 and m.encoder.input_factor[0]==10000
     a,va,pos,h=select(x,v);loss,_=objective(m,m(a,va,pos),x,v,h,a,va);loss.backward();assert torch.isfinite(loss)
+
+
+def raw_rows():
+    import numpy as np
+    from ..v5.shards.phase1_contract import SAMPLE_DTYPE
+    rows=np.zeros(3,dtype=SAMPLE_DTYPE);rows['values']=1;rows['valid']=1;rows['timeframe_us']=1000000
+    rows['end_us']=1700000000000000+np.arange(64)*1000000;rows['values'][:,:,12:16]=1.01;rows['valid'][0,:4,6:18]=0
+    return rows
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required for full raw pipeline')
+def test_full_raw_capture_optimizer_rng_resume_and_native_metrics():
+    from .full_step import Replay,forward
+    from .full_validation import Accumulator
+    from ..phase1_v7.full_data import prepare_raw,gpu_inputs
+    from ..phase1_v8.data import cache
+    from ..phase1_v7.metrics import evaluate
+    from ..phase2_v2.train import rng_state,restore_rng
+    rows=raw_rows();b=prepare_raw(rows,native=True).to('cuda');values,valid,_=gpu_inputs(b);cached=cache(rows)
+    torch.testing.assert_close(values.cpu(),cached['values'],rtol=2e-5,atol=2e-5);assert torch.equal(valid.cpu(),cached['valid'])
+    config=Config(width=32,layers=1,embedding=64,dropout=0,readout='split_scale',input_price_scale=10000)
+    m=Autoencoder(config,parameters()).cuda();opt=torch.optim.AdamW(m.parameters(),lr=.001,fused=True);replay=Replay(m,b)
+    replay(b);opt.step();saved=copy.deepcopy(dict(model=m.state_dict(),optimizer=opt.state_dict(),rng=rng_state()))
+    expected=replay(b)[0].clone();opt.step();other=Autoencoder(config,parameters()).cuda();other.load_state_dict(saved['model'])
+    second=torch.optim.AdamW(other.parameters(),lr=.001,fused=True);second.load_state_dict(saved['optimizer']);restore_rng(saved['rng']);again=Replay(other,b)
+    actual=again(b)[0];second.step();torch.testing.assert_close(actual,expected,rtol=1e-5,atol=1e-6)
+    for p,q in zip(m.parameters(),other.parameters()):torch.testing.assert_close(p,q,rtol=1e-5,atol=1e-6)
+    with torch.no_grad():
+        m.eval();out,x,v,h=forward(m,b,16);acc=Accumulator(16);acc.add(m,out,x,v,h,b);result=acc.finish()
+        reference=evaluate(inverse(out['logs']).cpu().numpy(),rows,h.cpu().numpy()[...,None])
+    assert result['raw_mae']['1s']['trade_close']==pytest.approx(reference['frames']['1000000']['channels']['trade_close']['mae'])
