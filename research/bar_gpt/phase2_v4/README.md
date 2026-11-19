@@ -46,3 +46,14 @@ immutable source revision and runtime output. Detached controller:`phase2_v4.lau
 Rich monitor:`phase2_v4.panel --output RUN`. Commands and measured profiles belong
 under the workstation runtime root, not source. First qualify exact head parity,
 future shapes,masks,gradient/resume behavior,tiny fitting and full pipeline speed.
+
+Initial launch: source `95cad7fe0d4cdf1735d1b1c5de85467b632a5971`, run
+`full-p1head-lr3e5-shuffled-pass01`, W&B `mehdifaraji/bargpt-phase2/gh6kl6tc`.
+Runtime:`D:/TradingML/runtimes/bar_gpt/phase2-v4-phase1-head-20261119` holds
+`training-command.txt`,`start-full.ps1`,deployment proofs and profile results.
+The256-session profile covered782733 eligible origins at49920/s including startup;
+cached compute peaked near350K/s at batch4096. Tiny32-example loss1.515->0.789
+after400updates. Exact head parity,mask/gradient,CUDA resume,fixed schedule and
+session-population/order tests passed. Real train/validation/checkpoint integration
+completed13updates. This is qualification, not proof of forecast superiority.
+V3 stopped gracefully at85656; its final checkpoint,logs and STOP are retained.
