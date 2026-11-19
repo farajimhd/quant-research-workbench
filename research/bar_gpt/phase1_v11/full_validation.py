@@ -10,6 +10,7 @@ from ..v5.data_v3 import close_loader
 from ..v5.shards.phase1_contract import FRAMES,write_json
 from .full_step import forward,InferenceReplay
 from .transforms import references
+from .validation_objective import ObjectiveAccumulator
 
 
 class Accumulator(NativeAccumulator):
@@ -40,6 +41,7 @@ class Accumulator(NativeAccumulator):
 def evaluate(model,manifest,a,status,limit=0):
     model.eval();source=loader(manifest,a,'validation');device=None;acc={name:Accumulator(n) for name,n in (('masked',16),('all_visible',64))}
     generator=torch.Generator(device='cuda').manual_seed(731);started=time.perf_counter();n=0;recent=deque();stopped=False;graphs={}
+    objectives={mode:ObjectiveAccumulator(value.visible) for mode,value in acc.items()}
     try:
         device=DeviceBatches(source,'cuda');startup=time.perf_counter()-started;wait=device.wait_seconds
         for i in range(limit or 2**63-1):
@@ -52,6 +54,7 @@ def evaluate(model,manifest,a,status,limit=0):
                     out,x,v,h=graphs[mode](b)
                 else:out,x,v,h=forward(model,b,visible,generator)
                 acc[mode].add(model,out,x,v,h,b)
+                objectives[mode].add(model,out,x,v,h)
             device.advance();n+=len(b.target);now=time.perf_counter();recent.append((now,n))
             while len(recent)>2 and now-recent[0][0]>60:recent.popleft()
             rate=(n-recent[0][1])/max(.001,now-recent[0][0]) if len(recent)>1 else 0
@@ -62,9 +65,9 @@ def evaluate(model,manifest,a,status,limit=0):
                 phase_loader_wait_fraction=(device.wait_seconds-wait)/max(.001,now-started-startup),gpu_reserved_mib=torch.cuda.memory_reserved()/2**20)
         if stopped and not n:return None
         if not stopped and not limit and n!=manifest['counts']['validation']:raise ValueError('Incomplete certified validation population')
-        results={k:v.finish() for k,v in acc.items()};result=dict(windows=n,full_population=not limit and not stopped,stopped=stopped,
+        results={k:dict(v.finish(),**objectives[k].finish()) for k,v in acc.items()};result=dict(windows=n,full_population=not limit and not stopped,stopped=stopped,
             seconds=time.perf_counter()-started,startup_seconds=startup,loader_wait_seconds=device.wait_seconds-wait,metrics=results,
-            scope='Hidden48 and all-visible64 source-valid reconstruction separately. Full validation uses all certified windows; relative quantiles are histogram approximations.')
+            scope='Hidden48 and all-visible64 source-valid reconstruction separately. Full validation uses all certified windows; relative quantiles are histogram approximations. Loss is the window-weighted mean of the unchanged training objective evaluated per batch; masked loss is primary.')
         write_json(a.output/'validation-latest.json',result)
         if any(v['nonfinite'] or v['negative'] or v['structure_violations'] for v in results.values()):raise FloatingPointError('Native validation failure; evidence retained')
         return None if stopped else result

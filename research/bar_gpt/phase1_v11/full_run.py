@@ -28,13 +28,16 @@ def main():
     p.add_argument('--wandb-project',default='bargpt-phase1-v11-full')
     p.add_argument('--seed',type=int,default=17);p.add_argument('--checkpoint-every',type=int,default=1000);p.add_argument('--diagnostic-every',type=int,default=5000)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--retain-optimizer',action='store_true');p.add_argument('--resume',action='store_true');p.add_argument('--resume-contract-source')
+    p.add_argument('--continue-full-state',action='store_true',help='New scientific continuation identity; preserve parent optimizer, RNG and traversal')
     a=p.parse_args();a.device='cuda';a.preparation='raw_gpu'
     if not 0<=a.workers<=32 or not 0<=a.validation_workers<=32 or not 1<=a.prefetch<=4:raise ValueError('Loader bounds')
     if min(a.batch_size,a.epochs,a.checkpoint_every,a.diagnostic_every)<=0 or not 0<a.min_learning_rate<=a.learning_rate:raise ValueError('Invalid schedule')
     if a.resume_contract_source and not a.resume:raise ValueError('Engineering contract source requires resume')
+    if a.continue_full_state and not a.retain_optimizer:raise ValueError('Full continuation requires retained optimizer')
     preflight(a);torch.set_num_threads(4);torch.manual_seed(a.seed);np.random.seed(a.seed);random.seed(a.seed)
     frozen=verify(a.data);calibration=json.loads(a.calibration.read_text());parent=torch.load(a.checkpoint,map_location='cpu',weights_only=False);parent=load_checkpoint(a.checkpoint,parent['contract'])
-    if parent['contract']['data_hash']!=frozen['hash'] or parent['contract']['calibration_sha256']!=file_hash(a.calibration):raise ValueError('Parent data/calibration differs')
+    parent_data_ok=parent['contract'].get('split_hash')==frozen['source_split_hash'] if a.continue_full_state else parent['contract'].get('data_hash')==frozen['hash']
+    if not parent_data_ok or parent['contract']['calibration_sha256']!=file_hash(a.calibration):raise ValueError('Parent data/calibration differs')
     manifest=load_split(a.split)
     if manifest['manifest_hash']!=frozen['source_split_hash']:raise ValueError('Full split differs from qualified source')
     manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}

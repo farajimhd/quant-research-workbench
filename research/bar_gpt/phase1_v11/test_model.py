@@ -1,5 +1,6 @@
 import torch
 import copy
+import math
 import pytest
 from .model import Config,Autoencoder,select,objective
 from .transforms import coordinates,references,center,decode,inverse
@@ -223,3 +224,29 @@ def test_reusable_host_staging_order_aliases_tails_and_bounded_allocation():
         assert device.pin_allocations==8
         for actual,expected in zip(observed,batches):torch.testing.assert_close(actual,expected.grid,rtol=0,atol=0)
     finally:device.close()
+
+
+@pytest.mark.parametrize('visible',[16,64])
+def test_validation_objective_matches_training_formula_with_weighted_tail(visible):
+    from .validation_objective import ObjectiveAccumulator
+    _,x,v=example();x=x.float();v[0,:8,4]=False
+    model=Autoencoder(Config(width=32,layers=1,embedding=64,readout='split_scale',dropout=0,visible_weight=.5),parameters()).eval()
+    acc=ObjectiveAccumulator(visible);expected=0.
+    for lo,hi in [(0,2),(2,3)]:
+        t=x[lo:hi];tv=v[lo:hi];a,va,pos,h=select(t,tv,visible)
+        out=model(a,va,pos);loss,_=objective(model,out,t,tv,h,a,va)
+        expected+=float(loss.detach())*(hi-lo);acc.add(model,out,t,tv,h)
+    result=acc.finish()
+    assert result['loss']==pytest.approx(expected/3,rel=1e-6)
+    assert all(math.isfinite(value) for value in result.values())
+
+
+def test_continuation_preserves_data_order_and_allows_explicit_schedule_change():
+    from .continuation import validate_continuation
+    old=dict(config={'embedding':256},source_revision='old',batch_size=4096,workers=16,learning_rate=1e-4,epochs=100)
+    parent=dict(contract=old,epoch=20,step=927672,batch_cursor=16493,origins=3799069768,phase='train')
+    new=dict(old,source_revision='new',learning_rate=3e-5,epochs=25,retain_optimizer=True)
+    start=validate_continuation(parent,new)
+    assert start['step']==927672 and start['batch_cursor']==16493
+    with pytest.raises(ValueError,match='workers'):validate_continuation(parent,dict(new,workers=32))
+    with pytest.raises(ValueError,match='horizon'):validate_continuation(parent,dict(new,epochs=20))

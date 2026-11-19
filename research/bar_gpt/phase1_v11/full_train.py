@@ -12,6 +12,7 @@ from ..phase1_v7.full_data import prepare_raw
 from ..phase1_v10.train import training_learning_rate,verify_traversal
 from ..phase1_v5_raw.engine import report
 from .pipeline import DeviceBatches,loader
+from .continuation import validate_continuation
 from ..phase2_v2.train import rng_state,restore_rng,save_checkpoint,load_checkpoint
 from ..v5.data_v3 import close_loader
 from ..v5.shards.phase1_contract import write_json,file_hash
@@ -30,12 +31,18 @@ def train(model,parent,a,manifest,status):
         sampling='Every certified training window; original chronological split, deterministic shuffled worker lanes, all tails retained.',
         decoder_dependency='Exported learned embedding only; all nine references predicted; visible-only median computation.',
         encoder_parameters=sum(p.numel() for p in model.encoder.parameters()),decoder_parameters=sum(p.numel() for p in model.parameters())-sum(p.numel() for p in model.encoder.parameters()))
-    epoch=step=cursor=origins=epoch_done=0;phase='train';best=development_best=float('inf');history=[]
+    if a.continue_full_state:contract['continuation_start']=validate_continuation(parent,contract)
+    epoch=step=cursor=origins=epoch_done=0;phase='train';best=development_best=float('inf');history=[];baseline_complete=not a.continue_full_state
     if a.resume:
         saved=load_checkpoint(a.output/'checkpoint_last.pt',contract);model.load_state_dict(saved['model']);optimizer.load_state_dict(saved['optimizer']);restore_rng(saved['rng'])
         epoch,step,cursor,origins,epoch_done,phase,best,development_best,history=(saved[k] for k in ('epoch','step','batch_cursor','origins','epoch_done','phase','best','development_best','history'))
+        baseline_complete=saved.get('baseline_complete',not a.continue_full_state)
         write_json(a.output/f'engineering-resume-{time.time_ns()}.json',dict(execution_source=a.source_revision,previous_execution_source=saved['execution_source'],checkpoint_proof=json.loads((a.output/'checkpoint_last.proof.json').read_text())))
-    else:write_json(a.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}))
+    else:
+        if a.continue_full_state:
+            epoch,step,cursor,origins,epoch_done,phase=(parent[k] for k in ('epoch','step','batch_cursor','origins','epoch_done','phase'))
+            history=list(parent['history']);restore_rng(parent['rng'])
+        write_json(a.output/'manifest.json',dict(contract=contract,arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()}))
     import wandb
     identity_path=a.output/'wandb-identity.json';identity=json.loads(identity_path.read_text()) if identity_path.exists() else None
     if a.resume and not identity:raise ValueError('Original W&B identity required')
@@ -48,7 +55,7 @@ def train(model,parent,a,manifest,status):
     def checkpoint(name='checkpoint_last.pt'):
         save_checkpoint(a.output/name,dict(model=model.state_dict(),optimizer=optimizer.state_dict(),rng=rng_state(),contract=contract,
             epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,phase=phase,best=best,development_best=development_best,history=history,
-            execution_source=a.source_revision,scheduler=dict(step=step,total_updates=total_updates,peak=a.learning_rate,floor=a.min_learning_rate)))
+            execution_source=a.source_revision,baseline_complete=baseline_complete,scheduler=dict(step=step,total_updates=total_updates,peak=a.learning_rate,floor=a.min_learning_rate)))
         if step>=report_floor:run.summary.update({'checkpoint/step':step,'checkpoint/sha256':file_hash(a.output/name),'checkpoint/path':str(a.output/name),'optimizer_step':step})
         status(step=step,epoch=min(epoch+1,a.epochs),epoch_done=epoch_done,origins=origins,last_checkpoint=str(a.output/name))
     development_rows=np.load(a.data/'development.npy',allow_pickle=False);development=cache(development_rows,'cuda')
@@ -57,15 +64,31 @@ def train(model,parent,a,manifest,status):
         try:
             result=evaluate_model(model,development,development_rows,a.output,lambda **kw:status(**kw,step=step,epoch=epoch+1))
             write_json(a.output/'development-latest.json',result)
-            metrics={f'development/{mode}/{key}':m[key] for mode,m in result.items() for key in ('balanced_price_relative_mean','balanced_activity_log_mae','worst_price_band_relative_mean')}
+            metrics={f'development/{mode}/{key}':m[key] for mode,m in result.items() for key in ('balanced_price_relative_mean','balanced_activity_log_mae','worst_price_band_relative_mean','loss')}
+            metrics['development/loss']=result['masked']['loss']
             publish(metrics)
             with (a.output/'development-history.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,**metrics))+'\n')
             return result['masked']['selection_score']
         finally:restore_rng(state);model.train(was)
     replay=None
+    def validation_metrics(validation,baseline=False):
+        metrics={'validation/loss':validation['metrics']['masked']['loss'],'validation/is_baseline':int(baseline),
+                 'validation/epoch':epoch+epoch_done/manifest['counts']['train'] if baseline else epoch+1}
+        for mode,m in validation['metrics'].items():
+            metrics.update({f'validation/{mode}/{k}':v for k,v in m.items() if isinstance(v,(int,float))})
+            for frame,channels in m['raw_mae'].items():metrics.update({f'validation/{mode}/raw_mae/{frame}/{k}':v for k,v in channels.items() if v is not None})
+        return metrics
     try:
         if not a.resume:
             development_best=diagnostics();checkpoint('checkpoint_development_best.pt');checkpoint()
+            if a.continue_full_state:checkpoint('checkpoint_start.pt')
+        if not baseline_complete:
+            state=rng_state()
+            try:baseline=evaluate(model,manifest,a,lambda **kw:status(**kw,baseline_validation=True))
+            finally:restore_rng(state)
+            if baseline is None:checkpoint();return 'stopped'
+            write_json(a.output/'baseline-validation.json',baseline);publish(validation_metrics(baseline,True))
+            baseline_complete=True;checkpoint();status(baseline_validation=False)
         rows=np.load(a.data/'train.npy',mmap_mode='r',allow_pickle=False)
         example=prepare_raw(rows[:a.batch_size]).to('cuda');model.train();replay=Replay(model,example);del example
         while epoch<a.epochs:
@@ -112,13 +135,10 @@ def train(model,parent,a,manifest,status):
             write_json(a.output/f'validation-{epoch+1:03}.json',validation)
             masked=validation['metrics']['masked'];score=.5*masked['balanced_price_mape_pct']+masked['activity_log_mae']+.0005*masked['worst_price_band_mape_pct']
             improved=score<best;best=min(best,score);history.append(dict(epoch=epoch+1,step=step,score=score))
-            metrics={}
-            for mode,m in validation['metrics'].items():
-                metrics.update({f'validation/{mode}/{k}':v for k,v in m.items() if isinstance(v,(int,float))})
-                for frame,channels in m['raw_mae'].items():metrics.update({f'validation/{mode}/raw_mae/{frame}/{k}':v for k,v in channels.items() if v is not None})
+            metrics=validation_metrics(validation)
             publish(metrics);epoch+=1;cursor=epoch_done=0;phase='train';checkpoint()
             if improved:checkpoint('checkpoint_best.pt')
-            status(latest_validation=dict(epoch=epoch,price_mape_pct=masked['balanced_price_mape_pct'],activity_log_mae=masked['activity_log_mae'],seconds=validation['seconds']))
+            status(latest_validation=dict(epoch=epoch,loss=masked['loss'],price_mape_pct=masked['balanced_price_mape_pct'],activity_log_mae=masked['activity_log_mae'],seconds=validation['seconds']))
         if origins!=manifest['counts']['train']*a.epochs:raise ValueError('Completed training population mismatch')
         return 'complete'
     except KeyboardInterrupt:checkpoint();return 'interrupted'

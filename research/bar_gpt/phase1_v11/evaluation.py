@@ -5,6 +5,7 @@ import torch
 from ..phase1_v8.data import batch
 from ..phase1_v7.metrics import evaluate,require_structured,distribution
 from .transforms import references,decode,inverse,REF_PRICES,REF_ACTIVITY
+from .validation_objective import ObjectiveAccumulator
 
 
 @torch.no_grad()
@@ -12,11 +13,13 @@ def evaluate_model(model,data,rows,output,status,controls=False,constant_logs=No
     model.eval();result={};device=data['values'].device
     for mode in ('masked','all_visible'):
         started=time.monotonic();generator=torch.Generator(device=device).manual_seed(314159)
+        objective_accumulator=ObjectiveAccumulator(64 if mode=='all_visible' else 16)
         predictions=[];oracles=[];masks=[];embeddings=[];reference_error=[];activity_error=[];baseline=[];reference_rows=[];reference_valid=[]
         for start in range(0,len(rows),256):
             ids=torch.arange(start,min(start+256,len(rows)),device=device)
             x,v,pos,t,tv,hidden=batch(data,ids,16,generator,full=mode=='all_visible')
             z=model.encoder(x,v,pos);out=model.decode(z)
+            objective_accumulator.add(model,out,t,tv,hidden)
             refs,rv=references(x[...,:18],v[...,:18],model.encoder.reference_mean)
             reference_error.append(torch.expm1(out['references'][:,REF_PRICES].double()-refs[:,REF_PRICES]).abs()[rv[:,REF_PRICES]].cpu().numpy())
             activity_error.append((out['references'][:,REF_ACTIVITY]-refs[:,REF_ACTIVITY]).abs()[rv[:,REF_ACTIVITY]].cpu().numpy())
@@ -26,6 +29,7 @@ def evaluate_model(model,data,rows,output,status,controls=False,constant_logs=No
             if controls:baseline.append(inverse(decode(torch.zeros_like(out['code']),refs)).cpu().numpy())
             if start%2048==0:status(stage='evaluation '+mode,done=start+len(ids),total=len(rows),windows_per_second=(start+len(ids))/max(time.monotonic()-started,1e-9))
         mask=np.concatenate(masks);pred=np.concatenate(predictions);metrics=evaluate(pred,rows,mask)
+        metrics.update(objective_accumulator.finish())
         require_structured(metrics,paired=True)
         metrics['reference_price_relative']=distribution(np.concatenate(reference_error));metrics['reference_activity_log_absolute']=distribution(np.concatenate(activity_error))
         rp=np.concatenate(reference_rows).astype(np.float64);rv=np.concatenate(reference_valid)
