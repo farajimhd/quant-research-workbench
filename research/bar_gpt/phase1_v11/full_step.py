@@ -7,11 +7,9 @@ from ..phase2_v2.train import rng_state,restore_rng
 from .model import objective
 
 
-def forward(model,b,visible=16,generator=None,with_objective=False):
+def forward(model,b,visible=16,generator=None):
     values,valid,_=gpu_inputs(b);x,v,p,h=select(values,valid,visible,generator)
-    out=model(x,v,p)
-    result=(out,values,valid,h)
-    return (*result,objective(model,out,values,valid,h,x,v)) if with_objective else result
+    return model(x,v,p),values,valid,h
 
 
 def backward(model,b):
@@ -47,15 +45,15 @@ class Replay:
 class InferenceReplay:
     """Fixed batch size only; registered private RNG retains fresh random masks."""
     @torch.no_grad()
-    def __init__(self,model,b,visible,generator,with_objective=False):
+    def __init__(self,model,b,visible,generator):
         self.batch=b.map(lambda x:x.clone());self.graph=torch.cuda.CUDAGraph();stream=torch.cuda.Stream()
         self.graph.register_generator_state(generator)
         stream.wait_stream(torch.cuda.current_stream());state=generator.get_state()
         try:
             with torch.cuda.stream(stream):
-                for _ in range(3):forward(model,self.batch,visible,generator,with_objective)
+                for _ in range(3):forward(model,self.batch,visible,generator)
             torch.cuda.current_stream().wait_stream(stream)
-            with torch.cuda.graph(self.graph,stream=stream,capture_error_mode='thread_local'):self.output=forward(model,self.batch,visible,generator,with_objective)
+            with torch.cuda.graph(self.graph,stream=stream,capture_error_mode='thread_local'):self.output=forward(model,self.batch,visible,generator)
         finally:generator.set_state(state)
 
     @torch.no_grad()

@@ -50,11 +50,11 @@ def evaluate(model,manifest,a,status,limit=0):
             except StopIteration:break
             for mode,visible in (('masked',16),('all_visible',64)):
                 if getattr(a,'validation_graphs',False) and len(b.target)==(a.validation_batch_size or a.batch_size):
-                    if mode not in graphs:graphs[mode]=InferenceReplay(model,b,visible,generator,with_objective=True)
-                    out,x,v,h,loss_parts=graphs[mode](b)
-                else:out,x,v,h,loss_parts=forward(model,b,visible,generator,with_objective=True)
+                    if mode not in graphs:graphs[mode]=InferenceReplay(model,b,visible,generator)
+                    out,x,v,h=graphs[mode](b)
+                else:out,x,v,h=forward(model,b,visible,generator)
                 acc[mode].add(model,out,x,v,h,b)
-                objectives[mode].add_values(*loss_parts,len(x))
+                objectives[mode].add(model,out,x,v,h)
             device.advance();n+=len(b.target);now=time.perf_counter();recent.append((now,n))
             while len(recent)>2 and now-recent[0][0]>60:recent.popleft()
             rate=(n-recent[0][1])/max(.001,now-recent[0][0]) if len(recent)>1 else 0

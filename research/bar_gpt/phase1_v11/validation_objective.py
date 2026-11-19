@@ -18,14 +18,10 @@ class ObjectiveAccumulator:
         positions = torch.arange(64,device=target.device).expand(len(target),-1) if self.visible==64 else (~hidden).nonzero(as_tuple=True)[1].reshape(len(target),self.visible)
         take = lambda value: value.gather(1, positions[..., None].expand(-1, -1, value.shape[-1]))
         loss, parts = objective(model, out, target, valid, hidden, take(target), take(valid))
-        self.add_values(loss,parts,len(target))
-
-    @torch.no_grad()
-    def add_values(self,loss,parts,windows):
         self.keys = ['loss'] + ['objective_' + key for key in parts]
-        values = torch.stack([loss, *parts.values()]).double() * windows
+        values = torch.stack([loss, *parts.values()]).double() * len(target)
         self.sums = values if self.sums is None else self.sums + values
-        self.windows += windows
+        self.windows += len(target)
 
     def finish(self):
         if not self.windows:
