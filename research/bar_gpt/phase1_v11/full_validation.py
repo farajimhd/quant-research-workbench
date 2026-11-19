@@ -3,7 +3,7 @@ from collections import deque
 from types import SimpleNamespace
 import time
 import torch
-from ..phase1_v10.train import Accumulator as NativeAccumulator
+from .native_metrics import NativeAccumulator
 from .pipeline import loader,DeviceBatches
 from ..phase1_v5_raw.engine import FRAME_NAMES
 from ..v5.data_v3 import close_loader
