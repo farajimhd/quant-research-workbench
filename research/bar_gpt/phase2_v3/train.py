@@ -6,6 +6,7 @@ from ..phase2_v2.device_pipeline import device_batches
 from .data import batches,target_size
 from .metrics import Metrics,ValidationMetrics
 from .cuda_step import CudaStep
+from ..v5.shards.phase1_contract import CHANNELS
 
 
 @torch.no_grad()
@@ -22,6 +23,10 @@ def evaluate(model,units,teacher,teacher_sha,args,mean,reporter,step):
             seconds=time.perf_counter()-started;rate=metrics.count/max(seconds,.001)
             reporter.update(stage='validation',done=metrics.count,step=step,validation_samples_per_second=rate,validation_seconds=seconds)
         result=dict(metrics.result(),**native.result(),seconds=time.perf_counter()-started)
+        if 'horizon_counts' in result:
+            for bar,errors in enumerate(result['log_mae_by_horizon_channel']):
+                for c,(channel,value) in enumerate(zip(CHANNELS,errors)):
+                    result[f'horizon/bar_{bar+1}/log_mae/{channel}']=value if result['horizon_counts']['counts'][bar][c] else None
         reporter.update(latest_validation_loss=result['loss'],latest_validation_step=step)
         return result
     finally:

@@ -90,3 +90,18 @@ from block counts, because warmup and future-target purge determine eligibility.
 The2026 validation covers only32 distinct ticker identities before cross-root
 deduplication (29 liquid and3 illiquid); it must not be presented as broad future
 market generalization. Validation remains the original certified split.
+
+Per-horizon monitoring adds `validation_horizon/bar_1` through `bar_64`:
+`raw_mae/FEATURE` and `log_mae/FEATURE` for all18 features, and
+`price_mape_pct/FEATURE` for12 price features. Each bar denotes its observed-bar
+offset, not guaranteed wall seconds. Source-invalid values are excluded. Price
+MAPE uses finite positive actual prices (including tiny positives); denominator,
+exclusion, tiny and overflow counts are retained in `validation_horizon_counts`.
+Zero-population metrics are unavailable, never a fabricated zero.
+The existing asynchronous CPU histogram reduction now also accumulates tiny64x18
+summaries in the same loop. No added model forward, raw inverse, GPU reduction or
+device-to-host copy is needed. Existing log-error summaries are simply named at
+evaluation completion. `train/loss` aliases the existing `train_loss` series.
+An instrumentation resume preserves the original exact scientific contract and
+W&B identity, rejects source changes outside the reviewed metric/reporting files,
+and records old/new source hashes and the restored cursor in a runtime receipt.

@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from .model import loss
 from ..phase1_v11.transforms import PRICES,ACTIVITY
 from ..phase1_v10.train import Accumulator as Native
+from .horizon_metrics import HorizonPriceRelative
 
 
 class Metrics:
@@ -37,6 +38,7 @@ class Metrics:
 class ValidationMetrics:
     def __init__(self,device):
         self.native=Native();self.device=device
+        self.native.reducers=[HorizonPriceRelative(),HorizonPriceRelative()]
         self.adapter=SimpleNamespace(input_mean=torch.zeros(27,device=device),input_scale=torch.ones(27,device=device))
         self.controls={k:torch.zeros(2,18,device=device,dtype=torch.float64) for k in ('last','mean','median','training_mean')}
         self.model_errors={k:v.clone() for k,v in self.controls.items()}

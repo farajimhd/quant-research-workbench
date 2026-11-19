@@ -49,6 +49,8 @@ def main(argv=None):
         decoder_dependency='256-dimensional learned context embedding only; no true or raw reference bypass',
         objective='Equal price/activity family source-valid SmoothL1; price1000*log error, activitylog1p error; batch-window-weighted validation',
         export='encoder only for256-dimensional representation; optional decoder for64x18 raw forecasts')))
+    from .resume_metrics import preserve_contract
+    contract=preserve_contract(a,contract)
     manifest=dict(model=contract,phase2_version='bargpt-phase2-v3',source_revision=a.source_revision,output=str(a.output),resume=str(a.resume) if a.resume else None,
         parameters=sum(p.numel() for p in model.parameters()),encoder_parameters=sum(p.numel() for p in model.encoder.parameters()),
         arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()})
@@ -58,6 +60,8 @@ def main(argv=None):
     with lease(a.output):
         reporter=Reporter(a.output,manifest,mode='online',project='bargpt-phase2')
         if reporter.run is None:raise RuntimeError('Online W&B is mandatory')
+        reporter.run.define_metric('train/loss',step_metric='global_step',summary='min',hidden=False)
+        reporter.run.define_metric('validation_horizon/*',step_metric='global_step',hidden=False)
         reporter.update(stage='preparing certified publications',epoch=1,epochs=a.epochs,step=0)
         try:
             from .train import train

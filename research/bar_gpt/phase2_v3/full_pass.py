@@ -98,7 +98,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
                             else:metrics.add(predicted,target,tokens[:,7])
                             optimized=time.perf_counter();timing['optimizer_metrics']+=optimized-computed
                             if step%args.log_every==0:
-                                reporter.log(dict(train_loss=float(loss.detach()),gradient_norm=float(norm),
+                                reporter.log(dict(train_loss=float(loss.detach()),**{'train/loss':float(loss.detach())},gradient_norm=float(norm),
                                     learning_rate=optimizer.param_groups[0]['lr'],full_pass=epoch+1),step)
                                 now=time.perf_counter()
                                 reporter.update(stage='training',epoch=epoch+1,epochs=args.epochs,
