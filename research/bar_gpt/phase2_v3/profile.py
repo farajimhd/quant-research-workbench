@@ -3,7 +3,8 @@ from dataclasses import replace
 import copy,time
 import torch
 from ..phase2_v2.benchmark import sample_units
-from ..phase2_v2.data import checked_unit,plan_block
+from ..phase2_v2.data import load_units
+from itertools import islice
 from ..phase2_v2.train import optimizer_for,autocast
 from ..phase2_v2.device_pipeline import device_batches
 from ..v5.shards.contract import write_json
@@ -16,8 +17,8 @@ from .model import Forecaster
 
 def profile(model,teacher,proof,args):
     all_units,_=sample_units(args.dataset_release,args.max_blocks)
-    units=all_units
-    units=[u for u in units if any(b[1]==0 for b in u.blocks)]
+    released,_=load_units(release=args.dataset_release)
+    units=[u for _,u in islice(released.iter_from(0),args.max_blocks)]
     if not units:raise ValueError('No training profile units')
     original=copy.deepcopy(model.state_dict());report=[]
     source=device_batches(batches(units,0,teacher,proof['sha256'],args),args.device,args.gpu_prefetch)
@@ -44,17 +45,17 @@ def profile(model,teacher,proof,args):
     if first is None:raise ValueError('No eligible profile origins')
     tokens,ages,target=first
     config=model.config;del replay,optimizer,p,loss,norm,model
-    for batch in (256,512,1024,2048):
-        if batch>len(tokens):continue
+    for batch in (256,512,1024,2048,4096,8192):
         model=Forecaster(config).to(args.device);model.load_state_dict(original);model.train();opt=optimizer_for(model,args)
-        x=tokens[:batch];a=ages[:batch];t={k:v[:batch] for k,v in target.items()};graph=CudaStep(model,batch)
+        indices=torch.arange(batch,device=tokens.device)%len(tokens)
+        x=tokens[indices];a=ages[indices];t={k:v[indices] for k,v in target.items()};graph=CudaStep(model,batch)
         started=time.perf_counter()
         for _ in range(args.profile_steps):
             _,l,norm=graph(x,a,t)
             if not (torch.isfinite(l)&torch.isfinite(norm)):raise FloatingPointError('Nonfinite compute sweep')
             opt.step()
         torch.cuda.synchronize();seconds=time.perf_counter()-started
-        report.append(dict(kind='cached_compute',batch=batch,steps=args.profile_steps,seconds=seconds,origins_per_second=batch*args.profile_steps/seconds,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20))
+        report.append(dict(kind='cached_compute',batch=batch,repeated_rows=batch>len(tokens),steps=args.profile_steps,seconds=seconds,origins_per_second=batch*args.profile_steps/seconds,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20))
         write_json(args.output/'profile-partial.json',report);print(report[-1],flush=True)
         del graph,opt,model
     model=Forecaster(config).to(args.device);model.load_state_dict(original);model.train();opt=torch.optim.AdamW(model.parameters(),lr=3e-4,fused=args.device=='cuda')
@@ -84,7 +85,7 @@ def profile(model,teacher,proof,args):
         def update(self,**kw):pass
         def log(self,metrics,step):pass
     qa=SimpleNamespace(**vars(args));qa.output=args.output/'integration';qa.output.mkdir();qa.epochs=1;qa.resume=None;qa.validation_every=10000
-    qa.cuda_step_replay=True;qa.seed=args.seed
+    qa.cuda_step_replay=True;qa.seed=args.seed;qa.batch_size=256
     model=Forecaster(config).to(args.device);model.load_state_dict(original);model.train()
     contract=dict(qualification=True,teacher=proof['sha256'],source=args.source_revision)
     integration=train(model,teacher,proof['sha256'],[units[0],validation_units[0]],contract,qa,Reporter())
