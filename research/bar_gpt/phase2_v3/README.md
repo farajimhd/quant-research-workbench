@@ -56,3 +56,37 @@ resource settings. Train additionally requires `--execute`. Exact generated
 commands are retained under the runtime root. Use `panel --output RUN` to monitor.
 `context-encoder.pt` and optional `forecast-decoder.pt` export the final durable
 state, bind the phase1 teacher SHA and include configuration and provenance.
+
+## Workstation qualification and initial launch
+
+Training source: `6815d06388aec7ca6cdf2a4f207bcf0c19c9effa`.
+Runtime root: `D:/TradingML/runtimes/bar_gpt/phase2-v3-v11-20261119`.
+Pinned teacher: `phase1-final-epoch025.pt`, SHA256
+`879812b4d0e3bfafbdd291b292a0a6921c63e476d0ee20907b0b567acefef9aa`.
+Run: `full-transformer256-pass01`, W&B `mehdifaraji/bargpt-phase2/ivwdfvnl`.
+The exact command is in `training-command.txt`; source deployment hashes,
+profile commands, profile results and checkpoint proofs are retained under that root.
+
+Matched first256 training-publication profiles (793133 eligible origins): batch4096
+and preparation workers2/4/8 achieved42.8K/49.4K/46.2K origins/s respectively.
+Vectorizing the exact Float64 log/log1p preparation achieved51.5K with four workers.
+These short measurements include startup and are not sustained whole-corpus speeds.
+Cached model computation peaked near354K/s at batch4096;8192 was slightly slower.
+Selected: batch4096,tokenbatch1024,4 I/O and4 preparation workers,8GiB bounded
+prefetch,4GiB per-publication cache admission,BF16 trunk/FP32 decoder,fused AdamW,
+CUDA graph updates. GPU memory is not a performance objective by itself.
+
+Qualification:43 focused model/causal-data/scheduling/prefetch tests; subsequent
+model checks passed after vectorization. The real runnable train/validation/
+checkpoint integration completed19 updates including graph and tail paths.
+Tiny32-example loss fell5.923→2.216 in400updates. Optimized tokenizer inputs and
+embeddings matched standalone Phase1 exactly across all five context timeframes
+(2827 historical windows). These are engineering/learnability gates, not evidence
+of out-of-sample forecasting skill. Full-validation controls decide that.
+
+The certified release has12188930 training blocks and254 validation blocks.
+One full pass is potentially a long run; no complete-origin total is inferred
+from block counts, because warmup and future-target purge determine eligibility.
+The2026 validation covers only32 distinct ticker identities before cross-root
+deduplication (29 liquid and3 illiquid); it must not be presented as broad future
+market generalization. Validation remains the original certified split.
