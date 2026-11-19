@@ -202,3 +202,24 @@ def test_mlp_raw_graph_and_resume(backbone):
     restore_rng(saved['rng']);again=Replay(other,b);actual=again(b)[0];second.step()
     torch.testing.assert_close(expected,actual,rtol=1e-5,atol=1e-6)
     for p,q in zip(m.parameters(),other.parameters()):torch.testing.assert_close(p,q,rtol=1e-5,atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA host staging required')
+def test_reusable_host_staging_order_aliases_tails_and_bounded_allocation():
+    from .pipeline import DeviceBatches
+    from ..phase1_v7.full_data import prepare_raw
+    batches=[]
+    for index,size in enumerate([3,3,1,2,3,3,2,1,3,3]):
+        rows=raw_rows()[:size].copy();rows['values']*=index+1
+        batches.append(prepare_raw(rows,native=True))
+    device=DeviceBatches(batches,'cuda');observed=[]
+    try:
+        for expected in batches:
+            got=device.pop()
+            assert got.grid.data_ptr()==got.target.data_ptr()==got.raw.data_ptr()
+            # Clone on the consumer stream, then prefetch before synchronizing.
+            copied=got.grid.clone();device.advance();observed.append(copied.cpu())
+        with pytest.raises(StopIteration):device.pop()
+        assert device.pin_allocations==8
+        for actual,expected in zip(observed,batches):torch.testing.assert_close(actual,expected.grid,rtol=0,atol=0)
+    finally:device.close()

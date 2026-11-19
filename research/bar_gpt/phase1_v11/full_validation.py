@@ -4,8 +4,8 @@ from types import SimpleNamespace
 import time
 import torch
 from ..phase1_v10.train import Accumulator as NativeAccumulator
-from ..phase1_v7.full_data import loader
-from ..phase1_v5_raw.engine import DeviceBatches,FRAME_NAMES
+from .pipeline import loader,DeviceBatches
+from ..phase1_v5_raw.engine import FRAME_NAMES
 from ..v5.data_v3 import close_loader
 from ..v5.shards.phase1_contract import FRAMES,write_json
 from .full_step import forward,InferenceReplay

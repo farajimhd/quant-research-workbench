@@ -8,9 +8,10 @@ from .full_step import Replay,backward
 from .full_validation import evaluate
 from .evaluation import evaluate_model
 from .data import cache
-from ..phase1_v7.full_data import loader,prepare_raw
+from ..phase1_v7.full_data import prepare_raw
 from ..phase1_v10.train import training_learning_rate,verify_traversal
-from ..phase1_v5_raw.engine import DeviceBatches,report
+from ..phase1_v5_raw.engine import report
+from .pipeline import DeviceBatches,loader
 from ..phase2_v2.train import rng_state,restore_rng,save_checkpoint,load_checkpoint
 from ..v5.data_v3 import close_loader
 from ..v5.shards.phase1_contract import write_json,file_hash
@@ -92,7 +93,8 @@ def train(model,parent,a,manifest,status):
                             metrics=dict(loss=float(loss),price_loss=float(parts[0]),activity_loss=float(parts[1]),reference_price_loss=float(parts[2]),reference_activity_loss=float(parts[3]),
                                 gradient_norm=float(norm),learning_rate=lr,windows_per_second=(seen-recent[0][1])/max(.001,now-recent[0][0]),
                                 phase_startup_seconds=startup,phase_loader_wait_seconds=device.wait_seconds-wait,phase_loader_wait_fraction=(device.wait_seconds-wait)/max(.001,now-began),
-                                gpu_mib=torch.cuda.memory_allocated()/2**20,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20)
+                                gpu_mib=torch.cuda.memory_allocated()/2**20,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20,
+                                host_staging_seconds=device.staging_seconds,host_pin_allocations=device.pin_allocations,host_pinned_mib=device.pinned_bytes/2**20)
                             status(stage='training',epoch=epoch+1,step=step,epoch_done=epoch_done,origins=origins,**metrics);publish({'train/'+k:v for k,v in metrics.items()})
                             with (a.output/'metrics.jsonl').open('a') as f:f.write(json.dumps(dict(step=step,epoch=epoch+1,**metrics))+'\n')
                         if step%a.diagnostic_every==0:

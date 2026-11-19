@@ -7,8 +7,8 @@ import torch
 from .config import Config
 from .model import Autoencoder
 from .full_step import Replay
-from ..phase1_v7.full_data import loader,gpu_inputs
-from ..phase1_v5_raw.engine import DeviceBatches
+from ..phase1_v7.full_data import gpu_inputs
+from .pipeline import loader,DeviceBatches
 from ..v5.data_v3 import load_split,close_loader
 from ..v5.loader_index_v1 import attach
 from ..phase1_v8.runtime import preflight
