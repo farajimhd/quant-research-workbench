@@ -10,7 +10,6 @@ from .evaluation import evaluate_model
 from .data import cache
 from ..phase1_v7.full_data import prepare_raw
 from ..phase1_v10.train import training_learning_rate,verify_traversal
-from ..phase1_v5_raw.engine import report
 from .pipeline import DeviceBatches,loader
 from .continuation import validate_continuation
 from ..phase2_v2.train import rng_state,restore_rng,save_checkpoint,load_checkpoint
@@ -50,8 +49,9 @@ def train(model,parent,a,manifest,status):
         dir=str(a.output),config=None if identity else contract)
     if not identity:write_json(identity_path,dict(id=run.id,url=run.url))
     report_floor=int(run.summary.get('optimizer_step',-1)) if a.resume else -1
-    def publish(metrics):
-        if step>report_floor:report(run,metrics,step)
+    def publish(metrics,force=False):
+        if force or step>report_floor:
+            run.log(dict(metrics,optimizer_step=step),step=max(step,run.step),commit=True)
     def checkpoint(name='checkpoint_last.pt'):
         save_checkpoint(a.output/name,dict(model=model.state_dict(),optimizer=optimizer.state_dict(),rng=rng_state(),contract=contract,
             epoch=epoch,step=step,cursor=(epoch,cursor),batch_cursor=cursor,origins=origins,epoch_done=epoch_done,phase=phase,best=best,development_best=development_best,history=history,
@@ -87,7 +87,7 @@ def train(model,parent,a,manifest,status):
             try:baseline=evaluate(model,manifest,a,lambda **kw:status(**kw,baseline_validation=True))
             finally:restore_rng(state)
             if baseline is None:checkpoint();return 'stopped'
-            write_json(a.output/'baseline-validation.json',baseline);publish(validation_metrics(baseline,True))
+            write_json(a.output/'baseline-validation.json',baseline);publish(validation_metrics(baseline,True),force=True)
             baseline_complete=True;checkpoint();status(baseline_validation=False)
         rows=np.load(a.data/'train.npy',mmap_mode='r',allow_pickle=False)
         example=prepare_raw(rows[:a.batch_size]).to('cuda');model.train();replay=Replay(model,example);del example
