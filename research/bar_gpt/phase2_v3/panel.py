@@ -89,7 +89,8 @@ def render(root,reader,width=100,height=30):
         if len(history)>1:
             delta=val['loss']-history[-2]['validation']['loss']
             quality.add_row('Val loss change',Text(f'{delta:+.6f} (lower is better)',style='green' if delta<0 else 'yellow'))
-        quality.add_row('Price % / act log',f'{val["balanced_price_mape_pct"]:.3f}% / {val["activity_log_mae"]:.4f}')
+        quality.add_row('Price MAPE',f'{val["balanced_price_mape_pct"]:.3f}%')
+        quality.add_row('Activity log MAE',f'{val["activity_log_mae"]:.4f}')
         skill=val.get('skill/last/price')
         if skill is not None:quality.add_row('Vs last-bar price',Text(f'{100*skill:+.2f}% (positive is better)',style='green' if skill>0 else 'yellow'))
     else:quality.add_row('Validation','Pending first complete evaluation')
@@ -107,8 +108,9 @@ def render(root,reader,width=100,height=30):
     resources.add_row('Checkpoint saved',saved)
     metrics=Table.grid(expand=True,padding=(0,1))
     if compact:
-        metrics.add_column();metrics.add_row(quality)
-        if height>=24:metrics.add_row(resources)
+        metrics.add_column();metrics.add_row(Text('LEARNING',style='bold blue'));metrics.add_row(quality)
+        if height>=24:
+            metrics.add_row(Text('PERFORMANCE',style='bold blue'));metrics.add_row(resources)
     else:
         metrics.add_column(ratio=3);metrics.add_column(ratio=2)
         metrics.add_row(Panel(quality,title='Learning',border_style='blue'),Panel(resources,title='Performance',border_style='dim'))
