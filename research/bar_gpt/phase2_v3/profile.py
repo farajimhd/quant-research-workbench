@@ -3,7 +3,7 @@ from dataclasses import replace
 import copy,time
 import torch
 from ..phase2_v2.benchmark import sample_units
-from ..phase2_v2.data import load_units
+from ..phase2_v2.data import load_units,checked_unit
 from itertools import islice
 from ..phase2_v2.train import optimizer_for,autocast
 from ..phase2_v2.device_pipeline import device_batches
@@ -13,6 +13,34 @@ from .data import batches
 from .cuda_step import CudaStep
 from .metrics import Metrics,ValidationMetrics
 from .model import Forecaster
+
+
+@torch.no_grad()
+def tokenizer_parity(unit,teacher,proof,args):
+    """Check optimized inputs against the standalone phase1 preprocessing path."""
+    from ..phase1_v6.model import Transform
+    from ..v5.transforms_v1 import BarInputTransformV1
+    from ..v5.phase2_ar_shards.contract import FRAMES
+    from .tokenizer import raw_logs
+    session=SessionTokens(checked_unit(unit),teacher,proof['sha256'],device=args.device,
+        precision=args.precision,memory_mib=args.cache_mib,token_batch=args.token_batch)
+    result=[]
+    for frame,(values,valid,clocks) in enumerate(session.pools):
+        ids=torch.arange(63,min(63+args.token_batch,len(values)),device=args.device)
+        if not len(ids):raise AssertionError('Missing phase1 parity frame')
+        gather=ids[:,None]-session.positions.flip(0)
+        raw=values[gather];mask=valid[gather].bool()
+        standard=BarInputTransformV1()(raw,mask,clocks[gather],FRAMES[frame])
+        standard.values[...,:18]=Transform.logs(raw,mask).float()
+        time,tm=session.window_time(frame,gather)
+        torch.testing.assert_close(raw_logs(raw,mask),standard.values[...,:18],rtol=0,atol=0)
+        torch.testing.assert_close(time,standard.values[...,18:],rtol=0,atol=0)
+        assert torch.equal(tm,standard.valid[...,18:])
+        expected=teacher(standard.values,standard.valid,session.positions.expand(len(ids),-1))
+        session.ensure(frame,ids.cpu().numpy())
+        torch.testing.assert_close(session.bank[frame][ids],expected,rtol=1e-5,atol=1e-6)
+        result.append(dict(frame_us=FRAMES[frame],windows=len(ids),max_embedding_error=float((session.bank[frame][ids]-expected).abs().max())))
+    return result
 
 
 def profile(model,teacher,proof,args):
@@ -92,6 +120,7 @@ def profile(model,teacher,proof,args):
     saved=load_checkpoint(qa.output/'checkpoint_last.pt',contract)
     if integration!='complete' or saved['epoch']!=1 or not saved['history'][-1]['pass_complete']:raise AssertionError('Runnable integration failed')
     report.append(dict(kind='bounded_full_pass_integration',state=integration,step=saved['step'],validation_loss=saved['history'][-1]['validation']['loss']))
-    result=dict(passed=True,measurements=report,teacher=proof,native=native_result,scope='Bounded training-publication qualification, not full-corpus generalization')
+    parity=tokenizer_parity(units[0],teacher,proof,args)
+    result=dict(passed=True,measurements=report,teacher=proof,native=native_result,tokenizer_parity=parity,scope='Bounded training-publication qualification, not full-corpus generalization')
     write_json(args.output/'profile.json',result);print({k:v for k,v in result.items() if k not in ('native','teacher')},flush=True)
     return result
