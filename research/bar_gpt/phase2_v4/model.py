@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from ..phase1_v11.model import Autoencoder
 from ..phase1_v11.transforms import PRICES
-from ..phase2_v3.model import Config as BaseConfig,ContextEncoder,Forecaster as BaseForecaster
+from ..phase2_v3.model import Config as BaseConfig,ContextEncoder,Forecaster as BaseForecaster,loss
 
 
 @dataclass(frozen=True)

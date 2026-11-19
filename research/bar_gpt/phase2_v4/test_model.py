@@ -8,6 +8,9 @@ from .model import Forecaster,Phase1Decoder
 
 
 def test_identical_phase1_heads_and_embedding_only_forecast():
+    from .metrics import Metrics
+    from .profile import profile
+    from .train import train
     parameters=dict(time_mean=[0.]*9,time_scale=[1.]*9,reference_mean=[0.]*9,reference_scale=[1.]*9)
     source=Autoencoder(Phase1Config(width=128,layers=4,embedding=256,latent_tokens=4,readout='split_scale',dropout=0.),parameters).eval()
     head=Phase1Decoder();head.initialize_phase1(source.state_dict());z=torch.randn(3,256)
@@ -21,6 +24,8 @@ def test_identical_phase1_heads_and_embedding_only_forecast():
     changed=dict(t,logs=t['logs'].clone());changed['logs'][~t['valid']]=999.
     torch.testing.assert_close(m.training_loss(p,changed),loss)
     assert sum(p.numel() for p in head.parameters())==888489
+    metrics=Metrics('cpu');metrics.add(p.detach(),t)
+    assert metrics.result()['loss']==pytest.approx(float(loss.detach()))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA required')
