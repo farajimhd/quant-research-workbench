@@ -30,7 +30,7 @@ def tokenizer_parity(unit,teacher,proof,args):
         if not len(ids):raise AssertionError('Missing phase1 parity frame')
         gather=ids[:,None]-session.positions.flip(0)
         raw=values[gather];mask=valid[gather].bool()
-        standard=BarInputTransformV1()(raw,mask,clocks[gather],FRAMES[frame])
+        standard=BarInputTransformV1().to(args.device)(raw,mask,clocks[gather],FRAMES[frame])
         standard.values[...,:18]=Transform.logs(raw,mask).float()
         time,tm=session.window_time(frame,gather)
         torch.testing.assert_close(raw_logs(raw,mask),standard.values[...,:18],rtol=0,atol=0)

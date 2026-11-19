@@ -30,9 +30,9 @@ def load_teacher(path,sha256,calibration,device='cpu'):
 
 
 def raw_logs(raw,valid):
-    safe=torch.where(valid,raw,1).double();cols=[]
-    for j in range(18):cols.append(safe[...,j].log() if j in PRICES else safe[...,j].log1p())
-    return torch.where(valid,torch.stack(cols,-1),0).float()
+    safe=torch.where(valid,raw,1).double().reshape(*raw.shape[:-1],3,6)
+    logs=torch.cat((safe[...,:4].log(),safe[...,4:].log1p()),-1).reshape_as(raw)
+    return torch.where(valid,logs,0).float()
 
 
 class SessionTokens(BaseSession):
