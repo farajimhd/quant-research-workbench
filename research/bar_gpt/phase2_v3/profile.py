@@ -11,6 +11,7 @@ from .tokenizer import SessionTokens
 from .data import batches
 from .cuda_step import CudaStep
 from .metrics import Metrics,ValidationMetrics
+from .model import Forecaster
 
 
 def profile(model,teacher,proof,args):
@@ -39,11 +40,13 @@ def profile(model,teacher,proof,args):
         report.append(dict(kind='complete_pipeline',origins=count,seconds=time.perf_counter()-started,startup_seconds=startup,
             origins_per_second=count/(time.perf_counter()-started),batch=args.batch_size,prepare_workers=args.prepare_workers))
     finally:source.close()
+    write_json(args.output/'profile-partial.json',report);print(report[-1],flush=True)
     if first is None:raise ValueError('No eligible profile origins')
     tokens,ages,target=first
+    config=model.config;del replay,optimizer,p,loss,norm,model
     for batch in (256,512,1024,2048):
         if batch>len(tokens):continue
-        model.load_state_dict(original);model.train();opt=optimizer_for(model,args)
+        model=Forecaster(config).to(args.device);model.load_state_dict(original);model.train();opt=optimizer_for(model,args)
         x=tokens[:batch];a=ages[:batch];t={k:v[:batch] for k,v in target.items()};graph=CudaStep(model,batch)
         started=time.perf_counter()
         for _ in range(args.profile_steps):
@@ -52,8 +55,9 @@ def profile(model,teacher,proof,args):
             opt.step()
         torch.cuda.synchronize();seconds=time.perf_counter()-started
         report.append(dict(kind='cached_compute',batch=batch,steps=args.profile_steps,seconds=seconds,origins_per_second=batch*args.profile_steps/seconds,gpu_reserved_mib=torch.cuda.memory_reserved()/2**20))
-        del graph,opt
-    model.load_state_dict(original);model.train();opt=torch.optim.AdamW(model.parameters(),lr=3e-4,fused=args.device=='cuda')
+        write_json(args.output/'profile-partial.json',report);print(report[-1],flush=True)
+        del graph,opt,model
+    model=Forecaster(config).to(args.device);model.load_state_dict(original);model.train();opt=torch.optim.AdamW(model.parameters(),lr=3e-4,fused=args.device=='cuda')
     n=min(32,len(tokens));x=tokens[:n];a=ages[:n];t={k:v[:n] for k,v in target.items()};curve=[]
     for step in range(401):
         opt.zero_grad(set_to_none=True)
@@ -81,7 +85,7 @@ def profile(model,teacher,proof,args):
         def log(self,metrics,step):pass
     qa=SimpleNamespace(**vars(args));qa.output=args.output/'integration';qa.output.mkdir();qa.epochs=1;qa.resume=None;qa.validation_every=10000
     qa.cuda_step_replay=True;qa.seed=args.seed
-    model.load_state_dict(original);model.train()
+    model=Forecaster(config).to(args.device);model.load_state_dict(original);model.train()
     contract=dict(qualification=True,teacher=proof['sha256'],source=args.source_revision)
     integration=train(model,teacher,proof['sha256'],[units[0],validation_units[0]],contract,qa,Reporter())
     saved=load_checkpoint(qa.output/'checkpoint_last.pt',contract)
