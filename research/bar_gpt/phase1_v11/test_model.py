@@ -253,35 +253,3 @@ def test_continuation_preserves_data_order_and_allows_explicit_schedule_change()
     assert start['step']==927672 and start['batch_cursor']==16493
     with pytest.raises(ValueError,match='workers'):validate_continuation(parent,dict(new,workers=32))
     with pytest.raises(ValueError,match='horizon'):validate_continuation(parent,dict(new,epochs=20))
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA metric capture required')
-def test_native_metric_graph_matches_original_including_tail():
-    from types import SimpleNamespace
-    from ..phase1_v10.train import Accumulator as Original
-    from .native_metrics import NativeAccumulator
-    from ..phase1_v7.full_data import prepare_raw
-    from ..v5.shards.phase1_contract import FRAMES
-    from .full_step import forward
-    model=Autoencoder(Config(width=32,layers=1,embedding=64,readout='split_scale',dropout=0),parameters()).cuda().eval()
-    adapter=SimpleNamespace(input_mean=torch.cat((torch.zeros(18,device='cuda'),model.encoder.time_mean)),input_scale=torch.cat((torch.ones(18,device='cuda'),model.encoder.time_scale)))
-    original=Original();actual=NativeAccumulator();actual.frame_values=torch.tensor(FRAMES,device='cuda')
-    try:
-        for count,visible in ((3,16),(3,64),(2,16)):
-            b=prepare_raw(raw_rows()[:count],native=True).to('cuda')
-            with torch.no_grad():out,x,v,h=forward(model,b,visible)
-            args=(adapter,(out['logs'],out['time'],out['validity']),x,v,h,b)
-            original.add(*args);actual.add(*args)
-        expected=original.finish();result=actual.finish()
-        def compare(a,b):
-            if isinstance(a,dict):
-                assert a.keys()==b.keys()
-                for key in a:compare(a[key],b[key])
-            elif isinstance(a,list):
-                assert len(a)==len(b)
-                for x,y in zip(a,b):compare(x,y)
-            elif isinstance(a,(float,int)):assert a==pytest.approx(b,rel=1e-6,abs=1e-8)
-            else:assert a==b
-        compare(expected,result)
-    finally:
-        original.pool.shutdown(wait=True);actual.pool.shutdown(wait=True)

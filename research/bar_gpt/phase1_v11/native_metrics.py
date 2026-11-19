@@ -1,39 +1,11 @@
 """V11 native reducer with cached device constants; unchanged V10 metric formulas."""
 import torch
-from types import SimpleNamespace
 from ..phase1_v10.train import Accumulator as BaseAccumulator,group_sum
 from ..phase1_v10.model import inverse
 
 
 class NativeAccumulator(BaseAccumulator):
-    @torch.no_grad()
     def add(self,model,output,values,valid,hidden,b):
-        inputs=(*output,values,valid,hidden,b.raw,b.frames)
-        if not hasattr(self,'metric_graph'):
-            self.metric_inputs=tuple(x.clone() for x in inputs)
-            names=('sums','counts','logs','ps','ys','p2','y2','zero','tiny','bad','time_sum','time_count','confusion')
-            saved={name:getattr(self,name).clone() for name in names}
-            stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())
-            def compute():
-                p,t,vl,x,v,h,raw,frames=self.metric_inputs
-                return self.device_add(model,(p,t,vl),x,v,h,SimpleNamespace(raw=raw,frames=frames))
-            with torch.cuda.stream(stream):
-                for _ in range(3):compute()
-            torch.cuda.current_stream().wait_stream(stream)
-            self.metric_graph=torch.cuda.CUDAGraph()
-            with torch.cuda.graph(self.metric_graph,stream=stream,capture_error_mode='thread_local'):
-                self.metric_output=compute()
-            for name,value in saved.items():getattr(self,name).copy_(value)
-        if all(x.shape==s.shape for x,s in zip(inputs,self.metric_inputs)):
-            for x,s in zip(inputs,self.metric_inputs):s.copy_(x,non_blocking=True)
-            self.metric_graph.replay();error,truth,v,fi=self.metric_output
-        else:error,truth,v,fi=self.device_add(model,output,values,valid,hidden,b)
-        lane=self.batches%2
-        if self.pending[lane] is not None:self.pending[lane].result()
-        cpu=[x.cpu() for x in (error.transpose(1,2),truth.transpose(1,2),v.transpose(1,2),fi)]
-        self.pending[lane]=self.pool.submit(self.reducers[lane].add,*cpu);self.batches+=1
-
-    def device_add(self,model,output,values,valid,hidden,b):
         p,t,vl=output;raw=inverse(p);truth=b.raw.double();v=valid[...,:18]&hidden[...,None]
         error=(raw-truth).abs();loge=(p.double()-values[...,:18].double()).abs()
         self.bad[0]+=(~torch.isfinite(raw)&v).sum();self.bad[1]+=((raw<0)&v).sum()
@@ -53,4 +25,7 @@ class NativeAccumulator(BaseAccumulator):
         self.time_sum+=torch.where(tv,te,0).sum((0,1));self.time_count+=tv.sum((0,1))
         vv=vl>0;eligible=hidden[...,None]
         self.confusion+=torch.stack(((vv&valid&eligible).sum(),(vv&~valid&eligible).sum(),(~vv&valid&eligible).sum(),(~vv&~valid&eligible).sum()))
-        return error,truth,v,fi
+        lane=self.batches%2
+        if self.pending[lane] is not None:self.pending[lane].result()
+        cpu=[x.cpu() for x in (error.transpose(1,2),truth.transpose(1,2),v.transpose(1,2),fi)]
+        self.pending[lane]=self.pool.submit(self.reducers[lane].add,*cpu);self.batches+=1
