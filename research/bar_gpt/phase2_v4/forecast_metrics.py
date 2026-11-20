@@ -84,7 +84,7 @@ class ForecastMetrics:
                     result[out+'raw_mae']=ratio(base,n)
                     result[out+'model_raw_mae_same_mask']=ratio(ours,n)
                     result[out+'log_mae']=ratio(total(src+'log_absolute_error'),n)
-                    result[out+'raw_mae_skill']=1-ours/base if base>0 else None
+                    result[out+'raw_mae_skill']=float(1-ours/base) if base>0 else None
                 if c not in (3,9,15):continue
                 for tolerance in (.05,.1,.2):
                     value=ratio(total(f'price/within_{tolerance:g}pct'),total('price/count'))

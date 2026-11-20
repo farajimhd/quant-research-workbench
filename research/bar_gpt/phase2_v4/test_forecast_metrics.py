@@ -34,6 +34,8 @@ def test_shifted_control_matches_independent_numpy_and_counts():
 
 def test_direction_perfect_persistence_and_partition_merge():
     t=example();m=ForecastMetrics('cpu');m.add(t['logs'],t);r=m.result()
+    from ..v5.checkpoint_transition_v1 import state_hash
+    assert state_hash({'validation':r})  # Real checkpoint scalar contract.
     for key in ('from_origin','consecutive_path'):
         assert r[f'forecast/direction/{key}/all/trade_close/accuracy_moving_pct']==100
         assert r[f'forecast/direction/{key}/all/trade_close/accuracy_3way_pct']==100

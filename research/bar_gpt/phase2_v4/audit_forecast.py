@@ -27,6 +27,7 @@ def main():
     parser.add_argument('--run',type=Path,required=True)
     parser.add_argument('--output',type=Path,required=True)
     parser.add_argument('--source-revision',required=True)
+    parser.add_argument('--compare-overhead',action='store_true')
     own=parser.parse_args()
     launch=json.loads(own.run.with_name(own.run.name+'-launcher').joinpath('launch.json').read_text())
     argv=launch['command'];argv=argv[argv.index('research.bar_gpt.phase2_v4.run_train')+1:]
@@ -44,7 +45,24 @@ def main():
     units,dataset=load_units(release=a.dataset_release)
     if digest(dataset)!=digest(saved['contract']['dataset']):raise ValueError('Dataset changed')
     moments=saved['training_metrics']['moments'].to(a.device);mean=moments[2]/moments[4].clamp_min(1)
-    began=time.monotonic();result=evaluate(model,units,teacher,proof['sha256'],a,mean,Reporter(a.output),saved['step'])
+    from . import metrics as metric_module
+    class DisabledForecast:
+        def __init__(self,*args):pass
+        def add(self,*args):pass
+        def result(self):return {}
+    timings=[];result=None;reference=None
+    for mode in (('base','extended','base') if own.compare_overhead else ('extended',)):
+        metric_module.ForecastMetrics=ForecastMetrics if mode=='extended' else DisabledForecast
+        began=time.monotonic()
+        measured=evaluate(model,units,teacher,proof['sha256'],a,mean,Reporter(a.output),saved['step'])
+        elapsed=time.monotonic()-began
+        if measured is None:raise RuntimeError('Audit interrupted, not complete')
+        if reference is None:reference=measured['loss']
+        if measured['loss']!=reference:raise ValueError('Evaluation loss parity failed')
+        timings.append(dict(mode=mode,seconds=elapsed,origins=measured['origins']))
+        if mode=='extended':result=measured;extended_seconds=elapsed
+        write_json(a.output/'timings.json',timings)
+    metric_module.ForecastMetrics=ForecastMetrics
     if result is None:raise RuntimeError('Audit interrupted, not complete')
     if not saved['training_metrics']['count']:
         # End-of-validation checkpoints reset interval moments. Zero is not a
@@ -52,7 +70,7 @@ def main():
         result={k:v for k,v in result.items() if not k.startswith(('control/training_mean/','skill/training_mean/'))}
     receipt=dict(state='complete',version=ForecastMetrics.VERSION,source=a.source_revision,
         checkpoint=str(checkpoint),checkpoint_sha256=file_hash(checkpoint),contract_sha256=digest(saved['contract']),
-        dataset_sha256=digest(dataset),step=saved['step'],seconds=time.monotonic()-began,metrics=result)
+        dataset_sha256=digest(dataset),step=saved['step'],seconds=extended_seconds,timings=timings,metrics=result)
     write_json(a.output/'audit.json',receipt)
     print(json.dumps({k:v for k,v in receipt.items() if k!='metrics'}),flush=True)
 
