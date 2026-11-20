@@ -62,7 +62,11 @@ def evaluate(model,manifest,a,reporter,step,rows=None):
         if rows is None and result['windows']!=manifest['counts']['validation']:raise ValueError('Validation population incomplete')
         if rows is not None and result['windows']!=len(rows):raise ValueError('Development incomplete')
         write_json(a.output/('development-latest.json' if rows is not None else 'validation-latest.json'),result)
-        reporter.log({('development/' if rows is not None else 'validation/')+k:v for k,v in scalars(result).items()},step)
+        measured=scalars(result)
+        reporter.log({('development/' if rows is not None else 'validation/')+k:v for k,v in measured.items()},step)
+        reporter.update(latest_evaluation=dict(scope='development' if rows is not None else 'full validation',step=step,loss=result['loss'],
+            trade_close_mae_1s=measured.get('raw_mae/1s/trade_close'),candle_direction_1s=measured.get('candle/1s/trade/moving_direction_pct'),
+            range_accuracy_1s=measured.get('range/1s/trade/magnitude_accuracy_pct'),seconds=result['seconds']))
         return result
     finally:
         if device:device.close()

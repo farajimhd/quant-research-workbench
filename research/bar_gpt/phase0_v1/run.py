@@ -1,6 +1,6 @@
 import os
 os.environ.update(PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1',PYTHONUNBUFFERED='1')
-import argparse,gc,json,random,time
+import argparse,gc,json,math,random,time
 from pathlib import Path
 import numpy as np
 import torch
@@ -25,21 +25,25 @@ def qualify(a,parameters,manifest):
     records=[]
     for kind in ('linear','residual_mlp'):
         torch.manual_seed(17);model=Autoencoder(parameters,Config(backbone=kind)).cuda();opt=torch.optim.AdamW(model.parameters(),lr=1e-3,weight_decay=0.,fused=True)
-        initial=float(objective(model,*forward_batch(model,b)[:3])[0])
-        best=float('inf');began=time.perf_counter()
-        for step in range(2000):
-            opt.zero_grad(set_to_none=True);loss,_,norm=backward(model,b)
+        initial=float(objective(model,*forward_batch(model,b)[:3])[0].detach())
+        best=float('inf');began=time.perf_counter();replay=Replay(model,b);curve=[]
+        for step in range(4000):
+            lr=1e-6+.5*(3e-4-1e-6)*(1+math.cos(math.pi*step/3999))
+            for group in opt.param_groups:group['lr']=lr
+            loss,parts,norm=replay(b)
             if not bool(torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Tiny gradient failure')
             opt.step();best=min(best,float(loss))
-        final=float(objective(model,*forward_batch(model,b)[:3])[0])
-        records.append(dict(kind=kind,initial=initial,final=final,best=best,steps=step+1,seconds=time.perf_counter()-began))
+            if step%200==0:curve.append(dict(step=step,loss=float(loss),parts=parts.cpu().tolist(),lr=lr))
+        final=float(objective(model,*forward_batch(model,b)[:3])[0].detach())
+        records.append(dict(kind=kind,initial=initial,final=final,best=best,steps=step+1,curve=curve,seconds=time.perf_counter()-began))
+        write_json(a.output/'tiny.json',records);del replay
     write_json(a.output/'tiny.json',records)
-    if records[-1]['best']>1. or records[-1]['best']>records[-1]['initial']*.001:raise ValueError('Easy-case fit failed; diagnose before full run')
+    if records[-1]['final']>.1 or records[-1]['best']>records[-1]['initial']*.0001:raise ValueError('Easy-case fit failed; diagnose before full run')
     del model,opt,b;gc.collect();torch.cuda.empty_cache()
     profiles=[]
     for batch,workers in ((256,8),(512,16),(1024,16),(2048,16),(1024,8),(1024,32)):
         a.batch_size=batch;a.workers=workers;model=Autoencoder(parameters).cuda();opt=torch.optim.AdamW(model.parameters(),lr=3e-4,weight_decay=0.,fused=True)
-        source=loader(manifest,a,'train');device=None;replay=None;start=time.perf_counter();n=0;steps=0
+        source=loader(manifest,a,'train');device=None;replay=None;b=None;start=time.perf_counter();n=0;steps=0
         try:
             device=DeviceBatches(source,'cuda');startup=time.perf_counter()-start
             for i in range(a.profile_batches):
@@ -74,7 +78,7 @@ def main():
     p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
     p.add_argument('--split',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v6-cohort-balanced-v4/split.json'))
     p.add_argument('--epochs',type=int,default=20);p.add_argument('--batch-size',type=int,default=1024);p.add_argument('--workers',type=int,default=16)
-    p.add_argument('--learning-rate',type=float,default=3e-4);p.add_argument('--min-learning-rate',type=float,default=1e-5)
+    p.add_argument('--learning-rate',type=float,default=1e-4);p.add_argument('--min-learning-rate',type=float,default=1e-6)
     p.add_argument('--validation-every',type=int,default=2000);p.add_argument('--checkpoint-every',type=int,default=1000)
     p.add_argument('--profile-batches',type=int,default=256);p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
     p.add_argument('--no-graphs',dest='graphs',action='store_false');a=p.parse_args()
