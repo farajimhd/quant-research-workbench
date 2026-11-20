@@ -46,6 +46,10 @@ def main():
     moments=saved['training_metrics']['moments'].to(a.device);mean=moments[2]/moments[4].clamp_min(1)
     began=time.monotonic();result=evaluate(model,units,teacher,proof['sha256'],a,mean,Reporter(a.output),saved['step'])
     if result is None:raise RuntimeError('Audit interrupted, not complete')
+    if not saved['training_metrics']['count']:
+        # End-of-validation checkpoints reset interval moments. Zero is not a
+        # valid training-population control; retain the existing historical row.
+        result={k:v for k,v in result.items() if not k.startswith(('control/training_mean/','skill/training_mean/'))}
     receipt=dict(state='complete',version=ForecastMetrics.VERSION,source=a.source_revision,
         checkpoint=str(checkpoint),checkpoint_sha256=file_hash(checkpoint),contract_sha256=digest(saved['contract']),
         dataset_sha256=digest(dataset),step=saved['step'],seconds=time.monotonic()-began,metrics=result)

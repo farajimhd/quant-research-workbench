@@ -44,6 +44,8 @@ def upload_audit(args,contract,reporter):
     if (report['state']!='complete' or report['checkpoint_sha256']!=file_hash(args.resume)
         or report['contract_sha256']!=digest(contract) or report['source']!=args.source_revision):
         raise ValueError('Audit not bound to this checkpoint/source/contract')
-    reporter.log({f'validation_{k}':v for k,v in report['metrics'].items()},report['step'])
+    # Supplement the historical row; do not overwrite existing controls whose
+    # training-interval calibration may already have reset at this checkpoint.
+    reporter.log({f'validation_{k}':v for k,v in report['metrics'].items() if k.startswith('forecast/')},report['step'])
     reporter.run.config.update({'forecast_metrics_version':report['version'],
         'forecast_metrics_audit_sha256':file_hash(args.forecast_audit)},allow_val_change=True)
