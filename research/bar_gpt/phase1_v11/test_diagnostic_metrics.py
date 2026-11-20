@@ -45,3 +45,24 @@ def test_masked_endpoint_and_validity_counts():
     assert np.array(r['moves']['consecutive_close'])[...,0].sum()==2*32*3-2
     assert np.array(r['moves']['window_last_vs_first_close'])[...,0].sum()==0
     assert d.bucket(torch.tensor([0.,-.05,-.1,-.25,-.5,-1.,.05,.1,.25,.5,1.],dtype=torch.float64)).tolist()==list(range(11))
+
+
+def test_confusion_matches_scalar_reference():
+    actual=torch.tensor([[[0.,-.03,.3],[.02,-.4,1.]],[[.06,.2,-.7],[0.,-.1,.5]]],dtype=torch.float64)
+    predicted=torch.tensor([[[.02,-.03,-.3],[-.02,-.2,.9]],[[.07,0.,-.3],[0.,.2,.5]]],dtype=torch.float64)
+    mask=torch.ones_like(actual,dtype=torch.bool);mask[0,1,2]=False
+    frames=torch.tensor([1,3]);d=Diagnostics('cpu');d.moves('test',actual,predicted,mask,frames)
+    expected=np.zeros((6,3,11,11));sums=np.zeros((6,3,11,6))
+    def label(x):
+        if x==0:return 0
+        bucket=next((i for i,edge in enumerate((.05,.1,.25,.5)) if abs(x)<=edge),4)
+        return 1+bucket+(5 if x>0 else 0)
+    for i in range(2):
+        for t in range(2):
+            for c in range(3):
+                if not mask[i,t,c]:continue
+                a=float(actual[i,t,c]);p=float(predicted[i,t,c]);f=int(frames[i]);b=label(a)
+                expected[f,c,b,label(p)]+=1
+                sums[f,c,b]+=[1,abs(p-a),p-a,float(np.sign(a)==np.sign(p)),a,p]
+    r=d.finish();np.testing.assert_array_equal(r['confusion']['test'],expected)
+    np.testing.assert_allclose(r['moves']['test'],sums,rtol=1e-14,atol=1e-14)

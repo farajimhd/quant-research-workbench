@@ -138,7 +138,7 @@ metadata is used only by evaluation, never by the model or training loss.
 The instrumentation resume pins ancestor 95cad7fe0, verifies checkpoint proof,
 the unchanged scientific/numerical contract and an explicit source-file allowlist.
 The existing one-full-pass policy, optimizer, LR, traversal and RNG are retained.
-# Matched Phase1 inheritance diagnosis
+
+## Matched Phase1 inheritance diagnosis
 
 `python -B -m research.bar_gpt.phase2_v4.diagnose_inheritance --run STOPPED_RUN --output NEW_RUNTIME --source-revision SHA` is a read-only GPU audit. It verifies both checkpoints and the certified release, evaluates all708600 validation origins, and compares the frozen Phase1 decoder's last historical close with the actual last observed close alongside Phase2's first-future-close error. It retains signed/absolute errors and correlation sufficient statistics for all three close channels, plus the normal forecast metrics. The teacher reconstructs its own past input; Phase2 predicts future bars. Correlation can suggest inheritance but is not a causal experiment. The original training STOP and checkpoint are untouched. Run only after the owned trainer has exited.
-
