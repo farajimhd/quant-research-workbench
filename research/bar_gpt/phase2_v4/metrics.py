@@ -4,6 +4,7 @@ from .model import loss
 from ..phase1_v11.transforms import PRICES,ACTIVITY
 from ..phase1_v10.train import Accumulator as Native
 from .horizon_metrics import HorizonPriceRelative
+from .forecast_metrics import ForecastMetrics
 
 
 class Metrics:
@@ -42,8 +43,10 @@ class ValidationMetrics:
         self.adapter=SimpleNamespace(input_mean=torch.zeros(27,device=device),input_scale=torch.ones(27,device=device))
         self.controls={k:torch.zeros(2,18,device=device,dtype=torch.float64) for k in ('last','mean','median','training_mean')}
         self.model_errors={k:v.clone() for k,v in self.controls.items()}
+        self.forecast=ForecastMetrics(device)
     @torch.no_grad()
     def add(self,p,target,mean):
+        self.forecast.add(p,target)
         t=target['logs'];v=target['valid'];n=len(p);zero=p.new_zeros((n,64,9));false=torch.zeros_like(zero,dtype=torch.bool)
         self.native.add(self.adapter,(p,zero,p.new_zeros((n,64,27))),torch.cat((t,zero),-1),torch.cat((v,false),-1),
             torch.ones(n,64,device=p.device,dtype=torch.bool),SimpleNamespace(raw=target['raw'],frames=torch.full((n,),1000000,device=p.device,dtype=torch.int64)))
@@ -55,6 +58,7 @@ class ValidationMetrics:
             self.model_errors[key]+=torch.stack((torch.where(mask,(p-t).double().abs(),0).sum((0,1)),count))
     def result(self):
         result=self.native.finish()
+        result.update(self.forecast.result())
         if result['nonfinite'] or result['negative'] or result['structure_violations']:raise FloatingPointError('Native forecast validity failure')
         for key,(s,n) in self.controls.items():
             model=self.model_errors[key][0];valid=n>0

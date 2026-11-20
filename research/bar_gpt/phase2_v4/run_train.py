@@ -21,6 +21,7 @@ from .model import Forecaster,Config
 def arguments(argv=None):
     p=argparse.ArgumentParser(add_help=False);p.add_argument('--phase1-calibration',type=Path,required=True)
     p.add_argument('--layers',type=int,default=2)
+    p.add_argument('--forecast-audit',type=Path)
     a,remaining=p.parse_known_args(sys.argv[1:] if argv is None else argv)
     defaults={'--epochs':'1','--learning-rate':'0.00003','--min-learning-rate':'0.000003','--validation-every':'5000','--warmup-updates':'1000','--patience':'24','--seed':'17'}
     for k,v in defaults.items():
@@ -28,6 +29,7 @@ def arguments(argv=None):
     args=shared_arguments(remaining,expected_feature_drop=0.)
     if args.mode not in ('profile','train'):raise ValueError('Use explicit profile or train mode; no implicit training')
     args.phase1_calibration=a.phase1_calibration;args.layers=a.layers
+    args.forecast_audit=a.forecast_audit
     if args.layers not in (1,2):raise ValueError('Qualified one/two-layer comparison only')
     if not args.teacher_checkpoint or not args.teacher_sha256:raise ValueError('Explicit completed phase1 checkpoint required')
     return args
@@ -50,6 +52,8 @@ def main(argv=None):
         objective='Equal price/activity family source-valid SmoothL1; price1000*log error, activitylog1p error; batch-window-weighted validation',
         export='encoder only for256-dimensional representation; optional decoder for64x18 raw forecasts')))
 
+    from .resume_metrics import preserve_contract,upload_audit
+    contract=preserve_contract(a,contract)
     manifest=dict(model=contract,phase2_version='bargpt-phase2-v4',source_revision=a.source_revision,output=str(a.output),resume=str(a.resume) if a.resume else None,
         parameters=sum(p.numel() for p in model.parameters()),encoder_parameters=sum(p.numel() for p in model.encoder.parameters()),
         arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(a).items()})
@@ -63,6 +67,7 @@ def main(argv=None):
         reporter.run.define_metric('validation_horizon/*',step_metric='global_step',hidden=False)
         reporter.update(stage='preparing certified publications',epoch=1,epochs=a.epochs,step=0)
         try:
+            upload_audit(a,contract,reporter)
             from .train import train
             state=train(model,teacher,proof['sha256'],units,contract,a,reporter)
             # Export final durable checkpoint, not possibly uncheckpointed memory.

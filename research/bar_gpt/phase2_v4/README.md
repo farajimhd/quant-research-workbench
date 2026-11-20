@@ -57,3 +57,34 @@ after400updates. Exact head parity,mask/gradient,CUDA resume,fixed schedule and
 session-population/order tests passed. Real train/validation/checkpoint integration
 completed13updates. This is qualification, not proof of forecast superiority.
 V3 stopped gracefully at85656; its final checkpoint,logs and STOP are retained.
+# Evaluation extension: shifted actuals and directional accuracy
+
+`audit_forecast.py --run RUN --output NEW_RUNTIME_DIR --source-revision SHA`
+runs the entire certified validation split on the stopped run's verified last
+checkpoint, without an optimizer or W&B writer. The same `ForecastMetrics`
+reducer runs in training validation after qualification. Audit output binds the
+checkpoint, source, dataset, step and runtime. Resume with `--forecast-audit
+AUDIT_JSON` uploads the qualified result at its original step to the same W&B run.
+
+`shifted_actual_future_informed` repeats the last observed feature for horizon 1,
+then uses the previous actual target feature for horizons 2–64. This is an
+evaluation-only one-bar movement benchmark, not a deployable fixed-origin forecast.
+`last_observed` remains the causal persistence control. Both expose raw MAE,
+model raw MAE on identical masks, log MAE, counts and raw-MAE skill. All 18 channels
+have aggregate metrics; trade/bid/ask close also have all 64 horizon metrics.
+
+Direction from origin compares each predicted close and actual close with the
+last observed close. Consecutive-path direction compares successive predictions
+with successive actuals; actual future values never enter model predictions.
+Exact unchanged raw prices are a third class; report both three-class accuracy
+and accuracy restricted to actual nonzero moves, with unchanged/moving counts
+and the fraction of actual moves that are up (class-imbalance context). Predicted
+direction uses log differences to avoid inverse-rounding turning a constant log
+prediction into a spurious move. No tick-size/deadband assumption is introduced.
+Tolerance hit rates use absolute relative error <= 0.05%, 0.1%, or 0.2%.
+All comparisons require source validity of both operands. The extra `last_raw`
+metadata is used only by evaluation, never by the model or training loss.
+
+The instrumentation resume pins ancestor 95cad7fe0, verifies checkpoint proof,
+the unchanged scientific/numerical contract and an explicit source-file allowlist.
+The existing one-full-pass policy, optimizer, LR, traversal and RNG are retained.

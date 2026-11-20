@@ -91,4 +91,4 @@ class SessionTokens(BaseSession):
         lo=((count-1).clamp_min(0)//2)[:,None];hi=(count//2)[:,None]
         med=.5*(sorted_values.gather(1,lo).squeeze(1)+sorted_values.gather(1,hi).squeeze(1))
         return self.token_bank[context],ages,dict(logs=logs,valid=mask,raw=raw,
-            last=px[:,-1],last_valid=pv[:,-1],mean=mean,median=torch.where(count>0,med,0),history_valid=count>0)
+            last=px[:,-1],last_raw=values[past[:,-1]],last_valid=pv[:,-1],mean=mean,median=torch.where(count>0,med,0),history_valid=count>0)
