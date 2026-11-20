@@ -37,9 +37,28 @@ class Replay:
         self.graph.replay();return self.output
 
 
+class InferenceReplay:
+    @torch.no_grad()
+    def __init__(self,model,b):
+        self.batch=b.map(lambda x:x.clone());self.graph=torch.cuda.CUDAGraph();stream=torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):forward_batch(model,self.batch)
+        torch.cuda.current_stream().wait_stream(stream)
+        with torch.cuda.graph(self.graph,stream=stream,capture_error_mode='thread_local'):self.output=forward_batch(model,self.batch)
+    @torch.no_grad()
+    def __call__(self,b):
+        copied=set()
+        for name in ('grid','slots','valid','frames'):
+            dest=getattr(self.batch,name)
+            if dest.data_ptr() not in copied:dest.copy_(getattr(b,name),non_blocking=True)
+            copied.add(dest.data_ptr())
+        self.graph.replay();return self.output
+
+
 @torch.no_grad()
 def evaluate(model,manifest,a,reporter,step,rows=None):
-    was=model.training;model.eval();metric=Metrics();source=None;device=None;start=time.perf_counter()
+    was=model.training;model.eval();metric=Metrics();source=None;device=None;start=time.perf_counter();replay=None
     try:
         if rows is None:
             source=loader(manifest,a,'validation');device=DeviceBatches(source,'cuda')
@@ -52,7 +71,13 @@ def evaluate(model,manifest,a,reporter,step,rows=None):
         else:iterator=(prepare_raw(rows[i:i+a.batch_size],True).to('cuda') for i in range(0,len(rows),a.batch_size))
         for index,b in enumerate(iterator):
             if (a.output/'STOP').exists():return None
-            out,x,v=forward_batch(model,b);metric.add(model,out,x,v,b)
+            if a.graphs and len(b.target)==a.batch_size:
+                if replay is None:
+                    expected=forward_batch(model,b)[0]['logs'];replay=InferenceReplay(model,b)
+                    torch.testing.assert_close(replay(b)[0]['logs'],expected,rtol=1e-5,atol=1e-6)
+                out,x,v=replay(b)
+            else:out,x,v=forward_batch(model,b)
+            metric.add(model,out,x,v,b)
             if index%25==0:
                 elapsed=time.perf_counter()-start
                 reporter.update(stage='development' if rows is not None else 'full validation',step=step,validation_windows=metric.windows,
@@ -64,6 +89,8 @@ def evaluate(model,manifest,a,reporter,step,rows=None):
         write_json(a.output/('development-latest.json' if rows is not None else 'validation-latest.json'),result)
         measured=scalars(result)
         reporter.log({('development/' if rows is not None else 'validation/')+k:v for k,v in measured.items()},step)
+        if getattr(reporter,'run',None) is not None:
+            reporter.run.save(str(a.output/('development-latest.json' if rows is not None else 'validation-latest.json')),base_path=str(a.output),policy='live')
         reporter.update(latest_evaluation=dict(scope='development' if rows is not None else 'full validation',step=step,loss=result['loss'],
             trade_close_mae_1s=measured.get('raw_mae/1s/trade_close'),candle_direction_1s=measured.get('candle/1s/trade/moving_direction_pct'),
             range_accuracy_1s=measured.get('range/1s/trade/magnitude_accuracy_pct'),seconds=result['seconds']))

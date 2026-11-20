@@ -11,14 +11,14 @@ from rich.live import Live
 def render(s,now=None):
     now=time.time() if now is None else now;age=now-s.get('updated',now)
     state=s.get('state','waiting for status');stage=s.get('stage','initializing')
-    title=f"Phase 0 · 16D single-bar · {state}"
+    title=f"Phase 0 | 16D single-bar | {state}"
     table=Table.grid(padding=(0,2));table.add_column();table.add_column(justify='right')
-    table.add_row('Stage',str(stage));table.add_row('Epoch / optimizer step',f"{s.get('epoch','—')}/{s.get('epochs',20)} · {s.get('step',0):,}")
+    table.add_row('Stage',str(stage));table.add_row('Epoch / optimizer step',f"{s.get('epoch','-')}/{s.get('epochs',20)} | {s.get('step',0):,}")
     table.add_row('Bars / sec',f"{s.get('bars_per_second',0):,.0f}");table.add_row('Windows / sec',f"{s.get('windows_per_second',0):,.0f}")
     table.add_row('Training loss',f"{s['loss']:.6f}" if 'loss' in s else 'pending')
     table.add_row('Loader wait (cumulative)',f"{s.get('loader_wait_seconds',0):.1f}s")
-    if age>15:table.add_row('Status freshness',f'STALE · {age:.0f}s old')
-    elif 'gpu_util' in s:table.add_row('GPU compute / memory',f"{s['gpu_util']:.0f}% · {s.get('gpu_memory_mib',0)/1024:.1f} GiB")
+    if age>15:table.add_row('Status freshness',f'STALE | {age:.0f}s old')
+    elif 'gpu_util' in s:table.add_row('GPU compute / memory',f"{s['gpu_util']:.0f}% | {s.get('gpu_memory_mib',0)/1024:.1f} GiB")
     progress=Progress(TextColumn('{task.description}'),BarColumn(bar_width=None),TextColumn('{task.percentage:5.1f}%'),expand=True)
     if stage in ('development','full validation'):
         progress.add_task('Evaluation',total=s.get('validation_total') or 1,completed=s.get('validation_windows',0))
@@ -34,7 +34,7 @@ def render(s,now=None):
         latest.add_row('1s range-bin accuracy',f"{e['range_accuracy_1s']:.2f}%" if e.get('range_accuracy_1s') is not None else 'not present')
         items.append(latest)
     if s.get('error'):items.append(str(s['error']))
-    return Panel(Group(*items),title=title,subtitle='Reconstruction of input bars · not forecasting')
+    return Panel(Group(*items),title=title,subtitle='Reconstruction of input bars | not forecasting')
 
 
 def main():

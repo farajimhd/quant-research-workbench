@@ -23,7 +23,7 @@ def qualify(a,parameters,manifest):
     # Explicit easy synthetic test: repeat one observed bar, retain legal time metadata.
     b.grid.copy_(b.grid[:,:1].expand_as(b.grid).clone());b.valid.copy_(b.valid[:,:1].expand_as(b.valid).clone())
     records=[]
-    for kind in ('linear','residual_mlp'):
+    for kind in (() if a.profile_only else ('linear','residual_mlp')):
         torch.manual_seed(17);model=Autoencoder(parameters,Config(backbone=kind)).cuda();opt=torch.optim.AdamW(model.parameters(),lr=1e-3,weight_decay=0.,fused=True)
         initial=float(objective(model,*forward_batch(model,b)[:3])[0].detach())
         best=float('inf');began=time.perf_counter();replay=Replay(model,b);curve=[]
@@ -37,11 +37,13 @@ def qualify(a,parameters,manifest):
         final=float(objective(model,*forward_batch(model,b)[:3])[0].detach())
         records.append(dict(kind=kind,initial=initial,final=final,best=best,steps=step+1,curve=curve,seconds=time.perf_counter()-began))
         write_json(a.output/'tiny.json',records);del replay
-    write_json(a.output/'tiny.json',records)
-    if records[-1]['final']>.1 or records[-1]['best']>records[-1]['initial']*.0001:raise ValueError('Easy-case fit failed; diagnose before full run')
-    del model,opt,b;gc.collect();torch.cuda.empty_cache()
+    if records:
+        write_json(a.output/'tiny.json',records)
+        if records[-1]['final']>.1 or records[-1]['best']>records[-1]['initial']*.0001:raise ValueError('Easy-case fit failed; diagnose before full run')
+        del model,opt
+    del b;gc.collect();torch.cuda.empty_cache()
     profiles=[]
-    for batch,workers in ((256,8),(512,16),(1024,16),(2048,16),(1024,8),(1024,32)):
+    for batch,workers in ([(int(pair.split(':')[0]),int(pair.split(':')[1])) for pair in a.profile_configs.split(',')] if a.profile_configs else ((256,8),(512,16),(1024,16),(2048,16),(1024,8),(1024,32))):
         a.batch_size=batch;a.workers=workers;model=Autoencoder(parameters).cuda();opt=torch.optim.AdamW(model.parameters(),lr=3e-4,weight_decay=0.,fused=True)
         source=loader(manifest,a,'train');device=None;replay=None;b=None;start=time.perf_counter();n=0;steps=0
         try:
@@ -81,6 +83,7 @@ def main():
     p.add_argument('--learning-rate',type=float,default=1e-4);p.add_argument('--min-learning-rate',type=float,default=1e-6)
     p.add_argument('--validation-every',type=int,default=2000);p.add_argument('--checkpoint-every',type=int,default=1000)
     p.add_argument('--profile-batches',type=int,default=256);p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
+    p.add_argument('--profile-only',action='store_true');p.add_argument('--profile-configs',default='')
     p.add_argument('--no-graphs',dest='graphs',action='store_false');a=p.parse_args()
     a.device='cuda';a.preparation='raw_gpu';a.seed=17;a.prefetch=4;a.shard_prefetch=16;a.shard_prefetch_mib=64
     a.validation_batch_size=a.batch_size;a.validation_workers=a.workers
