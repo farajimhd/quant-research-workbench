@@ -33,6 +33,7 @@ def main():
     for flag in ('--resume','--forecast-audit'):
         if flag in argv:
             i=argv.index(flag);del argv[i:i+2]
+    if '--cuda-step-replay' in argv:argv.remove('--cuda-step-replay')
     for flag,value in (('--mode','profile'),('--output',str(own.output)),('--source-revision',own.source_revision)):
         argv[argv.index(flag)+1]=value
     a=arguments(argv);preflight(a);torch.set_num_threads(a.threads)
