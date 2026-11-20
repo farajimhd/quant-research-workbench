@@ -1,5 +1,14 @@
 # V11 median-centered Transformer MAE
 
+## Reconstruction direction and scale diagnosis
+
+`python -B -m research.bar_gpt.phase1_v11.diagnose --output RUNTIME --source-revision SHA --checkpoint EPOCH25 --checkpoint-sha256 HASH --calibration CALIBRATION`
+evaluates the frozen epoch25 Phase2 teacher over its original complete certified validation split. `--limit-batches` is an explicitly incomplete smoke profile. The checkpoint proof, calibration and split hashes are checked before inference; no model is trained or source data changed. Default batch4096/workers16 uses bounded prefetch and CUDA inference replay. Results and status belong only under the runtime root.
+
+Reports separate random16-visible/48-hidden reconstruction from all64-visible reconstruction. Candle direction is sign(close/open-1); consecutive direction compares adjacent closes inside the same input window; window direction compares last versus first close. High-low range is100*(high/low-1). Exact zero is its own class; signed move bins are(0,.05],(.05,.1],(.1,.25],(.25,.5],>.5 percent. Confusion matrices retain actual and predicted classes by timeframe and trade/bid/ask; the unchanged and moving populations can be reported separately. Masked pair metrics require both endpoints hidden, and every endpoint must be source-valid. These are reconstruction diagnostics, never forecasting accuracy.
+
+Native errors cover all18 channels; signed and absolute price-reference errors and last-close offsets diagnose common scale shifts. A second reconstruction replaces only predicted references with true visible-input references and is explicitly labelled oracle diagnostic. No such substitution affects normal predictions. Full numeric sums/counts are saved for reproducible weighted summaries; no hard valid values are discarded. Dollar errors and activity errors must not be averaged together.
+
 E07 is the supported bounded-campaign candidate, not a forecasting-validated or production model. Seven candidates were attempted; one failed tiny qualification and six completed. The user subsequently approved100-epoch full training; see the operational handoff below. Preserve all older runs and STOP files.
 
 Each family transforms OHLC to `s=log(C), d=log(O/C), u=log(H/max(O,C)), l=log(min(O,C)/L)` and activity to log1p. Median-center s and both activity channels using only the 16 randomly visible bars. Nine references and their availability flags enter one reference token. Missing quote values are completed deterministically within OHLC/bid-ask order solely to construct coordinates; original validity remains authoritative for raw losses and metrics. No difficult valid observation is clipped or dropped.
