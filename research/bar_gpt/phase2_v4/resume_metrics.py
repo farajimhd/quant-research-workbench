@@ -7,7 +7,8 @@ ORIGINAL='95cad7fe0d4cdf1735d1b1c5de85467b632a5971'
 ALLOWED={f'research/bar_gpt/phase2_v4/{name}' for name in (
     'metrics.py','forecast_metrics.py','tokenizer.py','run_train.py','resume_metrics.py',
     'README.md','test_forecast_metrics.py','audit_forecast.py','move_metrics.py','test_move_metrics.py','train.py',
-    'move_contract.py','class_census.py','test_class_census.py')}
+    'move_contract.py','class_census.py','test_class_census.py','loader_census.py','test_loader_census.py',
+    'data.py','full_pass.py','profile_loader_census.py')}
 # Previously committed removal of V4 profiling injection from V3; not a train import.
 ALLOWED.add('research/bar_gpt/phase2_v3/profile.py')
 

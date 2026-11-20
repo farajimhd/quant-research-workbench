@@ -1,5 +1,20 @@
 # Phase2 V4: identical Phase1 decoder heads for future bars
 
+Training now defaults to a loader-integrated next-candle census. The training
+session reads its already-verified `reader.views[0]` CPU array, computes tiny
+int8 class/year/liquidity tags, and carries those as CPU-only target metadata.
+The model and loss never receive the metadata. Packed batches preserve row
+alignment, including batches crossing publication boundaries. Counts commit
+only after successful optimizer updates, and are saved in the same verified
+checkpoint as the optimizer/traversal/RNG. Unconsumed prefetch cannot alter them.
+`loader-census.json` mirrors durable counts; `training_census/` W&B metrics are
+logged with validation. Validation loading does not compute these extra tags.
+The scope is consumed exposure since enablement, with the start step/cursor
+explicitly saved. Previous independent partial census is retained separately,
+never blindly merged; the earlier training prefix remains uncovered here.
+`profile_loader_census.py` compares identical real loader units with/without
+counting, checks first-batch tensor parity, and performs no optimizer updates.
+
 `class_census.py --release CERTIFICATE --output NEW_RUNTIME_DIR --source-revision
 SHA` counts the actual next-candle classes across every eligible training origin
 using CPU only. Defaults: horizon1, one idle-priority CPU, very-low I/O priority,

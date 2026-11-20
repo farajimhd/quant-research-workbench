@@ -22,6 +22,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
     epoch=step=stale=0;cursor=(0,0,0);phase='train';best=math.inf
     history=[];interval_history=[];last_validation_step=-1;exhausted=False;transition=None
     metrics=Metrics(args.device)
+    census_state=None
     if args.resume:
         saved=load_checkpoint(args.resume,contract)
         model.load_state_dict(saved['model']);optimizer.load_state_dict(saved['optimizer'])
@@ -35,6 +36,10 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
         exhausted=saved.get('pass_exhausted',False)
         transition=saved.get('schedule_transition')
         metrics.restore(saved['training_metrics']);restore_rng(saved['rng'])
+        census_state=saved.get('loader_census')
+    from .loader_census import LoaderCensus,TAG
+    if census_state and not getattr(args,'loader_census',False):raise ValueError('Cannot silently drop an active census ledger')
+    census=LoaderCensus(step,epoch,cursor,census_state) if getattr(args,'loader_census',False) else None
 
     def checkpoint(name):
         save_checkpoint(args.output/name,dict(contract=contract,model=model.state_dict(),
@@ -42,11 +47,13 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
             cursor=cursor,phase=phase,best=best,stale=stale,history=history,
             interval_history=interval_history,last_validation_step=last_validation_step,
             data_pass=epoch+1,pass_exhausted=exhausted,schedule_transition=transition,
-            training_metrics=metrics.state(),rng=rng_state()))
+            training_metrics=metrics.state(),rng=rng_state(),loader_census=census.state() if census else None))
+        if census:write_json(args.output/'loader-census.json',census.state())
 
     def finish_pass():
         nonlocal epoch,cursor,exhausted
         epoch+=1;cursor=(0,0,0);exhausted=False;scheduler.next_pass()
+        if census:census.last_epoch=epoch;census.last_cursor=list(cursor)
         checkpoint(f'checkpoint_pass_{epoch:03d}.pt');checkpoint('checkpoint_last.pt')
 
     captured=None
@@ -95,6 +102,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
                                 norm=torch.nn.utils.clip_grad_norm_(model.parameters(),1.,error_if_nonfinite=True)
                             computed=time.perf_counter();timing['compute_guard']+=computed-received
                             optimizer.step();step+=1;scheduler.updates+=1;cursor=next_cursor
+                            if census:census.commit(target[TAG],step,epoch,cursor)
                             if captured is not None and batch_count==args.batch_size:metrics.count+=batch_count
                             else:metrics.add(predicted,target,tokens[:,7])
                             optimized=time.perf_counter();timing['optimizer_metrics']+=optimized-computed
@@ -108,7 +116,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
                                     interval_origins=metrics.count,pass_fraction=progress.fraction(cursor),
                                     total_training_blocks=int(progress.prefix[-1]),
                                     updates_since_validation=step-max(0,last_validation_step),
-                                    learning_rate=optimizer.param_groups[0]['lr'],
+                                    learning_rate=optimizer.param_groups[0]['lr'],loader_census_origins=census.origins if census else 0,
                                     samples_per_second=(metrics.count-reported_count)/max(.001,now-reported_time))
                                 reported_time,reported_count=now,metrics.count
                             reported=time.perf_counter();timing['reporting']+=reported-optimized
@@ -147,6 +155,7 @@ def train_full_pass(model,teacher,teacher_sha,units,contract,args,reporter,*,com
                     history=history,stale=stale)
                 history[-1]['learning_guard']=guard_review
             reporter.log(dict({f'validation_{k}':v for k,v in validation.items()},
+                **(census.metrics() if census else {}),
                 **({f'learning_guard/{k}':v for k,v in guard_review.items()
                     if type(v) in (int,float,bool)} if guard_review else {}),
                 validation_is_epoch_end=exhausted,full_pass=epoch+1,validation_index=len(history)),step)

@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 from ..phase2_v2.train import source_batches
-from .tokenizer import SessionTokens
+from .tokenizer import SessionTokens,CensusSessionTokens
 
 
 def load_units(roots=(),release=None):
@@ -29,11 +29,13 @@ def target_size(target):return len(target['logs'])
 
 def batches(units,split,teacher,teacher_sha,args,*,cursor=(0,0,0),report=None,reconstruction=False):
     if reconstruction:raise ValueError('Raw target evidence already included')
-    source=source_batches(units,split,teacher,teacher_sha,args,cursor=cursor,report=report,session_type=SessionTokens)
+    session_type=CensusSessionTokens if split==0 and getattr(args,'loader_census',False) else SessionTokens
+    source=source_batches(units,split,teacher,teacher_sha,args,cursor=cursor,report=report,session_type=session_type)
     chunks=[];count=0;last=None
     def packed():
         token,meta=(torch.cat([c[i] for c in chunks]) for i in range(2))
-        target={k:torch.cat([c[2][k] for c in chunks]) for k in chunks[0][2]}
+        target={k:(np.concatenate([c[2][k] for c in chunks]) if isinstance(chunks[0][2][k],np.ndarray)
+                   else torch.cat([c[2][k] for c in chunks])) for k in chunks[0][2]}
         return token,meta,target,last,np.concatenate([c[3] for c in chunks]),np.concatenate([c[4] for c in chunks])
     try:
         for token,meta,target,next_cursor,origins,liquid in source:

@@ -92,3 +92,19 @@ class SessionTokens(BaseSession):
         med=.5*(sorted_values.gather(1,lo).squeeze(1)+sorted_values.gather(1,hi).squeeze(1))
         return self.token_bank[context],ages,dict(logs=logs,valid=mask,raw=raw,
             last=px[:,-1],last_raw=values[past[:,-1]],last_valid=pv[:,-1],mean=mean,median=torch.where(count>0,med,0),history_valid=count>0)
+
+
+class CensusSessionTokens(SessionTokens):
+    """Training-only side metadata from the very same verified CPU pool."""
+    def __init__(self,reader,*args,**kwargs):
+        super().__init__(reader,*args,**kwargs)
+        from .loader_census import label_pool
+        raw=reader.views[0]  # Already loaded/verified by the existing reader.
+        self.class_tags=label_pool(raw['values'],raw['valid'],
+            int(reader.receipt['session_date'][:4]),int(reader.receipt['liquid']))
+
+    def batch(self,plan,start,stop):
+        from .loader_census import TAG
+        tokens,ages,target=super().batch(plan,start,stop)
+        target[TAG]=self.class_tags[plan.endpoints[0][start:stop,-1]]
+        return tokens,ages,target

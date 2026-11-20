@@ -22,6 +22,7 @@ def arguments(argv=None):
     p=argparse.ArgumentParser(add_help=False);p.add_argument('--phase1-calibration',type=Path,required=True)
     p.add_argument('--layers',type=int,default=2)
     p.add_argument('--forecast-audit',type=Path)
+    p.add_argument('--no-loader-census',dest='loader_census',action='store_false')
     a,remaining=p.parse_known_args(sys.argv[1:] if argv is None else argv)
     defaults={'--epochs':'1','--learning-rate':'0.00003','--min-learning-rate':'0.000003','--validation-every':'5000','--warmup-updates':'1000','--patience':'24','--seed':'17'}
     for k,v in defaults.items():
@@ -30,6 +31,7 @@ def arguments(argv=None):
     if args.mode not in ('profile','train'):raise ValueError('Use explicit profile or train mode; no implicit training')
     args.phase1_calibration=a.phase1_calibration;args.layers=a.layers
     args.forecast_audit=a.forecast_audit
+    args.loader_census=a.loader_census and args.mode=='train'
     if args.layers not in (1,2):raise ValueError('Qualified one/two-layer comparison only')
     if not args.teacher_checkpoint or not args.teacher_sha256:raise ValueError('Explicit completed phase1 checkpoint required')
     return args
