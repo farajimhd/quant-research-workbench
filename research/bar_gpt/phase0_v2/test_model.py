@@ -1,13 +1,15 @@
 import torch
+import pytest
 from .model import Autoencoder,Config,objective
 from ..phase0_v1.model import Autoencoder as MLP
 from ..phase1_v11.test_diagnostic_metrics import fixture
 
 
-def test_unchanged_decoder_inputs_loss_and_independent_bars():
+@pytest.mark.parametrize('config',[Config(chunk_bars=13),Config(width=4,layers=1,heads=1,pooling='flatten',chunk_bars=13)])
+def test_unchanged_decoder_inputs_loss_and_independent_bars(config):
     params=dict(mean=[0.]*27,scale=[1.]*27)
     torch.manual_seed(17);base=MLP(params)
-    torch.manual_seed(17);model=Autoencoder(params,Config(chunk_bars=13))
+    torch.manual_seed(17);model=Autoencoder(params,config)
     for k,v in base.decoder.state_dict().items():torch.testing.assert_close(model.decoder.state_dict()[k],v,rtol=0,atol=0)
     _,logs,v,_,_,_=fixture();x=torch.cat((logs.float(),torch.zeros(2,64,9)),-1);valid=torch.cat((v,torch.ones(2,64,9,dtype=torch.bool)),-1)
     z=model.encode(x,valid);assert z.shape==(2,64,16)

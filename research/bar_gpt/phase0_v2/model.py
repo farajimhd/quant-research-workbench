@@ -12,6 +12,7 @@ class Config(BaseConfig):
     backbone:str='feature_attention'
     heads:int=4
     chunk_bars:int=16384
+    pooling:str='mean'
 
 
 class AttentionBlock(nn.Module):
@@ -37,10 +38,12 @@ class FeatureAttention(nn.Module):
         # Same remaining36 inputs: nine standardized time fields and27 validity flags.
         self.metadata=nn.Linear(36,c.width)
         self.blocks=nn.Sequential(*[AttentionBlock(c.width,c.heads) for _ in range(c.layers)])
-        self.readout=nn.Linear(c.width,c.embedding)
+        if c.pooling not in ('mean','flatten'):raise ValueError('Unknown readout')
+        self.readout=nn.Linear(c.width*(18 if c.pooling=='flatten' else 1),c.embedding)
     def encode_chunk(self,x):
         h=x[:,:18,None]*self.value_weight+self.feature_identity+self.metadata(x[:,18:])[:,None]
-        return self.readout(self.blocks(h).mean(1))
+        h=self.blocks(h)
+        return self.readout(h.flatten(1) if self.config.pooling=='flatten' else h.mean(1))
     def forward(self,x):
         shape=x.shape[:-1];x=x.reshape(-1,54)
         # Bounded attention workspace and CUDA grid sizes; never mixes different bars.

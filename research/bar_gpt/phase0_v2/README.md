@@ -6,6 +6,8 @@ Each bar supplies18 feature tokens. Each token has its normalized coordinate tim
 
 Initial candidate: width32, two layers, four heads. Smaller width16/one-layer/two-head configurations may be profiled if needed to approach MLP throughput. Architecture choices and batch/worker settings must be retained in each run's config and runtime profiles. Use `--width`, `--layers`, `--heads`, `--chunk-bars`; existing qualification/production flags remain the same.
 
+Measured first candidate: only13–14K windows/s versus the prior MLP's244K windows/s. Loader waiting was negligible. The width16/one-head/one-layer candidate passed the unchanged tiny convergence gate after40000 bounded updates (loss2174.53→0.0263); shorter4000/12000-step tests failed and remain recorded. Qualification steps are distinct from the unchanged full-training schedule. A further encoder-only option `--pooling flatten --width 4 --layers 1 --heads 1` retains ordered feature-token identity in a72→16 readout, avoiding the rank restriction of mean-pooling four-channel tokens. It still uses full feature self-attention and supplies only16D to the same decoder. No precision changes.
+
 ```
 python -B -m research.bar_gpt.phase0_v2.run --mode qualify --output NEW_RUNTIME --source-revision SHA --calibration D:/TradingML/runtimes/bar_gpt/phase0-v1-singlebar-20261120/calibration.json --profile-configs 256:8,512:16 --profile-batches 128
 python -B -m research.bar_gpt.phase0_v2.launch --mode train --output NEW_RUNTIME --source-revision SHA --calibration D:/TradingML/runtimes/bar_gpt/phase0-v1-singlebar-20261120/calibration.json --epochs 20 --batch-size WINDOWS --workers WORKERS
