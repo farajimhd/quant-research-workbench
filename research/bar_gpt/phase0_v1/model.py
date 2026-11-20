@@ -25,6 +25,7 @@ class Autoencoder(nn.Module):
     def __init__(self,parameters,config=Config()):
         super().__init__();self.config=config
         for key in ('mean','scale'):self.register_buffer(key,torch.tensor(parameters[key],dtype=torch.float32))
+        self.register_buffer('loss_factor',torch.tensor([config.price_factor if j in PRICES else 1. for j in range(18)]))
         if config.backbone=='linear':self.encoder=nn.Linear(54,config.embedding)
         elif config.backbone=='residual_mlp':
             self.encoder=nn.Sequential(nn.Linear(54,config.width),nn.GELU(),*[Block(config.width) for _ in range(config.layers)],nn.Linear(config.width,config.embedding))
@@ -51,8 +52,7 @@ class Autoencoder(nn.Module):
 def objective(model,out,values,valid):
     code,cm=coordinates(values[...,:18],valid[...,:18]);mask=valid[...,:18]
     error=out['logs']-values[...,:18]
-    factor=error.new_tensor([model.config.price_factor if j in PRICES else 1. for j in range(18)])
-    element=F.smooth_l1_loss(error*factor,torch.zeros_like(error),reduction='none')
+    element=F.smooth_l1_loss(error*model.loss_factor,torch.zeros_like(error),reduction='none')
     axes=tuple(range(error.ndim-1))
     channel=torch.where(mask,element,0).sum(axes)/mask.sum(axes).clamp_min(1)
     target=(code-model.mean[:18])/model.scale[:18]
