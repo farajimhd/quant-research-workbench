@@ -27,8 +27,8 @@ def qualify(a,parameters,manifest):
         torch.manual_seed(17);model=Autoencoder(parameters,Config(width=a.width,layers=a.layers,heads=a.heads,chunk_bars=a.chunk_bars)).cuda();opt=torch.optim.AdamW(model.parameters(),lr=1e-3,weight_decay=0.,fused=True)
         initial=float(objective(model,*forward_batch(model,b)[:3])[0].detach())
         best=float('inf');began=time.perf_counter();replay=Replay(model,b);curve=[]
-        for step in range(4000):
-            lr=1e-6+.5*(3e-4-1e-6)*(1+math.cos(math.pi*step/3999))
+        for step in range(a.tiny_steps):
+            lr=1e-6+.5*(3e-4-1e-6)*(1+math.cos(math.pi*step/max(1,a.tiny_steps-1)))
             for group in opt.param_groups:group['lr']=lr
             loss,parts,norm=replay(b)
             if not bool(torch.isfinite(loss)&torch.isfinite(norm)):raise FloatingPointError('Tiny gradient failure')
@@ -84,6 +84,7 @@ def main():
     p.add_argument('--validation-every',type=int,default=2000);p.add_argument('--checkpoint-every',type=int,default=1000)
     p.add_argument('--profile-batches',type=int,default=256);p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
     p.add_argument('--profile-only',action='store_true');p.add_argument('--profile-configs',default='')
+    p.add_argument('--tiny-steps',type=int,default=4000)
     p.add_argument('--width',type=int,default=32);p.add_argument('--layers',type=int,default=2);p.add_argument('--heads',type=int,default=4);p.add_argument('--chunk-bars',type=int,default=16384)
     p.add_argument('--no-graphs',dest='graphs',action='store_false');a=p.parse_args()
     a.device='cuda';a.preparation='raw_gpu';a.seed=17;a.prefetch=4;a.shard_prefetch=16;a.shard_prefetch_mib=64
