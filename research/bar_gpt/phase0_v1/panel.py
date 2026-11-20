@@ -20,12 +20,14 @@ def render(s,now=None):
     if age>15:table.add_row('Status freshness',f'STALE | {age:.0f}s old')
     elif 'gpu_util' in s:table.add_row('GPU compute / memory',f"{s['gpu_util']:.0f}% | {s.get('gpu_memory_mib',0)/1024:.1f} GiB")
     progress=Progress(TextColumn('{task.description}'),BarColumn(bar_width=None),TextColumn('{task.percentage:5.1f}%'),expand=True)
-    if stage in ('development','full validation'):
-        progress.add_task('Evaluation',total=s.get('validation_total') or 1,completed=s.get('validation_windows',0))
+    known_progress=False
+    if stage in ('development','full validation') and s.get('validation_total'):
+        progress.add_task('Evaluation',total=s['validation_total'],completed=s.get('validation_windows',0));known_progress=True
         table.add_row('Validation bars / sec',f"{s.get('validation_bars_per_second',0):,.0f}")
-    else:progress.add_task('Epoch',total=s.get('epoch_total') or 1,completed=s.get('epoch_done',0))
+    elif s.get('epoch_total'):
+        progress.add_task('Epoch',total=s['epoch_total'],completed=s.get('epoch_done',0));known_progress=True
     if stage=='training' and 'epoch_eta_seconds' in s:table.add_row('Epoch training ETA',f"{s['epoch_eta_seconds']/60:.1f} min")
-    e=s.get('latest_evaluation');items=[table,progress]
+    e=s.get('latest_evaluation');items=[table]+([progress] if known_progress else [])
     if e:
         latest=Table.grid(padding=(0,2));latest.add_column();latest.add_column(justify='right')
         latest.add_row(f"Latest {e['scope']}",f"step {e['step']:,}")
