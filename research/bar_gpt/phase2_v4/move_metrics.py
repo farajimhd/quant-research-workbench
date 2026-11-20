@@ -3,16 +3,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-CHANNELS=('trade_close','bid_close','ask_close')
-RANGES=('0_to_0.05pct','0.05_to_0.1pct','0.1_to_0.25pct','0.25_to_0.5pct','above_0.5pct')
-BINS=('unchanged',)+tuple(f'{side}_{band}' for side in ('down','up') for band in RANGES)
+from .move_contract import CHANNELS,EDGES_PCT,RANGES,BINS
 FIELDS=('count','correct','moving','correct_moving','raw_error','relative_error_pct',
         'last_error','shifted_error','actual_return_pct','predicted_return_pct')
 
 
 class MoveMetrics:
     def __init__(self,device):
-        self.edges=torch.tensor([.05,.1,.25,.5],dtype=torch.float64,device=device)
+        self.edges=torch.tensor(EDGES_PCT,dtype=torch.float64,device=device)
         self.offset=torch.arange(64*3,device=device).reshape(1,64,3)*11
         self.sums=torch.zeros((2,2,64*3*11,10),device=device,dtype=torch.float64)
 

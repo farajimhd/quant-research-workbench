@@ -1,5 +1,21 @@
 # Phase2 V4: identical Phase1 decoder heads for future bars
 
+`class_census.py --release CERTIFICATE --output NEW_RUNTIME_DIR --source-revision
+SHA` counts the actual next-candle classes across every eligible training origin
+using CPU only. Defaults: horizon1, one idle-priority CPU, very-low I/O priority,
+50% work duty and 64MiB/s sealed-payload throughput cap. No Torch/model imports,
+no GPU context, no training stop/resume and no W&B writer. `--split validation`
+checks parity; `--horizons 1 2 3 ... 64` is explicit optional wider scope.
+The same sealed readers, `plan_block` eligibility and common validity mask are
+used. Overlapping labels retain the same exposure as training; this is not a
+deduplicated-bar count. Results include per-year/liquidity strata and rejection
+counts. Traversal is independently shuffled for early coverage, but partial
+counts must not be represented as a complete distribution.
+Atomic `state.json` is resumable at publication boundaries with `--resume`.
+`progress.json` exposes completion, ETA, throughput and resource limits. STOP
+is checked between publications and during throttling and is never removed by
+the script. `--profile-units N` gives a bounded pilot, never a full-census claim.
+
 User requested a separate copy of V3 with the actual Phase1 V11 decoder heads,
 and authorized fixes to problematic training and scheduling. V3 checkpoints,
 logs, identities and source snapshots remain independent.
