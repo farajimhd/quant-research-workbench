@@ -23,6 +23,10 @@ def evaluate(model,units,teacher,teacher_sha,args,mean,reporter,step):
             seconds=time.perf_counter()-started;rate=metrics.count/max(seconds,.001)
             reporter.update(stage='validation',done=metrics.count,step=step,validation_samples_per_second=rate,validation_seconds=seconds)
         result=dict(metrics.result(),**native.result(),seconds=time.perf_counter()-started)
+        if getattr(native.forecast,'moves',None) is not None:
+            path=native.forecast.moves.save(args.output,step)
+            if getattr(reporter,'run',None) is not None:
+                reporter.run.save(str(path),base_path=str(args.output),policy='live')
         if 'horizon_counts' in result:
             for bar,errors in enumerate(result['log_mae_by_horizon_channel']):
                 for c,(channel,value) in enumerate(zip(CHANNELS,errors)):

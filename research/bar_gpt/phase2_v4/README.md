@@ -59,6 +59,25 @@ completed13updates. This is qualification, not proof of forecast superiority.
 V3 stopped gracefully at85656; its final checkpoint,logs and STOP are retained.
 # Evaluation extension: shifted actuals and directional accuracy
 
+Move-size extension: `move_metrics.py` uses batched GPU bucketization/scatter
+reductions, with fixed-size float64 accumulators. It evaluates trade/bid/ask close,
+both origin-to-horizon returns and consecutive predicted/actual path returns,
+grouped separately by actual or predicted signed moves. Bins are exact zero and
+up/down `(0,.05]`, `(.05,.1]`, `(.1,.25]`, `(.25,.5]`, `(.5,infinity)` percent.
+Every group reports count/share, direction accuracy, raw/relative MAE, both
+baseline MAEs and skills, and mean actual/predicted returns. A common valid mask
+requires current, origin and previous actual close for fair baseline comparisons.
+No future actual is substituted into the predicted path. No bins are fitted.
+
+All 64 horizons and three close channels are retained in the bounded rolling
+`move-buckets-latest.npz`, uploaded to W&B Files after validation. Its `sums` axes
+are definition, grouping, horizon, channel, signed bin, statistic; labels and step
+are embedded. `MoveMetrics.row` converts any slice to reported metrics. W&B curves
+cover all-horizon aggregates for all three closes and horizons 1–3 for trade close.
+This avoids tens of thousands of scalar curves and checkpoint-history growth.
+`audit_forecast --compare-overhead` compares the existing metrics without move
+buckets, then all metrics, then existing metrics again on the identical checkpoint.
+
 `audit_forecast.py --run RUN --output NEW_RUNTIME_DIR --source-revision SHA`
 runs the entire certified validation split on the stopped run's verified last
 checkpoint, without an optimizer or W&B writer. The same `ForecastMetrics`

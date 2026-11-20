@@ -3,13 +3,15 @@ import math
 import torch
 from ..phase1_v11.transforms import PRICES
 from ..v5.shards.phase1_contract import CHANNELS
+from .move_metrics import MoveMetrics
 
 
 class ForecastMetrics:
-    VERSION = 'shifted-actual-direction-v1'
-    def __init__(self, device):
+    VERSION = 'shifted-actual-direction-move-buckets-v2'
+    def __init__(self, device, *, enable_moves=True):
         self.device = device
         self.sums = {}
+        self.moves=MoveMetrics(device) if enable_moves else None
 
     def add_sum(self, name, value, mask):
         value = torch.where(mask, value, 0).double().sum(0)
@@ -19,6 +21,7 @@ class ForecastMetrics:
 
     @torch.no_grad()
     def add(self, predicted, target):
+        if self.moves is not None:self.moves.add(predicted,target)
         p = predicted.double()
         price = torch.zeros(18, device=p.device, dtype=torch.bool)
         price[list(PRICES)] = True
@@ -96,4 +99,5 @@ class ForecastMetrics:
                     for name,num,den in (('accuracy_3way_pct','correct_3way','count'),('accuracy_moving_pct','correct_moving','moving_count'),('actual_up_moving_pct','actual_up','moving_count')):
                         value=ratio(total(src+num),total(src+den));result[out+name]=None if value is None else 100*value
         if any(v is not None and not math.isfinite(v) for v in result.values()):raise FloatingPointError('Nonfinite forecast diagnostics')
+        if self.moves is not None:result.update(self.moves.result())
         return result

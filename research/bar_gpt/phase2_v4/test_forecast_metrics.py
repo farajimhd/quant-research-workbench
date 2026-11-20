@@ -43,7 +43,7 @@ def test_direction_perfect_persistence_and_partition_merge():
     assert r['forecast/tolerance/all/trade_close/within_0.05pct']==100
     split=ForecastMetrics('cpu')
     for i in range(2):split.add(t['logs'][i:i+1],{k:v[i:i+1] for k,v in t.items()})
-    assert split.result()==r
+    assert split.result()==pytest.approx(r,rel=1e-12,abs=1e-10)
     persist=ForecastMetrics('cpu');persist.add(t['last'][:,None].expand(-1,64,-1),t)
     assert persist.result()['forecast/direction/from_origin/all/trade_close/accuracy_moving_pct']==0
 

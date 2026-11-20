@@ -46,10 +46,8 @@ def main():
     if digest(dataset)!=digest(saved['contract']['dataset']):raise ValueError('Dataset changed')
     moments=saved['training_metrics']['moments'].to(a.device);mean=moments[2]/moments[4].clamp_min(1)
     from . import metrics as metric_module
-    class DisabledForecast:
-        def __init__(self,*args):pass
-        def add(self,*args):pass
-        def result(self):return {}
+    class DisabledForecast(ForecastMetrics):
+        def __init__(self,device):super().__init__(device,enable_moves=False)
     timings=[];result=None;reference=None
     for mode in (('base','extended','base') if own.compare_overhead else ('extended',)):
         metric_module.ForecastMetrics=ForecastMetrics if mode=='extended' else DisabledForecast

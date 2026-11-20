@@ -6,7 +6,7 @@ from ..v5.shards.contract import digest,write_json,file_hash
 ORIGINAL='95cad7fe0d4cdf1735d1b1c5de85467b632a5971'
 ALLOWED={f'research/bar_gpt/phase2_v4/{name}' for name in (
     'metrics.py','forecast_metrics.py','tokenizer.py','run_train.py','resume_metrics.py',
-    'README.md','test_forecast_metrics.py','audit_forecast.py')}
+    'README.md','test_forecast_metrics.py','audit_forecast.py','move_metrics.py','test_move_metrics.py','train.py')}
 # Previously committed removal of V4 profiling injection from V3; not a train import.
 ALLOWED.add('research/bar_gpt/phase2_v3/profile.py')
 
@@ -49,3 +49,8 @@ def upload_audit(args,contract,reporter):
     reporter.log({f'validation_{k}':v for k,v in report['metrics'].items() if k.startswith('forecast/')},report['step'])
     reporter.run.config.update({'forecast_metrics_version':report['version'],
         'forecast_metrics_audit_sha256':file_hash(args.forecast_audit)},allow_val_change=True)
+    cube=args.forecast_audit.parent/'move-buckets-latest.npz'
+    if cube.exists():
+        import shutil
+        destination=args.output/cube.name;shutil.copy2(cube,destination)
+        reporter.run.save(str(destination),base_path=str(args.output),policy='live')
