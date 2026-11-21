@@ -69,6 +69,10 @@ def test_metric_masks_and_teacher_reference():
     reference={k:r for k,r in result['raw'].items() if k.startswith('teacher_')}
     cached=Metrics('cpu',reference);cached.add(model,teacher,b,(z,torch.zeros(2,64,36),v.any(-1),values,valid,z,z),pos)
     assert scalars(cached.result())==s
+    from .metrics import RawMetrics,BaseRawMetrics
+    original=BaseRawMetrics('cpu');capturable=RawMetrics('cpu');out=teacher.decode(z+.01)
+    original.add(teacher,out,values,valid,b);capturable.add(teacher,out,values,valid,b)
+    assert original.result()==capturable.result()
 
 
 def test_optimizer_rng_resume_is_exact(tmp_path):

@@ -114,7 +114,8 @@ def main():
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path);p.add_argument('--tiny-steps',type=int,default=4000)
     p.add_argument('--profile-batches',type=int,default=128);p.add_argument('--profile-configs',default='2048:8,4096:16,8192:16,8192:32,16384:16')
     p.add_argument('--width',type=int,default=128);p.add_argument('--layers',type=int,default=2);p.add_argument('--heads',type=int,default=4)
-    p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--no-graphs',dest='graphs',action='store_false');a=p.parse_args()
+    p.add_argument('--precision',choices=['fp32','bf16'],default='bf16');p.add_argument('--no-graphs',dest='graphs',action='store_false')
+    p.add_argument('--no-metric-graphs',dest='metric_graphs',action='store_false');a=p.parse_args()
     a.device='cuda';a.preparation='raw_gpu';a.seed=17;a.prefetch=4;a.shard_prefetch=16;a.shard_prefetch_mib=64
     a.validation_batch_size=a.batch_size;a.validation_workers=a.workers
     if min(a.batch_size,a.epochs,a.warmup_steps,a.validation_every,a.checkpoint_every)<1 or not 0<=a.workers<=32:raise ValueError('Invalid bounds')
@@ -149,7 +150,7 @@ def main():
         contract=dict(version='phase1-v12',source=a.source_revision,config=vars(model.config),teacher=identity,
                       calibration_sha256=file_hash(a.calibration),split_hash=manifest['manifest_hash'],counts=manifest['counts'],
                       epochs=a.epochs,batch_size=a.batch_size,workers=a.workers,learning_rate=a.learning_rate,min_learning_rate=a.min_learning_rate,
-                      warmup_steps=a.warmup_steps,weight_decay=.01,seed=a.seed,graphs=a.graphs,
+                      warmup_steps=a.warmup_steps,weight_decay=.01,seed=a.seed,graphs=a.graphs,metric_graphs=a.metric_graphs,
                       objective='Training-only normalized frozen16D latents: hidden SmoothL1 +0.1 visible SmoothL1; raw metrics diagnostic only',
                       precision='Teacher FP32, temporal encoder '+a.precision+', decoder and latent loss FP32',
                       parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters())+model.queries.numel())

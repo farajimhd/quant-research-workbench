@@ -4,7 +4,7 @@ import torch
 from .model import positions
 from .data import prepare
 from .step import backward,Replay,InferenceReplay
-from .metrics import Metrics,scalars
+from .metrics import Metrics,MetricsReplay,scalars
 from ..phase1_v11.pipeline import loader,DeviceBatches
 from ..phase1_v7.full_data import prepare_raw
 from ..phase2_v2.train import rng_state,restore_rng,save_checkpoint,load_checkpoint
@@ -14,7 +14,7 @@ from ..v5.shards.phase1_contract import write_json
 
 @torch.no_grad()
 def evaluate(model,teacher,manifest,a,reporter,step,rows=None,limit_batches=None):
-    was=model.training;model.eval();source=device=replay=None;start=time.perf_counter()
+    was=model.training;model.eval();source=device=replay=metric_replay=None;start=time.perf_counter()
     generator=torch.Generator(device='cuda').manual_seed(917)
     if rows is not None and limit_batches is not None:raise ValueError('Ambiguous evaluation scope')
     stage='profile validation' if limit_batches else ('development' if rows is not None else 'full validation')
@@ -52,7 +52,11 @@ def evaluate(model,teacher,manifest,a,reporter,step,rows=None,limit_batches=None
             else:
                 z,meta,valid,x,v=prepare(teacher,b)
                 data=(z,meta,valid,x,v,model(z,meta,pos),model(z,meta,positions(len(z),'cuda',64)))
-            metrics.add(model,teacher,b,data,pos)
+            if a.metric_graphs and replay is not None and len(b.grid)==a.validation_batch_size:
+                if metric_replay is None and metrics.windows==0:metric_replay=MetricsReplay(metrics,model,teacher,replay)
+                if metric_replay:metric_replay()
+                else:metrics.add(model,teacher,b,data,pos)
+            else:metrics.add(model,teacher,b,data,pos)
             if index%25==0:
                 elapsed=time.perf_counter()-start;speed=metrics.windows/max(.001,elapsed)
                 reporter.update(stage=stage,validation_windows=metrics.windows,validation_total=total,
