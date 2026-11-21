@@ -7,7 +7,7 @@ import torch
 from .model import Autoencoder,Config,positions,objective
 from .data import load_teacher,prepare
 from .step import backward,Replay
-from .train import train
+from .train import train,evaluate
 from ..phase1_v11.pipeline import loader,DeviceBatches
 from ..phase1_v7.full_data import prepare_raw
 from ..phase1_v8.runtime import preflight
@@ -102,7 +102,7 @@ def qualify(a,teacher,cal,manifest):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--mode',choices=['calibrate','qualify','train'],required=True)
+    p=argparse.ArgumentParser();p.add_argument('--mode',choices=['calibrate','qualify','profile-validation','train'],required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--teacher',type=Path);p.add_argument('--calibration',type=Path)
     p.add_argument('--teacher-epoch',type=int,default=19)
@@ -133,6 +133,19 @@ def main():
         if a.mode=='calibrate':return calibrate(a,teacher,identity,frozen,manifest)
         if a.mode=='qualify':return qualify(a,teacher,cal,manifest)
         torch.manual_seed(a.seed);model=make_model(a,cal)
+        if a.mode=='profile-validation':
+            reporter=Reporter(a.output,dict(output=str(a.output)),mode='disabled',project='bargpt-phase1-v12-frozen16-mae')
+            profiles=[]
+            try:
+                for repeat in range(2):
+                    result=evaluate(model,teacher,manifest,a,reporter,repeat,limit_batches=a.profile_batches)
+                    if result is None:reporter.finish('stopped');return
+                    r=result[0];profiles.append(dict(repeat=repeat,windows=r['windows'],seconds=r['seconds'],startup_seconds=r['startup_seconds'],
+                                                   pipeline_seconds=r['pipeline_seconds'],pipeline_windows_per_second=r['windows']/r['pipeline_seconds']))
+                    write_json(a.output/'evaluation_profiles.json',profiles);print(profiles[-1],flush=True)
+                reporter.finish('qualification_complete')
+            except BaseException as exc:reporter.finish('failed',repr(exc));raise
+            return
         contract=dict(version='phase1-v12',source=a.source_revision,config=vars(model.config),teacher=identity,
                       calibration_sha256=file_hash(a.calibration),split_hash=manifest['manifest_hash'],counts=manifest['counts'],
                       epochs=a.epochs,batch_size=a.batch_size,workers=a.workers,learning_rate=a.learning_rate,min_learning_rate=a.min_learning_rate,

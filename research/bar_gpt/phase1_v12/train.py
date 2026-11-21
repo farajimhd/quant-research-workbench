@@ -13,12 +13,15 @@ from ..v5.shards.phase1_contract import write_json
 
 
 @torch.no_grad()
-def evaluate(model,teacher,manifest,a,reporter,step,rows=None):
+def evaluate(model,teacher,manifest,a,reporter,step,rows=None,limit_batches=None):
     was=model.training;model.eval();source=device=replay=None;start=time.perf_counter()
     generator=torch.Generator(device='cuda').manual_seed(917)
-    stage='development' if rows is not None else 'full validation'
+    if rows is not None and limit_batches is not None:raise ValueError('Ambiguous evaluation scope')
+    stage='profile validation' if limit_batches else ('development' if rows is not None else 'full validation')
     total=len(rows) if rows is not None else manifest['counts']['validation']
-    reference_path=a.output/('teacher-development.json' if rows is not None else 'teacher-validation.json')
+    if limit_batches:total=min(total,limit_batches*a.validation_batch_size)
+    scope='profile_validation' if limit_batches else ('development' if rows is not None else 'validation')
+    reference_path=a.output/('teacher-'+scope+'.json')
     reference=json.loads(reference_path.read_text()) if reference_path.exists() else None
     if reference and any(r['windows']!=total for r in reference.values()):raise ValueError('Teacher baseline population mismatch')
     metrics=Metrics(teacher_reference=reference)
@@ -31,8 +34,9 @@ def evaluate(model,teacher,manifest,a,reporter,step,rows=None):
                     try:b=device.pop()
                     except StopIteration:return
                     yield b;device.advance()
-            stream=batches()
+            stream=itertools.islice(batches(),limit_batches) if limit_batches else batches()
         else:stream=(prepare_raw(rows[i:i+a.batch_size],True).to('cuda') for i in range(0,len(rows),a.batch_size))
+        startup=time.perf_counter()-start
         for index,b in enumerate(stream):
             if (a.output/'STOP').exists():return None
             pos=positions(len(b.grid),'cuda',16,generator)
@@ -53,14 +57,16 @@ def evaluate(model,teacher,manifest,a,reporter,step,rows=None):
                 elapsed=time.perf_counter()-start;speed=metrics.windows/max(.001,elapsed)
                 reporter.update(stage=stage,validation_windows=metrics.windows,validation_total=total,
                                 validation_windows_per_second=speed,validation_eta_seconds=(total-metrics.windows)/max(1,speed))
-        result=metrics.result();result.update(seconds=time.perf_counter()-start,full_population=rows is None)
+        elapsed=time.perf_counter()-start
+        result=metrics.result();result.update(seconds=elapsed,startup_seconds=startup,pipeline_seconds=elapsed-startup,
+                                             full_population=rows is None and limit_batches is None,scope=scope)
         if result['windows']!=total:raise ValueError('Incomplete validation population')
         if result['nonfinite']:raise FloatingPointError('Nonfinite validation reconstruction')
         if reference is None:write_json(reference_path,{k:v for k,v in result['raw'].items() if k.startswith('teacher_')})
         measured=scalars(result)
         measured.update(seconds=result['seconds'],windows_per_second=total/max(.001,result['seconds']))
         if not all(math.isfinite(float(x)) for x in measured.values()):raise FloatingPointError('Nonfinite validation metrics')
-        name='development' if rows is not None else 'validation'
+        name=scope
         write_json(a.output/(name+'-latest.json'),result)
         reporter.log({name+'/'+k:v for k,v in measured.items()},step)
         reporter.update(stage=stage,validation_windows=total,validation_eta_seconds=0,
