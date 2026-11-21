@@ -52,8 +52,7 @@ def direction_objective(model, teacher, pred, latent, valid, pos, raw, source_va
     weights = torch.where(known, 1., .1) if pos.shape[1] < 64 else torch.ones_like(valid, dtype=torch.float32)
     for b in (0, 6, 12):
         mask = source_valid[..., b] & source_valid[..., b+3]
-        target = torch.log(raw[..., b].double()/raw[..., b+3].double().clamp_min(1e-300))
-        target = torch.where(mask, target, 0).float()
+        target = torch.log(torch.where(mask,raw[..., b].double(),1)/torch.where(mask,raw[..., b+3].double(),1)).float()
         err = (code[..., b+1]-target)*10000.  # log-basis-point units
         element = F.smooth_l1_loss(err, torch.zeros_like(err), reduction='none')
         loss = loss+(torch.where(mask, element, 0)*weights).sum()/(mask*weights).sum().clamp_min(1)
@@ -62,7 +61,7 @@ def direction_objective(model, teacher, pred, latent, valid, pos, raw, source_va
         price=base.new_zeros(())
         for b in (0,6,12):
             mask=source_valid[...,b+3]
-            target=torch.where(mask,raw[...,b+3].double().clamp_min(1e-300).log(),0).float()
+            target=torch.where(mask,raw[...,b+3].double(),1).log().float()
             element=F.smooth_l1_loss((code[...,b]-target)*1000.,torch.zeros_like(target),reduction='none')
             price=price+(torch.where(mask,element,0)*weights).sum()/(mask*weights).sum().clamp_min(1)
         total=total+.01*price/3
