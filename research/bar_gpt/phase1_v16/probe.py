@@ -4,12 +4,14 @@ os.environ['PYTHONDONTWRITEBYTECODE']='1'
 import argparse,json
 from pathlib import Path
 import torch
+import wandb
 from .model import Autoencoder
 from ..phase1_v12.model import Config,positions,gather
 from ..phase1_v12.data import load_teacher
 from ..phase1_v13.experiment import cache
 from ..v5.shards.phase1_contract import write_json,file_hash
 from ..phase2_v2.train import lease
+from research.mlops.env import discover_env_files,load_env_files
 
 
 def summary(pred,target):
@@ -30,7 +32,7 @@ def fit_probe(x,y,dx,dy):
 
 @torch.no_grad()
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--checkpoints',nargs='+',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--checkpoints',nargs='+',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--wandb',action='store_true');a=p.parse_args()
     if a.output.exists():raise ValueError('New probe identity required')
     a.output.mkdir(parents=True);torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     root=Path('D:/TradingML/runtimes/bar_gpt');cal=json.loads((root/'phase1-v12-frozen16-mae-20261121/teacher/calibration.json').read_text())
@@ -68,6 +70,17 @@ def main():
             print(path.parent.name,rows[str(path)]['probe']['development']['moving'],rows[str(path)]['decoder']['moving'],flush=True)
             del m,features,predictions
         write_json(a.output/'result.json',dict(scope='Same-window trade candle reconstruction, complete source-valid trade pairs only; no future labels',counts=counts,ridge=.01,results=rows))
+        if a.wandb:
+            load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
+            w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v16-direction',name=a.output.name,dir=str(a.output),config=dict(scope='Frozen same-window direction probes, not forecasts',checkpoints={str(p):file_hash(p) for p in a.checkpoints},data_hash=cal['data_hash'],split_hash=cal['split_hash'],ridge=.01))
+            payload={}
+            def flatten(prefix,value):
+                for key,item in value.items():
+                    if isinstance(item,dict):flatten(prefix+'/'+key,item)
+                    elif isinstance(item,(int,float)):payload[prefix+'/'+key]=item
+            for key,value in rows.items():flatten(Path(key).parent.name if key not in ('training_constant','mean_latent_probe','phase0_teacher') else key,value)
+            w.log(payload,step=0);w.summary['status']='complete'
+            write_json(a.output/'wandb.json',dict(url=w.url,metrics=payload));w.finish()
 
 
 if __name__=='__main__':main()
