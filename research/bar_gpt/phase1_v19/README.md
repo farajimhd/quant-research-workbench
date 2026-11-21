@@ -141,3 +141,14 @@ and nonzero gradients into the new decoder columns. Nothing raw or deterministic
 is appended. It remains one linear512-to1024 decoder. Compare against256 with
 the same parent, expanded training pool, LR3e-6,15000 updates and relative_all.
 This tests capacity, not a claim that increasing capacity fixes rare-scale tails.
+
+`scale_augmentation` is a separate train-only robustness hypothesis, not new
+historical evidence: each real training window has one synthetic copy with
+prices multiplied by2**k and volumes/displayed sizes divided by2**k, k sampled
+uniformly from{-8..-1,1..8}. Trade/quote counts, time, validity, candle signs,
+activity-change signs and ordering stay unchanged. Every valid numerical change
+must invert exactly or preparation fails; no ceilings/clipping. Original shards
+and validation/audit sets are unchanged. Synthetic identities retain source row,
+source hash and exponent. Its manifest labels synthetic counts and weighting.
+The frozen Phase0 teacher must be checked on these augmented values before
+training; poor teacher information retention would invalidate this approach.
