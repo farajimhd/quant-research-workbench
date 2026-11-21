@@ -22,12 +22,11 @@ from research.mlops.env import discover_env_files,load_env_files
 
 @torch.no_grad()
 def calibrate(a,teacher,identity,frozen,manifest):
-    # Pin the exact final checkpoint before deriving any latent statistics.
+    # Pin the exact user-selected checkpoint before deriving latent statistics.
     source=a.teacher
     progress=json.loads((source.parent/'progress.json').read_text())
-    final=json.loads((source.parent/'validation-020.json').read_text())
-    if progress['state']!='complete' or final['windows']!=manifest['counts']['validation'] or not final['full_population']:
-        raise ValueError('Completed Phase0 epoch20/full validation required')
+    if progress['state'] not in ('complete','stopped'):
+        raise ValueError('Phase0 must exit before teacher pinning')
     shutil.copy2(source,a.output/'teacher.pt');shutil.copy2(source.with_suffix('.proof.json'),a.output/'teacher.proof.json')
     if file_hash(a.output/'teacher.pt')!=identity['checkpoint_sha256']:raise ValueError('Pinned teacher changed')
     rows=np.load(a.data/'train.npy',mmap_mode='r');sums=torch.zeros(2,16,device='cuda',dtype=torch.float64);count=0;start=time.perf_counter()
@@ -106,6 +105,7 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--mode',choices=['calibrate','qualify','train'],required=True)
     p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
     p.add_argument('--teacher',type=Path);p.add_argument('--calibration',type=Path)
+    p.add_argument('--teacher-epoch',type=int,default=19)
     p.add_argument('--data',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v8-learned-mae-20261117/dataset'))
     p.add_argument('--split',type=Path,default=Path('D:/TradingML/runtimes/bar_gpt/phase1-v6-cohort-balanced-v4/split.json'))
     p.add_argument('--epochs',type=int,default=20);p.add_argument('--batch-size',type=int,default=4096);p.add_argument('--workers',type=int,default=16)
@@ -125,7 +125,7 @@ def main():
     if frozen['source_split_hash']!=manifest['manifest_hash']:raise ValueError('Subset/full split mismatch')
     cal=None if a.mode=='calibrate' else json.loads(a.calibration.read_text())
     path=a.teacher if cal is None else Path(cal['teacher_path'])
-    teacher,identity=load_teacher(path,manifest['manifest_hash'],'cuda')
+    teacher,identity=load_teacher(path,manifest['manifest_hash'],'cuda',cal['teacher']['checkpoint_epoch'] if cal else a.teacher_epoch)
     if cal and (cal['split_hash']!=manifest['manifest_hash'] or cal['data_hash']!=frozen['hash'] or cal['teacher']!=identity):raise ValueError('Teacher/calibration/split mismatch')
     if identity['contract']['counts']!=manifest['counts']:raise ValueError('Phase0 population differs')
     manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}

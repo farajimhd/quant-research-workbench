@@ -7,18 +7,22 @@ from ..phase2_v2.train import load_checkpoint
 from ..v5.shards.phase1_contract import file_hash
 
 
-def load_teacher(path,split_hash,device='cpu'):
+def load_teacher(path,split_hash,device='cpu',required_epoch=19):
     path=Path(path)
     proof=json.loads(path.with_suffix('.proof.json').read_text())
     if file_hash(path)!=proof['sha256']:raise ValueError('Teacher hash mismatch')
     peek=torch.load(path,map_location='cpu',weights_only=False)
     state=load_checkpoint(path,peek['contract']);c=state['contract']
     if c['version']!='phase0-v2' or c['split_hash']!=split_hash:raise ValueError('Teacher version/split differs')
-    if state['epoch']!=20 or state['phase']!='train' or state['windows']!=20*c['counts']['train']:raise ValueError('Completed epoch20 teacher required')
+    done=state['epoch_done'];population=c['counts']['train']
+    checkpoint_epoch=state['epoch']+int(done>0)
+    if checkpoint_epoch!=required_epoch or state['windows']!=state['epoch']*population+done:raise ValueError('Requested teacher epoch/traversal mismatch')
+    if not 0<=done<=population or state['phase'] not in ('train','validation'):raise ValueError('Invalid teacher traversal')
     if c['config']['embedding']!=16:raise ValueError('16D teacher required')
     teacher=BarEncoder(dict(mean=state['model']['mean'],scale=state['model']['scale']),BarConfig(**c['config']))
     teacher.load_state_dict(state['model']);teacher.requires_grad_(False);teacher.eval();teacher.to(device)
-    return teacher,dict(checkpoint_sha256=proof['sha256'],contract=c,epoch=20,step=state['step'])
+    return teacher,dict(checkpoint_sha256=proof['sha256'],contract=c,checkpoint_epoch=checkpoint_epoch,
+                        completed_epochs=state['epoch']+int(done==population),within_epoch_windows=done,step=state['step'])
 
 
 @torch.no_grad()

@@ -88,7 +88,7 @@ def test_optimizer_rng_resume_is_exact(tmp_path):
     for key,value in model.state_dict().items():torch.testing.assert_close(clone.state_dict()[key],value,rtol=0,atol=0)
 
 
-def test_teacher_epoch20_admission_and_frozen_parameters(tmp_path):
+def test_teacher_epoch_admission_and_frozen_parameters(tmp_path):
     import pytest
     from .data import load_teacher
     from ..phase0_v2.model import Autoencoder as BarEncoder,Config as BarConfig
@@ -96,10 +96,10 @@ def test_teacher_epoch20_admission_and_frozen_parameters(tmp_path):
     c=BarConfig(width=4,layers=1,heads=1,pooling='flatten')
     teacher=BarEncoder(dict(mean=[0.]*27,scale=[1.]*27),c)
     contract=dict(version='phase0-v2',split_hash='test',counts=dict(train=2),config=vars(c))
-    state=dict(contract=contract,model=teacher.state_dict(),optimizer=dict(state={}),step=10,cursor=(19,0),epoch=19,phase='train',windows=38)
+    state=dict(contract=contract,model=teacher.state_dict(),optimizer=dict(state={}),step=10,cursor=(19,1),epoch=19,phase='train',epoch_done=1,windows=39)
     path=tmp_path/'teacher.pt';save_checkpoint(path,state)
-    with pytest.raises(ValueError,match='epoch20'):load_teacher(path,'test')
-    state.update(epoch=20,windows=40,cursor=(20,0));save_checkpoint(path,state)
-    loaded,identity=load_teacher(path,'test');assert identity['epoch']==20
+    with pytest.raises(ValueError,match='epoch'):load_teacher(path,'test')
+    state.update(epoch=18,windows=37,cursor=(18,1));save_checkpoint(path,state)
+    loaded,identity=load_teacher(path,'test');assert identity['checkpoint_epoch']==19 and identity['completed_epochs']==18
     assert all(not p.requires_grad for p in loaded.parameters()) and not loaded.training
     with pytest.raises(ValueError,match='split'):load_teacher(path,'changed')

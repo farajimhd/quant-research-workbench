@@ -1,8 +1,8 @@
 # Phase1 V12: frozen Phase0 latent-target MAE
 
-User-approved experiment: freeze the completed Phase0 V2 epoch20 single-bar encoder, reconstruct its64x16 latent sequence from16 randomly selected bars, train20 epochs over exactly the same certified training population, and validate on exactly the same full validation population. This is temporal reconstruction pretraining, not forecasting.
+User-approved experiment: freeze the user-selected Phase0 V2 epoch19 single-bar encoder, reconstruct its64x16 latent sequence from16 randomly selected bars, train20 epochs over exactly the same certified training population, and validate on exactly the same full validation population. This is temporal reconstruction pretraining, not forecasting.
 
-The teacher checkpoint must have epoch20, completed traversal/scheduler state, matching split hash/counts, a verified checkpoint proof, completed run status, and completed full validation020. Calibration pins an independent hash-verified copy under the new runtime. No earlier checkpoint or best-development substitute is allowed. Teacher weights remainFP32 and frozen. All pretrained artifacts remain intact.
+The user revised the handoff to stop Phase0 and use epoch19. Its retained best-development checkpoint is step840000 during epoch19 (18 fully completed epochs); the exact end-of-epoch19 rolling checkpoint was overwritten in epoch20. Admission verifies the requested checkpoint epoch, exact traversal/count arithmetic, split hash, checkpoint proof and stopped/completed run state. Calibration pins an independent hash-verified copy under the new runtime. This is explicitly the retained within-epoch19 best-development checkpoint, not the end-of-epoch19 model. Teacher weights remainFP32 and frozen. All pretrained artifacts remain intact.
 
 ## Model and objective
 
@@ -20,12 +20,12 @@ Full validation uses all47750007 original Phase0 validation windows; training us
 
 Masked and all-visible latent SmoothL1, MSE, MAE, target/prediction variance, training-derived zero-normalized constant and visible-context mean controls are recorded by timeframe. Raw native-unit, price-relative, candle direction and range diagnostics pass predictions through the frozen Phase0 decoder. The same decoder applied to true Phase0 embeddings supplies a labelled teacher reconstruction reference. This uses targets for evaluation only, never decoder inputs or training inverses. Teacher diagnostic aggregates are computed once per immutable validation/development traversal and reused, since teacher weights, population, masks and decoder never change. Student diagnostics are recomputed every evaluation. Raw diagnostics do not enter the latent objective.
 
-Bounded rolling last/best checkpoints preserve model, optimizer, all RNG state, traversal cursor, scheduler progress and scientific contract. Resume uses the same W&B identity and rejects changed science. No automatic scheduled jobs. A detached finite launcher writes exact command, owner creation times and exit receipts. Human STOP files remain authoritative. The original Phase0 run must finish naturally before GPU ownership passes to this experiment.
+Bounded rolling last/best checkpoints preserve model, optimizer, all RNG state, traversal cursor, scheduler progress and scientific contract. Resume uses the same W&B identity and rejects changed science. No automatic scheduled jobs. A detached finite launcher writes exact command, owner creation times and exit receipts. Human STOP files remain authoritative. Phase0 is gracefully stopped under the revised user instruction; exact owner/worker exit is checked before GPU handoff. Its later partial-epoch20 stop checkpoint remains available for resume.
 
 Commands run from a committed, pushed, hash-verified immutable workstation snapshot. Set `PYTHONDONTWRITEBYTECODE=1`; Python launchers also set it. All output paths are under `D:/TradingML/runtimes/bar_gpt/phase1-v12-frozen16-mae-20261121`:
 
 ```
-python -B -m research.bar_gpt.phase1_v12.run --mode calibrate --output ROOT/teacher --source-revision SHA --teacher PHASE0_RUN/checkpoint_last.pt
+python -B -m research.bar_gpt.phase1_v12.run --mode calibrate --output ROOT/teacher --source-revision SHA --teacher PHASE0_RUN/checkpoint_best.pt --teacher-epoch 19
 python -B -m research.bar_gpt.phase1_v12.run --mode qualify --output ROOT/profile --source-revision SHA --calibration ROOT/teacher/calibration.json
 python -B -m research.bar_gpt.phase1_v12.launch --mode train --output ROOT/full-20ep --source-revision SHA --calibration ROOT/teacher/calibration.json --epochs 20 --batch-size PROFILED_BATCH --workers PROFILED_WORKERS
 python -B -m research.bar_gpt.phase1_v12.panel --output ROOT/full-20ep
