@@ -23,19 +23,19 @@ class TemporalSlots(Encoder):
 class Autoencoder(Base):
     def __init__(self, c, mean, scale, arm='body'):
         super().__init__(c, mean, scale, 'stable_balanced')
-        if arm not in ('base', 'body', 'linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price'):
+        if arm not in ('base', 'body', 'linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price','scaled_slots_price_strong'):
             raise ValueError('Unknown direction experiment')
         self.arm = arm
-        if arm in ('slots_body','scaled_slots_body','scaled_slots_price'):
+        if arm in ('slots_body','scaled_slots_body','scaled_slots_price','scaled_slots_price_strong'):
             self.encoder.__class__ = TemporalSlots
             self.encoder.count_scaled=arm.startswith('scaled_slots')
             self.encoder.readout = nn.Linear(c.width*64, c.embedding)
-        if arm in ('linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price'):
+        if arm in ('linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price','scaled_slots_price_strong'):
             del self.decoder, self.queries
             self.decoder = nn.Linear(c.embedding, 64*16)
 
     def decode(self, embedding):
-        if self.arm in ('linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price'):
+        if self.arm in ('linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price','scaled_slots_price_strong'):
             return self.decoder(embedding.float()).reshape(-1, 64, 16)
         return super().decode(embedding)
 
@@ -58,14 +58,14 @@ def direction_objective(model, teacher, pred, latent, valid, pos, raw, source_va
         element = F.smooth_l1_loss(err, torch.zeros_like(err), reduction='none')
         loss = loss+(torch.where(mask, element, 0)*weights).sum()/(mask*weights).sum().clamp_min(1)
     total=base+.1*loss/3
-    if model.arm=='scaled_slots_price':
+    if model.arm in ('scaled_slots_price','scaled_slots_price_strong'):
         price=base.new_zeros(())
         for b in (0,6,12):
             mask=source_valid[...,b+3]
             target=torch.where(mask,raw[...,b+3].double(),1).log().float()
             element=F.smooth_l1_loss((code[...,b]-target)*1000.,torch.zeros_like(target),reduction='none')
             price=price+(torch.where(mask,element,0)*weights).sum()/(mask*weights).sum().clamp_min(1)
-        total=total+.01*price/3
+        total=total+(.1 if model.arm=='scaled_slots_price_strong' else .01)*price/3
     return total, loss/3
 
 
@@ -74,8 +74,8 @@ def load_exported_encoder(path,device='cpu'):
     from ..phase1_v12.model import Config
     saved=torch.load(path,map_location='cpu',weights_only=False)
     c=Config(**saved['config']);state=saved['encoder'];arm=saved['arm']
-    if arm not in ('base','body','linear_body','slots_body','scaled_slots_body','scaled_slots_price'):raise ValueError('Unknown exported architecture')
-    slots=arm in ('slots_body','scaled_slots_body','scaled_slots_price')
+    if arm not in ('base','body','linear_body','slots_body','scaled_slots_body','scaled_slots_price','scaled_slots_price_strong'):raise ValueError('Unknown exported architecture')
+    slots=arm in ('slots_body','scaled_slots_body','scaled_slots_price','scaled_slots_price_strong')
     encoder=(TemporalSlots if slots else Encoder)(c,state['mean'],state['scale'])
     if slots:
         encoder.count_scaled=arm.startswith('scaled_slots');encoder.readout=nn.Linear(c.width*64,c.embedding)

@@ -5,7 +5,7 @@ from ..phase1_v12.model import Config, positions, gather
 
 def test_only_learned_256_embedding_and_hidden_isolation():
     torch.set_num_threads(2)
-    for arm in ('base','body','linear_body','slots_body','scaled_slots_body','scaled_slots_price'):
+    for arm in ('base','body','linear_body','slots_body','scaled_slots_body','scaled_slots_price','scaled_slots_price_strong'):
         torch.manual_seed(17)
         m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),arm).eval()
         z=torch.randn(2,64,16);metadata=torch.randn(2,64,36);pos=positions(2,'cpu',16)
@@ -28,7 +28,7 @@ def test_temporal_slots_use_original_positions():
 
 def test_export_contains_no_decoder_or_extra_values(tmp_path):
     from .model import load_exported_encoder
-    for arm in ('body','scaled_slots_price'):
+    for arm in ('body','scaled_slots_price','scaled_slots_price_strong'):
         m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),arm).eval()
         path=tmp_path/(arm+'.pt');torch.save(dict(config=vars(m.config),arm=arm,encoder=m.encoder.state_dict()),path)
         encoder=load_exported_encoder(path)
