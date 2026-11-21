@@ -1,0 +1,28 @@
+import torch
+from .objectives import relative_activity_loss
+
+
+def test_relative_inverse_identity_zero_and_large_valid_values():
+    y=torch.tensor([0.,1e-9,1.,1e6,1e15],dtype=torch.float64)[None,:,None].expand(1,5,18).clone()
+    valid=torch.ones_like(y,dtype=torch.bool)
+    assert relative_activity_loss(y.log1p(),y,valid)==0
+    p=y*2+1;code=p.log1p().requires_grad_()
+    # Every ratio (p-y)/(1+y) equals1, Huber(beta=.1) gives.95.
+    torch.testing.assert_close(relative_activity_loss(code,y,valid),torch.tensor(.95,dtype=torch.float64))
+    relative_activity_loss(code,y,valid).backward();assert torch.isfinite(code.grad).all()
+
+
+def test_invalid_values_excluded_before_exponential():
+    y=torch.ones(2,64,18,dtype=torch.float64);valid=torch.ones_like(y,dtype=torch.bool)
+    code=y.log1p();valid[:,10]=False;code[:,10]=1e9;y[:,10]=float('nan')
+    assert relative_activity_loss(code,y,valid)==0
+    valid.zero_();assert relative_activity_loss(code,y,valid)==0
+
+
+def test_rare_overshoot_has_correct_strong_gradient():
+    y=torch.zeros(1,64,18,dtype=torch.float64);valid=torch.ones_like(y,dtype=torch.bool)
+    code=torch.zeros_like(y);code[0,40,10]=20.;code.requires_grad_()
+    loss=relative_activity_loss(code,y,valid);loss.backward()
+    expected=torch.tensor(20.,dtype=torch.float64).exp()/(64*6)
+    torch.testing.assert_close(code.grad[0,40,10],expected)
+    assert torch.isfinite(loss) and loss>1e6
