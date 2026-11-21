@@ -1,4 +1,5 @@
 import torch
+from functools import lru_cache
 from torch.nn import functional as F
 from ..phase1_v16.model import direction_objective
 from ..phase1_v17.objectives import ACTIVITY
@@ -7,13 +8,17 @@ from ..v5.shards.phase1_contract import FRAMES
 ARMS=('joint','joint_calibrated')
 
 
+@lru_cache(maxsize=8)
+def constants(device):
+    return torch.tensor(ACTIVITY,device=device),torch.tensor(FRAMES,device=device)
+
+
 @torch.no_grad()
 def calibrate(raw,valid,frames):
-    indices=torch.tensor(ACTIVITY,device=raw.device)
+    indices,codes=constants(raw.device)
     mask=valid.index_select(-1,indices)
     target=torch.where(mask,raw.index_select(-1,indices).double(),0).log1p()
     pair=mask[:,1:]&mask[:,:-1];delta=target[:,1:]-target[:,:-1]
-    codes=torch.tensor(FRAMES,device=raw.device)
     group=F.one_hot((frames[:,None]==codes).long().argmax(1),6).T.double()
     count=group@pair.double().sum(1)
     square=group@torch.where(pair,delta.square(),0).sum(1)
@@ -23,7 +28,7 @@ def calibrate(raw,valid,frames):
 
 
 def penalties(code,raw,valid,known,frames,scale_sq,balanced):
-    indices=torch.tensor(ACTIVITY,device=raw.device)
+    indices,codes=constants(raw.device)
     mask=valid.index_select(-1,indices)
     target=torch.where(mask,raw.index_select(-1,indices).double(),0).log1p().float()
     predicted=code.index_select(-1,indices)
@@ -38,7 +43,7 @@ def penalties(code,raw,valid,known,frames,scale_sq,balanced):
     q=predicted.clamp_min(0)
     delta=(q[:,1:]-q[:,:-1])-(target[:,1:]-target[:,:-1])
     if balanced:
-        f=(frames[:,None]==torch.tensor(FRAMES,device=frames.device)).long().argmax(1)
+        f=(frames[:,None]==codes).long().argmax(1)
         delta=delta/scale_sq[f,None,:].sqrt()
     change=torch.where(pair,delta.square(),0).sum((0,1))/pair.sum((0,1)).clamp_min(1)
     return level.mean(),change.mean(),tail.mean()
