@@ -12,15 +12,16 @@ NAMES = ('trade_volume', 'trade_count', 'bid_size', 'bid_count', 'ask_size', 'as
 class ActivityMetrics:
     def __init__(self, device='cuda'):
         self.frames = torch.tensor(FRAMES, device=device)
+        self.indices = torch.tensor(ACTIVITY,device=device)
         self.sums = torch.zeros(6, 6, 7, device=device, dtype=torch.float64)
         self.confusion = torch.zeros(6, 6, 3, 3, device=device, dtype=torch.float64)
         self.maxima = torch.zeros(6, 6, 2, device=device, dtype=torch.float64)
 
     @torch.no_grad()
     def add(self, logs, raw, valid, frames):
-        mask = valid[..., ACTIVITY]
-        y = raw[..., ACTIVITY].double()
-        p_log = logs[..., ACTIVITY].double()
+        mask = valid.index_select(-1,self.indices)
+        y = raw.index_select(-1,self.indices).double()
+        p_log = logs.index_select(-1,self.indices).double()
         p = p_log.expm1()
         target_log = torch.where(mask, y, 0).log1p()
         frame = (frames[:, None] == self.frames).long().argmax(1)
