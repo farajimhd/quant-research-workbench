@@ -80,3 +80,12 @@ count multiplier. This preserves the parent's all-visible computation exactly
 scratch learning. It does not reveal missing inputs or add embedding components.
 Run from the preserved parent with separate identity, unchanged decoder, and
 control/relative01/relative1 losses to separate the architecture and objective.
+
+Scratch unscaled relative01 completed15000 updates but was rejected: activity
+direction gains came with severe price errors. Relative activity loss alone
+does not protect prices. `relative_all` therefore adds an exact price-relative
+Huber term (weight1,beta0.1) on exp(predicted_log-target_log)-1 to relative01.
+It uses all12 valid price channels, including original quote pairing, and no
+ceiling or target substitution. Test identity covers very small positive prices.
+The mean-filled continuation compares control,relative01,relative1,relative_all
+from the pre-full parent (better retained candle direction),6000 updates1e-5.

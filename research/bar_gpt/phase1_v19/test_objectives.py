@@ -26,3 +26,15 @@ def test_rare_overshoot_has_correct_strong_gradient():
     expected=torch.tensor(20.,dtype=torch.float64).exp()/(64*6)
     torch.testing.assert_close(code.grad[0,40,10],expected)
     assert torch.isfinite(loss) and loss>1e6
+def test_price_relative_exact_inverse_and_invalid_mask():
+    import torch
+    from .objectives import relative_price_loss
+    raw=torch.full((1,2,18),.001,dtype=torch.float64)
+    valid=torch.ones_like(raw,dtype=torch.bool)
+    logs=(2*raw).log().requires_grad_()
+    loss=relative_price_loss(logs,raw,valid)
+    torch.testing.assert_close(loss,torch.tensor(.95,dtype=torch.float64))
+    loss.backward();assert torch.isfinite(logs.grad).all()
+    valid[:]=False
+    assert relative_price_loss(logs,raw*float('nan'),valid)==0
+

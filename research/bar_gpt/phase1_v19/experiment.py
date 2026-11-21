@@ -52,7 +52,7 @@ def main():
     p=argparse.ArgumentParser()
     p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--revision',required=True);p.add_argument('--steps',type=int,default=6000)
-    p.add_argument('--arms',default=','.join(ARMS));p.add_argument('--lr',type=float,default=1e-5)
+    p.add_argument('--arms',default=','.join(ARMS[:4]));p.add_argument('--lr',type=float,default=1e-5)
     p.add_argument('--stress-cases',type=Path)
     p.add_argument('--batch',type=int,default=1024)
     p.add_argument('--balanced-frames',action='store_true')
@@ -98,7 +98,8 @@ def main():
         contract['hypotheses']={'control':'Matched continuation of V18; no inverse-aware term',
             'relative01':'Add0.1 native relative Huber to control exponential overshoot tails',
             'relative1':'Tenfold stronger inverse-aware penalty to test loss competition',
-            'unscaled_relative01':'Matched relative01 loss, remove64/N positional-slot amplification'}
+            'unscaled_relative01':'Matched relative01 loss, remove64/N positional-slot amplification',
+            'relative_all':'Relative01 plus inverse-aware price relative loss; preserve native price scales'}
         contract['validation_boundary']='Development/audit/forensic examples never enter training or calibration'
         contract['diagnostic_stress_sha']=file_hash(a.stress_cases) if a.stress_cases else None
         write_json(a.output/'manifest.json',contract)
