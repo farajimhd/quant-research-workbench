@@ -44,6 +44,7 @@ def main():
             selected.append(valid);raw=data[6][valid]
             targets.append((10000*torch.log(raw[...,0].double()/raw[...,3].double())).float())
         y,dy=targets;rows={}
+        train_1s=train[5][selected[0]]==1000000;dev_1s=dev[5][selected[1]]==1000000
         rows['training_constant']=summary(y.mean(0).expand_as(dy),dy)
         rows['mean_latent_probe']=fit_probe(train[0][selected[0]].mean(1),y,dev[0][selected[1]].mean(1),dy)
         rows['phase0_teacher']=summary(10000*teacher.decode(dev[0][selected[1]])['code'][...,1],dy)
@@ -61,6 +62,8 @@ def main():
                     preds.append(10000*teacher.decode(m.denormalize(m.decode(emb)))['code'][...,1])
                 features.append(torch.cat(parts));predictions.append(torch.cat(preds))
             rows[str(path)]=dict(sha256=file_hash(path),probe=fit_probe(features[0],y,features[1],dy),train_decoder=summary(predictions[0],y),decoder=summary(predictions[1],dy))
+            rows[str(path)]['probe_1s']=fit_probe(features[0][train_1s],y[train_1s],features[1][dev_1s],dy[dev_1s])
+            rows[str(path)]['decoder_1s']=summary(predictions[1][dev_1s],dy[dev_1s])
             write_json(a.output/'result.json',dict(scope='Same-window trade candle reconstruction, complete source-valid trade pairs only; no future labels',counts=counts,ridge=.01,results=rows))
             print(path.parent.name,rows[str(path)]['probe']['development']['moving'],rows[str(path)]['decoder']['moving'],flush=True)
             del m,features,predictions
