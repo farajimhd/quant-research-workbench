@@ -32,16 +32,35 @@ class MeanFilledSlots(TemporalSlots):
         return self.readout(aligned.flatten(1))
 
 
+class ControlVariateSlots(TemporalSlots):
+    def forward(self,visible_latents,visible_metadata,pos):
+        x=torch.cat(((visible_latents-self.mean)/self.scale,visible_metadata),-1)
+        with torch.autocast(x.device.type,dtype=torch.bfloat16,
+                            enabled=x.is_cuda and self.config.precision=='bf16'):
+            h=self.stem(x)+self.position[0,pos]
+            h=self.blocks(torch.cat((self.cls.expand(len(x),-1,-1),h),1))[:,1:].float()
+        if pos.shape[1]==64:
+            aligned=h.new_zeros(len(h),64,h.shape[-1]).scatter(1,pos[...,None].expand_as(h),h)
+        else:
+            mean=h.mean(1,keepdim=True)
+            # Preserve count correction for deviations, but not the common
+            # component. The reference is visible-only and stays in encoder.
+            visible=mean+(64/pos.shape[1])*(h-mean)
+            aligned=mean.expand(-1,64,-1).scatter(1,pos[...,None].expand_as(h),visible)
+        return self.readout(aligned.flatten(1))
+
+
 class Autoencoder(Previous):
     def __init__(self,c,mean,scale,architecture='scaled'):
         super().__init__(c,mean,scale,'scaled_slots_price')
-        if architecture not in ('scaled','unscaled','centered','mean_filled'):raise ValueError(architecture)
+        if architecture not in ('scaled','unscaled','centered','mean_filled','control_variate'):raise ValueError(architecture)
         self.architecture=architecture
         self.encoder.count_scaled=architecture=='scaled'
         if architecture=='centered':
             self.encoder.__class__=CenteredSlots
             self.encoder.global_readout=nn.Linear(c.width,c.embedding)
         if architecture=='mean_filled':self.encoder.__class__=MeanFilledSlots
+        if architecture=='control_variate':self.encoder.__class__=ControlVariateSlots
 
 
 def architecture(contract):

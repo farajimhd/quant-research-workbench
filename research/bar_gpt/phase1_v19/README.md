@@ -114,3 +114,21 @@ The supplement never reads validation/audit rows. Latent normalization remains
 frozen; activity loss calibration uses combined training only. Development stays
 the original11146 windows. Equal selected-window weighting is deliberately not
 population-unbiased and is not used for full-validation metrics.
+
+The supplement completed in34.68s:46993 nonoverlapping windows from6144
+verified entries, including31 independent100ms windows in the previously absent
+0.01--0.10 bid band. All four mean-filled6000-update continuations were rejected:
+close MAE1.03--1.13 versus0.405, despite candle direction92.7--93.6 percent.
+The next matched coverage arms keep the original scaled architecture, use the
+supplement,15000 updates and lower LR3e-6 (control,relative01,relative_all).
+These isolate loss effects on the expanded pool; coverage versus LR is not a
+pure ablation relative to earlier runs.
+
+`control_variate` is a separate targeted pooling hypothesis: for visible states
+h, fill hidden positions with visible mean(h), and visible positions with
+mean(h)+(64/N)*(h-mean(h)). This retains count correction on variations but removes
+random common-component amplification. All-visible computation remains exactly
+the parent (CPU zero-tolerance test). No added parameters, raw decoder inputs or
+embedding fields. An initial zero-update evaluation is labelled as such; it
+cannot be described as trained evidence. The same inference architecture must
+be retained when exporting the encoder or resuming.

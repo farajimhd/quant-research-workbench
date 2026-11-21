@@ -58,10 +58,10 @@ def main():
     p.add_argument('--batch',type=int,default=1024)
     p.add_argument('--balanced-frames',action='store_true')
     p.add_argument('--initialization',choices=['parent','scratch'],default='parent')
-    p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled'],default='scaled')
+    p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled','control_variate'],default='scaled')
     a=p.parse_args();arms=a.arms.split(',')
     if a.output.exists() or len(arms)>4 or len(set(arms))!=len(arms) or any(x not in ARMS for x in arms):raise ValueError('New identity and valid arms required')
-    if not 1<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')
+    if not 0<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')
     receipt=json.loads(a.checkpoint.with_suffix('.proof.json').read_text()) if a.checkpoint.with_suffix('.proof.json').exists() else json.loads((a.checkpoint.parent/'result.json').read_text())
     receipt['checkpoint_sha']=receipt.get('checkpoint_sha',receipt.get('sha256'))
     if file_hash(a.checkpoint)!=receipt['checkpoint_sha']:raise ValueError('Parent changed')
@@ -162,7 +162,7 @@ def main():
                         print(arm,step,{k:measured[k] for k in ('all_visible/candle/1s/trade/moving_direction_pct','all_visible/raw_mae/1s/trade_close','activity/all_visible/1s/trade_volume/moving_direction_pct','activity/all_visible/1s/trade_volume/raw_mae')},flush=True)
                 save(out/'checkpoint.pt')
                 result=dict(name=arm,seconds=time.perf_counter()-began,checkpoint_sha=file_hash(out/'checkpoint.pt'),wandb_url=w.url,
-                            cached_windows_per_second=a.steps*a.batch/training_seconds,peak_gpu_bytes=torch.cuda.max_memory_allocated(),curve=curve)
+                            cached_windows_per_second=a.steps*a.batch/training_seconds if training_seconds else 0.,peak_gpu_bytes=torch.cuda.max_memory_allocated(),curve=curve)
                 write_json(out/'result.json',result);results.append(result);write_json(a.output/'comparison.json',results);status='complete'
             except BaseException:
                 save(out/'checkpoint_partial.pt');raise
