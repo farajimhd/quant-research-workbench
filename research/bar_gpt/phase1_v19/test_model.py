@@ -36,3 +36,17 @@ def test_mean_fill_preserves_all_visible_parent_exactly():
     variate=Autoencoder(Config(),torch.zeros(16),torch.ones(16),'control_variate').eval()
     variate.load_state_dict(parent.state_dict())
     torch.testing.assert_close(parent(z,meta,pos),variate(z,meta,pos),rtol=0,atol=0)
+
+
+def test_bottleneck_expansion_preserves_prediction_and_can_learn():
+    from .model import initialize_parent
+    parent=Autoencoder(Config(),torch.zeros(16),torch.ones(16),'scaled').eval()
+    larger=Autoencoder(Config(embedding=512),torch.zeros(16),torch.ones(16),'scaled').eval()
+    changed=initialize_parent(larger,parent.state_dict())
+    assert len(changed)==3
+    z=torch.randn(2,64,16);meta=torch.randn(2,64,36)
+    for count in (16,64):
+        pos=positions(2,'cpu',count)
+        torch.testing.assert_close(parent(z,meta,pos),larger(z,meta,pos),rtol=1e-5,atol=1e-6)
+    larger(z,meta,pos).square().mean().backward()
+    assert larger.decoder.weight.grad[:,256:].abs().sum()>0

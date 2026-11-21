@@ -40,7 +40,7 @@ def render(s,now=None):
         if e.get('candle_direction_1s') is not None:latest.add_row('1s candle / volume direction',f"{e['candle_direction_1s']:.1f}% / {e['volume_direction_1s']:.1f}%")
         items.append(latest)
     if s.get('error'):items.append(str(s['error']))
-    return Panel(Group(*items),title=f'Phase 1 V19 | frozen16D MAE | {state}',subtitle='16 random bars in3/4 batches;64 in1/4 | 256D embedding')
+    return Panel(Group(*items),title=f'Phase 1 V19 | frozen16D MAE | {state}',subtitle=f"16 random bars in3/4 batches;64 in1/4 | {s.get('embedding',256)}D embedding")
 
 
 def main():

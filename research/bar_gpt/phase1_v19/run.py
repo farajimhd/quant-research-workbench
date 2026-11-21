@@ -114,7 +114,7 @@ def main():
             teacher=identity,calibration_sha256=file_hash(a.calibration),split_hash=manifest['manifest_hash'],counts=manifest['counts'],
             epochs=a.epochs,batch_size=a.batch_size,learning_rate=a.learning_rate,min_learning_rate=a.min_learning_rate,warmup_steps=a.warmup_steps,
             weight_decay=.01,seed=a.seed,loss_source_sha=file_hash(Path(__file__).with_name('objectives.py')),
-            objective='V18 joint plus V19 inverse-aware losses as recorded by loss_arm; fixed Phase0 teacher; decoder receives learned256D only',
+            objective='V18 joint plus V19 inverse-aware losses as recorded by loss_arm; fixed Phase0 teacher; decoder receives learned bottleneck only',
             visibility='16random in3/4 updates,64in1/4',full_reference_sha=file_hash(a.full_reference),
             quality_rule='Report every group regression; emergency stop after2 development evaluations with>10% error regression or>1pp direction decline, or any full evaluation crossing these bounds; require first-pass balanced improvement',
             parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()))
@@ -124,6 +124,7 @@ def main():
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False);os.environ.setdefault('WANDB_ENTITY','mehdifaraji')
         reporter=Reporter(a.output,config,mode='online',project='bargpt-phase1-v19-full20')
         if reporter.run is None:raise RuntimeError('Online W&B required')
+        reporter.update(embedding=model.config.embedding)
         try:reporter.finish(train(model,teacher,manifest,a,contract,reporter))
         except BaseException as exc:reporter.finish('failed',repr(exc));raise
 

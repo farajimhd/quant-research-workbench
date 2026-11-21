@@ -67,6 +67,21 @@ def architecture(contract):
     return contract.get('architecture','scaled' if contract.get('encoder_count_scaled',True) else 'unscaled')
 
 
+def initialize_parent(model,state):
+    """Optional learned bottleneck expansion with zero added decoder columns."""
+    own=model.state_dict();changed=[]
+    for key,value in state.items():
+        if key not in own:raise ValueError('Unknown parent parameter: '+key)
+        if own[key].shape==value.shape:own[key]=value
+        elif key in ('encoder.readout.weight','encoder.readout.bias') and own[key].shape[0]>value.shape[0] and own[key].shape[1:]==value.shape[1:]:
+            own[key][:value.shape[0]]=value;changed.append(key)
+        elif key=='decoder.weight' and own[key].shape[0]==value.shape[0] and own[key].shape[1]>value.shape[1]:
+            own[key].zero_();own[key][:,:value.shape[1]]=value;changed.append(key)
+        else:raise ValueError('Unqualified parent geometry: '+key)
+    if own.keys()!=state.keys():raise ValueError('Parent is missing architecture parameters')
+    model.load_state_dict(own);return changed
+
+
 def load_exported_encoder(path,device='cpu'):
     from ..phase1_v12.model import Config
     saved=torch.load(path,map_location='cpu',weights_only=False)

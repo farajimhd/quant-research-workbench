@@ -132,3 +132,12 @@ the parent (CPU zero-tolerance test). No added parameters, raw decoder inputs or
 embedding fields. An initial zero-update evaluation is labelled as such; it
 cannot be described as trained evidence. The same inference architecture must
 be retained when exporting the encoder or resuming.
+
+Optional capacity ablation `--embedding 512` expands learned readout rows and
+decoder input columns only. The existing256D learned projection/decoder weights
+are preserved; extra readout rows use seeded initialization and extra decoder
+columns start at zero. Tests verify initial prediction parity at16/64 visibility
+and nonzero gradients into the new decoder columns. Nothing raw or deterministic
+is appended. It remains one linear512-to1024 decoder. Compare against256 with
+the same parent, expanded training pool, LR3e-6,15000 updates and relative_all.
+This tests capacity, not a claim that increasing capacity fixes rare-scale tails.
