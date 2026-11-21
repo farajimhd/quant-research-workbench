@@ -21,7 +21,7 @@ from ..phase1_v15.experiment import cache
 from ..phase1_v11.data import verify
 from ..phase1_v10.step import stable_clip
 from ..phase2_v2.train import lease,load_checkpoint
-from ..v5.shards.phase1_contract import file_hash, write_json
+from ..v5.shards.phase1_contract import file_hash, write_json,digest
 from research.mlops.env import discover_env_files, load_env_files
 from .stress import load_cases,evaluate as stress_evaluate
 
@@ -54,6 +54,7 @@ def main():
     p.add_argument('--revision',required=True);p.add_argument('--steps',type=int,default=6000)
     p.add_argument('--arms',default=','.join(ARMS[:4]));p.add_argument('--lr',type=float,default=1e-5)
     p.add_argument('--stress-cases',type=Path)
+    p.add_argument('--training-supplement',type=Path)
     p.add_argument('--batch',type=int,default=1024)
     p.add_argument('--balanced-frames',action='store_true')
     p.add_argument('--initialization',choices=['parent','scratch'],default='parent')
@@ -79,6 +80,14 @@ def main():
     with lease(a.output):
         start=time.perf_counter();teacher,_=load_teacher(Path(cal['teacher_path']),cal['split_hash'],'cuda')
         train=cache(dataset/'train.npy',teacher);dev=cache(dataset/'development.npy',teacher)
+        supplement=None
+        if a.training_supplement:
+            supplement=json.loads((a.training_supplement/'manifest.json').read_text())
+            if digest({k:v for k,v in supplement.items() if k!='hash'})!=supplement['hash'] or supplement['split_hash']!=cal['split_hash']:raise ValueError('Supplement provenance')
+            for name,sha in supplement['files'].items():
+                if file_hash(a.training_supplement/name)!=sha:raise ValueError('Supplement changed')
+            extra=cache(a.training_supplement/'train.npy',teacher)
+            train=tuple(torch.cat((x,y)) for x,y in zip(train,extra));del extra
         activity_scale,activity_calibration=calibrate(train[6],train[4],train[5])
         stress=load_cases(a.stress_cases) if a.stress_cases else None
         sampler=FrameSampler(train[5]) if a.balanced_frames else None
@@ -91,6 +100,8 @@ def main():
                       weighting='uniform training windows; original coordinate losses weight visible1 hidden0.1; new relative penalty weights all valid bars equally; metrics unweighted',
                       deadline_seconds=3300,scope='Bounded subset; no full training',fresh_optimizer=True)
         contract.update(initialization=a.initialization,architecture=a.architecture)
+        if supplement:
+            contract['training_supplement']=dict(path=str(a.training_supplement),hash=supplement['hash'],windows=supplement['windows'],weighting=supplement['weighting'])
         if sampler:
             contract['weighting']='Uniform six-frame draw then uniform window within frame: probability1/(6*frame_count). Calibration unchanged; metrics unweighted.'
             contract['frame_counts']=sampler.counts.cpu().tolist()

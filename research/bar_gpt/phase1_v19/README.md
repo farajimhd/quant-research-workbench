@@ -100,3 +100,17 @@ All group regressions remain reported. Emergency guards are tightened from10x
 raw error to1.10x, or a direction drop exceeding1percentage point (two successive
 development checks; immediate after full validation). These are stop thresholds,
 not permission to accept smaller regressions. Promotion remains a separate gate.
+
+Coverage diagnosis: original training100ms has only4 windows with bid<0.10,
+all below0.01; zero windows cover bid0.01--0.10. `training_pool` builds a
+deterministic CPU-only supplement from the sealed TRAIN loader index,1024
+entries per timeframe, four threads,20minute preparation deadline. Each selected
+payload/receipt is hash-verified; partition0 and cutoff boundaries are asserted.
+Candidates include price-band, activity-tail and uniform rows. Exact existing
+training identities and same-security/timeframe overlapping supplement windows
+are rejected with counts; inputs and source-valid values are copied unchanged.
+Manifest records identities, weights, hashes, coverage and selection probabilities.
+The supplement never reads validation/audit rows. Latent normalization remains
+frozen; activity loss calibration uses combined training only. Development stays
+the original11146 windows. Equal selected-window weighting is deliberately not
+population-unbiased and is not used for full-validation metrics.
