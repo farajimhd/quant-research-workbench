@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from .model import Autoencoder,Config,positions,objective
-from .data import load_teacher,prepare
+from .data import load_teacher,prepare,resume_contract
 from .step import backward,Replay
 from .train import train,evaluate
 from ..phase1_v11.pipeline import loader,DeviceBatches
@@ -154,8 +154,10 @@ def main():
                       objective='Training-only normalized frozen16D latents: hidden SmoothL1 +0.1 visible SmoothL1; raw metrics diagnostic only',
                       precision='Teacher FP32, temporal encoder '+a.precision+', decoder and latent loss FP32',
                       parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters())+model.queries.numel())
-        config=dict(model=contract,output=str(a.output),resume=str(a.resume) if a.resume else None)
+        if a.resume:contract=resume_contract(contract,a.resume)
+        config=dict(model=contract,engineering_revision=a.source_revision,output=str(a.output),resume=str(a.resume) if a.resume else None)
         if not a.resume:write_json(a.output/'manifest.json',config)
+        else:write_json(a.output/f'resume-{int(time.time())}.json',config)
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False);os.environ.setdefault('WANDB_ENTITY','mehdifaraji')
         reporter=Reporter(a.output,config,mode='online',project='bargpt-phase1-v12-frozen16-mae')
         if reporter.run is None:raise RuntimeError('Online W&B logging required')

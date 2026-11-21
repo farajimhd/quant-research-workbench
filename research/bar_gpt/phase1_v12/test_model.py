@@ -61,6 +61,9 @@ def test_metric_masks_and_teacher_reference():
     b=SimpleNamespace(grid=raw,frames=torch.tensor([1000000,60000000]))
     metric=Metrics('cpu');metric.add(model,teacher,b,(z,torch.zeros(2,64,36),v.any(-1),values,valid,z,z),pos)
     result=metric.result();s=scalars(result)
+    assert type(s['masked/all/latent_loss']) is float
+    from ..v5.checkpoint_transition_v1 import state_hash
+    assert state_hash(dict(best=s['masked/all/latent_loss']))
     assert sum(result['counts'][0])==96 and sum(result['counts'][1])==128
     assert s['masked/all/latent_loss']==0 and s['all_visible/all/latent_loss']==0
     assert s['masked/raw_mae/1s/trade_close']==s['teacher_masked/raw_mae/1s/trade_close']
@@ -81,9 +84,13 @@ def test_optimizer_rng_resume_is_exact(tmp_path):
     def step(m,o):
         pos=positions(len(z),'cpu');o.zero_grad();loss=objective(m,m(z,meta,pos),z,valid,pos)[0];loss.backward();o.step();return pos,loss.detach()
     step(model,opt)
-    contract=dict(version='test-v12',config=vars(model.config))
+    contract=dict(version='test-v12',config=vars(model.config),source='original')
     state=dict(model=model.state_dict(),optimizer=opt.state_dict(),rng=rng_state(),contract=contract,step=1,cursor=(0,1))
     path=tmp_path/'last.pt';save_checkpoint(path,state)
+    from .data import resume_contract
+    import pytest
+    assert resume_contract(dict(contract,source='engineering-fix'),path)==contract
+    with pytest.raises(ValueError,match='scientific'):resume_contract(dict(contract,config={}),path)
     expected_pos,expected_loss=step(model,opt)
     clone,_,_,_,_=fixture();other=torch.optim.AdamW(clone.parameters(),lr=1e-3)
     saved=load_checkpoint(path,contract);clone.load_state_dict(saved['model']);other.load_state_dict(saved['optimizer']);restore_rng(saved['rng'])

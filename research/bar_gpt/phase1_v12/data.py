@@ -32,3 +32,14 @@ def prepare(teacher,b):
     timing=torch.where(valid[...,18:],(values[...,18:]-teacher.mean[18:])/teacher.scale[18:],0)
     metadata=torch.cat((timing,valid.float()),-1)
     return latent,metadata,valid[...,:18].any(-1),values,valid
+
+
+def resume_contract(current,path):
+    """Keep original scientific identity; record current engineering SHA separately."""
+    path=Path(path);proof=json.loads(path.with_suffix('.proof.json').read_text())
+    if file_hash(path)!=proof['sha256']:raise ValueError('Resume checkpoint hash changed')
+    prior=torch.load(path,map_location='cpu',weights_only=False)['contract']
+    candidate=dict(current,source=prior['source'])
+    if candidate!=prior:raise ValueError('Changed scientific contract cannot resume this experiment')
+    load_checkpoint(path,prior)
+    return candidate

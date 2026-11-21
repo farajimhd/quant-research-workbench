@@ -86,7 +86,7 @@ def scalars(result):
     for mode,raw in result['raw'].items():out.update({mode+'/'+k:v for k,v in raw_scalars(raw).items()})
     out['loss']=out['masked/all/latent_loss']
     out['windows']=result['windows'];out['nonfinite']=result['nonfinite']
-    return out
+    return {k:(v.item() if isinstance(v,np.generic) else v) for k,v in out.items()}
 
 
 class MetricsReplay:

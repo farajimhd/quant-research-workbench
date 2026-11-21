@@ -137,7 +137,7 @@ def train(model,teacher,manifest,a,contract,reporter):
                         if step%a.validation_every==0:
                             result=evaluate(model,teacher,manifest,a,reporter,step,development)
                             if result is None:checkpoint();return 'stopped'
-                            score=result[1]['masked/all/latent_loss']
+                            score=float(result[1]['masked/all/latent_loss'])
                             if score<best:best=score;checkpoint('checkpoint_best.pt')
                             measure=time.perf_counter();measure_windows=windows
                         if step%a.checkpoint_every==0:checkpoint()
