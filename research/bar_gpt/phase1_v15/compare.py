@@ -18,12 +18,18 @@ def compare(fixed, control):
     fm, cm = [r['metrics'] for r in results]
     masked = [k for k in fm if k.startswith('masked/')]
     changed = {k: [cm[k], fm[k]] for k in masked if fm[k] != cm[k]}
+    # Movement scatter reductions can differ in FP64 summation order across runs.
+    # Keep exact checks for latent/raw metrics and retain every measured difference.
+    roundoff = {k: v for k, v in changed.items()
+                if any('/'+s+'/' in k for s in ('candle', 'consecutive_close', 'range'))
+                and math.isclose(*v, rel_tol=1e-12, abs_tol=1e-12)}
+    material = {k: v for k, v in changed.items() if k not in roundoff}
     keys = [k for k in fm if k.startswith('all_visible/raw_mae/')]
     rows = [{'metric': k, 'control': cm[k], 'fixed': fm[k],
              'fixed_over_control': fm[k] / cm[k] if cm[k] else None} for k in keys]
     ratios = [r['fixed_over_control'] for r in rows if r['fixed_over_control'] is not None]
     return dict(windows=results[0]['windows'], receipts=receipts,
-                masked_metrics=len(masked), masked_changed=changed,
+                masked_metrics=len(masked), masked_changed=material, masked_reduction_roundoff=roundoff,
                 raw_mae_groups=len(rows), improved=sum(r < 1 for r in ratios),
                 geomean_ratio=math.exp(sum(math.log(r) for r in ratios) / len(ratios)),
                 worst_groups=sorted(rows, key=lambda r: r['fixed_over_control'] or 0, reverse=True)[:12],
@@ -41,7 +47,7 @@ def main():
     result = compare(a.fixed, a.control)
     with a.output.open('x', encoding='utf-8') as f:
         json.dump(result, f, indent=2)
-    print(json.dumps({k: v for k, v in result.items() if k not in ('receipts', 'all_raw_mae')}, indent=2))
+    print(json.dumps({k: v for k, v in result.items() if k not in ('receipts', 'all_raw_mae', 'masked_reduction_roundoff')}, indent=2))
     if result['masked_changed']:
         raise RuntimeError('Masked metrics changed: paired control requires investigation')
 
