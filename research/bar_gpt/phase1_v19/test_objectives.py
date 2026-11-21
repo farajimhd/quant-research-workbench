@@ -38,3 +38,12 @@ def test_price_relative_exact_inverse_and_invalid_mask():
     valid[:]=False
     assert relative_price_loss(logs,raw*float('nan'),valid)==0
 
+
+def test_visible_symmetry_without_hidden_underprediction_explosion():
+    raw=torch.full((1,2,18),99.,dtype=torch.float64)
+    valid=torch.ones_like(raw,dtype=torch.bool);visible=torch.tensor([[True,False]])
+    under=torch.full_like(raw,50.).log();over=torch.full_like(raw,200.).log()
+    all_visible=torch.ones_like(visible)
+    torch.testing.assert_close(relative_activity_loss(under,raw,valid,all_visible),relative_activity_loss(over,raw,valid,all_visible))
+    torch.testing.assert_close(relative_activity_loss(under,raw,valid,visible),torch.tensor(.7,dtype=torch.float64))
+

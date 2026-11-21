@@ -19,7 +19,7 @@ def protected_regression(metrics,reference):
     # Emergency training guards, not promotion tolerances. Every smaller
     # regression remains exposed for final acceptance.
     bad=bool(report['missing']) or any(r['ratio']>1.10 for r in report['errors'])
-    bad=bad or any(r['change_pp'] < -1. for r in report['directions'])
+    bad=bad or any(r['change_pp'] < -1. and r['metric'].startswith(('all_visible/','activity/all_visible/')) for r in report['directions'])
     return bad,report
 
 

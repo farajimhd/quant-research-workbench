@@ -118,7 +118,8 @@ def main():
             'relative01':'Add0.1 native relative Huber to control exponential overshoot tails',
             'relative1':'Tenfold stronger inverse-aware penalty to test loss competition',
             'unscaled_relative01':'Matched relative01 loss, remove64/N positional-slot amplification',
-            'relative_all':'Relative01 plus inverse-aware price relative loss; preserve native price scales'}
+            'relative_all':'Relative01 plus inverse-aware price relative loss; preserve native price scales',
+            'relative_visible_symmetric':'Same as relative_all, but visible activity uses symmetric multiplicative error to correct underprediction bias'}
         contract['validation_boundary']='Development/audit/forensic examples never enter training or calibration'
         contract['diagnostic_stress_sha']=file_hash(a.stress_cases) if a.stress_cases else None
         write_json(a.output/'manifest.json',contract)

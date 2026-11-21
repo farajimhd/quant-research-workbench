@@ -171,3 +171,19 @@ and decoder, trains only the correction on16 random bars per batch, and uses a
 (tested after an optimizer update). Full training, only after qualification,
 unfreezes the full model; this warmup is not a claim that its frozen all-visible
 representation improved. Native profiling handles inactive-branch gradients.
+
+The6000-update adapter warmup succeeded on development: masked1s close MAE
+0.37852 versus0.71702 pre-full V18, masked stress max1.168e6, and all-visible
+outputs exactly unchanged from512D parent. Wider comparison still rejects full
+promotion: parent512D daily bid/ask-count MAE is about31% worse than V18.
+Next matched6000-update arms unfreeze the whole model at1e-6, equal-frame
+sampling, unchanged real pool: relative_all versus relative_visible_symmetric.
+The latter uses exp(abs(log((1+pred)/(1+target))))-1 on visible activity bars,
+retaining asymmetric overshoot protection on hidden bars. This tests whether
+the original relative penalty's bounded underprediction cost biases counts low.
+No synthetic augmentation is used. All512 fields remain learned; decoder unchanged.
+
+Comparison now also includes MAPE and bin/magnitude agreement, not only raw/log
+MAE and direction. Emergency direction guards use observed/all-visible metrics;
+masked direction near chance remains reported rather than being treated as a
+working reconstruction signal. All masked raw/MAPE regressions remain guarded.

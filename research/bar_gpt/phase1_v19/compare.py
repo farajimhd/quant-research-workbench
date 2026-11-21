@@ -8,8 +8,8 @@ def compare(candidate,reference):
     errors=[];directions=[];missing=[]
     for key,old in reference.items():
         if not key.startswith(('masked/','all_visible/','activity/masked/','activity/all_visible/')):continue
-        error='/raw_mae/' in key or key.endswith(('/raw_mae','/log_mae'))
-        direction=key.endswith(('/moving_direction_pct','/balanced_direction_pct','/direction_pct'))
+        error='/raw_mae/' in key or '/mape_pct/' in key or key.endswith(('/raw_mae','/log_mae'))
+        direction=key.endswith(('/moving_direction_pct','/balanced_direction_pct','/direction_pct','/bin_accuracy_pct','/magnitude_accuracy_pct'))
         if not error and not direction:continue
         if key not in candidate or not math.isfinite(candidate[key]):missing.append(key);continue
         new=candidate[key]
@@ -21,7 +21,7 @@ def compare(candidate,reference):
                 missing=missing,error_groups=len(errors),direction_groups=len(directions),
                 error_regressions=sum(r['regression'] for r in errors),direction_regressions=sum(r['regression'] for r in directions),
                 errors=errors,directions=directions,
-                note='Same fixed population and masks required. Full qualification is separate. No tolerance hides a regression.')
+                note='Same fixed population and masks required. Direction list also includes range/magnitude/bin agreements. Full qualification is separate. No tolerance hides a regression.')
 
 
 def main():
