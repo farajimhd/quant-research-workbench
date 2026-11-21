@@ -23,6 +23,7 @@ from ..phase1_v10.step import stable_clip
 from ..phase2_v2.train import lease,load_checkpoint
 from ..v5.shards.phase1_contract import file_hash, write_json
 from research.mlops.env import discover_env_files, load_env_files
+from .stress import load_cases,evaluate as stress_evaluate
 
 
 @torch.no_grad()
@@ -52,6 +53,7 @@ def main():
     p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
     p.add_argument('--revision',required=True);p.add_argument('--steps',type=int,default=6000)
     p.add_argument('--arms',default=','.join(ARMS));p.add_argument('--lr',type=float,default=1e-5)
+    p.add_argument('--stress-cases',type=Path)
     p.add_argument('--batch',type=int,default=1024)
     p.add_argument('--balanced-frames',action='store_true')
     a=p.parse_args();arms=a.arms.split(',')
@@ -76,6 +78,7 @@ def main():
         start=time.perf_counter();teacher,_=load_teacher(Path(cal['teacher_path']),cal['split_hash'],'cuda')
         train=cache(dataset/'train.npy',teacher);dev=cache(dataset/'development.npy',teacher)
         activity_scale,activity_calibration=calibrate(train[6],train[4],train[5])
+        stress=load_cases(a.stress_cases) if a.stress_cases else None
         sampler=FrameSampler(train[5]) if a.balanced_frames else None
         contract=dict(source=a.revision,parent=str(a.checkpoint),parent_sha=receipt['checkpoint_sha'],data_hash=verified['hash'],
                       split_hash=cal['split_hash'],calibration_sha=file_hash(calpath),teacher_sha=file_hash(Path(cal['teacher_path'])),
@@ -93,6 +96,7 @@ def main():
             'relative01':'Add0.1 native relative Huber to control exponential overshoot tails',
             'relative1':'Tenfold stronger inverse-aware penalty to test loss competition'}
         contract['validation_boundary']='Development/audit/forensic examples never enter training or calibration'
+        contract['diagnostic_stress_sha']=file_hash(a.stress_cases) if a.stress_cases else None
         write_json(a.output/'manifest.json',contract)
         results=[]
         for arm in arms:
@@ -132,6 +136,7 @@ def main():
                             write_json(out/'progress.json',dict(step=step,steps=a.steps,seconds=time.perf_counter()-began,speed=speed,loss=float(loss.detach())))
                     if step%1000==0 or step==a.steps:
                         detailed,measured=evaluate(model,teacher,dev)
+                        if stress is not None:measured.update(stress_evaluate(model,teacher,stress))
                         write_json(out/f'evaluation-{step}.json',detailed);write_json(out/'latest-metrics.json',measured)
                         curve.append(dict(step=step,metrics=measured));w.log({'development/'+k:v for k,v in measured.items()},step=step)
                         print(arm,step,{k:measured[k] for k in ('all_visible/candle/1s/trade/moving_direction_pct','all_visible/raw_mae/1s/trade_close','activity/all_visible/1s/trade_volume/moving_direction_pct','activity/all_visible/1s/trade_volume/raw_mae')},flush=True)
