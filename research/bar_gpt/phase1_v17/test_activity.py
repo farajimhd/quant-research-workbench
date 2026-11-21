@@ -28,7 +28,7 @@ def test_loss_masks_and_gradient_without_reference_inputs():
     known=torch.ones(2,64,dtype=torch.bool)
     pred=raw.log1p().float().requires_grad_()
     terms=activity_terms(pred,raw,valid,known)
-    assert all(float(x)==0 for x in terms)
+    assert all(float(x.detach())==0 for x in terms)
     other=raw.clone();other[:,5,4]=9999999
     for a,b in zip(terms,activity_terms(pred,other,valid,known)):torch.testing.assert_close(a,b)
     perturbed=pred+1
@@ -46,3 +46,13 @@ def test_magnitude_wrong_despite_perfect_direction():
     assert s[p+'moving_direction_pct']==100
     assert s[p+'raw_mae']>1e8
     assert s[p+'overshoot_10x_count']==4
+
+
+def test_visible_objective_ignores_hidden_activity_targets():
+    raw=torch.ones(2,64,18,dtype=torch.float64)
+    valid=torch.ones_like(raw,dtype=torch.bool)
+    known=torch.zeros(2,64,dtype=torch.bool);known[:,:16]=True
+    logs=raw.log1p().float()+.2
+    modified=raw.clone();modified[:,16:]=9999
+    for a,b in zip(activity_terms(logs,raw,valid,known,0),activity_terms(logs,modified,valid,known,0)):
+        torch.testing.assert_close(a,b,rtol=0,atol=0)

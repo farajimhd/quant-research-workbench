@@ -44,3 +44,26 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 
 W&B project: `mehdifaraji/bargpt-phase1-v17-activity`. Each arm gets a unique run.
 Checkpoints retain optimizer and RNG states; a changed loss is a new experiment.
+
+## Adaptive follow-up hypotheses
+
+Initial3000-update results: matched control1s volume moving direction50.05%,
+level-loss52.12%, level+change53.45%. Daily bid-size MAE fell from1.4864e13
+in the control to7064 with level loss and5688 with level+change, but1s candle
+direction fell from93.28% to79.72%/70.98%. This is a tradeoff, not qualification.
+Two15000-update matched runs test whether further learning resolves it.
+
+`activity_visible` keeps the original latent MAE/body/price losses, but applies
+additional activity level loss only to visible bars and change loss only to
+pairs with both bars visible. Random16-of64 masks expose few consecutive pairs;
+supervising hidden random activity changes may encourage averaging. This is a
+hypothesis, not a proven cause. `activity_preserve` adds0.4 times the existing
+body loss to the visible activity objective (total body coefficient0.5), testing
+loss competition with observed candle direction. No architecture/input changes.
+
+Full validation uses the original streaming pipeline with captured inference and
+the new eager metric adapter. Metric graph capture is intentionally disabled
+until the additional accumulator buffers have capture/parity coverage; profile
+this cost before claiming full-validation speed. Frozen linear activity probes
+fit only training windows, report excluded incomplete windows, and compare an
+untrained encoder. All probes reconstruct same-window changes, not future labels.
