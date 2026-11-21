@@ -58,6 +58,7 @@ def evaluate(model,teacher,manifest,a,reporter,step,rows=None):
         if result['nonfinite']:raise FloatingPointError('Nonfinite validation reconstruction')
         if reference is None:write_json(reference_path,{k:v for k,v in result['raw'].items() if k.startswith('teacher_')})
         measured=scalars(result)
+        measured.update(seconds=result['seconds'],windows_per_second=total/max(.001,result['seconds']))
         if not all(math.isfinite(float(x)) for x in measured.values()):raise FloatingPointError('Nonfinite validation metrics')
         name='development' if rows is not None else 'validation'
         write_json(a.output/(name+'-latest.json'),result)

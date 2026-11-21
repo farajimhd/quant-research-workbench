@@ -57,5 +57,6 @@ def scalars(result):
                         prefix+'/target_variance':np.maximum(0,s[4]-s[3]**2).mean(),prefix+'/prediction_variance':np.maximum(0,s[6]-s[5]**2).mean(),
                         prefix+'/constant_loss':s[7].mean(),prefix+'/visible_mean_loss':s[8].mean()})
     for mode,raw in result['raw'].items():out.update({mode+'/'+k:v for k,v in raw_scalars(raw).items()})
+    out['loss']=out['masked/all/latent_loss']
     out['windows']=result['windows'];out['nonfinite']=result['nonfinite']
     return out

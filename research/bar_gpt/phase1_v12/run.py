@@ -145,6 +145,7 @@ def main():
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False);os.environ.setdefault('WANDB_ENTITY','mehdifaraji')
         reporter=Reporter(a.output,config,mode='online',project='bargpt-phase1-v12-frozen16-mae')
         if reporter.run is None:raise RuntimeError('Online W&B logging required')
+        reporter.run.save(str(a.calibration),base_path=str(a.calibration.parent),policy='now')
         try:reporter.finish(train(model,teacher,manifest,a,contract,reporter))
         except BaseException as exc:reporter.finish('failed',repr(exc));raise
 
