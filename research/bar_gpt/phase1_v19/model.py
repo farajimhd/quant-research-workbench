@@ -56,7 +56,7 @@ class ControlVariateSlots(TemporalSlots):
 class Autoencoder(Previous):
     def __init__(self,c,mean,scale,architecture='scaled'):
         super().__init__(c,mean,scale,'scaled_slots_price')
-        if architecture not in ('scaled','unscaled','centered','mean_filled','control_variate','mask_adapter'):raise ValueError(architecture)
+        if architecture not in ('scaled','unscaled','centered','mean_filled','control_variate','mask_adapter','count_nullspace'):raise ValueError(architecture)
         self.architecture=architecture
         self.encoder.count_scaled=architecture=='scaled'
         if architecture=='centered':
@@ -64,10 +64,35 @@ class Autoencoder(Previous):
             self.encoder.global_readout=nn.Linear(c.width,c.embedding)
         if architecture=='mean_filled':self.encoder.__class__=MeanFilledSlots
         if architecture=='control_variate':self.encoder.__class__=ControlVariateSlots
-        if architecture=='mask_adapter':
+        if architecture in ('mask_adapter','count_nullspace'):
             self.encoder.__class__=MeanFilledSlots
             self.encoder.mask_adapter=nn.Linear(c.embedding,c.embedding)
             nn.init.zeros_(self.encoder.mask_adapter.weight);nn.init.zeros_(self.encoder.mask_adapter.bias)
+        if architecture=='count_nullspace':
+            self.count_head=nn.Linear(c.embedding,64)
+            nn.init.zeros_(self.count_head.weight);nn.init.zeros_(self.count_head.bias)
+            self.register_buffer('count_basis',torch.zeros(16))
+
+    def decode(self,embedding):
+        prediction=super().decode(embedding)
+        if hasattr(self,'count_head'):
+            prediction=prediction+self.count_head(embedding.float())[...,None]*self.count_basis
+        return prediction
+
+    @torch.no_grad()
+    def initialize_count_basis(self,teacher):
+        # Nullspace of the twelve price and three quantity coordinates in the
+        # frozen teacher decoder. Counts may change; nothing is appended to E.
+        matrix=teacher.decoder.weight.detach().double()*teacher.scale[:18,None].double()*self.encoder.scale.double()[None,:]
+        protected=[i for i in range(18) if i not in (5,11,17)]
+        rows=matrix[protected];rows=rows/rows.norm(dim=1,keepdim=True)
+        _,_,v=torch.linalg.svd(rows,full_matrices=True)
+        basis=v[-1];effect=matrix[11]@basis
+        if effect.abs()<1e-8:raise ValueError('No usable count-only direction')
+        basis=basis/effect
+        if (matrix[protected]@basis).abs().max()>1e-8:raise ValueError('Count basis leaks into protected coordinates')
+        self.count_basis.copy_(basis.float())
+        return dict(count_effects=(matrix[[5,11,17]]@basis).cpu().tolist(),basis_norm=float(basis.norm()))
 
 
 def architecture(contract):
@@ -86,7 +111,7 @@ def initialize_parent(model,state):
             own[key].zero_();own[key][:,:value.shape[1]]=value;changed.append(key)
         else:raise ValueError('Unqualified parent geometry: '+key)
     missing=set(own)-set(state)
-    if missing-set(('encoder.mask_adapter.weight','encoder.mask_adapter.bias')):raise ValueError('Parent is missing architecture parameters')
+    if missing-set(('encoder.mask_adapter.weight','encoder.mask_adapter.bias','count_head.weight','count_head.bias','count_basis')):raise ValueError('Parent is missing architecture parameters')
     changed.extend(sorted(missing))
     model.load_state_dict(own);return changed
 

@@ -64,3 +64,22 @@ def test_mask_adapter_warmup_cannot_change_all_visible():
     m(z,meta,masked).square().mean().backward();optimizer.step()
     torch.testing.assert_close(m(z,meta,full),baseline,rtol=0,atol=0)
     assert not torch.equal(m(z,meta,masked),initial)
+
+
+def test_count_head_protects_non_count_coordinates():
+    from types import SimpleNamespace
+    from .model import initialize_parent
+    torch.manual_seed(19)
+    parent=Autoencoder(Config(),torch.zeros(16),torch.ones(16),'mask_adapter')
+    m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),'count_nullspace')
+    initialize_parent(m,parent.state_dict())
+    teacher=SimpleNamespace(decoder=torch.nn.Linear(16,18),scale=torch.ones(18))
+    m.initialize_count_basis(teacher);m.requires_grad_(False);m.count_head.requires_grad_(True)
+    e=torch.randn(8,256);before=teacher.decoder(m.decode(e)).detach()
+    opt=torch.optim.AdamW(m.count_head.parameters(),lr=.01)
+    for _ in range(3):
+        opt.zero_grad();code=teacher.decoder(m.decode(e));(code[...,11]-2).square().mean().backward();opt.step()
+    after=teacher.decoder(m.decode(e));keep=[i for i in range(18) if i not in (5,11,17)]
+    # Two FP32 matrix multiplies introduce rounding despite the FP64 nullspace.
+    torch.testing.assert_close(after[...,keep],before[...,keep],rtol=1e-5,atol=5e-6)
+    assert (after[...,11]-before[...,11]).abs().max()>.01

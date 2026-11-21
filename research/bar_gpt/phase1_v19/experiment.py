@@ -59,9 +59,11 @@ def main():
     p.add_argument('--embedding',type=int,choices=[256,512],default=None)
     p.add_argument('--balanced-frames',action='store_true')
     p.add_argument('--initialization',choices=['parent','scratch'],default='parent')
-    p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled','control_variate','mask_adapter'],default='scaled')
+    p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled','control_variate','mask_adapter','count_nullspace'],default='scaled')
+    p.add_argument('--count-warmup',action='store_true')
     p.add_argument('--adapter-warmup',action='store_true')
     a=p.parse_args();arms=a.arms.split(',')
+    if a.count_warmup and (a.architecture!='count_nullspace' or a.adapter_warmup):raise ValueError('Count warmup requires its own architecture')
     if a.adapter_warmup and a.architecture!='mask_adapter':raise ValueError('Adapter warmup requires the mask adapter architecture')
     if a.output.exists() or len(arms)>4 or len(set(arms))!=len(arms) or any(x not in ARMS for x in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')
@@ -104,6 +106,7 @@ def main():
                       deadline_seconds=3300,scope='Bounded subset; no full training',fresh_optimizer=True)
         contract.update(initialization=a.initialization,architecture=a.architecture)
         contract['adapter_warmup']=a.adapter_warmup
+        contract['count_warmup']=a.count_warmup
         if a.adapter_warmup:contract['masking']='16 random visible bars every training batch; shared encoder and decoder frozen during adapter-only warmup'
         contract['config']=dict(contract['config'])
         if a.embedding:contract['config']['embedding']=a.embedding
@@ -119,7 +122,8 @@ def main():
             'relative1':'Tenfold stronger inverse-aware penalty to test loss competition',
             'unscaled_relative01':'Matched relative01 loss, remove64/N positional-slot amplification',
             'relative_all':'Relative01 plus inverse-aware price relative loss; preserve native price scales',
-            'relative_visible_symmetric':'Same as relative_all, but visible activity uses symmetric multiplicative error to correct underprediction bias'}
+            'relative_visible_symmetric':'Same as relative_all, but visible activity uses symmetric multiplicative error to correct underprediction bias',
+            'counts_only':'Frozen representation; lightweight bottleneck-only count correction constrained to the protected-coordinate nullspace'}
         contract['validation_boundary']='Development/audit/forensic examples never enter training or calibration'
         contract['diagnostic_stress_sha']=file_hash(a.stress_cases) if a.stress_cases else None
         write_json(a.output/'manifest.json',contract)
@@ -129,12 +133,16 @@ def main():
             arch='unscaled' if arm=='unscaled_relative01' else a.architecture
             model=Autoencoder(Config(**contract['config']),cal['mean'],cal['scale'],arch).cuda()
             expanded=initialize_parent(model,saved['model']) if a.initialization=='parent' else []
+            count_basis=model.initialize_count_basis(teacher) if a.architecture=='count_nullspace' else None
+            if a.count_warmup:
+                model.requires_grad_(False);model.count_head.requires_grad_(True)
             if a.adapter_warmup:
                 model.requires_grad_(False);model.encoder.mask_adapter.requires_grad_(True)
             opt=torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=.01,fused=True)
             generator=torch.Generator(device='cuda').manual_seed(559)
             arm_contract=dict(contract,loss_arm=arm,encoder_count_scaled=model.encoder.count_scaled,architecture=arch,
                               parameters=sum(p.numel() for p in model.parameters()),trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),expanded_parameters=expanded)
+            arm_contract['count_basis']=count_basis
             w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v19-tail-repair',name=a.output.name+'-'+arm,dir=str(out),config=arm_contract,reinit=True)
             status='failed';step=0;curve=[];training_seconds=0.
             def save(path):

@@ -187,3 +187,17 @@ Comparison now also includes MAPE and bin/magnitude agreement, not only raw/log
 MAE and direction. Emergency direction guards use observed/all-visible metrics;
 masked direction near chance remains reported rather than being treated as a
 working reconstruction signal. All masked raw/MAPE regressions remain guarded.
+
+Both equal-frame unfreezing arms were rejected: 1s close MAE worsened to about
+0.75 and daily count MAE worsened further. Protected adapter warmup is undergoing
+complete validation before any promotion. Next bounded hypothesis is
+`count_nullspace` with `--count-warmup --arms counts_only`: freeze the existing
+model and add a zero-initialized512-to64 linear decoder correction, constrained
+to the nullspace of the frozen teacher's twelve price and three quantity rows.
+The only decoder input remains the512D embedding. This adds32,832 parameters,
+and is decoder calibration, not improved embedding information. Teacher-derived
+fixed basis uses no examples/targets; its count effects are trade0.18217,
+bid1,ask0.98757 per unit correction. Protected-channel leakage is zero in real
+arithmetic, but FP32 rounding must be measured on real validation (not claimed
+bit-identical). Counts-only log, adjacent-change and relative objectives use
+source-valid training targets only. All existing validation metrics remain.
