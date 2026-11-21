@@ -89,3 +89,14 @@ It uses all12 valid price channels, including original quote pairing, and no
 ceiling or target substitution. Test identity covers very small positive prices.
 The mean-filled continuation compares control,relative01,relative1,relative_all
 from the pre-full parent (better retained candle direction),6000 updates1e-5.
+
+The V19 full runner is prepared but must not launch before full qualification.
+It pins the candidate, full-validation result and validation checkpoint identity;
+preserves architecture flags on engineering resume and encoder export; retains
+optimizer/RNG/cursor and the original worker-count traversal. Native CPU tests
+check frozen-teacher gradients, hidden-input isolation and exact resumed updates.
+Full GPU graph/gradient parity and pipeline profiles are required before launch.
+All group regressions remain reported. Emergency guards are tightened from10x
+raw error to1.10x, or a direction drop exceeding1percentage point (two successive
+development checks; immediate after full validation). These are stop thresholds,
+not permission to accept smaller regressions. Promotion remains a separate gate.
