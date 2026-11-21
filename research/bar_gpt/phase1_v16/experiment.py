@@ -60,7 +60,7 @@ def main():
     if data['hash'] != cal['data_hash'] or cal['split_hash'] != saved['contract']['split_hash']:
         raise ValueError('Data/calibration mismatch')
     arms=a.arms.split(',')
-    if not arms or any(x not in ('base','body','linear_body','slots_body') for x in arms) or len(set(arms))!=len(arms):raise ValueError('Invalid arms')
+    if not arms or any(x not in ('base','body','linear_body','slots_body','scaled_slots_body') for x in arms) or len(set(arms))!=len(arms):raise ValueError('Invalid arms')
     a.output.mkdir(parents=True)
     import psutil
     write_json(a.output / 'process.json', dict(pid=os.getpid(), created=psutil.Process().create_time()))

@@ -15,24 +15,26 @@ class TemporalSlots(Encoder):
             h = self.blocks(torch.cat((self.cls.expand(len(x), -1, -1), h), 1))[:, 1:]
         aligned=h.new_zeros(len(h),64,h.shape[-1],dtype=torch.float32)
         aligned=aligned.scatter(1,pos[...,None].expand_as(h),h.float())
+        if getattr(self,'count_scaled',False):aligned=aligned*(64/pos.shape[1])
         return self.readout(aligned.flatten(1))
 
 
 class Autoencoder(Base):
     def __init__(self, c, mean, scale, arm='body'):
         super().__init__(c, mean, scale, 'stable_balanced')
-        if arm not in ('base', 'body', 'linear_body', 'slots_body'):
+        if arm not in ('base', 'body', 'linear_body', 'slots_body', 'scaled_slots_body'):
             raise ValueError('Unknown direction experiment')
         self.arm = arm
-        if arm == 'slots_body':
+        if arm in ('slots_body','scaled_slots_body'):
             self.encoder.__class__ = TemporalSlots
+            self.encoder.count_scaled=arm=='scaled_slots_body'
             self.encoder.readout = nn.Linear(c.width*64, c.embedding)
-        if arm in ('linear_body', 'slots_body'):
+        if arm in ('linear_body', 'slots_body', 'scaled_slots_body'):
             del self.decoder, self.queries
             self.decoder = nn.Linear(c.embedding, 64*16)
 
     def decode(self, embedding):
-        if self.arm in ('linear_body', 'slots_body'):
+        if self.arm in ('linear_body', 'slots_body', 'scaled_slots_body'):
             return self.decoder(embedding.float()).reshape(-1, 64, 16)
         return super().decode(embedding)
 

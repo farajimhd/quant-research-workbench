@@ -5,7 +5,7 @@ from ..phase1_v12.model import Config, positions, gather
 
 def test_only_learned_256_embedding_and_hidden_isolation():
     torch.set_num_threads(2)
-    for arm in ('base','body','linear_body','slots_body'):
+    for arm in ('base','body','linear_body','slots_body','scaled_slots_body'):
         torch.manual_seed(17)
         m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),arm).eval()
         z=torch.randn(2,64,16);metadata=torch.randn(2,64,36);pos=positions(2,'cpu',16)
