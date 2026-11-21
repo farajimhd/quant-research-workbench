@@ -56,3 +56,13 @@ def test_visible_objective_ignores_hidden_activity_targets():
     modified=raw.clone();modified[:,16:]=9999
     for a,b in zip(activity_terms(logs,raw,valid,known,0),activity_terms(logs,modified,valid,known,0)):
         torch.testing.assert_close(a,b,rtol=0,atol=0)
+
+
+def test_frame_sampler_reproducible_and_balanced():
+    from .sampling import FrameSampler
+    frames=torch.cat([torch.full((i+1,),f,dtype=torch.long) for i,f in enumerate(FRAMES)])
+    sampler=FrameSampler(frames)
+    a=sampler.sample(60000,torch.Generator().manual_seed(17))
+    b=sampler.sample(60000,torch.Generator().manual_seed(17))
+    assert torch.equal(a,b)
+    for f in FRAMES:assert 9500<int((frames[a]==f).sum())<10500

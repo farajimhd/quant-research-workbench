@@ -12,6 +12,7 @@ import torch
 import wandb
 from .objectives import objective, ARMS
 from .metrics import ActivityMetrics, scalars as activity_scalars
+from .sampling import FrameSampler
 from ..phase1_v16.model import Autoencoder
 from ..phase1_v12.model import Config, positions
 from ..phase1_v12.metrics import Metrics, scalars
@@ -52,6 +53,7 @@ def main():
     p.add_argument('--revision',required=True);p.add_argument('--steps',type=int,default=3000)
     p.add_argument('--arms',default='control,activity,activity_delta');p.add_argument('--lr',type=float,default=1e-5)
     p.add_argument('--batch',type=int,default=1024)
+    p.add_argument('--balanced-frames',action='store_true')
     a=p.parse_args();arms=a.arms.split(',')
     if a.output.exists() or len(arms)>4 or len(set(arms))!=len(arms) or any(x not in ARMS for x in arms):raise ValueError('New identity and valid arms required')
     if not 1<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')
@@ -71,6 +73,7 @@ def main():
     with lease(a.output):
         start=time.perf_counter();teacher,_=load_teacher(Path(cal['teacher_path']),cal['split_hash'],'cuda')
         train=cache(dataset/'train.npy',teacher);dev=cache(dataset/'development.npy',teacher)
+        sampler=FrameSampler(train[5]) if a.balanced_frames else None
         contract=dict(source=a.revision,parent=str(a.checkpoint),parent_sha=receipt['checkpoint_sha'],data_hash=verified['hash'],
                       split_hash=cal['split_hash'],calibration_sha=file_hash(calpath),teacher_sha=file_hash(Path(cal['teacher_path'])),
                       config=saved['contract']['config'],arm='scaled_slots_price',arms=arms,steps=a.steps,batch=a.batch,lr=a.lr,
@@ -79,6 +82,9 @@ def main():
                       masking='16 random visible bars in 3/4 batches; all64 in 1/4',
                       weighting='uniform window sampling; valid channel means; visible loss weight1 hidden0.1; metrics unweighted',
                       deadline_seconds=3300,scope='Bounded subset; no full training',fresh_optimizer=True)
+        if sampler:
+            contract['weighting']='Uniform six-frame draw then uniform window within frame: probability1/(6*frame_count). Calibration unchanged; metrics unweighted.'
+            contract['frame_counts']=sampler.counts.cpu().tolist()
         write_json(a.output/'manifest.json',contract)
         results=[]
         for arm in arms:
@@ -105,7 +111,7 @@ def main():
                 for step in range(a.steps+1):
                     if time.perf_counter()-began>3000 or (a.output/'STOP').exists():raise InterruptedError('Deadline/human STOP')
                     if step:
-                        tick=time.perf_counter();ids=torch.randint(len(train[0]),(a.batch,),device='cuda',generator=generator)
+                        tick=time.perf_counter();ids=sampler.sample(a.batch,generator) if sampler else torch.randint(len(train[0]),(a.batch,),device='cuda',generator=generator)
                         z,meta,valid,_,v,_,raw=[x[ids] for x in train];pos=positions(len(z),'cuda',64 if step%4==0 else 16,generator)
                         opt.zero_grad(set_to_none=True)
                         loss,parts=objective(model,teacher,model(z,meta,pos),z,valid,pos,raw,v,arm)

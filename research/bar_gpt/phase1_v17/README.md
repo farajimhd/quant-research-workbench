@@ -67,3 +67,11 @@ until the additional accumulator buffers have capture/parity coverage; profile
 this cost before claiming full-validation speed. Frozen linear activity probes
 fit only training windows, report excluded incomplete windows, and compare an
 untrained encoder. All probes reconstruct same-window changes, not future labels.
+
+Training counts are100ms22101,1s20818,10s16478,1m5888,1h1766,daily555.
+Development counts are2866,2960,2742,1509,856,213 respectively. The eighth-slot
+follow-up tests `--balanced-frames`: equal frame probabilities, uniform existing
+windows within each frame. It changes training sampling only, not frozen sample
+identities, calibration or unweighted evaluation. No validation examples enter
+training. This tests coverage imbalance, not a claim that555 daily windows are
+sufficient for broad generalization.
