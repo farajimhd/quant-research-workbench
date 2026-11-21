@@ -61,10 +61,11 @@ hypothesis, not a proven cause. `activity_preserve` adds0.4 times the existing
 body loss to the visible activity objective (total body coefficient0.5), testing
 loss competition with observed candle direction. No architecture/input changes.
 
-Full validation uses the original streaming pipeline with captured inference and
-the new eager metric adapter. Metric graph capture is intentionally disabled
-until the additional accumulator buffers have capture/parity coverage; profile
-this cost before claiming full-validation speed. Frozen linear activity probes
+Full validation uses the original streaming pipeline with captured inference.
+The initial activity adapter was eager; the finalized version captures every
+native/activity accumulator after eager-versus-captured parity checks. A bounded
+524288-window comparison matched every quality metric and reduced elapsed time
+from15.22 to14.35 seconds. Frozen linear activity probes
 fit only training windows, report excluded incomplete windows, and compare an
 untrained encoder. All probes reconstruct same-window changes, not future labels.
 
@@ -75,3 +76,8 @@ windows within each frame. It changes training sampling only, not frozen sample
 identities, calibration or unweighted evaluation. No validation examples enter
 training. This tests coverage imbalance, not a claim that555 daily windows are
 sufficient for broad generalization.
+
+The eight-arm campaign ended without promoting V17 to full training. Although
+the price-preserving arm improved98/108 all-visible full-validation raw groups,
+masked daily ask-count MAE remained3.55e9. The user-authorized20-epoch run therefore
+uses the separately versioned V18 corrective qualification, not this checkpoint.

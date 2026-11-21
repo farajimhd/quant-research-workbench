@@ -83,3 +83,42 @@ python -B -m research.bar_gpt.phase1_v18.run --mode profile --checkpoint CANDIDA
 python -B -m research.bar_gpt.phase1_v18.launch --mode train --checkpoint CANDIDATE --qualification RECEIPT_JSON --full-reference FULL_VALIDATION_RESULT_JSON --output FULL_RUNTIME --source-revision SOURCE_SHA --epochs 20 --batch-size MEASURED_BATCH --workers MEASURED_WORKERS
 # Resume with identical arguments plus --resume FULL_RUNTIME/checkpoint_last.pt.
 ```
+
+## Full-population qualification and selected launch
+
+`joint` completed all 47,750,007 validation windows in 839.50 seconds
+(56,879 windows/s), with no nonfinite reconstruction. Compared with the V17
+price-preserving candidate, 96/108 all-visible and 95/108 masked raw-error groups
+improved. The geometric raw-error ratios were 0.840 and 0.219 respectively.
+Worst regressions were 5.85% for all-visible 1h ask-low and 62.21% for masked
+100ms ask-size. Full-validation 1s close MAE fell from $0.9464 to $0.7419;
+candle moving direction was 87.30% and volume moving direction 73.65%.
+Masked daily ask-count MAE fell from 3.55e9 to 116613. Large masked activity
+outliers remain (daily bid-size maximum absolute error 7.26e12).
+
+Frozen 1s development probes, using only exported embeddings, improved volume
+direction from V16's 51.20% to 71.85%, and trade-count direction from 51.31%
+to 76.88%. The untrained encoder scored 65.93% and 68.01%. Quote-size probes
+remain weak: bid/ask 52.28%/51.85%, below the untrained 60.30%/61.11%.
+These are same-window retention probes, not future forecasting results.
+Exact-flat quote-size recall is almost zero; full three-way bid-size accuracy
+is 30.46%, below the always-unchanged baseline's 43.21%. Moving-only direction
+must not be described as overall accuracy or complete repair of the embeddings.
+
+Five complete-pipeline profiles tested batches 4096/8192/16384/32768 and
+16/32 workers. All passed eager/captured loss and gradient checks. Larger
+configurations were slower. Sustained checks over 2.10M and 4.19M windows selected
+batch8192/workers16: 98756 windows/s, 0.195 seconds loader wait in 42.47 seconds,
+28.20 seconds startup, and 8166 MiB peak allocated GPU memory. The first 50 native
+updates reached 98378 windows/s and saved a verified checkpoint for same-run resume.
+
+Pinned training source: `73c165cef4c5d56255e7c92aeeea96650277392c`.
+Parent checkpoint: `phase1-v18-joint-20261121/joint/checkpoint.pt`, SHA256
+`a6ab30c77d312030cd8b8697c558735c8fbb1a1b3487e16f4a59a7131c837883`.
+Encoder-only export: same directory `encoder.pt`, SHA256
+`062bb35b6f10dcdb240d315e4574473d2c7536d79d8aa93a25b0ccfee05d5d28`;
+exact CPU export parity was checked at both 16 and 64 visible positions.
+Runtime: `D:/TradingML/runtimes/bar_gpt/phase1-v18-joint-full20-20261121`.
+W&B: https://wandb.ai/mehdifaraji/bargpt-phase1-v18-full20/runs/uig4mxue .
+The launch receipts contain the exact command. This is an authorized experimental
+20-epoch run with quality guards, not a claim that 20 epochs are complete.
