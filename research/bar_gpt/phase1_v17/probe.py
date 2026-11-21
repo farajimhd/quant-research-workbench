@@ -20,7 +20,7 @@ from research.mlops.env import discover_env_files,load_env_files
 
 @torch.no_grad()
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--checkpoints',nargs='+',type=Path,required=True);p.add_argument('--output',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--checkpoints',nargs='+',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--revision',required=True);a=p.parse_args()
     if a.output.exists():raise ValueError('New identity required')
     a.output.mkdir(parents=True);torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     root=Path('D:/TradingML/runtimes/bar_gpt');dataset=root/'phase1-v8-learned-mae-20261117/dataset'
@@ -38,11 +38,21 @@ def main():
             m.load_state_dict(saved['model']);models.append((str(path),m.eval()))
         torch.manual_seed(17)
         models.append(('untrained',Autoencoder(Config(**saved['contract']['config']),cal['mean'],cal['scale'],'scaled_slots_price').cuda().eval()))
+        models.append(('raw_summary',None))
         results={}
         for name,model in models:
             features=[]
-            for z,meta,*_ in data:
-                features.append(torch.cat([model.encoder(z[i:i+512],meta[i:i+512],positions(len(z[i:i+512]),'cuda',64)) for i in range(0,len(z),512)]))
+            for z,meta,valid,x,v,frames,raw in data:
+                if model is None:
+                    # Independent baseline only; never fed into a learned encoder.
+                    x=x[...,:18].double();mask=v[...,:18];count=mask.sum(1).clamp_min(1)
+                    mean=torch.where(mask,x,0).sum(1)/count
+                    std=(torch.where(mask,(x-mean[:,None]).square(),0).sum(1)/count).sqrt()
+                    low=torch.where(mask,x,float('inf')).amin(1);high=torch.where(mask,x,float('-inf')).amax(1)
+                    features.append(torch.cat((mean,std,torch.where(mask.any(1),low,0),torch.where(mask.any(1),high,0),
+                                               torch.where(mask[:,0],x[:,0],0),torch.where(mask[:,-1],x[:,-1],0),mask.sum(1)/64),-1))
+                else:
+                    features.append(torch.cat([model.encoder(z[i:i+512],meta[i:i+512],positions(len(z[i:i+512]),'cuda',64)) for i in range(0,len(z),512)]))
             results[name]={}
             for j,channel in zip(ACTIVITY,NAMES):
                 masks=[d[4][...,j].all(1) & (d[5]==1000000) for d in data]
@@ -55,10 +65,10 @@ def main():
             print(name,{k:v.get('probe',{}).get('development',{}).get('moving') for k,v in results[name].items()},flush=True)
             write_json(a.output/'result.json',dict(scope='1s same-window activity log-change probes; not future forecasts; complete source-valid channel windows only; error units log-basis-points of 1+activity',ridge=.01,results=results))
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
-        w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v17-activity',name=a.output.name,dir=str(a.output),config=dict(data_hash=cal['data_hash'],checkpoints={str(p):file_hash(p) for p in a.checkpoints},ridge=.01))
+        w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v17-activity',name=a.output.name,dir=str(a.output),config=dict(source=a.revision,data_hash=cal['data_hash'],checkpoints={str(p):file_hash(p) for p in a.checkpoints},ridge=.01))
         payload={}
         for name,channels in results.items():
-            label=Path(name).parent.name if name!='untrained' else name
+            label=Path(name).parent.name if name not in ('untrained','raw_summary') else name
             for channel,result in channels.items():
                 for split,scores in result.get('probe',{}).items():
                     payload.update({f'{label}/{channel}/{split}/{k}':v for k,v in scores['moving'].items()})
