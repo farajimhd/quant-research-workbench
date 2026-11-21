@@ -67,3 +67,32 @@ def scalars(result):
             values['balanced_direction_pct']=float(np.mean(recalls)) if recalls else 0.
             out.update({prefix+k:float(v) for k,v in values.items()})
     return out
+
+
+from ..phase1_v12.metrics import Metrics as NativeMetrics, scalars as native_scalars
+
+
+class FullMetrics(NativeMetrics):
+    """Eager metric adapter for the existing full-data inference pipeline."""
+    def __init__(self, device='cuda', teacher_reference=None):
+        super().__init__(device, teacher_reference)
+        self.activity={name:ActivityMetrics(device) for name in ('masked','all_visible','teacher')}
+
+    @torch.no_grad()
+    def add(self, model, teacher, batch, data, pos):
+        super().add(model,teacher,batch,data,pos)
+        z,meta,valid,x,v,masked,visible=data
+        hidden=~torch.zeros_like(valid).scatter(1,pos,True)
+        for name,pred,mask in (('masked',model.denormalize(masked),v&hidden[...,None]),('all_visible',model.denormalize(visible),v),('teacher',z,v)):
+            self.activity[name].add(teacher.decode(pred)['logs'],batch.grid,mask,batch.frames)
+
+    def result(self):
+        result=super().result()
+        result['activity']={k:v.result() for k,v in self.activity.items()}
+        return result
+
+
+def full_scalars(result):
+    out=native_scalars(result)
+    for name,r in result['activity'].items():out.update({'activity/'+name+'/'+k:v for k,v in scalars(r).items()})
+    return out
