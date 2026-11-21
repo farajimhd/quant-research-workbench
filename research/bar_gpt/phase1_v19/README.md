@@ -152,3 +152,22 @@ and validation/audit sets are unchanged. Synthetic identities retain source row,
 source hash and exponent. Its manifest labels synthetic counts and weighting.
 The frozen Phase0 teacher must be checked on these augmented values before
 training; poor teacher information retention would invalidate this approach.
+
+Aggressive augmentation was rejected before Phase1 training: on768 paired
+training windows, frozen Phase0 1s candle direction fell96.19% to85.21%.
+Separating price-only and quantity-only shifts still gave86.19% and87.66%.
+The augmented artifacts remain labelled and preserved, but no candidate trains
+on them. This is a measured teacher sensitivity, not evidence of corrupted data.
+
+The512D capacity arm on real data improved development1s close MAE to0.31385,
+candle direction92.37%, and activity direction; masked stress max remained2.394e9.
+Applying mean-filled inference without updates retained identical all-visible
+metrics and reduced masked stress max to1.319e6, but masked close MAE rose0.8521.
+The next `mask_adapter` adds a zero-initialized learned512-to512 residual inside
+the encoder, gated by1-N/64; it is bypassed entirely at N=64. Decoder input is
+still exactly512 learned values. `--adapter-warmup` freezes the existing encoder
+and decoder, trains only the correction on16 random bars per batch, and uses a
+16-visible tiny-fit gate. This protects all-visible outputs exactly during warmup
+(tested after an optimizer update). Full training, only after qualification,
+unfreezes the full model; this warmup is not a claim that its frozen all-visible
+representation improved. Native profiling handles inactive-branch gradients.

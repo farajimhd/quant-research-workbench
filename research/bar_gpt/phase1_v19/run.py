@@ -48,10 +48,13 @@ def profile(a,teacher,cal,manifest,saved):
                 b=device.pop();pos=positions(len(b.grid),'cuda',64 if (i+1)%4==0 else 16)
                 if pos.shape[1] not in replays:
                     opt.zero_grad(set_to_none=True);expected=backward(model,teacher,b,pos)
-                    gradients=[p.grad.clone() for p in model.parameters()]
+                    gradients=[p.grad.clone() if p.grad is not None else None for p in model.parameters()]
                     replay=Replay(model,teacher,b,pos);actual=replay(b,pos)
                     torch.testing.assert_close(actual[0],expected[0],rtol=1e-4,atol=2e-5)
-                    for parameter,gradient in zip(model.parameters(),gradients):torch.testing.assert_close(parameter.grad,gradient,rtol=1e-3,atol=2e-5)
+                    for parameter,gradient in zip(model.parameters(),gradients):
+                        if gradient is None:
+                            if parameter.grad is not None:raise ValueError('Graph activated an unused branch')
+                        else:torch.testing.assert_close(parameter.grad,gradient,rtol=1e-3,atol=2e-5)
                     del gradients;replays[pos.shape[1]]=replay
                 else:actual=replays[pos.shape[1]](b,pos)
                 device.advance()

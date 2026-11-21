@@ -59,8 +59,10 @@ def main():
     p.add_argument('--embedding',type=int,choices=[256,512],default=None)
     p.add_argument('--balanced-frames',action='store_true')
     p.add_argument('--initialization',choices=['parent','scratch'],default='parent')
-    p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled','control_variate'],default='scaled')
+    p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled','control_variate','mask_adapter'],default='scaled')
+    p.add_argument('--adapter-warmup',action='store_true')
     a=p.parse_args();arms=a.arms.split(',')
+    if a.adapter_warmup and a.architecture!='mask_adapter':raise ValueError('Adapter warmup requires the mask adapter architecture')
     if a.output.exists() or len(arms)>4 or len(set(arms))!=len(arms) or any(x not in ARMS for x in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')
     receipt=json.loads(a.checkpoint.with_suffix('.proof.json').read_text()) if a.checkpoint.with_suffix('.proof.json').exists() else json.loads((a.checkpoint.parent/'result.json').read_text())
@@ -101,6 +103,8 @@ def main():
                       weighting='uniform training windows; original coordinate losses weight visible1 hidden0.1; new relative penalty weights all valid bars equally; metrics unweighted',
                       deadline_seconds=3300,scope='Bounded subset; no full training',fresh_optimizer=True)
         contract.update(initialization=a.initialization,architecture=a.architecture)
+        contract['adapter_warmup']=a.adapter_warmup
+        if a.adapter_warmup:contract['masking']='16 random visible bars every training batch; shared encoder and decoder frozen during adapter-only warmup'
         contract['config']=dict(contract['config'])
         if a.embedding:contract['config']['embedding']=a.embedding
         contract['embedding']=f"{contract['config']['embedding']} learned values only"
@@ -124,10 +128,12 @@ def main():
             arch='unscaled' if arm=='unscaled_relative01' else a.architecture
             model=Autoencoder(Config(**contract['config']),cal['mean'],cal['scale'],arch).cuda()
             expanded=initialize_parent(model,saved['model']) if a.initialization=='parent' else []
+            if a.adapter_warmup:
+                model.requires_grad_(False);model.encoder.mask_adapter.requires_grad_(True)
             opt=torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=.01,fused=True)
             generator=torch.Generator(device='cuda').manual_seed(559)
             arm_contract=dict(contract,loss_arm=arm,encoder_count_scaled=model.encoder.count_scaled,architecture=arch,
-                              parameters=sum(p.numel() for p in model.parameters()),expanded_parameters=expanded)
+                              parameters=sum(p.numel() for p in model.parameters()),trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),expanded_parameters=expanded)
             w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v19-tail-repair',name=a.output.name+'-'+arm,dir=str(out),config=arm_contract,reinit=True)
             status='failed';step=0;curve=[];training_seconds=0.
             def save(path):
@@ -136,7 +142,7 @@ def main():
             try:
                 # Training-only easy case, cloned weights. Never modifies experiment parent.
                 tiny=copy.deepcopy(model);tiny_opt=torch.optim.AdamW(tiny.parameters(),lr=1e-4)
-                tiny_curve=[];z,meta,valid,_,v,frames,raw=[x[:1] for x in train];pos=positions(1,'cuda',64)
+                tiny_curve=[];z,meta,valid,_,v,frames,raw=[x[:1] for x in train];pos=positions(1,'cuda',16 if a.adapter_warmup else 64)
                 for t in range(201):
                     loss,_=objective(tiny,teacher,tiny(z,meta,pos),z,valid,pos,raw,v,arm,frames,activity_scale)
                     if t in (0,200):tiny_curve.append(float(loss.detach()))
@@ -148,7 +154,7 @@ def main():
                     if time.perf_counter()-began>3000 or (a.output/'STOP').exists():raise InterruptedError('Deadline/human STOP')
                     if step:
                         tick=time.perf_counter();ids=sampler.sample(a.batch,generator) if sampler else torch.randint(len(train[0]),(a.batch,),device='cuda',generator=generator)
-                        z,meta,valid,_,v,frames,raw=[x[ids] for x in train];pos=positions(len(z),'cuda',64 if step%4==0 else 16,generator)
+                        z,meta,valid,_,v,frames,raw=[x[ids] for x in train];pos=positions(len(z),'cuda',64 if step%4==0 and not a.adapter_warmup else 16,generator)
                         opt.zero_grad(set_to_none=True)
                         loss,parts=objective(model,teacher,model(z,meta,pos),z,valid,pos,raw,v,arm,frames,activity_scale)
                         loss.backward();norm=stable_clip(model.parameters())

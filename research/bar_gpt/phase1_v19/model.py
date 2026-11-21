@@ -29,7 +29,10 @@ class MeanFilledSlots(TemporalSlots):
         # learned bottleneck. No raw feature, target, or decoder side channel.
         aligned=h.mean(1,keepdim=True).expand(-1,64,-1)
         aligned=aligned.scatter(1,pos[...,None].expand_as(h),h)
-        return self.readout(aligned.flatten(1))
+        embedding=self.readout(aligned.flatten(1))
+        if hasattr(self,'mask_adapter') and pos.shape[1]<64:
+            embedding=embedding+(1-pos.shape[1]/64)*self.mask_adapter(embedding)
+        return embedding
 
 
 class ControlVariateSlots(TemporalSlots):
@@ -53,7 +56,7 @@ class ControlVariateSlots(TemporalSlots):
 class Autoencoder(Previous):
     def __init__(self,c,mean,scale,architecture='scaled'):
         super().__init__(c,mean,scale,'scaled_slots_price')
-        if architecture not in ('scaled','unscaled','centered','mean_filled','control_variate'):raise ValueError(architecture)
+        if architecture not in ('scaled','unscaled','centered','mean_filled','control_variate','mask_adapter'):raise ValueError(architecture)
         self.architecture=architecture
         self.encoder.count_scaled=architecture=='scaled'
         if architecture=='centered':
@@ -61,6 +64,10 @@ class Autoencoder(Previous):
             self.encoder.global_readout=nn.Linear(c.width,c.embedding)
         if architecture=='mean_filled':self.encoder.__class__=MeanFilledSlots
         if architecture=='control_variate':self.encoder.__class__=ControlVariateSlots
+        if architecture=='mask_adapter':
+            self.encoder.__class__=MeanFilledSlots
+            self.encoder.mask_adapter=nn.Linear(c.embedding,c.embedding)
+            nn.init.zeros_(self.encoder.mask_adapter.weight);nn.init.zeros_(self.encoder.mask_adapter.bias)
 
 
 def architecture(contract):
@@ -78,7 +85,9 @@ def initialize_parent(model,state):
         elif key=='decoder.weight' and own[key].shape[0]==value.shape[0] and own[key].shape[1]>value.shape[1]:
             own[key].zero_();own[key][:,:value.shape[1]]=value;changed.append(key)
         else:raise ValueError('Unqualified parent geometry: '+key)
-    if own.keys()!=state.keys():raise ValueError('Parent is missing architecture parameters')
+    missing=set(own)-set(state)
+    if missing-set(('encoder.mask_adapter.weight','encoder.mask_adapter.bias')):raise ValueError('Parent is missing architecture parameters')
+    changed.extend(sorted(missing))
     model.load_state_dict(own);return changed
 
 

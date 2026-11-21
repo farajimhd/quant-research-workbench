@@ -5,7 +5,7 @@ from ..phase1_v12.model import Config,positions,gather
 
 def test_hidden_isolation_export_and_gradients(tmp_path):
     torch.set_num_threads(2)
-    for arch in ('scaled','unscaled','centered','mean_filled','control_variate'):
+    for arch in ('scaled','unscaled','centered','mean_filled','control_variate','mask_adapter'):
         torch.manual_seed(17)
         m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),arch).eval()
         z=torch.randn(2,64,16);meta=torch.randn(2,64,36);pos=positions(2,'cpu',16)
@@ -50,3 +50,17 @@ def test_bottleneck_expansion_preserves_prediction_and_can_learn():
         torch.testing.assert_close(parent(z,meta,pos),larger(z,meta,pos),rtol=1e-5,atol=1e-6)
     larger(z,meta,pos).square().mean().backward()
     assert larger.decoder.weight.grad[:,256:].abs().sum()>0
+
+
+def test_mask_adapter_warmup_cannot_change_all_visible():
+    from .model import initialize_parent
+    torch.manual_seed(17)
+    parent=Autoencoder(Config(),torch.zeros(16),torch.ones(16),'mean_filled').eval()
+    m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),'mask_adapter').eval()
+    initialize_parent(m,parent.state_dict());m.requires_grad_(False);m.encoder.mask_adapter.requires_grad_(True)
+    z=torch.randn(2,64,16);meta=torch.randn(2,64,36);full=positions(2,'cpu',64);masked=positions(2,'cpu',16)
+    baseline=m(z,meta,full).detach().clone();initial=m(z,meta,masked).detach().clone()
+    optimizer=torch.optim.AdamW(m.encoder.mask_adapter.parameters(),lr=1e-3)
+    m(z,meta,masked).square().mean().backward();optimizer.step()
+    torch.testing.assert_close(m(z,meta,full),baseline,rtol=0,atol=0)
+    assert not torch.equal(m(z,meta,masked),initial)
