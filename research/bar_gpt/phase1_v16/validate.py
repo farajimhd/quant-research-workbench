@@ -18,7 +18,7 @@ from research.mlops.env import discover_env_files,load_env_files
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--output',type=Path,required=True)
-    p.add_argument('--source-revision',required=True);p.add_argument('--variant',choices=['base','body','linear_body','slots_body','scaled_slots_body'],required=True)
+    p.add_argument('--source-revision',required=True);p.add_argument('--variant',choices=['base','body','linear_body','slots_body','scaled_slots_body','scaled_slots_price'],required=True)
     p.add_argument('--profile-batches',type=int,default=0);p.add_argument('--batch-size',type=int,default=4096);p.add_argument('--workers',type=int,default=16)
     p.add_argument('--seconds',type=int,default=3000);a=p.parse_args()
     if a.output.exists():raise ValueError('New validation identity required')

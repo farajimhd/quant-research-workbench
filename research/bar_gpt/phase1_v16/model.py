@@ -22,19 +22,19 @@ class TemporalSlots(Encoder):
 class Autoencoder(Base):
     def __init__(self, c, mean, scale, arm='body'):
         super().__init__(c, mean, scale, 'stable_balanced')
-        if arm not in ('base', 'body', 'linear_body', 'slots_body', 'scaled_slots_body'):
+        if arm not in ('base', 'body', 'linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price'):
             raise ValueError('Unknown direction experiment')
         self.arm = arm
-        if arm in ('slots_body','scaled_slots_body'):
+        if arm in ('slots_body','scaled_slots_body','scaled_slots_price'):
             self.encoder.__class__ = TemporalSlots
-            self.encoder.count_scaled=arm=='scaled_slots_body'
+            self.encoder.count_scaled=arm.startswith('scaled_slots')
             self.encoder.readout = nn.Linear(c.width*64, c.embedding)
-        if arm in ('linear_body', 'slots_body', 'scaled_slots_body'):
+        if arm in ('linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price'):
             del self.decoder, self.queries
             self.decoder = nn.Linear(c.embedding, 64*16)
 
     def decode(self, embedding):
-        if self.arm in ('linear_body', 'slots_body', 'scaled_slots_body'):
+        if self.arm in ('linear_body', 'slots_body', 'scaled_slots_body','scaled_slots_price'):
             return self.decoder(embedding.float()).reshape(-1, 64, 16)
         return super().decode(embedding)
 
@@ -57,4 +57,13 @@ def direction_objective(model, teacher, pred, latent, valid, pos, raw, source_va
         err = (code[..., b+1]-target)*10000.  # log-basis-point units
         element = F.smooth_l1_loss(err, torch.zeros_like(err), reduction='none')
         loss = loss+(torch.where(mask, element, 0)*weights).sum()/(mask*weights).sum().clamp_min(1)
-    return base+.1*loss/3, loss/3
+    total=base+.1*loss/3
+    if model.arm=='scaled_slots_price':
+        price=base.new_zeros(())
+        for b in (0,6,12):
+            mask=source_valid[...,b+3]
+            target=torch.where(mask,raw[...,b+3].double().clamp_min(1e-300).log(),0).float()
+            element=F.smooth_l1_loss((code[...,b]-target)*1000.,torch.zeros_like(target),reduction='none')
+            price=price+(torch.where(mask,element,0)*weights).sum()/(mask*weights).sum().clamp_min(1)
+        total=total+.01*price/3
+    return total, loss/3

@@ -44,6 +44,7 @@ def main():
     p.add_argument('--revision', required=True)
     p.add_argument('--steps', type=int, default=15000)
     p.add_argument('--arms', default='base,body')
+    p.add_argument('--lr',type=float,default=3e-5)
     a = p.parse_args()
     if a.output.exists() or not 1 <= a.steps <= 30000:
         raise ValueError('New bounded experiment identity required')
@@ -60,7 +61,8 @@ def main():
     if data['hash'] != cal['data_hash'] or cal['split_hash'] != saved['contract']['split_hash']:
         raise ValueError('Data/calibration mismatch')
     arms=a.arms.split(',')
-    if not arms or any(x not in ('base','body','linear_body','slots_body','scaled_slots_body') for x in arms) or len(set(arms))!=len(arms):raise ValueError('Invalid arms')
+    if not arms or any(x not in ('base','body','linear_body','slots_body','scaled_slots_body','scaled_slots_price') for x in arms) or len(set(arms))!=len(arms):raise ValueError('Invalid arms')
+    if not 1e-6<=a.lr<=1e-3:raise ValueError('Invalid learning rate')
     a.output.mkdir(parents=True)
     import psutil
     write_json(a.output / 'process.json', dict(pid=os.getpid(), created=psutil.Process().create_time()))
@@ -74,7 +76,7 @@ def main():
         dev = cache(dataset / 'development.npy', teacher)
         contract = dict(source=a.revision, parent_checkpoint=str(a.checkpoint), parent_sha=file_hash(a.checkpoint),
                         data_hash=data['hash'], split_hash=cal['split_hash'], steps=a.steps, batch=1024,
-                        lr=3e-5, cache_seconds=time.perf_counter()-started, sampling_seed=559,
+                        lr=a.lr, cache_seconds=time.perf_counter()-started, sampling_seed=559,
                         config=saved['contract']['config'], variant='stable_balanced',
                         scope='Same frozen subset and parent encoder; changed heads initialized fresh; all arms fresh optimizer. No embedding augmentation', arms=arms,
                         embedding_contract='256 learned values only; no appended summaries, directions, references or input bypass')
@@ -89,7 +91,7 @@ def main():
             m.load_state_dict(compatible,strict=False)
             write_json(out/'initialization.json',dict(loaded=list(compatible),fresh=[k for k in m.state_dict() if k not in compatible],parameters=sum(p.numel() for p in m.parameters())))
             tiny=overfit(m,teacher,train);write_json(out/'tiny-overfit.json',tiny);print(name,'tiny',tiny,flush=True)
-            opt = torch.optim.AdamW(m.parameters(), lr=3e-5, weight_decay=.01, fused=True)
+            opt = torch.optim.AdamW(m.parameters(), lr=a.lr, weight_decay=.01, fused=True)
             g = torch.Generator(device='cuda').manual_seed(559)
             w = wandb.init(entity='mehdifaraji', project='bargpt-phase1-v16-direction',
                            name=a.output.name+'-'+name, dir=str(out), config=dict(contract, arm=name), reinit=True)
