@@ -30,7 +30,7 @@ def profile(a,teacher,cal,manifest,saved):
     results=[]
     for pair in a.profile_configs.split(','):
         a.batch_size,a.workers=map(int,pair.split(':'))
-        if not 1<=a.batch_size<=16384 or not 0<=a.workers<=32:raise ValueError('Profile bounds')
+        if not 1<=a.batch_size<=32768 or not 0<=a.workers<=32:raise ValueError('Profile bounds')
         model=make_model(saved,cal);opt=torch.optim.AdamW(model.parameters(),lr=a.learning_rate,weight_decay=.01,fused=True)
         source=loader(manifest,a,'train');device=None;replays={};replay=b=pos=actual=expected=None;torch.cuda.reset_peak_memory_stats()
         started=time.perf_counter();n=0
@@ -73,10 +73,10 @@ def main():
     p.add_argument('--learning-rate',type=float,default=1e-5);p.add_argument('--min-learning-rate',type=float,default=1e-5);p.add_argument('--warmup-steps',type=int,default=1)
     p.add_argument('--validation-every',type=int,default=2000);p.add_argument('--checkpoint-every',type=int,default=500)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
-    p.add_argument('--profile-batches',type=int,default=64);p.add_argument('--profile-configs',default='4096:16,8192:16,16384:16')
+    p.add_argument('--profile-batches',type=int,default=64);p.add_argument('--profile-configs',default='4096:16,8192:16,16384:16,16384:32,32768:32')
     a=p.parse_args();a.device='cuda';a.preparation='raw_gpu';a.seed=17;a.prefetch=4;a.shard_prefetch=16;a.shard_prefetch_mib=64
     a.validation_batch_size=8192;a.validation_workers=16;a.graphs=True;a.metric_graphs=True
-    if not 1<=a.epochs<=20 or not 1<=a.batch_size<=16384 or not 0<=a.workers<=32 or min(a.warmup_steps,a.validation_every,a.checkpoint_every)<1:raise ValueError('Training bounds')
+    if not 1<=a.epochs<=20 or not 1<=a.batch_size<=32768 or not 0<=a.workers<=32 or min(a.warmup_steps,a.validation_every,a.checkpoint_every)<1:raise ValueError('Training bounds')
     if not 1e-7<=a.min_learning_rate<=a.learning_rate<=1e-4:raise ValueError('Learning rate bounds')
     receipt=json.loads((a.checkpoint.parent/'result.json').read_text());parent_sha=file_hash(a.checkpoint)
     if parent_sha!=receipt['checkpoint_sha']:raise ValueError('Candidate checkpoint changed')
