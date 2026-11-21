@@ -43,3 +43,11 @@ but no64/N multiplication of positional slots. Both architecture state and
 loss identity are recorded; checkpoint readers restore the count-scaling flag.
 Known failure cases are evaluation-only stress tests and are explicitly labelled
 as such. They are neither pristine held-out evidence nor fitted training targets.
+
+Canonical input check: all32 retained failure bars were traced back through the
+ordered loader to exact sealed shard rows; payload/window hashes matched. Their
+bid/ask closing prices and displayed sizes matched the latest causal canonical
+quote in `market_sip_compact.events_2025`, with zero mismatches across nine tickers.
+The worst GNLN bar has canonical bid0.0129/size51200 and ask0.0131/size9700.
+This is targeted source confirmation, not a fresh audit of every dataset field
+or quote. `source_audit` records its precise scope and evidence under the runtime.
