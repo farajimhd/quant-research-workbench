@@ -23,3 +23,13 @@ def test_stable_duplicate_invariance_and_hidden_isolation():
     known=torch.zeros(4,64,dtype=torch.bool).scatter(1,p,True)
     torch.testing.assert_close(m(z,meta,p),m(torch.where(known[...,None],z,z+100),meta,p))
     torch.testing.assert_close(m(z,meta,p),m(z,meta,p.repeat_interleave(4,dim=1)),atol=1e-6,rtol=1e-5)
+
+
+def test_encoder_export_without_decoder(tmp_path):
+    from .model import load_exported_encoder
+    from ..phase1_v12.model import gather
+    c=Config(width=32,layers=1,heads=2,precision='fp32');m=Autoencoder(c,[0.]*16,[1.]*16,'stable_balanced')
+    path=tmp_path/'encoder.pt';torch.save(dict(config=vars(c),variant=m.variant,encoder=m.encoder.state_dict()),path)
+    encoder=load_exported_encoder(path);z=torch.randn(2,64,16);meta=torch.randn(2,64,36);pos=positions(2,'cpu',64)
+    torch.testing.assert_close(encoder(gather(z,pos),gather(meta,pos),pos),m.encoder(z,meta,pos),rtol=0,atol=0)
+    assert not any('decoder' in name for name in encoder.state_dict())

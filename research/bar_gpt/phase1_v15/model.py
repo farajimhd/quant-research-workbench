@@ -39,3 +39,14 @@ class Autoencoder(Base):
             old=self.encoder.blocks[i]
             new=CountAttention(c.width,c.heads,stable=variant.startswith('stable'),balanced=variant in ('balanced','stable_balanced'))
             new.load_state_dict(old.state_dict());self.encoder.blocks[i]=new
+
+
+def load_exported_encoder(path,device='cpu'):
+    """Load the fixed-size encoder without constructing or requiring a decoder."""
+    from ..phase1_v12.model import Encoder,Config
+    saved=torch.load(path,map_location='cpu',weights_only=False)
+    c=Config(**saved['config']);state=saved['encoder'];variant=saved['variant']
+    if variant not in ('original','balanced','stable','stable_balanced'):raise ValueError('Invalid exported variant')
+    encoder=Encoder(c,state['mean'],state['scale'])
+    for i in range(c.layers):encoder.blocks[i]=CountAttention(c.width,c.heads,variant.startswith('stable'),variant in ('balanced','stable_balanced'))
+    encoder.load_state_dict(state);return encoder.to(device).eval()
