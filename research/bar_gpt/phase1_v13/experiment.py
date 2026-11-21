@@ -22,13 +22,13 @@ def cache(path,teacher):
     rows=np.load(path,mmap_mode='r');parts=[]
     for i in range(0,len(rows),512):
         b=prepare_raw(rows[i:i+512],True).to('cuda')
-        parts.append((*prepare(teacher,b),b.frames))
-    return tuple(torch.cat([p[j] for p in parts]) for j in range(6))
+        parts.append((*prepare(teacher,b),b.frames,b.grid))
+    return tuple(torch.cat([p[j] for p in parts]) for j in range(7))
 
 
 @torch.no_grad()
 def evaluate(m,teacher,data):
-    z,meta,valid,x,v,frames=data;g=torch.Generator(device='cuda').manual_seed(917)
+    z,meta,valid,x,v,frames,raw_target=data;g=torch.Generator(device='cuda').manual_seed(917)
     result={};m.eval()
     for mode in ('masked','all_visible'):
         loss_sum=0.;count=0;mae=torch.zeros(2,device='cuda',dtype=torch.float64)
@@ -40,7 +40,7 @@ def evaluate(m,teacher,data):
             element=torch.nn.functional.smooth_l1_loss(pred,(zz-m.encoder.mean)/m.encoder.scale,reduction='none').mean(-1)
             loss_sum+=float(torch.where(mask,element,0).sum());count+=int(mask.sum())
             logs=teacher.decode(m.denormalize(pred))['logs'][...,3].double()
-            target=x[i:i+512,:,3].double().exp();raw=logs.exp()
+            target=raw_target[i:i+512,:,3].double();raw=logs.exp()
             if not torch.isfinite(raw).all():raise FloatingPointError('Nonfinite raw predictions')
             rawmask=mask&v[i:i+512,:,3]&(frames[i:i+512,None]==1000000)
             mae+=torch.stack((torch.where(rawmask,(raw-target).abs(),0).sum(),rawmask.sum()))
