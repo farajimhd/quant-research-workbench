@@ -13,7 +13,7 @@ import wandb
 from .objectives import objective, ARMS, calibrate
 from ..phase1_v17.metrics import ActivityMetrics, scalars as activity_scalars
 from ..phase1_v17.sampling import FrameSampler
-from ..phase1_v16.model import Autoencoder
+from .model import Autoencoder
 from ..phase1_v12.model import Config, positions
 from ..phase1_v12.metrics import Metrics, scalars
 from ..phase1_v12.data import load_teacher
@@ -56,6 +56,8 @@ def main():
     p.add_argument('--stress-cases',type=Path)
     p.add_argument('--batch',type=int,default=1024)
     p.add_argument('--balanced-frames',action='store_true')
+    p.add_argument('--initialization',choices=['parent','scratch'],default='parent')
+    p.add_argument('--architecture',choices=['scaled','unscaled','centered'],default='scaled')
     a=p.parse_args();arms=a.arms.split(',')
     if a.output.exists() or len(arms)>4 or len(set(arms))!=len(arms) or any(x not in ARMS for x in arms):raise ValueError('New identity and valid arms required')
     if not 1<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')
@@ -88,6 +90,7 @@ def main():
                       masking='16 random visible bars in 3/4 batches; all64 in 1/4',
                       weighting='uniform training windows; original coordinate losses weight visible1 hidden0.1; new relative penalty weights all valid bars equally; metrics unweighted',
                       deadline_seconds=3300,scope='Bounded subset; no full training',fresh_optimizer=True)
+        contract.update(initialization=a.initialization,architecture=a.architecture)
         if sampler:
             contract['weighting']='Uniform six-frame draw then uniform window within frame: probability1/(6*frame_count). Calibration unchanged; metrics unweighted.'
             contract['frame_counts']=sampler.counts.cpu().tolist()
@@ -102,11 +105,13 @@ def main():
         results=[]
         for arm in arms:
             began=time.perf_counter();out=a.output/arm;out.mkdir();torch.manual_seed(17)
-            model=Autoencoder(Config(**contract['config']),cal['mean'],cal['scale'],'scaled_slots_price').cuda()
-            model.load_state_dict(saved['model']);opt=torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=.01,fused=True)
-            model.encoder.count_scaled=arm!='unscaled_relative01'
+            arch='unscaled' if arm=='unscaled_relative01' else a.architecture
+            model=Autoencoder(Config(**contract['config']),cal['mean'],cal['scale'],arch).cuda()
+            if a.initialization=='parent':model.load_state_dict(saved['model'])
+            opt=torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=.01,fused=True)
             generator=torch.Generator(device='cuda').manual_seed(559)
-            arm_contract=dict(contract,loss_arm=arm,encoder_count_scaled=model.encoder.count_scaled)
+            arm_contract=dict(contract,loss_arm=arm,encoder_count_scaled=model.encoder.count_scaled,architecture=arch,
+                              parameters=sum(p.numel() for p in model.parameters()))
             w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v19-tail-repair',name=a.output.name+'-'+arm,dir=str(out),config=arm_contract,reinit=True)
             status='failed';step=0;curve=[];training_seconds=0.
             def save(path):

@@ -51,3 +51,24 @@ quote in `market_sip_compact.events_2025`, with zero mismatches across nine tick
 The worst GNLN bar has canonical bid0.0129/size51200 and ask0.0131/size9700.
 This is targeted source confirmation, not a fresh audit of every dataset field
 or quote. `source_audit` records its precise scope and evidence under the runtime.
+
+The four continuation arms failed qualification: relative1 retained catastrophic
+masked stress outputs (maximum4.96e11), while changing count scaling on the
+trained checkpoint destroyed development price reconstruction (1s close MAE27356).
+Do not resume that checkpoint unchanged or promote any of these repairs.
+
+Next matched experiments use scratch initialization,15000 updates,AdamW1e-4,
+and relative01/relative1 objectives with unscaled or centered-slot architectures.
+Centered slots combine a learned CLS projection and a learned projection of
+position-aligned token deviations from their visible mean, by addition into the
+same256D embedding. The decoder remains the existing single linear layer.
+No input reference, metadata or raw feature bypasses that embedding. The fixed
+teacher and its calibration remain unchanged. Architecture and initialization
+are separately recorded; these are new scientific identities, never resumes.
+
+Promotion requires complete full-population validation and comparison against
+the preserved pre-full candidate and stopped checkpoint across all18 channels,
+both visibility modes, all timeframes, price/body and activity directions.
+Aggregate improvement cannot excuse worsened working groups. Known32 cases are
+diagnostic only. These scratch experiments may be rejected even if their tail
+errors improve. Full training remains stopped until qualification succeeds.

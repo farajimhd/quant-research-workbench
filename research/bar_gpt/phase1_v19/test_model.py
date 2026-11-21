@@ -1,0 +1,27 @@
+import torch
+from .model import Autoencoder,load_exported_encoder
+from ..phase1_v12.model import Config,positions,gather
+
+
+def test_hidden_isolation_export_and_gradients(tmp_path):
+    torch.set_num_threads(2)
+    for arch in ('scaled','unscaled','centered'):
+        torch.manual_seed(17)
+        m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),arch).eval()
+        z=torch.randn(2,64,16);meta=torch.randn(2,64,36);pos=positions(2,'cpu',16)
+        embedding=m.encoder(gather(z,pos),gather(meta,pos),pos)
+        assert embedding.shape==(2,256)
+        expected=m.decode(embedding)
+        hidden=~torch.zeros(2,64,dtype=torch.bool).scatter(1,pos,True)
+        changed=z.clone();changed[hidden]=10000
+        changed_meta=meta.clone();changed_meta[hidden]=-10000
+        torch.testing.assert_close(m(changed,changed_meta,pos),expected,rtol=0,atol=0)
+        expected.square().mean().backward()
+        assert all(p.grad is None or torch.isfinite(p.grad).all() for p in m.parameters())
+        path=tmp_path/(arch+'.pt')
+        torch.save(dict(config=vars(m.config),architecture=arch,encoder=m.encoder.state_dict()),path)
+        exported=load_exported_encoder(path)
+        assert not any('decoder' in k for k in exported.state_dict())
+        for count in (16,64):
+            p=positions(2,'cpu',count)
+            torch.testing.assert_close(exported(gather(z,p),gather(meta,p),p),m.encoder(gather(z,p),gather(meta,p),p),rtol=0,atol=0)

@@ -4,7 +4,7 @@ os.environ.update(PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',MKL_NUM_THREAD
 import argparse,json,threading,time
 from pathlib import Path
 import torch
-from ..phase1_v16.model import Autoencoder
+from .model import Autoencoder,architecture
 from ..phase1_v12.model import Config
 from ..phase1_v12.data import load_teacher
 from ..phase1_v12 import train as pipeline
@@ -42,7 +42,7 @@ def main():
     saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
     c=Config(**saved['contract'].get('config',vars(Config())))
     if saved['contract']['arm']!=a.variant:raise ValueError('Checkpoint architecture mismatch')
-    m=Autoencoder(c,cal['mean'],cal['scale'],a.variant).cuda()
+    m=Autoencoder(c,cal['mean'],cal['scale'],architecture(saved['contract'])).cuda()
     m.load_state_dict({k:v for k,v in saved['model'].items() if k not in ('encoder.input_center','encoder.input_scale')})
     m.encoder.count_scaled=saved['contract'].get('encoder_count_scaled',True)
     manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}
