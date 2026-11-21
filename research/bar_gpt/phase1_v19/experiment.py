@@ -94,7 +94,8 @@ def main():
         contract['activity_calibration']=activity_calibration
         contract['hypotheses']={'control':'Matched continuation of V18; no inverse-aware term',
             'relative01':'Add0.1 native relative Huber to control exponential overshoot tails',
-            'relative1':'Tenfold stronger inverse-aware penalty to test loss competition'}
+            'relative1':'Tenfold stronger inverse-aware penalty to test loss competition',
+            'unscaled_relative01':'Matched relative01 loss, remove64/N positional-slot amplification'}
         contract['validation_boundary']='Development/audit/forensic examples never enter training or calibration'
         contract['diagnostic_stress_sha']=file_hash(a.stress_cases) if a.stress_cases else None
         write_json(a.output/'manifest.json',contract)
@@ -103,11 +104,13 @@ def main():
             began=time.perf_counter();out=a.output/arm;out.mkdir();torch.manual_seed(17)
             model=Autoencoder(Config(**contract['config']),cal['mean'],cal['scale'],'scaled_slots_price').cuda()
             model.load_state_dict(saved['model']);opt=torch.optim.AdamW(model.parameters(),lr=a.lr,weight_decay=.01,fused=True)
+            model.encoder.count_scaled=arm!='unscaled_relative01'
             generator=torch.Generator(device='cuda').manual_seed(559)
-            w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v19-tail-repair',name=a.output.name+'-'+arm,dir=str(out),config=dict(contract,loss_arm=arm),reinit=True)
+            arm_contract=dict(contract,loss_arm=arm,encoder_count_scaled=model.encoder.count_scaled)
+            w=wandb.init(entity='mehdifaraji',project='bargpt-phase1-v19-tail-repair',name=a.output.name+'-'+arm,dir=str(out),config=arm_contract,reinit=True)
             status='failed';step=0;curve=[];training_seconds=0.
             def save(path):
-                torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),contract=dict(contract,loss_arm=arm),step=step,
+                torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),contract=arm_contract,step=step,
                                 rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state_all(),sampling_rng=generator.get_state()),path)
             try:
                 # Training-only easy case, cloned weights. Never modifies experiment parent.

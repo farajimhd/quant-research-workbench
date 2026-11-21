@@ -3,7 +3,7 @@ import torch
 from torch.nn import functional as F
 from ..phase1_v18.objectives import objective as previous,calibrate,constants
 
-ARMS=('control','relative01','relative1')
+ARMS=('control','relative01','relative1','unscaled_relative01')
 
 
 def relative_activity_loss(code,raw,valid):
@@ -25,4 +25,4 @@ def objective(model,teacher,pred,latent,valid,pos,raw,source_valid,arm,frames,sc
     if arm=='control':return loss,dict(parts,activity_relative=loss.new_zeros(()))
     code=teacher.decoder(model.denormalize(pred).float())*teacher.scale[:18]+teacher.mean[:18]
     relative=relative_activity_loss(code,raw,source_valid)
-    return loss+(.1 if arm=='relative01' else 1.)*relative,dict(parts,activity_relative=relative)
+    return loss+(.1 if arm in ('relative01','unscaled_relative01') else 1.)*relative,dict(parts,activity_relative=relative)

@@ -44,6 +44,7 @@ def main():
     if saved['contract']['arm']!=a.variant:raise ValueError('Checkpoint architecture mismatch')
     m=Autoencoder(c,cal['mean'],cal['scale'],a.variant).cuda()
     m.load_state_dict({k:v for k,v in saved['model'].items() if k not in ('encoder.input_center','encoder.input_scale')})
+    m.encoder.count_scaled=saved['contract'].get('encoder_count_scaled',True)
     manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}
     contract=dict(source=a.source_revision,checkpoint=str(a.checkpoint),checkpoint_sha256=receipt['checkpoint_sha'],variant=a.variant,split_hash=cal['split_hash'],calibration_sha256=file_hash(calpath),profile_batches=a.profile_batches,batch_size=a.batch_size,workers=a.workers,deadline_seconds=a.seconds)
     write_json(a.output/'manifest.json',contract)

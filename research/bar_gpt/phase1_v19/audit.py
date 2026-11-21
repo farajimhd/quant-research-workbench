@@ -21,7 +21,7 @@ def load_model(path,cal):
     if path.with_suffix('.proof.json').exists():saved=load_checkpoint(path,saved['contract'])
     elif file_hash(path)!=json.loads((path.parent/'result.json').read_text())['checkpoint_sha']:raise ValueError('Changed checkpoint')
     m=Autoencoder(Config(**saved['contract']['config']),cal['mean'],cal['scale'],'scaled_slots_price').cuda().eval()
-    m.load_state_dict(saved['model']);return m
+    m.load_state_dict(saved['model']);m.encoder.count_scaled=saved['contract'].get('encoder_count_scaled',True);return m
 
 
 @torch.no_grad()
