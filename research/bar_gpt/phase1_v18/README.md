@@ -84,6 +84,11 @@ python -B -m research.bar_gpt.phase1_v18.launch --mode train --checkpoint CANDID
 # Resume with identical arguments plus --resume FULL_RUNTIME/checkpoint_last.pt.
 ```
 
+Worker count must remain unchanged on resume: the inherited stream partitions
+shards and seeds row permutations by worker count. A different worker count
+cannot replay the saved cursor exactly. The run used16 workers for both launch
+and native resume; subsequent runner admission explicitly rejects a mismatch.
+
 ## Full-population qualification and selected launch
 
 `joint` completed all 47,750,007 validation windows in 839.50 seconds

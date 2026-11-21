@@ -26,6 +26,13 @@ def make_model(saved,cal):
     model.load_state_dict(saved['model']);configure(model,saved['contract']);return model
 
 
+def verify_resume_workers(output,workers):
+    # EligibleStream partitions entries and seeds row permutations by worker
+    # count. Replaying a cursor with different workers would skip other rows.
+    original=json.loads((output/'manifest.json').read_text())
+    if original['workers']!=workers:raise ValueError('Resume must retain the original loader worker count and ordered traversal')
+
+
 def profile(a,teacher,cal,manifest,saved):
     results=[]
     for pair in a.profile_configs.split(','):
@@ -78,6 +85,7 @@ def main():
     a.validation_batch_size=8192;a.validation_workers=16;a.graphs=True;a.metric_graphs=True
     if not 1<=a.epochs<=20 or not 1<=a.batch_size<=32768 or not 0<=a.workers<=32 or min(a.warmup_steps,a.validation_every,a.checkpoint_every)<1:raise ValueError('Training bounds')
     if not 1e-7<=a.min_learning_rate<=a.learning_rate<=1e-4:raise ValueError('Learning rate bounds')
+    if a.resume:verify_resume_workers(a.output,a.workers)
     receipt=json.loads((a.checkpoint.parent/'result.json').read_text());parent_sha=file_hash(a.checkpoint)
     if parent_sha!=receipt['checkpoint_sha']:raise ValueError('Candidate checkpoint changed')
     if a.mode=='train':

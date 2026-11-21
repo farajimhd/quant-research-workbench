@@ -13,3 +13,10 @@ def test_balanced_score_and_missing_groups():
     assert score(worse,reference)[1]['worst_raw_ratio']==11
     del improved['masked/raw_mae/1s/trade_close']
     with pytest.raises(ValueError):score(improved,reference)
+
+
+def test_resume_cannot_change_traversal_workers(tmp_path):
+    from .run import verify_resume_workers
+    (tmp_path/'manifest.json').write_text('{"workers":16}')
+    verify_resume_workers(tmp_path,16)
+    with pytest.raises(ValueError,match='worker count'):verify_resume_workers(tmp_path,32)
