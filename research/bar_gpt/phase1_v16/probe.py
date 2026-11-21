@@ -60,7 +60,7 @@ def main():
                     emb=m.encoder(z[sl],meta[sl],pos);parts.append(emb)
                     preds.append(10000*teacher.decode(m.denormalize(m.decode(emb)))['code'][...,1])
                 features.append(torch.cat(parts));predictions.append(torch.cat(preds))
-            rows[str(path)]=dict(sha256=file_hash(path),probe=fit_probe(features[0],y,features[1],dy),decoder=summary(predictions[1],dy))
+            rows[str(path)]=dict(sha256=file_hash(path),probe=fit_probe(features[0],y,features[1],dy),train_decoder=summary(predictions[0],y),decoder=summary(predictions[1],dy))
             write_json(a.output/'result.json',dict(scope='Same-window trade candle reconstruction, complete source-valid trade pairs only; no future labels',counts=counts,ridge=.01,results=rows))
             print(path.parent.name,rows[str(path)]['probe']['development']['moving'],rows[str(path)]['decoder']['moving'],flush=True)
             del m,features,predictions

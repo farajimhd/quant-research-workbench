@@ -44,7 +44,7 @@ def direction_objective(model, teacher, pred, latent, valid, pos, raw, source_va
     # Phase0's linear decoder maps the reconstructed latent to log(O/C).
     # This avoids subtracting two large FP32 log-price outputs. References are
     # never passed into either decoder; raw targets are used only in the loss.
-    code = teacher.decode(model.denormalize(pred))['code']
+    code = teacher.decoder(model.denormalize(pred).float())*teacher.scale[:18]+teacher.mean[:18]
     loss = base.new_zeros(())
     known = torch.zeros_like(valid).scatter(1, pos, True)
     weights = torch.where(known, 1., .1) if pos.shape[1] < 64 else torch.ones_like(valid, dtype=torch.float32)
