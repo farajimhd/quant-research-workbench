@@ -57,7 +57,7 @@ def main():
     p.add_argument('--batch',type=int,default=1024)
     p.add_argument('--balanced-frames',action='store_true')
     p.add_argument('--initialization',choices=['parent','scratch'],default='parent')
-    p.add_argument('--architecture',choices=['scaled','unscaled','centered'],default='scaled')
+    p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled'],default='scaled')
     a=p.parse_args();arms=a.arms.split(',')
     if a.output.exists() or len(arms)>4 or len(set(arms))!=len(arms) or any(x not in ARMS for x in arms):raise ValueError('New identity and valid arms required')
     if not 1<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')

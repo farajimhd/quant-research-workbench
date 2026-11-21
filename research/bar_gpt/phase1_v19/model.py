@@ -18,15 +18,30 @@ class CenteredSlots(TemporalSlots):
         return self.global_readout(summary)+self.readout(aligned.flatten(1))
 
 
+class MeanFilledSlots(TemporalSlots):
+    def forward(self,visible_latents,visible_metadata,pos):
+        x=torch.cat(((visible_latents-self.mean)/self.scale,visible_metadata),-1)
+        with torch.autocast(x.device.type,dtype=torch.bfloat16,
+                            enabled=x.is_cuda and self.config.precision=='bf16'):
+            h=self.stem(x)+self.position[0,pos]
+            h=self.blocks(torch.cat((self.cls.expand(len(x),-1,-1),h),1))[:,1:].float()
+        # Impute only missing encoded states from visible states, before the
+        # learned bottleneck. No raw feature, target, or decoder side channel.
+        aligned=h.mean(1,keepdim=True).expand(-1,64,-1)
+        aligned=aligned.scatter(1,pos[...,None].expand_as(h),h)
+        return self.readout(aligned.flatten(1))
+
+
 class Autoencoder(Previous):
     def __init__(self,c,mean,scale,architecture='scaled'):
         super().__init__(c,mean,scale,'scaled_slots_price')
-        if architecture not in ('scaled','unscaled','centered'):raise ValueError(architecture)
+        if architecture not in ('scaled','unscaled','centered','mean_filled'):raise ValueError(architecture)
         self.architecture=architecture
         self.encoder.count_scaled=architecture=='scaled'
         if architecture=='centered':
             self.encoder.__class__=CenteredSlots
             self.encoder.global_readout=nn.Linear(c.width,c.embedding)
+        if architecture=='mean_filled':self.encoder.__class__=MeanFilledSlots
 
 
 def architecture(contract):

@@ -72,3 +72,11 @@ both visibility modes, all timeframes, price/body and activity directions.
 Aggregate improvement cannot excuse worsened working groups. Known32 cases are
 diagnostic only. These scratch experiments may be rejected even if their tail
 errors improve. Full training remains stopped until qualification succeeds.
+
+Additional controlled ablation `mean_filled`: missing temporal states receive
+the mean of visible encoded states before the learned slot projection, with no
+count multiplier. This preserves the parent's all-visible computation exactly
+(tested at zero tolerance), allowing a matched continuation rather than requiring
+scratch learning. It does not reveal missing inputs or add embedding components.
+Run from the preserved parent with separate identity, unchanged decoder, and
+control/relative01/relative1 losses to separate the architecture and objective.
