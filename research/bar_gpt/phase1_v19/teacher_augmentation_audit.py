@@ -24,7 +24,11 @@ def main():
     synthetic=np.load(a.augmentation/'train.npy',mmap_mode='r');rng=np.random.default_rng(192832)
     ids=np.concatenate([rng.choice(np.flatnonzero(original['timeframe_us']==f),128,replace=False) for f in FRAMES])
     results={}
-    for name,rows in (('original',original[ids]),('synthetic',synthetic[manifest['real_windows']+ids])):
+    real=original[ids];aug=synthetic[manifest['real_windows']+ids]
+    from .scale_augmentation import PRICES,QUANTITIES
+    price_only=real.copy();price_only['values'][...,list(PRICES)]=aug['values'][...,list(PRICES)]
+    quantity_only=real.copy();quantity_only['values'][...,list(QUANTITIES)]=aug['values'][...,list(QUANTITIES)]
+    for name,rows in (('original',real),('synthetic',aug),('prices_only',price_only),('quantities_only',quantity_only)):
         raw=RawMetrics('cpu');activity=ActivityMetrics('cpu')
         for i in range(0,len(rows),32):
             b=prepare_raw(rows[i:i+32],True);z,meta,valid,x,v=prepare(teacher,b);out=teacher.decode(z)
