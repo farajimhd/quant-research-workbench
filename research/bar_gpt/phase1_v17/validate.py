@@ -8,8 +8,9 @@ from ..phase1_v16.model import Autoencoder
 from ..phase1_v12.model import Config
 from ..phase1_v12.data import load_teacher
 from ..phase1_v12 import train as pipeline
-from .metrics import FullMetrics, full_scalars
+from .metrics import FullMetrics, FullMetricsReplay, full_scalars
 pipeline.Metrics = FullMetrics
+pipeline.MetricsReplay = FullMetricsReplay
 pipeline.scalars = full_scalars
 evaluate = pipeline.evaluate
 from ..v5.data_v3 import load_split
@@ -27,7 +28,7 @@ def main():
     p.add_argument('--seconds',type=int,default=3000);a=p.parse_args()
     if a.output.exists():raise ValueError('New validation identity required')
     if not 1<=a.seconds<=3000 or not 1<=a.batch_size<=8192 or not 0<=a.workers<=32 or a.profile_batches<0:raise ValueError('Invalid bounded validation settings')
-    a.output.mkdir(parents=True);a.validation_batch_size=a.batch_size;a.validation_workers=a.workers;a.graphs=True;a.metric_graphs=False
+    a.output.mkdir(parents=True);a.validation_batch_size=a.batch_size;a.validation_workers=a.workers;a.graphs=True;a.metric_graphs=True
     import psutil,sys
     write_json(a.output/'process.json',dict(pid=os.getpid(),created=psutil.Process().create_time(),command=sys.argv))
     a.preparation='raw_gpu';a.seed=17;a.prefetch=4;a.shard_prefetch=16;a.shard_prefetch_mib=64

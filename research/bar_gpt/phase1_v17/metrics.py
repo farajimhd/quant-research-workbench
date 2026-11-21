@@ -1,5 +1,6 @@
 """Vectorized consecutive-activity metrics; no pairs across window boundaries."""
 import torch
+import math
 from torch.nn import functional as F
 from ..phase1_v5_raw.engine import FRAME_NAMES
 from ..v5.shards.phase1_contract import FRAMES
@@ -27,7 +28,7 @@ class ActivityMetrics:
         stats = torch.stack((mask.double(), torch.where(mask, (p-y).abs(), 0),
                              torch.where(mask, (p_log-target_log).abs(), 0),
                              (mask & (y == 0)).double(), (mask & ~torch.isfinite(p)).double(),
-                             (mask & (p_log-target_log > torch.log(torch.tensor(10., device=y.device)))).double(),
+                             (mask & (p_log-target_log > math.log(10.))).double(),
                              torch.where(mask, p-y, 0)), -1)
         self.sums += (groups @ stats.sum(1).flatten(1)).reshape(6, 6, 7)
         # Reconstruct both members, never replace the predicted previous bar with truth.
@@ -69,7 +70,7 @@ def scalars(result):
     return out
 
 
-from ..phase1_v12.metrics import Metrics as NativeMetrics, scalars as native_scalars
+from ..phase1_v12.metrics import Metrics as NativeMetrics, MetricsReplay as NativeReplay, scalars as native_scalars
 
 
 class FullMetrics(NativeMetrics):
@@ -96,3 +97,27 @@ def full_scalars(result):
     out=native_scalars(result)
     for name,r in result['activity'].items():out.update({'activity/'+name+'/'+k:v for k,v in scalars(r).items()})
     return out
+
+
+class FullMetricsReplay(NativeReplay):
+    """Capture all native AND activity buffers, with eager/captured parity gates."""
+    @torch.no_grad()
+    def __init__(self, metrics, model, teacher, inference):
+        if metrics.windows:raise ValueError('Empty accumulators required')
+        self.metrics=metrics;self.batch_size=len(inference.batch.grid)
+        def add():metrics.add(model,teacher,inference.batch,inference.output,inference.pos)
+        add()
+        self.buffers=[metrics.count,metrics.sums]
+        for raw in metrics.raw.values():
+            self.buffers.extend((raw.raw,raw.loss,raw.nonfinite))
+            self.buffers.extend(raw.moves.tables.values());self.buffers.extend(raw.moves.confusions.values())
+        for activity in metrics.activity.values():self.buffers.extend((activity.sums,activity.confusion,activity.maxima))
+        expected=[t.clone() for t in self.buffers];self.zero()
+        self.graph=torch.cuda.CUDAGraph();stream=torch.cuda.Stream();stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):add()
+        torch.cuda.current_stream().wait_stream(stream);self.zero();stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.graph(self.graph,stream=stream):add()
+        torch.cuda.current_stream().wait_stream(stream);self.zero();self.graph.replay()
+        for actual,wanted in zip(self.buffers,expected):torch.testing.assert_close(actual,wanted,rtol=1e-6,atol=1e-8)
+        self.zero()
