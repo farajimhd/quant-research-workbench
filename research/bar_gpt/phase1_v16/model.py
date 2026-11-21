@@ -3,6 +3,7 @@ from torch import nn
 from torch.nn import functional as F
 from ..phase1_v15.model import Autoencoder as Base
 from ..phase1_v12.model import Encoder, objective
+from ..phase1_v15.model import CountAttention
 
 
 class TemporalSlots(Encoder):
@@ -66,3 +67,17 @@ def direction_objective(model, teacher, pred, latent, valid, pos, raw, source_va
             price=price+(torch.where(mask,element,0)*weights).sum()/(mask*weights).sum().clamp_min(1)
         total=total+.01*price/3
     return total, loss/3
+
+
+def load_exported_encoder(path,device='cpu'):
+    """Construct only the learned encoder; no decoder or per-example extras."""
+    from ..phase1_v12.model import Config
+    saved=torch.load(path,map_location='cpu',weights_only=False)
+    c=Config(**saved['config']);state=saved['encoder'];arm=saved['arm']
+    if arm not in ('base','body','linear_body','slots_body','scaled_slots_body','scaled_slots_price'):raise ValueError('Unknown exported architecture')
+    slots=arm in ('slots_body','scaled_slots_body','scaled_slots_price')
+    encoder=(TemporalSlots if slots else Encoder)(c,state['mean'],state['scale'])
+    if slots:
+        encoder.count_scaled=arm.startswith('scaled_slots');encoder.readout=nn.Linear(c.width*64,c.embedding)
+    for i in range(c.layers):encoder.blocks[i]=CountAttention(c.width,c.heads,stable=True,balanced=True)
+    encoder.load_state_dict(state);return encoder.to(device).eval()

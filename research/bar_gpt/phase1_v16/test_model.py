@@ -24,3 +24,16 @@ def test_temporal_slots_use_original_positions():
     z=torch.randn(2,16,16);meta=torch.randn(2,16,36);pos=positions(2,'cpu',16)
     order=torch.randperm(16)
     torch.testing.assert_close(m.encoder(z,meta,pos),m.encoder(z[:,order],meta[:,order],pos[:,order]),rtol=1e-5,atol=1e-6)
+
+
+def test_export_contains_no_decoder_or_extra_values(tmp_path):
+    from .model import load_exported_encoder
+    for arm in ('body','scaled_slots_price'):
+        m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),arm).eval()
+        path=tmp_path/(arm+'.pt');torch.save(dict(config=vars(m.config),arm=arm,encoder=m.encoder.state_dict()),path)
+        encoder=load_exported_encoder(path)
+        assert not any('decoder' in k for k in encoder.state_dict())
+        for n in (16,64):
+            z=torch.randn(2,n,16);meta=torch.randn(2,n,36);pos=positions(2,'cpu',n)
+            actual=encoder(z,meta,pos);assert actual.shape==(2,256)
+            torch.testing.assert_close(actual,m.encoder(z,meta,pos),rtol=0,atol=0)
