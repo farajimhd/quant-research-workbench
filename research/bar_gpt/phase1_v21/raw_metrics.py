@@ -27,4 +27,3 @@ class Metrics(BaseMetrics):
         self.moves.moves('candle',ratio(c,o),ratio(pc,po),m[...,0]&m[...,3],frame)
         self.moves.moves('consecutive_close',ratio(c[:,1:],c[:,:-1]),ratio(pc[:,1:],pc[:,:-1]),m[:,1:,:,3]&m[:,:-1,:,3],frame)
         self.moves.moves('range',ratio(h,l),ratio(ph,pl),m[...,1]&m[...,2],frame)
-

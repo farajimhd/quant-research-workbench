@@ -37,7 +37,8 @@ def main():
         if sha!=json.loads((path.parent/'result.json').read_text())['checkpoint_sha']:raise ValueError('Checkpoint changed')
         return torch.load(path,map_location='cpu',weights_only=False),sha
     parent,parent_sha=checked(a.parent);candidate,candidate_sha=checked(a.candidate);saved=combine(parent,candidate)
-    saved['step']=0;saved['contract'].update(source=a.revision,arm='selective_volume',parent_sha=parent_sha,calibrated_sha=candidate_sha,intervention='Same one head: parent trade-volume rows retained; all other calibrated rows retained. No optimizer resume.')
+    saved['step']=0;saved['contract'].update(source=a.revision,arm='selective_volume',steps=0,training_scope='deterministic row selection; no optimizer updates',parent_sha=parent_sha,calibrated_sha=candidate_sha,intervention='Same one head: parent trade-volume rows retained; all other calibrated rows retained. No optimizer resume.')
+    write_json(a.output/'manifest.json',saved['contract'])
     root=Path('D:/TradingML/runtimes/bar_gpt');data=root/'phase1-v8-learned-mae-20261117/dataset';verified=verify(data)
     if verified['source_split_hash']!=saved['contract']['split_hash']:raise ValueError('Split')
     load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)

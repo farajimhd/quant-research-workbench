@@ -79,7 +79,7 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--output',type=Path,required=True);p.add_argument('--revision',required=True)
     p.add_argument('--batch-size',type=int,default=4096);p.add_argument('--workers',type=int,default=16);p.add_argument('--limit-batches',type=int,default=0);p.add_argument('--seconds',type=int,default=3000);a=p.parse_args()
     if a.output.exists():raise ValueError('New evaluation identity required')
-    if not 1<=a.batch_size<=8192 or not 0<=a.workers<=32 or not 1<=a.seconds<=3000 or a.limit_batches<0:raise ValueError('Bounds')
+    if not 1<=a.batch_size<=32768 or not 0<=a.workers<=32 or not 1<=a.seconds<=3000 or a.limit_batches<0:raise ValueError('Bounds')
     a.output.mkdir();a.validation_batch_size=a.batch_size;a.validation_workers=a.workers
     import psutil,sys
     write_json(a.output/'process.json',dict(pid=os.getpid(),created=psutil.Process().create_time(),command=sys.argv))
