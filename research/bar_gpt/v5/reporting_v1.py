@@ -175,7 +175,9 @@ class Reporter:
                 if (self.root / name).exists():
                     artifact.add_file(str(self.root / name))
             self.run.log_artifact(artifact)
-            self.run.finish(exit_code=0 if state == "complete" else 1)
+            # A planned bounded qualification is a completed experiment, not
+            # a training exception. Keep its distinct local state above.
+            self.run.finish(exit_code=0 if state in ("complete", "qualification_complete") else 1)
         if self.writer_lease:
             self.writer_lease.close()
 
