@@ -2,6 +2,8 @@
 import os
 os.environ.update(PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
 import argparse,hashlib,json,time
+from contextlib import contextmanager
+from dataclasses import is_dataclass,replace
 from pathlib import Path
 import numpy as np
 import torch
@@ -23,6 +25,19 @@ from ..phase2_v2.train import lease
 from ..v5.shards.phase1_contract import FRAMES,CHANNELS,file_hash,digest,write_json
 from ..phase1_v5_raw.engine import FRAME_NAMES
 from research.mlops.env import discover_env_files,load_env_files
+
+
+@contextmanager
+def full_precision(model):
+    changed=[]
+    try:
+        for module in model.modules():
+            c=getattr(module,'config',None)
+            if is_dataclass(c) and hasattr(c,'precision'):
+                changed.append((module,c));module.config=replace(c,precision='fp32')
+        yield
+    finally:
+        for module,c in changed:module.config=c
 
 
 def measure(model,inputs,scale):
@@ -56,7 +71,8 @@ def measure(model,inputs,scale):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True)
     p.add_argument('--source-revision',required=True);p.add_argument('--checkpoint',type=Path,action='append',required=True)
-    p.add_argument('--steps',type=int,default=8);a=p.parse_args();a.device='cuda';a.resume=False
+    p.add_argument('--steps',type=int,default=8);p.add_argument('--precision-diagnostic',action='store_true')
+    a=p.parse_args();a.device='cuda';a.resume=False
     if not 1<=a.steps<=16 or not 1<=len(a.checkpoint)<=2:raise ValueError('Bounded diagnostic')
     preflight(a);torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     root=Path('D:/TradingML/runtimes/bar_gpt');base=root/'phase1-v8-learned-mae-20261117/dataset'
@@ -85,18 +101,31 @@ def main():
                 x,v,raw,f,z=[q[ids] for q in train];pos=positions(c['batch'],'cuda',64 if step%4==0 else 16,g)
                 sequence.append(hashlib.sha256(ids.cpu().numpy().tobytes()+pos.cpu().numpy().tobytes()).hexdigest())
                 inputs=(x,v,raw,f,pos,z);opt.zero_grad(set_to_none=True)
+                precision_before=precision_after=None
+                if a.precision_diagnostic:
+                    with torch.no_grad(),full_precision(model):_,precision_before=measure(model,inputs,scale)
                 total,before=measure(model,inputs,scale);total.backward();norm=stable_clip(model.parameters())
                 if not torch.isfinite(norm):raise FloatingPointError('Nonfinite gradient')
+                original={n:p.detach().clone() for n,p in model.named_parameters()}
                 opt.step()
+                dot={k:0. for k in ('bar','temporal','decoder')}
+                coefficient=float((1./(norm+1e-6)).clamp(max=1.).float())
+                with torch.no_grad():
+                    for n,p in model.named_parameters():
+                        if p.grad is not None:dot[n.split('.')[0]]+=float(((p-original[n]).double()*p.grad.double()).sum())/coefficient
+                del original
                 with torch.no_grad():_,after=measure(model,inputs,scale)
-                rows.append(dict(step=step,visible=pos.shape[1],preclip_gradient_norm=float(norm),before=before,after=after))
+                if a.precision_diagnostic:
+                    with torch.no_grad(),full_precision(model):_,precision_after=measure(model,inputs,scale)
+                rows.append(dict(step=step,visible=pos.shape[1],preclip_gradient_norm=float(norm),before=before,after=after,
+                    first_order_loss_change_by_module=dot,fp32_before=precision_before,fp32_after=precision_after))
                 print(cp.parent.name,step,before['loss'],after['loss'],flush=True)
             results[str(cp)]=rows;sampling.append(sequence)
             if file_hash(cp)!=sha:raise ValueError('Input checkpoint mutated')
             del model,opt,saved,total
         if len(sampling)==2 and sampling[0]!=sampling[1]:raise ValueError('Continuations used different examples/masks')
         write_json(a.output/'result.json',dict(source=a.source_revision,data_hash=verified['hash'],supplement_hash=sm['hash'],checkpoints=hashes,
-            sampling_hashes=sampling,results=results,seconds=time.monotonic()-started,
+            sampling_hashes=sampling,results=results,precision_diagnostic=a.precision_diagnostic,seconds=time.monotonic()-started,
             scope='Disposable sequential Adam updates with saved moments/RNG and unchanged LR, masks, clipping and objective. Same-batch before/after measurements, not validation or evidence of sustained generalization. Original checkpoints unchanged.'))
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
         w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v21-repair',name=a.output.name,dir=str(a.output),config=dict(source=a.source_revision,checkpoints=hashes,steps=a.steps,data_hash=verified['hash']))
@@ -104,6 +133,8 @@ def main():
             metrics={}
             for cp,rows in results.items():
                 name=Path(cp).parent.name;r=rows[i]
+                metrics[name+'/first_order_loss_change']=sum(r['first_order_loss_change_by_module'].values())
+                if r['fp32_before'] is not None:metrics[name+'/fp32_loss_delta']=r['fp32_after']['loss']-r['fp32_before']['loss']
                 for side in ('before','after'):
                     metrics[f'{name}/{side}/loss']=r[side]['loss']
                     for k,v in r[side]['components'].items():metrics[f'{name}/{side}/{k}']=v

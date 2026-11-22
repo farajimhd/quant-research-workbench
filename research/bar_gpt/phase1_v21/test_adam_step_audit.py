@@ -23,3 +23,14 @@ def test_measure_preserves_objective_and_counts_visibility():
         assert row['count']==(32 if key.startswith('visible/') else 96)
     total.backward()
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+def test_precision_context_restores_config_even_on_failure():
+    import pytest
+    from .adam_step_audit import full_precision
+    model,_,_=build();original=model.temporal.config
+    with pytest.raises(RuntimeError):
+        with full_precision(model):
+            assert model.temporal.config.precision=='fp32'
+            raise RuntimeError('test')
+    assert model.temporal.config is original
