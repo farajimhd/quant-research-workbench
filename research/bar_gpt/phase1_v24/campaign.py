@@ -18,7 +18,7 @@ from ..phase1_v12.model import positions
 from ..phase1_v11.data import verify
 from ..phase1_v19.objectives import calibrate
 from ..phase1_v10.step import stable_clip
-from ..phase1_v8.runtime import preflight
+from .runtime import preflight
 from ..phase2_v2.train import lease
 from ..v5.shards.phase1_contract import file_hash,digest,write_json
 from research.mlops.env import discover_env_files,load_env_files

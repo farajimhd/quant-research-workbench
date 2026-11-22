@@ -10,7 +10,7 @@ from ..phase0_v3.experiment import cache
 from ..phase1_v11.transforms import inverse
 from ..phase1_v11.data import verify
 from ..phase1_v12.model import positions
-from ..phase1_v8.runtime import preflight
+from .runtime import preflight
 from ..v5.shards.phase1_contract import file_hash,write_json
 
 
