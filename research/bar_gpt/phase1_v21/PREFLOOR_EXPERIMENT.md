@@ -28,3 +28,32 @@ alone. Outcomes belong in the runtime comparison and this document.
 
 Seven local repair tests passed, including unchanged predictions/other loss
 families, finite gradients, and source-invalid exclusion for the new arm.
+
+## Initial paired result
+
+Source383d66139c097b9134518dda8f133d23d7333bb3, runtime
+`phase1-v21-prefloor-20261122`. Control W&B `pachj5rh`, candidate `x0z7xvy8`,
+project `mehdifaraji/bargpt-phase01-v21-repair`. Both completed1,000 updates;
+candidate/control durations119.5/121.5seconds after profiling and cache setup.
+The measured cached throughputs were78,593/78,524windows/s, respectively.
+Batch8192 was fastest among256..8192, peak profile allocation12,668MiB.
+Both tiny runs reduced loss121.68 to40.68. Graph/eager gradients qualified at
+16 and64 visibility. Checkpoint/data hashes remain in runtime receipts.
+
+At1,000, candidate improves174/216 raw-error groups against control, with worst
+raw regression1.57% and worst direction/bin-accuracy regression0.219pp. None
+cross the declared5%/1pp review thresholds. Candidate/control 1s close MAE is
+$0.23251/$0.23357 all-visible and$0.25679/$0.27432 masked. However daily-volume
+MAE is746,895/744,652 and 1s candle direction90.769%/90.826%. The retained
+parent's all-visible close is$0.22770 and candle direction91.142%.
+
+At500updates, candidate candle direction was88.863% versus control91.016%,
+despite better close MAE. Thus this is a retained hypothesis, not a qualified
+full-training repair. A longer matched run is needed to determine whether the
+final advantage persists. Do not promote based on the final point alone.
+
+`compare_prefloor --run RUN` verifies both checkpoint hashes, final step count,
+and starting metrics (1e-8relative/1e-10absolute tolerance for GPU reduction
+roundoff), then records all216 group ratios and accuracy differences in
+`paired-quality.json`. It excludes evaluation duration from initial parity.
+No source data, output constraints or exported embedding fields changed.
