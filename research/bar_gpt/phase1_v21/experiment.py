@@ -53,6 +53,12 @@ def evaluate(model,teacher,data):
 
 def optimizer(model,lr,bar_lr):
     multiplier=getattr(model,'temporal_lr_multiplier',1.)
+    new_multiplier=getattr(model,'new_block_lr_multiplier',None)
+    if new_multiplier is not None:
+        old=[p for n,p in model.temporal.named_parameters() if not n.startswith('blocks.extra.')]
+        return torch.optim.AdamW([dict(params=model.bar.parameters(),lr=bar_lr),
+            dict(params=old,lr=lr*multiplier),dict(params=model.decoder.parameters(),lr=lr),
+            dict(params=model.temporal.blocks.extra.parameters(),lr=lr*new_multiplier)],weight_decay=0.,fused=True)
     if multiplier!=1.:
         return torch.optim.AdamW([dict(params=model.bar.parameters(),lr=bar_lr),
             dict(params=model.temporal.parameters(),lr=lr*multiplier),
@@ -68,7 +74,7 @@ def main():
     p.add_argument('--graphs',action='store_true')
     p.add_argument('--parent',type=Path)
     p.add_argument('--arms',default='range,both_log,both_symmetric,metric');a=p.parse_args();arms=a.arms.split(',')
-    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
+    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra','joint_basis_prefloor_temporal_extra_fast','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
     from ..phase1_v8.runtime import preflight
     a.device='cuda';a.resume=False;a.source_revision=a.revision;preflight(a)
@@ -130,7 +136,8 @@ def main():
             arm_contract['decoder_parameterization']='activity_dct64_v1' if arm.startswith('joint_basis_prefloor') else 'native_linear'
             if arm=='joint_basis_prefloor_nonlinear32':arm_contract['decoder_parameterization']='activity_dct64_nonlinear32_v1'
             if arm=='joint_basis_prefloor_nonlinear32':arm_contract['architecture']='Unchanged feature/temporal attention512D bottleneck; single FP32 activity-basis affine head plus zero-initialized512to32GELUto1152 correction, both fed solely by embedding'
-            arm_contract['temporal_extra_identity_block']=arm=='joint_basis_prefloor_temporal_extra'
+            arm_contract['temporal_extra_identity_block']=arm in ('joint_basis_prefloor_temporal_extra','joint_basis_prefloor_temporal_extra_fast')
+            arm_contract['new_block_lr_multiplier']=model.new_block_lr_multiplier
             if arm_contract['temporal_extra_identity_block']:arm_contract['architecture']='Feature attention unchanged; temporal128x2 plus identity-initialized extra128 attention block after final norm,512D embedding; unchanged single affine FP32 decoder'
             arm_contract['temporal_lr_multiplier']=model.temporal_lr_multiplier
             arm_contract['range_calibration']=range_cal if arm=='joint_basis_prefloor_range_balanced' else None

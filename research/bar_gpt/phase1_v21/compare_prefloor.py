@@ -19,7 +19,7 @@ def compare(old,new,step):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True)
     p.add_argument('--control',default='joint_repaired');p.add_argument('--candidate',default='joint_prefloor');a=p.parse_args()
-    if a.control not in ('joint_repaired','joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra') or a.candidate not in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra') or a.control==a.candidate:
+    if a.control not in ('joint_repaired','joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra','joint_basis_prefloor_temporal_extra_fast') or a.candidate not in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra','joint_basis_prefloor_temporal_extra_fast') or a.control==a.candidate:
         raise ValueError('Explicit supported comparison arms required')
     manifest=json.loads((a.run/'manifest.json').read_text())
     rows=[]

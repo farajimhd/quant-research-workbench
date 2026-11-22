@@ -73,6 +73,8 @@ def restore_basis(saved):
     model.load_state_dict(state,strict=True)
     model.activity_change_prefloor=True;model.repair_arm='joint_repaired'
     model.temporal_lr_multiplier=saved['contract'].get('temporal_lr_multiplier',1.)
+    model.new_block_lr_multiplier=saved['contract'].get('new_block_lr_multiplier')
+    if model.new_block_lr_multiplier is not None and (not extra or not 0<model.new_block_lr_multiplier<=100):raise ValueError('New block LR contract')
     if not 0<model.temporal_lr_multiplier<=1:raise ValueError('Temporal LR contract')
     if saved['contract'].get('range_calibration') is not None:
         from .range_balance import attach
