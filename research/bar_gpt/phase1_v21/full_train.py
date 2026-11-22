@@ -33,7 +33,7 @@ def quality(metrics, reference):
             if k.startswith(('masked/range/', 'all_visible/range/')) and k.endswith('bin_accuracy_pct')]
     if not bins:
         raise ValueError('Missing range metrics')
-    return .9*base + .1*sum(bins)/len(bins), details
+    return float(.9*base + .1*sum(bins)/len(bins)), details
 
 
 @torch.no_grad()

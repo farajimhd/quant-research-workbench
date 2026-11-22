@@ -76,6 +76,7 @@ def main():
     p.add_argument('--warmup-steps',type=int,default=500)
     p.add_argument('--validation-every',type=int,default=1000);p.add_argument('--checkpoint-every',type=int,default=500)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
+    p.add_argument('--restart-initialization',action='store_true')
     p.add_argument('--profile-batches',type=int,default=64)
     p.add_argument('--profile-configs',default='4096:16,8192:16,16384:16,16384:32')
     a=p.parse_args();a.device='cuda';a.preparation='raw_gpu';a.seed=17
@@ -83,7 +84,15 @@ def main():
     if not 1<=a.epochs<=20 or not 1<=a.batch_size<=32768 or not 0<=a.workers<=32:raise ValueError('Bounds')
     if not 1e-7<=a.min_learning_rate<=a.learning_rate<=1e-4:raise ValueError('LR bounds')
     if min(a.warmup_steps,a.validation_every,a.checkpoint_every,a.profile_batches)<1 or a.max_updates<0:raise ValueError('Cadence bounds')
+    if a.restart_initialization:
+        if a.resume or (a.output/'checkpoint_last.proof.json').exists():raise ValueError('Use verified checkpoint resume')
+        progress=json.loads((a.output/'progress.json').read_text())
+        if progress.get('state')!='failed' or progress.get('step',0)!=0:raise ValueError('Only failed zero-update initialization can restart')
+        with (a.output/'metrics.jsonl').open() as stream:
+            if any(json.loads(line)['step']!=0 for line in stream):raise ValueError('Optimizer updates already recorded')
+        a.resume=True
     preflight(a)
+    if a.restart_initialization:a.resume=None
     torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     torch.manual_seed(a.seed);random.seed(a.seed);np.random.seed(a.seed)
     sha=file_hash(a.checkpoint);receipt=json.loads((a.checkpoint.parent/'result.json').read_text())
@@ -115,9 +124,13 @@ def main():
             schedule='linear warmup floor to peak then cosine to floor over consumed full-population windows',
             parameters=sum(p.numel() for p in model.parameters()))
         if a.resume:contract=resume_contract(contract,a.resume)
+        if a.restart_initialization:
+            prior=json.loads((a.output/'manifest.json').read_text())['model']
+            if dict(contract,source=prior['source'])!=prior:raise ValueError('Changed experiment cannot restart under old identity')
+            contract=prior
         config=dict(model=contract,workers=a.workers,engineering_revision=a.source_revision,
-                    output=str(a.output),resume=str(a.resume) if a.resume else None)
-        write_json(a.output/(f'resume-{int(time.time())}.json' if a.resume else 'manifest.json'),config)
+                    output=str(a.output),resume=str(a.resume) if a.resume else str(a.output/'initialization') if a.restart_initialization else None)
+        write_json(a.output/(f'resume-{int(time.time())}.json' if a.resume or a.restart_initialization else 'manifest.json'),config)
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
         os.environ.setdefault('WANDB_ENTITY','mehdifaraji')
         reporter=Reporter(a.output,config,mode='online',project='bargpt-phase01-v21-full20')

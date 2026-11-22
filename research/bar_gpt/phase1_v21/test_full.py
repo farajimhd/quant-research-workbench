@@ -13,6 +13,16 @@ def test_schedule_endpoints_and_monotonic_decay():
     assert all(a>=b for a,b in zip(rates,rates[1:]))
 
 
+def test_quality_is_checkpoint_safe_native_float():
+    import numpy as np
+    from .full_train import quality
+    m={'all_visible/raw_mae/1s/trade_close':np.float64(1),
+       'masked/raw_mae/1s/trade_close':np.float64(1),
+       'all_visible/candle/1s/trade/moving_direction_pct':np.float64(90),
+       'all_visible/range/1s/trade/bin_accuracy_pct':np.float64(80)}
+    assert type(quality(m,m)[0]) is float
+
+
 def test_checkpoint_replays_next_update_exactly(tmp_path):
     torch.manual_seed(17);model=torch.nn.Linear(3,2);opt=torch.optim.AdamW(model.parameters(),lr=1e-4)
     def update(m,o):
