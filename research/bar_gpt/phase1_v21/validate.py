@@ -92,7 +92,7 @@ def main():
     if saved['contract']['split_hash']!=manifest['manifest_hash']:raise ValueError('Split changed')
     manifest=attach(manifest,Path(manifest['dataset']));manifest['splits']={}
     total=manifest['counts']['validation'];total=min(total,a.limit_batches*a.batch_size) if a.limit_batches else total
-    contract=dict(source=a.revision,checkpoint_sha=sha,split_hash=manifest['manifest_hash'],scope='profile' if a.limit_batches else 'full_validation',expected_windows=total,batch=a.batch_size,workers=a.workers,deadline_seconds=a.seconds)
+    contract=dict(source=a.revision,checkpoint_sha=sha,split_hash=manifest['manifest_hash'],scope='profile' if a.limit_batches else 'full_validation',expected_windows=total,batch=a.batch_size,workers=a.workers,deadline_seconds=a.seconds,loader_seed=a.seed,mask_seed=917,prefetch=a.prefetch,shard_prefetch=a.shard_prefetch,shard_prefetch_mib=a.shard_prefetch_mib)
     write_json(a.output/'manifest.json',contract)
     load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
     with lease(a.output):
