@@ -45,7 +45,7 @@ def main():
     a.output.mkdir(parents=True,exist_ok=True)
     (a.output/f'matched-{a.seen}.json').write_text(json.dumps(dict(identity=reference,seen=a.seen,rows=rows),indent=2))
     lines=[f'# Matched comparison: {a.seen:,} training-window exposures','',
-        'All rows use the same parent, training draws, masks, batch and update count. LR policies differ. Development metrics only; no forecasting evidence.','',
+        'All rows use the same parent, training draws, masks, batch and update count. LR policies differ. The 2B arm also changes inherited-head initialization; this is not a pure size ablation. Development metrics only; no forecasting evidence.','',
         '| Model | Parameters | Close MAE | Candle direction | Activity direction | Range accuracy | Raw MAE ratio vs control |',
         '|---|---:|---:|---:|---:|---:|---:|']
     for r in sorted(rows,key=lambda x:x['parameters']):

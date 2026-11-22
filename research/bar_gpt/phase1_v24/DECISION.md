@@ -16,10 +16,11 @@ mixed-precision initial evaluations are recorded separately. This is warm-start
 width/depth expansion, not independent training from scratch. The feature
 encoder remains unchanged; this does not test increasing feature capacity.
 
-All arms use seed 559, batch 256, 4,096 updates, and 1,048,576 sampled-window
+The first eight arms use seed 559, batch 256, 4,096 updates, and 1,048,576 sampled-window
 exposures. Samples are drawn uniformly with replacement from 114,599 training
 windows. The same 11,146 development windows are evaluated at five learning
-points. There is no new held-out or forecasting evaluation. Six timeframes,
+points. The later 2B arm uses 1,024 updates; its matched comparison is below.
+A post-selection audit is recorded below; there is no forecasting evaluation. Six timeframes,
 source validity, transforms, activity calibration and objective are unchanged.
 Training physically selects 16 bars on three updates out of four; every fourth
 update is all-visible. Hidden-position and all-visible metrics remain separate.
@@ -159,7 +160,63 @@ repair downtime to the original deadline. Eager batch 256 profiles at 260
 windows/s and 66 GiB peak allocated memory. Live speed was 265 windows/s with
 123 MiB shared GPU memory, eliminating the paging bottleneck.
 
-The extreme is planned for 262,144 exposures (1,024 updates), selected before
-training from profiling. It must be compared against the other arms at that
-same saved exposure, not their later endpoints above. It changes initialization
-as well as size. Final extreme results and structural audits remain pending.
+The extreme completed 262,144 exposures (1,024 updates), selected before
+training from profiling, in 2,556.7 seconds including qualification and repair.
+It has 1,955,104,706 parameters (width 4,608, 11 temporal blocks), with the same
+64x32 export and 594-parameter decoder. Training throughput was 260 windows/s.
+It changes initialization as well as size; this is not a pure capacity ablation.
+
+### Final decision and matched extreme comparison
+
+At 262,144 exposures, the 7.8M control versus 2B respectively achieved:
+close MAE $0.2465 versus $0.2489; candle direction 89.00% versus 88.95%;
+activity direction 48.83% versus 48.86%; range accuracy 33.70% versus 33.82%.
+The 216 raw-error group geometric mean was 1.6% lower for 2B, but throughput
+was about 44 times slower. This bounded result does not justify full 2B training.
+It does not establish that a longer, differently initialized 2B run cannot help.
+The final inherited Q replica divergence was 1.17e-5 to 7.47e-5, confirming
+that symmetry was broken, although the divergence remains small.
+
+Retain 50M as the practical range/activity candidate; retain the 500M high-LR
+checkpoint as a slower price/range alternative. Neither dominates the small
+control: 50M loses substantial price accuracy, and 500M costs about five times
+more than 50M. Reject the unstable high-LR 100M arm. Do not launch a full-data
+run from these findings automatically. Sub-$0.10 median percentage error still
+exceeds 128% even for the best of these full-budget candidates. Masked candle
+direction remains near 51%, and masked activity balanced direction near 33%.
+No downstream forecasting improvement has been demonstrated.
+
+All nine checkpoints passed the full 11,146-window structural audit in both
+visibility modes: zero nonfinite, negative, OHLC-structure or quote-crossing
+outputs, and zero constant embedding coordinates among 2,048 coordinates.
+These structure checks do not imply accurate activity magnitudes; the saved
+per-channel prediction/target variances expose substantial underdispersion.
+
+Runtime evidence under `D:\TradingML\runtimes\bar_gpt`:
+`phase1-v24-xl-20261122/MATCHED-262144.md`, `matched-262144.json`,
+`checkpoint-audit.json`, `learning-curves.png`, and
+`phase1-v24-final-audit-20261122/results.json`.
+The 2B checkpoint is `phase1-v24-extreme2b-20261122/e09-w4608-d11-s559/checkpoint_last.pt`,
+SHA256 `6ed7bc53b2f583a9d2c946e53cf6574f6e27dc4d1b9335e8b3f1804c5ceddd9c`.
+The practical 50M checkpoint is `phase1-v24-xl-20261122/e02-w768-d10-s559/checkpoint_last.pt`,
+SHA256 `c8e6f9aa0816c29de9da0198e7aeb6e45e190e16e6beb389528ca7f8eae90ba9`.
+Use the pinned reproduction command in README; local checkpoints include
+optimizer state, while W&B receives metrics only.
+
+### Post-selection audit
+
+Audit revision `f4c1398b64555e8c6acf4cad4e1d887b2c07a7ac` evaluated 8,258
+frozen audit windows once, without fitting or calibration. This partition is
+not a pristine external test: the manifest records prior full-validation
+aggregate exposure. Results are in `phase1-v24-selection-audit-20261122`.
+
+| Final checkpoint | Close MAE | Candle direction | Activity direction | Range accuracy |
+|---|---:|---:|---:|---:|
+| 7.8M control | $0.3756 | 89.24% | 49.33% | 36.49% |
+| 50M | $0.5565 | 90.14% | 51.79% | 39.22% |
+| 500M higher LR | $0.4388 | 90.08% | 51.08% | 39.07% |
+| 2B, quarter exposure | $0.5400 | 88.58% | 49.34% | 34.78% |
+
+The same practical tradeoff persists. These are final checkpoints with
+different total exposure for 2B, not an exposure-matched capacity comparison.
+The audit does not establish forecasting usefulness or statistical significance.
