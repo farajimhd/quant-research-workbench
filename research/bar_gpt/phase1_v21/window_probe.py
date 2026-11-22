@@ -75,8 +75,10 @@ def fresh(saved):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True)
     p.add_argument('--source-revision',required=True);p.add_argument('--checkpoint',action='append',type=Path,required=True)
+    p.add_argument('--ridge',type=float,default=.01)
     a=p.parse_args();a.device='cuda';a.resume=False
     if len(a.checkpoint)>3:raise ValueError('Bounded checkpoint count')
+    if not 1e-8<=a.ridge<=1:raise ValueError('Predeclared ridge bound')
     preflight(a);torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     root=Path('D:/TradingML/runtimes/bar_gpt');base=root/'phase1-v8-learned-mae-20261117/dataset'
     verified=verify(base);extra=root/'phase1-v19-training-pool-20261121'
@@ -119,7 +121,7 @@ def main():
                 key=f'{j}_{kind}';(tm,y),(dm,dy)=target_cache[key]
                 counts=dict(train_total=len(tm),train_included=int(tm.sum()),development_total=len(dm),development_included=int(dm.sum()))
                 if min(int(tm.sum()),int(dm.sum()))<2:raise ValueError('Insufficient valid probe labels')
-                solution=fit(features[0][tm],y);pred=predict(features[1][dm],solution)
+                solution=fit(features[0][tm],y,a.ridge);pred=predict(features[1][dm],solution)
                 groups={}
                 for frame in dev[3][dm].unique():
                     take=dev[3][dm]==frame
@@ -134,12 +136,12 @@ def main():
                                                    for f in dev[3][dm].unique()}
             results[label]=rows
             write_json(a.output/'result.json',dict(source=a.source_revision,data_hash=verified['hash'],supplement_hash=sm['hash'],
-                split_hash=verified['source_split_hash'],checkpoints=sources,ridge=.01,results=results,seconds=time.monotonic()-started,
+                split_hash=verified['source_split_hash'],checkpoints=sources,ridge=a.ridge,results=results,seconds=time.monotonic()-started,
                 scope='All-visible frozen512D window probes; each channel fit globally across timeframes on training only. Complete source-valid channel windows only; exclusions counted. Same-window labels, no forecasts. Raw summary is input-derived diagnostic control; readouts are not deployed decoders.'))
             del features
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
         run=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v21-full20',name=a.output.name,dir=str(a.output),
-            config=dict(source=a.source_revision,data_hash=verified['hash'],supplement_hash=sm['hash'],checkpoints=sources,ridge=.01,scope='Frozen window probes, not forecasting'))
+            config=dict(source=a.source_revision,data_hash=verified['hash'],supplement_hash=sm['hash'],checkpoints=sources,ridge=a.ridge,scope='Frozen window probes, not forecasting'))
         payload={}
         def flatten(prefix,value):
             for k,v in value.items():
