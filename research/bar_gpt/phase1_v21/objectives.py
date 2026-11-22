@@ -53,7 +53,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
     extra=shape+.05*wick+activity+.5*bins+.1*direction
     base=shape.new_zeros(());candle=shape.new_zeros(())
     if model.repair_arm.startswith('joint_'):
-        base,base_parts=joint_base(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,out)
+        base,_=joint_base(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,out,include_activity=model.repair_arm!='joint_repaired')
         if model.repair_arm in ('joint_metric_log','joint_repaired'):
             for b in (0,6,12):
                 mask=valid[...,b]&valid[...,b+3]&(raw[...,b]!=raw[...,b+3])
@@ -64,8 +64,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         if model.repair_arm=='joint_repaired':
             # Keep raw-price, body, wick and bar-anchor objectives. Replace the
             # old overlapping activity penalties with the tested log objective.
-            retained=base-base_parts['activity_level']-base_parts['activity_change']-.01*base_parts['activity_tail']-.1*base_parts['activity_relative']
-            total=retained+activity+.1*shape+.05*bins+.1*direction+.5*candle
+            total=base+activity+.1*shape+.05*bins+.1*direction+.5*candle
         else:total=base+(.1*extra+.05*candle if model.repair_arm=='joint_metric_log' else 0)
     else:total=extra
     return total,dict(range=shape,wick=wick,activity=activity,range_bins=bins,activity_direction=direction,joint_base=base,candle_direction=candle)
