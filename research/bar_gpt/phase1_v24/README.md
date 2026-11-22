@@ -22,8 +22,13 @@ throughput may reduce its exposure in 262,144-window increments; use
 `matched_compare --seen COUNT` against saved smaller-model evaluations at the
 same exposure count. Do not compare unequal endpoints as a matched experiment.
 All transformations, objective, masks, data, parent and LR-pilot protocol stay
-the same. This measures warm-start temporal scaling, not a language model or
-an isolated feature-capacity change. Run `qualify_extreme` on CPU first.
+the same. Before launch, checkpoint audits found inherited replicated Q groups
+remained identical despite real optimizer updates. The extreme therefore adds
+zero-sum noise (10% of each matrix RMS) to every inherited attention/FFN output
+projection. A real-window CPU probe preserved outputs within 2.4e-6 and changed
+first-layer Q-gradient replica divergence from zero to 2.2%. This initialization
+change is explicit: the extreme is a combined size/initialization experiment,
+not a pure size ablation. Run `qualify_extreme` on CPU first.
 
 The campaign was explicitly expanded to eight total experiments after the
 initial results: all higher LR candidates passed the stability gates, but the

@@ -4,7 +4,7 @@ from ..phase1_v12.model import Config,positions
 from ..phase1_v19.model import Autoencoder
 from ..phase1_v22.model import PositionEncoder
 from ..phase1_v23.model import expand_temporal
-from .model import optimizer,SPECS,EXTREME_SPEC
+from .model import optimizer,SPECS,EXTREME_SPEC,break_replica_symmetry
 
 
 def test_expansion_from_six_block_parent_and_gradients():
@@ -38,6 +38,20 @@ def test_extreme_size_preserves_parent_head_geometry():
     count=8*w*w*d+11*w*d+4*w*w+226*w+8642
     assert 1.9e9<count<2.1e9
     assert w%384==0 and d>=6
+
+
+def test_distributed_symmetry_break_preserves_output_and_changes_head_gradients():
+    torch.set_num_threads(2);torch.manual_seed(17)
+    old=PositionEncoder(Autoencoder(Config(width=64,layers=2,heads=2,embedding=512),torch.zeros(16),torch.ones(16),'mask_adapter').encoder,32)
+    new=expand_temporal(old,128,3)
+    z=torch.randn(1,16,16);meta=torch.randn(1,16,36);pos=positions(1,'cpu',16)
+    expected=new(z,meta,pos).detach()
+    break_replica_symmetry(new,64,2)
+    out=new(z,meta,pos)
+    torch.testing.assert_close(out,expected,rtol=1e-4,atol=1e-5)
+    out.square().mean().backward()
+    g=new.blocks[0].qkv.weight.grad[:128].reshape(2,64,128)
+    assert float((g-g.mean(0,keepdim=True)).square().mean()/g.square().mean())>1e-5
 
 
 def test_higher_lr_requires_stability_qualification():

@@ -154,7 +154,12 @@ def main():
                         to.zero_grad(set_to_none=True);value,_=loss(tiny,x,v,raw,f,pos,z,activity_scale)
                         if t in (0,100,200,300):tiny_curve.append(dict(step=t,loss=float(value)))
                         if not torch.isfinite(value):raise FloatingPointError('Tiny loss')
-                        if t<300:value.backward();stable_clip(tiny.parameters());to.step()
+                        if t<300:
+                            value.backward()
+                            if a.extreme_2b and t==0:
+                                width=spec['width'];q=tiny.temporal.blocks[0].qkv.weight.grad[:width,:384].reshape(width//384,384,384)
+                                tiny_curve[-1]['inherited_q_gradient_relative_divergence']=float((q-q.mean(0,keepdim=True)).square().mean().sqrt()/q.square().mean().sqrt().clamp_min(1e-20))
+                            stable_clip(tiny.parameters());to.step()
                     write_json(arm/'tiny.json',tiny_curve);w.log({'qualification/tiny_initial':tiny_curve[0]['loss'],'qualification/tiny_final':tiny_curve[-1]['loss']},step=0)
                     if tiny_curve[-1]['loss']>=tiny_curve[0]['loss']*.9:raise ValueError('Tiny fit failed10percent improvement')
                     del tiny,to,inputs,value,_;gc.collect();torch.cuda.empty_cache()
