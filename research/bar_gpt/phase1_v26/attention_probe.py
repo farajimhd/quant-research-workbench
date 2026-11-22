@@ -18,7 +18,7 @@ from ..v5.shards.phase1_contract import file_hash,write_json
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--source-revision',required=True)
-    p.add_argument('--checkpoint',type=Path,required=True);a=p.parse_args();a.device='cuda';a.resume=False;preflight(a)
+    p.add_argument('--checkpoint',type=Path,required=True);p.add_argument('--modes',default='baseline,tiny,pad,tiny_pad');a=p.parse_args();a.device='cuda';a.resume=False;preflight(a)
     torch.set_num_threads(4);torch.set_float32_matmul_precision('highest');torch.cuda.set_per_process_memory_fraction(.85);torch.manual_seed(123)
     root=a.output.parent
     with lease(a.output):
@@ -27,7 +27,9 @@ def main():
         rows=np.load(root/'phase1-v8-learned-mae-20261117/dataset/train.npy',mmap_mode='r');batch=prepare_raw(rows[:1024],True).to('cuda')
         masks=[(positions(1024,'cuda',n),positions(1024,'cuda',56)) for n in (16,64)]
         reference=[];result=dict(source=a.source_revision,checkpoint_sha=file_hash(a.checkpoint),cases=[])
-        for mode in ('baseline','tiny','pad','tiny_pad'):
+        modes=a.modes.split(',')
+        if modes[0]!='baseline':raise ValueError('Baseline must be first')
+        for mode in modes:
             install(model,teacher,mode);case=dict(mode=mode,measurements=[],accepted=True)
             for i,(pp,ap) in enumerate(masks):
                 model.zero_grad(set_to_none=True);values=backward(model,teacher,batch,pp,ap)
