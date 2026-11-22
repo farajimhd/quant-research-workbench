@@ -51,7 +51,7 @@ Example from a pushed, hash-verified workstation snapshot:
 $env:PYTHONDONTWRITEBYTECODE='1'
 & C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -u -m research.bar_gpt.phase1_v26.run_full --mode profile --output D:\TradingML\runtimes\bar_gpt\phase1-v26-full-profile-20261122 --source-revision <sha>
 # Use the measured batch/workers in the training command:
-& C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -u -m research.bar_gpt.phase1_v26.run_full --mode train --epochs 20 --output D:\TradingML\runtimes\bar_gpt\phase1-v26-full20-20261122 --source-revision <sha> --batch-size 4096 --workers 8
+& C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -u -m research.bar_gpt.phase1_v26.run_full --mode train --epochs 20 --output D:\TradingML\runtimes\bar_gpt\phase1-v26-full20-20261122 --source-revision <sha> --batch-size 1024 --workers 8 --validation-batch-size 512 --validation-workers 8
 ```
 
 W&B project:
@@ -63,3 +63,10 @@ oversubscription. The4096-batch first profile filled96494MiB and was stopped
 through its preserved STOP marker;1024/2048 gave equal speed. TF32 high math is
 only eligible after raw errors, directional metrics and gradient parity pass
 `precision_probe`; its selection is recorded in the immutable contract.
+
+Initial measured pipeline:512/1024/2048 batches gave approximately8.64-8.67K
+windows/s;16 workers did not improve throughput and doubled startup. High
+TF32 math was rejected: clipped-gradient relative differences34.4%/3.82%,
+despite small directional-metric changes. Highest precision is retained.
+`full_launch` directs stdout/stderr to runtime logs and can be launched via
+Win32_Process.Create without a scheduled task, independent of the SSH session.
