@@ -55,5 +55,11 @@ final advantage persists. Do not promote based on the final point alone.
 `compare_prefloor --run RUN` verifies both checkpoint hashes, final step count,
 and starting metrics (1e-8relative/1e-10absolute tolerance for GPU reduction
 roundoff), then records all216 group ratios and accuracy differences in
-`paired-quality.json`. It excludes evaluation duration from initial parity.
+`parent-aware-quality.json` (the original `paired-quality.json` is retained).
+It excludes evaluation duration from initial parity and compares every learning
+point against the retained parent's initial metrics as well as the trained
+control. At1,000, candidate beats the parent in130/216raw groups, but41groups
+regress more than5%; worst masked1s bid-high MAE increases39.1%. Two accuracy
+groups regress more than1pp (masked daily quote range bins). This is additional
+evidence against promoting the short trial.
 No source data, output constraints or exported embedding fields changed.
