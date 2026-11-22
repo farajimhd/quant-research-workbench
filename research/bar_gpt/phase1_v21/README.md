@@ -32,9 +32,9 @@ Hard bin/sign accuracy is never falsely described as differentiable.
 `metric_log` adds the same metric surrogates to the log-MSE activity arm,
 separating activity scale loss choice from directional/range supervision.
 
-Follow-up arms `joint_control` and `joint_metric` unfreeze BOTH encoders and the
+Follow-up arms `joint_control` and `joint_metric_log` unfreeze BOTH encoders and the
 one head. They use the unchanged V20 full reconstruction/retention objective;
-`joint_metric` adds0.1 times the new range/activity/metric loss. The baseline
+`joint_metric_log` adds0.1 times the new range/activity/metric loss. The baseline
 loss reuses the same forward tensors, avoiding duplicate attention work.
 It also adds0.05 times candle-direction BCE (one-basis-point temperature,
 source-valid nonflat open/close pairs), explicitly targeting the inherited

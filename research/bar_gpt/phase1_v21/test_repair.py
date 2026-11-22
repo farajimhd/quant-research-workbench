@@ -32,7 +32,7 @@ def test_joint_control_matches_parent_and_metric_trains_encoders():
     actual,_=loss(control,values,valid,raw,frames,pos,old,scale)
     expected,_=parent_loss(control,values,valid,raw,frames,pos,old,scale)
     torch.testing.assert_close(actual,expected,rtol=0,atol=0)
-    metric=initialize(None,saved,None,'joint_metric');value,_=loss(metric,values,valid,raw,frames,pos,old,scale);value.backward()
+    metric=initialize(None,saved,None,'joint_metric_log');value,_=loss(metric,values,valid,raw,frames,pos,old,scale);value.backward()
     for module in (metric.bar,metric.temporal,metric.decoder):
         assert any(p.grad is not None and p.grad.abs().sum()>0 for p in module.parameters())
 

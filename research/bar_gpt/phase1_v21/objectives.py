@@ -22,7 +22,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         err=(prediction-target)*10000
         term=F.smooth_l1_loss(err,torch.zeros_like(err),reduction='none')
         terms.append((torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1))
-        if model.repair_arm in ('metric','metric_log','joint_metric'):
+        if model.repair_arm in ('metric','metric_log','joint_metric_log'):
             edges=range_edges(prediction.device)
             logits=(prediction[...,None]-edges)*10000
             labels=(target[...,None]>edges).to(logits.dtype)
@@ -40,11 +40,11 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
             log=(code-target.log1p()).square()
             # Multiplicatively symmetric error in (1+activity), used only
             # in the loss. No target-dependent reference reaches the decoder.
-            error=(pred-target.log1p()).abs().expm1() if model.repair_arm in ('both_symmetric','metric','joint_metric') else log
+            error=(pred-target.log1p()).abs().expm1() if model.repair_arm in ('both_symmetric','metric') else log
             pair=mask[:,1:]&mask[:,:-1]&known[:,1:]&known[:,:-1]
             delta=(pred[:,1:]-pred[:,:-1])-(target[:,1:].log1p()-target[:,:-1].log1p())
             activity+=((torch.where(mask,error+.1*log,0)*weights).sum()/weights.sum().clamp_min(1)+.5*torch.where(pair,delta.square(),0).sum()/pair.sum().clamp_min(1))/6
-            if model.repair_arm in ('metric','metric_log','joint_metric'):
+            if model.repair_arm in ('metric','metric_log','joint_metric_log'):
                 actual=target[:,1:].log1p()-target[:,:-1].log1p()
                 moving=pair&(actual!=0)
                 logits=(pred[:,1:]-pred[:,:-1])/.1
@@ -54,13 +54,13 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
     base=shape.new_zeros(());candle=shape.new_zeros(())
     if model.repair_arm.startswith('joint_'):
         base,_=joint_base(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,out)
-        if model.repair_arm=='joint_metric':
+        if model.repair_arm=='joint_metric_log':
             for b in (0,6,12):
                 mask=valid[...,b]&valid[...,b+3]&(raw[...,b]!=raw[...,b+3])
                 logits=(out['logs'][...,b+3].double()-out['logs'][...,b].double())*10000
                 term=F.binary_cross_entropy_with_logits(logits,(raw[...,b+3]>raw[...,b]).to(logits.dtype),reduction='none')
                 weights=mask*torch.where(known,1.,.1)
                 candle+=(torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1)/3
-        total=base+(.1*extra+.05*candle if model.repair_arm=='joint_metric' else 0)
+        total=base+(.1*extra+.05*candle if model.repair_arm=='joint_metric_log' else 0)
     else:total=extra
     return total,dict(range=shape,wick=wick,activity=activity,range_bins=bins,activity_direction=direction,joint_base=base,candle_direction=candle)
