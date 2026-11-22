@@ -39,8 +39,11 @@ def main():
         source=arm/name
         if source.exists():source.rename(archive/name)
     if stop.exists():stop.rename(archive/'STOP')
-    manifest['qualification_elapsed_seconds']=manifest.get('qualification_elapsed_seconds',0)+failure['seconds']
-    receipt=dict(previous_source=manifest['source'],source=a.revision,reason='Identical scientific model/data/objective; eager backward replaces spilling CUDA graphs before any training',prior_seconds=failure['seconds'],wandb=json.loads((arm/'wandb.json').read_text()),changed_files=sorted(changed),time=time.time())
+    retry_at=time.time();failed_at=json.loads((root/'progress.json').read_text())['updated']
+    charged_seconds=failure['seconds']+max(0,retry_at-failed_at)
+    manifest['qualification_elapsed_seconds']=manifest.get('qualification_elapsed_seconds',0)+charged_seconds
+    manifest['qualification_retry_at']=retry_at
+    receipt=dict(previous_source=manifest['source'],source=a.revision,reason='Identical scientific model/data/objective; eager backward replaces spilling CUDA graphs before any training',prior_seconds=failure['seconds'],charged_seconds=charged_seconds,includes_engineering_downtime=True,wandb=json.loads((arm/'wandb.json').read_text()),changed_files=sorted(changed),time=retry_at)
     manifest['source']=a.revision;manifest.setdefault('engineering_resumes',[]).append(receipt)
     write_json(archive/'retry-receipt.json',receipt);write_json(root/'manifest.json',manifest)
     print(json.dumps(receipt))

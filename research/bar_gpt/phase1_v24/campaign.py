@@ -111,6 +111,8 @@ def main():
             arm.mkdir(exist_ok=True);start=time.time();deadline=start+3500
             prior=arm/'checkpoint_last.pt';resume=torch.load(prior,map_location='cpu',weights_only=False) if a.resume and prior.exists() else None
             prior_elapsed=resume['elapsed_seconds'] if resume else manifest.get('qualification_elapsed_seconds',0)
+            if not resume and manifest.get('qualification_retry_at'):
+                prior_elapsed+=max(0,start-manifest['qualification_retry_at'])
             deadline=start+max(0,3500-prior_elapsed)
             def admission():
                 if (out/'STOP').exists() or (out.parent/'STOP').exists():raise InterruptedError('Human STOP')
