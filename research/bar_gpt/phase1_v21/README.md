@@ -138,3 +138,9 @@ take time late in an epoch; it never silently changes row order. A changed
 scientific experiment requires a new identity. A bounded `--max-updates` canary
 can resume into the same20-epoch run without resetting optimizer or schedule.
 Use `full_panel --output RUN` for the read-only workstation display.
+`monitor --output RUN` writes a compact CPU-only health receipt with exact
+PID/creation-time/command ownership, current counters, checkpoint proof and the
+last three full validations. It never starts/stops training or reads shards.
+The user-requested thread heartbeat owns diagnosis/recovery decisions; it must
+preserve STOP markers, verify no duplicate owner, and reuse the same scientific
+contract on engineering resumes. A changed objective/model gets a new identity.
