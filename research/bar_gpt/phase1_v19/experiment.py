@@ -13,7 +13,7 @@ import wandb
 from .objectives import objective, ARMS, calibrate
 from ..phase1_v17.metrics import ActivityMetrics, scalars as activity_scalars
 from ..phase1_v17.sampling import FrameSampler
-from .model import Autoencoder,initialize_parent
+from .model import Autoencoder,initialize_parent,gradient_scope
 from ..phase1_v12.model import Config, positions
 from ..phase1_v12.metrics import Metrics, scalars
 from ..phase1_v12.data import load_teacher
@@ -61,9 +61,11 @@ def main():
     p.add_argument('--initialization',choices=['parent','scratch'],default='parent')
     p.add_argument('--architecture',choices=['scaled','unscaled','centered','mean_filled','control_variate','mask_adapter','count_nullspace'],default='scaled')
     p.add_argument('--count-warmup',action='store_true')
+    p.add_argument('--split-gradients',action='store_true')
     p.add_argument('--adapter-warmup',action='store_true')
     a=p.parse_args();arms=a.arms.split(',')
     if a.count_warmup and (a.architecture!='count_nullspace' or a.adapter_warmup):raise ValueError('Count warmup requires its own architecture')
+    if a.split_gradients and (a.architecture not in ('mask_adapter','count_nullspace') or a.count_warmup or a.adapter_warmup):raise ValueError('Split gradients requires an otherwise trainable mask-adapter model')
     if a.adapter_warmup and a.architecture!='mask_adapter':raise ValueError('Adapter warmup requires the mask adapter architecture')
     if a.output.exists() or len(arms)>4 or len(set(arms))!=len(arms) or any(x not in ARMS for x in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=15000 or not 1<=a.batch<=4096 or not 1e-6<=a.lr<=1e-4:raise ValueError('Invalid bounds')
@@ -107,6 +109,8 @@ def main():
         contract.update(initialization=a.initialization,architecture=a.architecture)
         contract['adapter_warmup']=a.adapter_warmup
         contract['count_warmup']=a.count_warmup
+        contract['split_gradients']=a.split_gradients
+        if a.split_gradients:contract['gradient_policy']='16-visible updates train only mask adapter;64-visible updates train shared encoder and decoder only'
         if a.adapter_warmup:contract['masking']='16 random visible bars every training batch; shared encoder and decoder frozen during adapter-only warmup'
         contract['config']=dict(contract['config'])
         if a.embedding:contract['config']['embedding']=a.embedding
@@ -164,6 +168,7 @@ def main():
                     if step:
                         tick=time.perf_counter();ids=sampler.sample(a.batch,generator) if sampler else torch.randint(len(train[0]),(a.batch,),device='cuda',generator=generator)
                         z,meta,valid,_,v,frames,raw=[x[ids] for x in train];pos=positions(len(z),'cuda',64 if step%4==0 and not a.adapter_warmup else 16,generator)
+                        if a.split_gradients:gradient_scope(model,pos.shape[1])
                         opt.zero_grad(set_to_none=True)
                         loss,parts=objective(model,teacher,model(z,meta,pos),z,valid,pos,raw,v,arm,frames,activity_scale)
                         loss.backward();norm=stable_clip(model.parameters())

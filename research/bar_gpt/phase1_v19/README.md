@@ -201,3 +201,22 @@ bid1,ask0.98757 per unit correction. Protected-channel leakage is zero in real
 arithmetic, but FP32 rounding must be measured on real validation (not claimed
 bit-identical). Counts-only log, adjacent-change and relative objectives use
 source-valid training targets only. All existing validation metrics remain.
+
+Full adapter validation completed47,750,007 windows in843.6s: 1s closeMAE
+0.74190->0.55283; candle direction87.30->92.06%; volume direction73.65->79.90%.
+Masked100ms bid-sizeMAE41194.7->5823.0. Not promoted: daily quote-countMAE
+increased22.8%, daily ask range agreement declined1.08pp. Count-only6000-update
+development trial reduced dailybid-countMAE42861->28018 versus old32628;
+price/quantity metrics unchanged apart from FP32 roundoff. Some count-direction
+scores declined versus the512D parent, though remained above oldV18. This head
+is an additive linear map and can algebraically fold into the main linear
+decoder: it is a constrained optimization parameterization, not increased
+function-class capacity. No embedding improvement is claimed for count-only work.
+
+Next `--split-gradients` hypothesis separates tasks during optimization:
+16-visible batches train only the mask adapter;64-visible batches train the
+shared encoder/decoder. Inputs, loss and visibility schedule remain unchanged.
+This tests whether unpredictable hidden targets were dragging shared count
+levels down and degrading otherwise good all-visible predictions. Fresh AdamW,
+LR1e-6,6000 updates, equal-frame real-data pool; parent is the count-corrected
+checkpoint. Every group is compared with both parent and originalV18.

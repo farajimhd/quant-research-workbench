@@ -1,5 +1,6 @@
 import torch
 from .objectives import objective
+from .model import gradient_scope
 from ..phase1_v12.data import prepare
 from ..phase1_v12.step import copy_batch,InferenceReplay
 from ..phase1_v10.step import stable_clip
@@ -7,11 +8,13 @@ from ..phase1_v10.step import stable_clip
 
 def configure(model,contract):
     model.loss_arm=contract['loss_arm']
+    model.split_gradients=contract.get('split_gradients',False)
     rms=torch.tensor(contract['activity_calibration']['mean_square_log_change'],device=next(model.parameters()).device,dtype=torch.float32)
     model.activity_scale=torch.where(rms>0,rms,1)
 
 
 def backward(model,teacher,b,pos):
+    if model.split_gradients:gradient_scope(model,pos.shape[1])
     latent,meta,valid,_,source_valid=prepare(teacher,b)
     prediction=model(latent,meta,pos)
     loss,parts=objective(model,teacher,prediction,latent,valid,pos,b.grid,source_valid,model.loss_arm,b.frames,model.activity_scale)
@@ -21,6 +24,7 @@ def backward(model,teacher,b,pos):
 
 class Replay:
     def __init__(self,model,teacher,b,pos):
+        self.model=model
         self.batch=b.map(lambda x:x.clone());self.pos=pos.clone();self.graph=torch.cuda.CUDAGraph();stream=torch.cuda.Stream()
         stream.wait_stream(torch.cuda.current_stream())
         with torch.cuda.stream(stream):
@@ -30,6 +34,7 @@ class Replay:
         self.params=list(model.parameters());self.grads=[p.grad for p in self.params]
 
     def __call__(self,b,pos):
+        if self.model.split_gradients:gradient_scope(self.model,pos.shape[1])
         copy_batch(self.batch,b);self.pos.copy_(pos)
         for p,g in zip(self.params,self.grads):p.grad=g
         self.graph.replay();return self.output

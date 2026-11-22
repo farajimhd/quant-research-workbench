@@ -99,6 +99,13 @@ def architecture(contract):
     return contract.get('architecture','scaled' if contract.get('encoder_count_scaled',True) else 'unscaled')
 
 
+def gradient_scope(model,visible_count):
+    """Separate unpredictable hidden-bar fitting from shared reconstruction."""
+    if not hasattr(model.encoder,'mask_adapter'):raise ValueError('Split gradients require a mask adapter')
+    model.requires_grad_(visible_count==64)
+    model.encoder.mask_adapter.requires_grad_(visible_count<64)
+
+
 def initialize_parent(model,state):
     """Optional learned bottleneck expansion with zero added decoder columns."""
     own=model.state_dict();changed=[]

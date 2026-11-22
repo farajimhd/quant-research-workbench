@@ -115,6 +115,7 @@ def main():
         if a.mode=='profile':return profile(a,teacher,cal,manifest,saved)
         model=make_model(saved,cal)
         contract=dict(version='phase1-v19-full',source=a.source_revision,config=vars(model.config),arm='scaled_slots_price',
+            split_gradients=model.split_gradients,
             architecture=model.architecture,encoder_count_scaled=model.encoder.count_scaled,loss_arm=model.loss_arm,activity_calibration=saved['contract']['activity_calibration'],parent_sha=parent_sha,
             teacher=identity,calibration_sha256=file_hash(a.calibration),split_hash=manifest['manifest_hash'],counts=manifest['counts'],
             epochs=a.epochs,batch_size=a.batch_size,learning_rate=a.learning_rate,min_learning_rate=a.min_learning_rate,warmup_steps=a.warmup_steps,

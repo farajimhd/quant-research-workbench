@@ -83,3 +83,16 @@ def test_count_head_protects_non_count_coordinates():
     # Two FP32 matrix multiplies introduce rounding despite the FP64 nullspace.
     torch.testing.assert_close(after[...,keep],before[...,keep],rtol=1e-5,atol=5e-6)
     assert (after[...,11]-before[...,11]).abs().max()>.01
+
+
+def test_split_gradient_updates_preserve_inactive_weights():
+    from .model import gradient_scope
+    m=Autoencoder(Config(),torch.zeros(16),torch.ones(16),'mask_adapter')
+    z=torch.randn(2,64,16);meta=torch.randn(2,64,36)
+    opt=torch.optim.AdamW(m.parameters(),lr=.001)
+    for count in (16,64,16):
+        gradient_scope(m,count);before={k:p.detach().clone() for k,p in m.named_parameters()}
+        opt.zero_grad(set_to_none=True);m(z,meta,positions(2,'cpu',count)).square().mean().backward();opt.step()
+        for k,p in m.named_parameters():
+            active=('mask_adapter' in k)==(count==16)
+            if not active:torch.testing.assert_close(p,before[k],rtol=0,atol=0)
