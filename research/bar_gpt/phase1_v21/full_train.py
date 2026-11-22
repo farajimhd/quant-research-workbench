@@ -99,7 +99,11 @@ def brief(metrics, scope, step, seconds):
 
 
 def train(model, teacher, manifest, a, contract, reporter):
-    opt = torch.optim.AdamW(model.parameters(), lr=a.learning_rate, weight_decay=0., fused=True)
+    groups=[]
+    for prefix,multiplier in (('bar.',a.bar_lr_multiplier),('temporal.',a.temporal_lr_multiplier),('decoder.',1.)):
+        groups.append(dict(params=[p for n,p in model.named_parameters() if n.startswith(prefix)],
+                           lr=a.learning_rate*multiplier,lr_multiplier=multiplier))
+    opt = torch.optim.AdamW(groups, lr=a.learning_rate, weight_decay=0., fused=True)
     scale = torch.ones(6, 6, device='cuda')  # unused by joint_repaired; retained API
     step=epoch=cursor=epoch_done=windows=0; phase='train'; best=float('inf')
     if a.resume:
@@ -149,7 +153,7 @@ def train(model, teacher, manifest, a, contract, reporter):
                         batch=device.pop(); pos=positions(len(batch.grid),'cuda',64 if (step+1)%4==0 else 16)
                         lr=learning_rate(windows,a.epochs*manifest['counts']['train'],a.learning_rate,a.min_learning_rate,
                                          a.warmup_steps*a.batch_size)
-                        for group in opt.param_groups: group['lr']=lr
+                        for group in opt.param_groups: group['lr']=lr*group['lr_multiplier']
                         if len(batch.grid)==a.batch_size:
                             if pos.shape[1] not in replays:
                                 replays[pos.shape[1]],actual=qualify(model,teacher,batch,pos,scale)
@@ -164,6 +168,7 @@ def train(model, teacher, manifest, a, contract, reporter):
                         if step%25==0:
                             elapsed=time.perf_counter()-tick; speed=(windows-before)/max(.001,elapsed)
                             reporter.log({'train/loss':float(value),'train/learning_rate':lr,'train/gradient_norm':float(norm),
+                                'train/bar_learning_rate':lr*a.bar_lr_multiplier,'train/temporal_learning_rate':lr*a.temporal_lr_multiplier,
                                 'train/windows_per_second':speed,'train/loader_wait_seconds':device.wait_seconds-wait,
                                 **{'train/'+k:float(v) for k,v in zip(PARTS,parts)}},step)
                             reporter.update(stage='training',step=step,epoch=epoch+1,epochs=a.epochs,epoch_done=epoch_done,
