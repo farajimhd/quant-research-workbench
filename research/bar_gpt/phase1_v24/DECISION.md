@@ -16,7 +16,7 @@ mixed-precision initial evaluations are recorded separately. This is warm-start
 width/depth expansion, not independent training from scratch. The feature
 encoder remains unchanged; this does not test increasing feature capacity.
 
-All arms use seed559, batch256, 4,096 updates, and 1,048,576 sampled-window
+All arms use seed 559, batch 256, 4,096 updates, and 1,048,576 sampled-window
 exposures. Samples are drawn uniformly with replacement from 114,599 training
 windows. The same 11,146 development windows are evaluated at five learning
 points. There is no new held-out or forecasting evaluation. Six timeframes,
@@ -68,7 +68,7 @@ finite gradients, CUDA-graph/eager gradient parity, LR-group membership and
 higher-LR eligibility guards were checked. Tiny-fit gates require a 10% loss
 reduction; they are a learning sanity check, not near-perfect memorization.
 All data is GPU cached, eliminating per-update disk reads. Batch128 and256 were
-profiled; common batch256 preserves matched updates. GPU model was verified as
+profiled; common batch 256 preserves matched updates. GPU model was verified as
 RTX PRO6000 Blackwell Server Edition with approximately 96GiB, not the laptop.
 
 W&B: https://wandb.ai/mehdifaraji/bargpt-phase01-v24-xl-capacity
@@ -101,16 +101,65 @@ campaign wall guard was retained because even including the approximately
 then completed at step4096: close MAE $0.4787, range39.39%, candle90.57%,
 activity50.94%. It does not outperform the faster 50M arm on these aggregates.
 
-The user separately authorized one approximately2B-parameter extreme, bringing
+The user separately authorized one approximately 2B-parameter extreme, bringing
 the bounded campaign to nine total experiments. Exact model size is
 1,955,104,706 parameters (width4608/depth11), with the same 594-parameter decoder.
 CPU qualification on real windows measured maximum FP32 expansion errors of
 2.86e-6 (16 visible bars) and 3.81e-6 (64 visible bars). Source:
 `aa7dcd044c7ae7f281a4cbc1d00a4da1e5940955`. The model is not yet claimed trained.
 
-Final comparison and recommendation will be recorded after the bounded
-higher-LR follow-ups and structural audit finish. Initial five-arm evidence
-already rules out a monotonic size improvement: continued 7.8M training reaches
-$0.1944 1s close MAE versus $0.1850 for 199M, whereas 49.8M leads range at
-39.52% and activity balanced direction at 51.02%. Do not attribute improvement
-against the uncontinued parent solely to capacity.
+### Completed matched full-budget arms
+
+All rows below have 1,048,576 exposures, batch 256 and 4,096 updates. Close MAE is
+all-visible 1s trade-close in dollars. Candle direction excludes unchanged
+candles; activity is balanced down/flat/up recall. Direction/range are equal
+timeframe/stream group means. See runtime comparison JSON for all 18 channels,
+both visibility modes and worst groups.
+
+| Parameters | LR multiplier | Close MAE | Candle direction | Activity direction | Range accuracy | Cached windows/s |
+|---:|---:|---:|---:|---:|---:|---:|
+| 7.8M control | 0.3 | $0.1944 | 89.66% | 49.04% | 35.98% | 11,563 |
+| 49.8M | 3 | $0.3881 | 90.58% | 51.02% | 39.52% | 4,456 |
+| 101.2M | 0.3 | $0.1871 | 89.66% | 48.95% | 36.10% | 2,940 |
+| 101.2M | 3 | $1.4356 | 87.69% | 50.51% | 39.21% | 2,938 |
+| 198.7M | 0.3 | $0.1850 | 89.57% | 48.91% | 35.95% | 1,749 |
+| 198.7M | 3 | $0.4787 | 90.57% | 50.94% | 39.39% | 1,745 |
+| 492.2M | 1 | $0.1971 | 89.76% | 49.21% | 37.32% | 893 |
+| 492.2M | 3 | $0.2659 | 90.59% | 50.49% | 39.14% | 897 |
+
+The 50M model leads range and activity direction; the higher-LR 500M offers a
+price/range tradeoff but is about 5x slower. The continued control explains much
+of the price improvement relative to the uncontinued parent. The short LR
+pilot was insufficient to guarantee later stability: the high-LR100M run had a
+late price-error jump. No monotonic capacity advantage is established.
+
+### Confirmed initialization limitation
+
+The audited inherited Q-weight replica slices remained effectively identical
+(relative RMS divergence 0 to 6.5e-8). This was not missing optimizer updates:
+nearly all audited weights changed and Adam step counters reached 4,096. A real
+CPU backward probe found identical original Q gradients. Distributing zero-sum
+noise across inherited attention/FFN output projections preserved forward
+outputs within 2.4e-6 but yielded 2.2% Q-gradient replica divergence. This is
+implemented only in the new extreme arm. Its real GPU objective measured 1.96%
+initial gradient divergence. Added random blocks in the older arms did learn;
+the finding does not mean every parameter was frozen or all extra capacity was
+unused. It limits what the older width-scaling results establish.
+
+### Extreme engineering record
+
+The first 2B graph qualification consumed approximately 40 GiB of shared GPU memory
+and exited its own throughput/deadline guard at 473.6 seconds, before main update 0.
+No force-stop was executed. Evidence and STOP were archived under the extreme
+root's `qualification-attempts/c665810a3`. Retry source is
+`654c9d79011748230713c6578c40243804199fcf`; W&B identity remains `1iaqyqt3`.
+Only campaign execution and the guarded retry utility changed; scientific
+module hashes were checked unchanged. The retry charges both prior compute and
+repair downtime to the original deadline. Eager batch 256 profiles at 260
+windows/s and 66 GiB peak allocated memory. Live speed was 265 windows/s with
+123 MiB shared GPU memory, eliminating the paging bottleneck.
+
+The extreme is planned for 262,144 exposures (1,024 updates), selected before
+training from profiling. It must be compared against the other arms at that
+same saved exposure, not their later endpoints above. It changes initialization
+as well as size. Final extreme results and structural audits remain pending.

@@ -29,7 +29,7 @@ def main():
                 q=last['model'][f'temporal.blocks.{block}.qkv.weight'][:width,:384].reshape(factor,384,384)
                 centered=q-q.mean(0,keepdim=True)
                 replicas.append(dict(block=block,relative_rms_divergence=float(centered.square().mean().sqrt()/q.square().mean().sqrt().clamp_min(1e-12))))
-        reports.append(dict(name=result['name'],best_step=best['step'],last_step=last['step'],best_score=best['best'],total_active_seconds=last['elapsed_seconds'],added_block_updates=learned,replicated_q_weight_divergence=replicas,curve=curves))
+        reports.append(dict(name=result['name'],best_step=best['step'],last_step=last['step'],best_score=best['best'],checkpoint_accounted_seconds=last['elapsed_seconds'],timing_includes_engineering_retry=bool(last['contract'].get('qualification_elapsed_seconds',0)),added_block_updates=learned,replicated_q_weight_divergence=replicas,curve=curves))
         del last,best
     (root/'checkpoint-audit.json').write_text(json.dumps(reports,indent=2))
     print(json.dumps(reports,indent=2))

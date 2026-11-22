@@ -1,6 +1,6 @@
-# V24: 50M–500M temporal capacity
+# V24: 50M–2B temporal capacity
 
-Five bounded runs: approximately 492M (first for budget profiling), 50M, 101M,
+Initial five bounded runs: approximately 492M (first for budget profiling), 50M, 101M,
 199M, and a matched 7.8M continued control. All start from V23 e03, the range-
 leading 384x6 checkpoint. Feature encoder, fixed training-only transformations,
 64x32 exported representation, 594-parameter shared decoder, masks and V21
@@ -29,6 +29,25 @@ projection. A real-window CPU probe preserved outputs within 2.4e-6 and changed
 first-layer Q-gradient replica divergence from zero to 2.2%. This initialization
 change is explicit: the extreme is a combined size/initialization experiment,
 not a pure size ablation. Run `qualify_extreme` on CPU first.
+
+The first extreme qualification exposed WDDM paging: CUDA graph buffers filled
+dedicated memory and consumed approximately40GiB shared GPU memory. It exited
+its own throughput/deadline guard before any main training update. The same
+W&B identity was retried with eager backward; model, optimizer, batch, loss and
+sampling are unchanged. Eager profiles measured237 windows/s at batch128 and
+260 at batch256, with approximately66GiB peak allocated memory at256. Live
+training reached265 windows/s with shared GPU memory reduced to123MiB.
+`retry_qualification` preserves the old attempt, refuses any already-trained
+checkpoint, checks the scientific-source hashes, and charges repair downtime
+against the original experiment deadline. The repaired source is pinned below.
+
+Reproduce the fixed-exposure extreme run from its immutable snapshot:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+Set-Location D:\TradingML\codes\bargpt-phase1-v24-654c9d790
+& C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -u -m research.bar_gpt.phase1_v24.campaign --output D:\TradingML\runtimes\bar_gpt\phase1-v24-extreme2b-reproduction --revision 654c9d79011748230713c6578c40243804199fcf --extreme-2b --windows 262144
+```
 
 The campaign was explicitly expanded to eight total experiments after the
 initial results: all higher LR candidates passed the stability gates, but the

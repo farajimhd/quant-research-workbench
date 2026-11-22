@@ -23,7 +23,7 @@ def main():
             size=f'{n/1000:.2f}B' if n>=1000 else f'{n:.1f}M'
             ax.plot(x,[v['summary'][key] for v in row['curve']],marker='o',linestyle='--' if row['name'].endswith('lr3') else '-',label=f"{size} LR×{results[row['name']]['lr_multiplier']:g}")
             ax.set(title=title,xlabel='Training-window exposures (millions)');ax.grid(alpha=.25)
-    axes[0,0].set_yscale('log');axes[0,0].legend(title='Total parameters')
+    axes[0,0].set_yscale('log');axes[0,0].legend(title='Total parameters',fontsize=8,ncol=2)
     fig.suptitle('V24: matched data and decoder, training-only LR selection\nAll-visible development reconstruction; no forecasting claim')
     fig.savefig(root/'learning-curves.png',dpi=160);plt.close(fig)
 
