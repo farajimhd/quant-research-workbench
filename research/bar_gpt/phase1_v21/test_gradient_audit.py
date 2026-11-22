@@ -43,3 +43,17 @@ def test_price_weight_changes_only_raw_price_contribution():
         if key != 'joint_base': torch.testing.assert_close(parts[key], old_parts[key], rtol=0, atol=0)
     changed.backward()
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
+
+
+def test_adam_scaling_uses_bias_correction_and_group_learning_rate():
+    from .gradient_audit import adam_scaling
+    model = torch.nn.Module()
+    for name in ('bar', 'temporal', 'decoder'):
+        model.add_module(name, torch.nn.Linear(1, 1, bias=False))
+    opt = torch.optim.AdamW([dict(params=getattr(model, n).parameters(), lr=lr)
+                            for n, lr in zip(('bar', 'temporal', 'decoder'), (.01, .02, .03))], weight_decay=0.)
+    for p in model.parameters(): p.grad = torch.full_like(p, 2.)
+    opt.step()
+    scales = adam_scaling(model, dict(contract=dict(version='phase1-v21-full20'), optimizer=opt.state_dict()))
+    for n, lr in zip(('bar', 'temporal', 'decoder'), (.01, .02, .03)):
+        torch.testing.assert_close(scales[n+'.weight'], torch.tensor([[lr/(2+1e-8)]]))

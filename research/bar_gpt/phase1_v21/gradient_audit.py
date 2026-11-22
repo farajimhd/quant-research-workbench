@@ -35,7 +35,25 @@ def geometry(vectors):
     return dict(norms=norms, cosines=cosines)
 
 
-def audit(model, inputs):
+def adam_scaling(model, saved):
+    """Fixed bias-corrected second-moment preconditioner, not an Adam step."""
+    if saved['contract'].get('version') != 'phase1-v21-full20':
+        raise ValueError('Only the verified full-training parameter-group contract is supported')
+    groups = saved['optimizer']['param_groups']; states = saved['optimizer']['state']
+    if len(groups) != 3: raise ValueError('Optimizer group count')
+    result = {}
+    for prefix, group in zip(('bar.', 'temporal.', 'decoder.'), groups):
+        params = [(n, p) for n, p in model.named_parameters() if n.startswith(prefix)]
+        if len(params) != len(group['params']): raise ValueError('Optimizer parameter order')
+        for (name, parameter), key in zip(params, group['params']):
+            state = states[key]; variance = state['exp_avg_sq'].to(parameter.device)
+            step = float(state['step'])
+            if step <= 0 or variance.shape != parameter.shape: raise ValueError('Optimizer moment state')
+            result[name] = group['lr'] / ((variance/(1-group['betas'][1]**step)).sqrt()+group['eps'])
+    return result
+
+
+def audit(model, inputs, precondition=None):
     captured = []
     hook = model.register_forward_hook(lambda module, args, output: captured.append(output))
     scale = torch.ones(6, 6, device=inputs[0].device)
@@ -57,14 +75,20 @@ def audit(model, inputs):
     torch.testing.assert_close(sum(breakdown.values()), parts['joint_base'])
     params = list(model.named_parameters())
     vectors = {group: {} for group in ('bar', 'temporal', 'decoder')}
+    conditioned = {group: {} for group in vectors}
     for name, value in dict(families, **{'base_'+k: v for k, v in breakdown.items()}).items():
         grads = torch.autograd.grad(value, [p for _, p in params], retain_graph=True, allow_unused=True)
         for group in vectors:
             vectors[group][name] = torch.cat([
                 (torch.zeros_like(p) if g is None else g).detach().flatten().float()
                 for (n, p), g in zip(params, grads) if n.startswith(group + '.')])
+            if precondition is not None:
+                conditioned[group][name] = torch.cat([
+                    ((torch.zeros_like(p) if g is None else g).detach()*precondition[n]).flatten().float()
+                    for (n, p), g in zip(params, grads) if n.startswith(group + '.')])
     return dict(loss=float(total.detach()), families={k: float(v.detach()) for k, v in families.items()},
-                gradients={k: geometry(v) for k, v in vectors.items()})
+                gradients={k: geometry(v) for k, v in vectors.items()},
+                fixed_adam_preconditioner={k: geometry(v) for k, v in conditioned.items()} if precondition is not None else None)
 
 
 def main():
@@ -77,6 +101,7 @@ def main():
     p.add_argument('--batches', type=int, default=2)
     p.add_argument('--stratified', action='store_true', help='Equal-count timeframe diagnostic, not population estimate')
     p.add_argument('--tiny-price-weight', type=float, help='Optional separate disposable-model overfit gate')
+    p.add_argument('--adam-precondition', action='store_true')
     a = p.parse_args()
     if not 1 <= a.batch_size <= 512 or not 1 <= a.batches <= 4 or len(a.checkpoint) > 3:
         raise ValueError('Bounded audit required')
@@ -141,13 +166,14 @@ def main():
             for balanced in (False, True):
                 model = initialize(None, saved, None, 'joint_repaired').cuda().train()
                 configure_activity(model, SimpleNamespace(activity_weight=1., activity_frame_counts=a.activity_frame_counts if balanced else None))
+                precondition = adam_scaling(model, saved) if a.adam_precondition else None
                 for i in range(a.batches):
                     s = slice(i*a.batch_size, (i+1)*a.batch_size)
                     for visible in (16, 64):
                         if time.monotonic()-started > 600: raise TimeoutError('Audit deadline')
                         generator = torch.Generator(device='cuda').manual_seed(917+i)
                         pos = positions(a.batch_size, 'cuda', visible, generator)
-                        result = audit(model, (x[s], v[s], raw[s], frames[s], pos, old[s]))
+                        result = audit(model, (x[s], v[s], raw[s], frames[s], pos, old[s]), precondition)
                         records.append(dict(checkpoint=str(cp), sha256=sha, balanced=balanced,
                                             batch=i, visible=visible, **result))
                 del model
@@ -156,7 +182,7 @@ def main():
             frame_counts_sha=file_hash(a.activity_frame_counts),
             frames={str(int(f)): int((frames==f).sum()) for f in frames.unique()},
             records=records, tiny=tiny_results, stratified=a.stratified, seconds=time.monotonic()-started,
-            limitation='Training-cache diagnostic only. Raw gradients before clipping/Adam; not causal proof or validation. joint_base includes the original raw/coordinate activity term.'))
+            limitation='Training-cache diagnostic only, not causal proof or validation. joint_base includes original raw/coordinate activity. Fixed Adam preconditioning uses saved bias-corrected second moments and group LR, without momentum, next-step variance or global clipping; it is not the actual optimizer update.'))
 
 
 if __name__ == '__main__': main()
