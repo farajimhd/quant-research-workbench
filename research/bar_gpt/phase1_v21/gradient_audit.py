@@ -11,6 +11,8 @@ import numpy as np
 import torch
 from .model import initialize
 from .objectives import loss
+from .joint_base import loss as base_loss
+from ..phase0_v1.model import objective as raw_loss
 from .run_full import configure_activity
 from ..phase0_v3.experiment import cache
 from ..phase1_v12.data import load_teacher
@@ -34,15 +36,28 @@ def geometry(vectors):
 
 
 def audit(model, inputs):
-    total, parts = loss(model, *inputs, torch.ones(6, 6, device=inputs[0].device))
+    captured = []
+    hook = model.register_forward_hook(lambda module, args, output: captured.append(output))
+    scale = torch.ones(6, 6, device=inputs[0].device)
+    try:
+        total, parts = loss(model, *inputs, scale)
+    finally:
+        hook.remove()
     families = dict(joint_base=parts['joint_base'],
                     activity=parts['activity'] + .1 * parts['activity_direction'],
                     range=.1 * parts['range'] + .05 * parts['range_bins'],
                     candle=.5 * parts['candle_direction'])
     torch.testing.assert_close(sum(families.values()), total)
+    latent, _, out = captured[0]
+    _, details = base_loss(model, *inputs, scale, latent, out, include_activity=False)
+    _, components = raw_loss(model, out, inputs[0], inputs[1])
+    breakdown = dict(raw_price=.5*components[0], raw_activity=.5*components[1],
+                     coordinate=.1*components[2], body=.5*details['body'],
+                     wick=.05*details['wick'], anchor=details['bar_latent_anchor'])
+    torch.testing.assert_close(sum(breakdown.values()), parts['joint_base'])
     params = list(model.named_parameters())
     vectors = {group: {} for group in ('bar', 'temporal', 'decoder')}
-    for name, value in families.items():
+    for name, value in dict(families, **{'base_'+k: v for k, v in breakdown.items()}).items():
         grads = torch.autograd.grad(value, [p for _, p in params], retain_graph=True, allow_unused=True)
         for group in vectors:
             vectors[group][name] = torch.cat([
@@ -60,6 +75,7 @@ def main():
     p.add_argument('--activity-frame-counts', type=Path, required=True)
     p.add_argument('--batch-size', type=int, default=256)
     p.add_argument('--batches', type=int, default=2)
+    p.add_argument('--stratified', action='store_true', help='Equal-count timeframe diagnostic, not population estimate')
     a = p.parse_args()
     if not 1 <= a.batch_size <= 512 or not 1 <= a.batches <= 4 or len(a.checkpoint) > 3:
         raise ValueError('Bounded audit required')
@@ -75,7 +91,17 @@ def main():
     torch.manual_seed(917)
     started = time.monotonic()
     rows = np.load(data/'train.npy', mmap_mode='r')
-    ids = np.random.default_rng(917).choice(len(rows), a.batches*a.batch_size, replace=False)
+    rng = np.random.default_rng(917)
+    if a.stratified:
+        choices = []
+        for f in np.unique(rows['timeframe_us']):
+            pool = np.flatnonzero(rows['timeframe_us'] == f)
+            choices.extend(rng.choice(pool, a.batches*a.batch_size//6, replace=False).tolist())
+        rng.shuffle(choices)
+        ids = np.array(choices)
+        a.batch_size = len(ids)//a.batches
+    else:
+        ids = rng.choice(len(rows), a.batches*a.batch_size, replace=False)
     records = []
     with lease(a.output):
         teacher, identity = load_teacher(root/'phase1-v12-frozen16-mae-20261121/teacher/teacher.pt',
@@ -110,7 +136,7 @@ def main():
             split_hash=verified['source_split_hash'], teacher=identity, ids=ids.tolist(),
             frame_counts_sha=file_hash(a.activity_frame_counts),
             frames={str(int(f)): int((frames==f).sum()) for f in frames.unique()},
-            records=records, seconds=time.monotonic()-started,
+            records=records, stratified=a.stratified, seconds=time.monotonic()-started,
             limitation='Training-cache diagnostic only. Raw gradients before clipping/Adam; not causal proof or validation. joint_base includes the original raw/coordinate activity term.'))
 
 
