@@ -100,7 +100,7 @@ def main():
             if sha!=json.loads((cp.parent/'result.json').read_text())['checkpoint_sha']:raise ValueError('Checkpoint changed')
             saved=torch.load(cp,map_location='cpu',weights_only=False)
             if saved['contract']['split_hash']!=verified['source_split_hash']:raise ValueError('Checkpoint split mismatch')
-            model=(restore_basis(saved) if saved['contract'].get('decoder_parameterization')=='activity_dct64_v1' else restore(saved)).cuda().eval()
+            model=(restore_basis(saved) if saved['contract'].get('decoder_parameterization') in ('activity_dct64_v1','activity_dct64_nonlinear32_v1') else restore(saved)).cuda().eval()
             label=str(cp);hashes[label]=sha;results[label]={}
             for split,data in (('train',train),('development',dev)):
                 if time.monotonic()-started>1200:raise TimeoutError('Diagnostic deadline')

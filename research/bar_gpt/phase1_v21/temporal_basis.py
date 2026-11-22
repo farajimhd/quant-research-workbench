@@ -41,16 +41,29 @@ class ActivityBasisLinear(nn.Module):
         return z.index_copy(2,self.activity_indices,activity).flatten(1)
 
 
+class ActivityBasisNonlinear(ActivityBasisLinear):
+    """One embedding-only head with a small zero-initialized nonlinear correction."""
+    def __init__(self,native,rank=32):
+        super().__init__(native)
+        self.correction_in=nn.Linear(self.in_features,rank,device=native.weight.device,dtype=native.weight.dtype)
+        self.correction_out=nn.Linear(rank,self.out_features,device=native.weight.device,dtype=native.weight.dtype)
+        nn.init.zeros_(self.correction_out.weight);nn.init.zeros_(self.correction_out.bias)
+
+    def forward(self,x):
+        return super().forward(x)+self.correction_out(F.gelu(self.correction_in(x)))
+
+
 def restore_basis(saved):
     """Restore only the declared basis schema; never treat coefficients as bars."""
     from ..phase1_v20.encoders import restore
-    if saved['contract'].get('decoder_parameterization')!='activity_dct64_v1':
+    kind=saved['contract'].get('decoder_parameterization')
+    if kind not in ('activity_dct64_v1','activity_dct64_nonlinear32_v1'):
         raise ValueError('Explicit activity basis contract required')
     state=saved['model'];w=state['decoder.coefficient_weight'];b=state['decoder.coefficient_bias']
     template={k:v for k,v in state.items() if not k.startswith('decoder.')}
     template.update({'decoder.weight':torch.zeros_like(w),'decoder.bias':torch.zeros_like(b)})
     model=restore(dict(saved,model=template))
-    model.decoder=ActivityBasisLinear(model.decoder)
+    model.decoder=(ActivityBasisNonlinear(model.decoder) if kind=='activity_dct64_nonlinear32_v1' else ActivityBasisLinear(model.decoder))
     torch.testing.assert_close(state['decoder.inverse_basis'].cpu(),model.decoder.inverse_basis.cpu(),rtol=0,atol=0)
     torch.testing.assert_close(state['decoder.activity_indices'].cpu(),model.decoder.activity_indices.cpu(),rtol=0,atol=0)
     model.load_state_dict(state,strict=True)
