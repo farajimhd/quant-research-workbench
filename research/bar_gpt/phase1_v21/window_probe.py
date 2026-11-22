@@ -93,6 +93,7 @@ def main():
         sources={}
         for label in [str(cp) for cp in a.checkpoint]+['untrained','raw_summary']:
             if time.monotonic()-started>1200:raise TimeoutError('Probe deadline')
+            decoder_logs=None
             if label=='raw_summary':features=[raw_summary(d) for d in data]
             else:
                 cp=a.checkpoint[0] if label=='untrained' else Path(label)
@@ -104,9 +105,14 @@ def main():
                 sources[label]=sha;torch.manual_seed(917)
                 model=(fresh(saved) if label=='untrained' else restore(saved)).cuda().eval()
                 features=[]
-                for x,v,raw,frames in data:
-                    features.append(torch.cat([model(x[i:i+512],v[i:i+512],positions(len(x[i:i+512]),'cuda',64))[1]
-                                               for i in range(0,len(x),512)]))
+                for split_index,(x,v,raw,frames) in enumerate(data):
+                    embeddings=[]; outputs=[]
+                    for i in range(0,len(x),512):
+                        _,embedding,output=model(x[i:i+512],v[i:i+512],positions(len(x[i:i+512]),'cuda',64))
+                        embeddings.append(embedding)
+                        if split_index==1 and label!='untrained':outputs.append(output['logs'])
+                    features.append(torch.cat(embeddings))
+                    if outputs:decoder_logs=torch.cat(outputs).double()
                 del model,saved
             rows={}
             for j,kind in tasks:
@@ -120,6 +126,12 @@ def main():
                     groups[str(int(frame))]=scores(pred[take],dy[take],kind)
                 rows[key]=dict(counts=counts,train=scores(predict(features[0][tm],solution),y,kind),development=scores(pred,dy,kind),by_frame=groups,
                                constant_development=scores(y.mean(0).expand_as(dy),dy,kind))
+                if decoder_logs is not None:
+                    actual=decoder_logs[dm,:,j]
+                    if kind=='candle':actual=(decoder_logs[dm,:,j+3]-actual)*10000
+                    if kind=='change':actual=actual.diff(dim=1)*10000
+                    rows[key]['decoder_by_frame']={str(int(f)):scores(actual[dev[3][dm]==f],dy[dev[3][dm]==f],kind)
+                                                   for f in dev[3][dm].unique()}
             results[label]=rows
             write_json(a.output/'result.json',dict(source=a.source_revision,data_hash=verified['hash'],supplement_hash=sm['hash'],
                 split_hash=verified['source_split_hash'],checkpoints=sources,ridge=.01,results=results,seconds=time.monotonic()-started,
