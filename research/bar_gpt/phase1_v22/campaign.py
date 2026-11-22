@@ -23,6 +23,12 @@ from ..v5.shards.phase1_contract import file_hash,digest,write_json
 from research.mlops.env import discover_env_files,load_env_files
 
 
+def verify_resume_revision(previous,current):
+    qualified=('88f2060144a13c662a041017d6832753b2c59b7c','9893dd6871ee0d25ad4a597abaead70afcfe2dd1')
+    if previous!=current and (previous,current)!=qualified:
+        raise ValueError('Unqualified source change: use a new scientific identity or explicitly qualify engineering equivalence')
+
+
 def ranking(metrics,reference):
     """Equal-group geometric MAE ratios plus balanced direction error ratios."""
     ratios=[];directions=[]
@@ -42,7 +48,7 @@ def main():
     p.add_argument('--windows',type=int,default=8388608);p.add_argument('--resume',action='store_true');a=p.parse_args()
     if not 1048576<=a.windows<=16777216 or a.windows%4096:raise ValueError('Bounded exposure, multiple of4096 required')
     a.device='cuda';a.source_revision=a.revision;preflight(a)
-    root=Path('D:/TradingML/runtimes/bar_gpt');out=a.output;began=time.time()
+    root=Path('D:/TradingML/runtimes/bar_gpt');out=a.output;began=time.time();invocation_started=began
     progress=lambda **kw:write_json(out/'progress.json',dict(updated=time.time(),**kw))
     torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
@@ -65,19 +71,21 @@ def main():
         for key in ('parent_sha','data_hash','supplement_hash','windows_per_arm'):
             if old[key]!=manifest[key]:raise ValueError('Changed scientific resume: '+key)
         manifest=old;began=old['started']
+        verify_resume_revision(old['source'],a.revision)
         if old['source']!=a.revision:
             manifest.setdefault('engineering_resumes',[]).append(dict(revision=a.revision,time=time.time(),reason='W&B terminal summary API fix; no model/objective/data changes'))
     else:manifest['started']=began;write_json(out/'manifest.json',manifest)
     with lease(out):
         progress(stage='preparing immutable GPU cache',experiment=0)
         teacher,identity=load_teacher(root/'phase1-v12-frozen16-mae-20261121/teacher/teacher.pt',verified['source_split_hash'],'cuda')
+        if a.resume and manifest.get('teacher') and manifest['teacher']!=identity:raise ValueError('Teacher changed on resume')
         train=tuple(torch.cat((x,y)) for x,y in zip(cache(np.load(data/'train.npy',mmap_mode='r')),cache(np.load(supplement/'train.npy',mmap_mode='r'))))
         dev=cache(np.load(data/'development.npy',mmap_mode='r'))
         def anchors(items):
             with torch.no_grad():z=torch.cat([teacher.encode(items[0][i:i+512],items[1][i:i+512]) for i in range(0,len(items[0]),512)])
             return (*items,z)
         train=anchors(train);dev=anchors(dev);activity_scale,activity_cal=calibrate(train[2],train[1],train[3])
-        manifest.update(train_windows=len(train[0]),dev_windows=len(dev[0]),teacher=identity,activity_calibration=activity_cal,cache_seconds=time.time()-began)
+        manifest.update(train_windows=len(train[0]),dev_windows=len(dev[0]),teacher=identity,activity_calibration=activity_cal,cache_seconds=time.time()-invocation_started)
         write_json(out/'manifest.json',manifest)
         reference_path=out/'parent-metrics.json'
         if reference_path.exists():reference=json.loads(reference_path.read_text())

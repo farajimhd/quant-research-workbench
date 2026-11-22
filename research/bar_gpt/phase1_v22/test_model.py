@@ -45,3 +45,11 @@ def test_full_loss_no_hidden_input_and_restore():
         torch.testing.assert_close(restored(x,valid,pos)[2]['logs'],actual[2]['logs'])
         empty,_=loss(m,x,torch.zeros_like(valid),x.exp(),torch.ones(2),pos,torch.zeros(2,64,16),torch.ones(6,6))
         assert empty==0
+
+
+def test_resume_source_fail_closed():
+    import pytest
+    from .campaign import verify_resume_revision
+    verify_resume_revision('same','same')
+    verify_resume_revision('88f2060144a13c662a041017d6832753b2c59b7c','9893dd6871ee0d25ad4a597abaead70afcfe2dd1')
+    with pytest.raises(ValueError):verify_resume_revision('parent','changed_science')

@@ -22,10 +22,24 @@ def main():
         values.update({'audit/'+k:v for k,v in audit.items() if isinstance(v,(int,float))})
         for name,metrics in baseline.items():values.update({'baseline/'+name+'/'+k:v for k,v in metrics.items()})
         diag=a.output/row['name']/'diagnostics-v3.json'
-        if diag.exists():values.update({'diagnostic/'+k:v for k,v in json.loads(diag.read_text()).items() if isinstance(v,(int,float))})
+        full=a.output/row['name']/'diagnostics-11146.json'
+        if full.exists():diag=full
+        if diag.exists():
+            diagnostic=json.loads(diag.read_text())
+            values.update({'diagnostic/'+k:v for k,v in diagnostic.items() if isinstance(v,(int,float))})
+            for band in diagnostic['price_bands']:
+                prefix=f"diagnostic/price_band_{band['low']}_{band['high']}/"
+                values.update({prefix+k:v for k,v in band.items() if isinstance(v,(int,float))})
+            for stat in diagnostic['shape_coordinate_stats']:
+                values.update({f"diagnostic/coordinate_{stat['coordinate']}/"+k:v for k,v in stat.items()})
+            for key in ('prediction_variance','target_variance'):
+                values.update({f'diagnostic/{key}/channel_{j}':v for j,v in enumerate(diagnostic[key])})
         if profile and profile['checkpoint_sha']==row['checkpoint_sha']:
             for entry in profile['results']:
                 values.update({f"profile/batch_{entry['batch']}/"+k:v for k,v in entry.items() if isinstance(v,(int,float))})
+            tiny=json.loads((a.profile.parent/'extended-tiny.json').read_text())
+            values.update({'qualification/extended_tiny_initial':tiny['curve'][0]['loss'],'qualification/extended_tiny_final':tiny['curve'][-1]['loss']})
+            values.update({f'qualification/extended_tiny_raw_mae/channel_{j}':v for j,v in enumerate(tiny['all_visible_raw_mae_by_channel'])})
         run.summary.update(values)
         artifacts=list(run.logged_artifacts());files=[f.name for f in run.files()]
         if artifacts or any(name.endswith(('.pt','.pth','.ckpt','.safetensors')) for name in files):raise ValueError('Unexpected checkpoint/artifact upload')
