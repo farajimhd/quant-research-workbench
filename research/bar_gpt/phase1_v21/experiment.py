@@ -61,8 +61,9 @@ def main():
     p.add_argument('--steps',type=int,default=3000);p.add_argument('--lr',type=float,default=1e-6);p.add_argument('--bar-lr',type=float,default=1e-7)
     p.add_argument('--decoder-visible-only',action='store_true')
     p.add_argument('--graphs',action='store_true')
+    p.add_argument('--parent',type=Path)
     p.add_argument('--arms',default='range,both_log,both_symmetric,metric');a=p.parse_args();arms=a.arms.split(',')
-    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric') for k in arms):raise ValueError('New identity and valid arms required')
+    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','joint_control','joint_metric') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
     a.output.mkdir();torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     import psutil,sys
@@ -70,7 +71,7 @@ def main():
     root=Path('D:/TradingML/runtimes/bar_gpt');data=root/'phase1-v8-learned-mae-20261117/dataset';verified=verify(data)
     supplement=root/'phase1-v19-training-pool-20261121';sm=json.loads((supplement/'manifest.json').read_text())
     if digest({k:v for k,v in sm.items() if k!='hash'})!=sm['hash'] or sm['split_hash']!=verified['source_split_hash'] or file_hash(supplement/'train.npy')!=sm['files']['train.npy']:raise ValueError('Training supplement provenance')
-    cp=root/'phase1-v20-joint-singlehead-20261121/joint/checkpoint.pt';receipt=json.loads((cp.parent/'result.json').read_text())
+    cp=a.parent or root/'phase1-v20-joint-singlehead-20261121/joint/checkpoint.pt';receipt=json.loads((cp.parent/'result.json').read_text())
     if file_hash(cp)!=receipt['checkpoint_sha']:raise ValueError('Window parent hash')
     saved=torch.load(cp,map_location='cpu',weights_only=False);cal=json.loads((root/'phase1-v12-frozen16-mae-20261121/teacher/calibration.json').read_text())
     refpath=root/'phase0-v3-input-reference-20261121/calibration.json';refs=json.loads(refpath.read_text())
@@ -87,10 +88,10 @@ def main():
         contract=dict(source=a.revision,bar_parent=identity,window_parent_sha=file_hash(cp),data_hash=verified['hash'],supplement_hash=sm['hash'],split_hash=verified['source_split_hash'],input_calibration_sha=file_hash(refpath),steps=a.steps,lr=a.lr,bar_lr=a.bar_lr,seed=559,cache_seconds=time.perf_counter()-start,train_windows=len(train[0]),dev_windows=len(dev[0]),architecture='Feature attention4x1 to16D; temporal128x2 to512D; oneLinear512to1152 FP32 output head; no intermediate decoder',masking='16 random bars in3/4 batches; all64 in1/4; hidden bars removed before both attention stages',anchor='Encoders frozen; legacy bar latents used only in evaluator; no anchor loss',activity_calibration=activity_cal,scope='Bounded real training pool; unchanged development; no full training')
         contract['decoder_visible_only']=a.decoder_visible_only
         contract['graphs']=a.graphs
-        contract['intervention']='Frozen encoders and close/body rows; fit existing wick/activity output rows only. No new head. Diagnostic calibration.'
+        contract['intervention']='Head arms freeze encoders; joint arms train both encoders. Head arms freeze and close/body rows; fit existing wick/activity output rows only. No new head. Diagnostic calibration.'
         profiles=[]
         for batch in (256,512,1024,2048,4096,8192):
-            torch.manual_seed(17);model=initialize(teacher,saved,cal).cuda();opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559);torch.cuda.reset_peak_memory_stats();began=None;replays={}
+            torch.manual_seed(17);model=initialize(teacher,saved,cal,arms[0]).cuda();opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559);torch.cuda.reset_peak_memory_stats();began=None;replays={}
             for i in range(12):
                 ids=torch.randint(len(train[0]),(batch,),device='cuda',generator=g);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if i%4==3 else 16,g)
                 set_gradient_scope(model,pos.shape[1],a.decoder_visible_only)
@@ -111,7 +112,7 @@ def main():
             model=initialize(teacher,saved,cal,arm).cuda()
             if arm=='frozen':model.bar.requires_grad_(False)
             opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559)
-            arm_contract=dict(contract,arm=arm,input_calibration=input_cal,repair_arm=arm,bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()))
+            arm_contract=dict(contract,arm=arm,input_calibration=input_cal,repair_arm=arm,training_scope='joint' if arm.startswith('joint_') else 'protected_head',bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()))
             w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v21-repair',name=a.output.name+'-'+arm,config=arm_contract,dir=str(out),reinit=True);step=0;status='failed';curve=[];seconds=0.;replays={}
             def save(path):torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),contract=arm_contract,step=step,rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state_all(),sampling_rng=g.get_state()),path)
             try:

@@ -30,6 +30,14 @@ assigned an invented up/down class. Exact-zero range remains a separate known
 limitation; these threshold losses cannot guarantee an exact-zero output.
 Hard bin/sign accuracy is never falsely described as differentiable.
 
+Follow-up arms `joint_control` and `joint_metric` unfreeze BOTH encoders and the
+one head. They use the unchanged V20 full reconstruction/retention objective;
+`joint_metric` adds0.1 times the new range/activity/metric loss. The baseline
+loss reuses the same forward tensors, avoiding duplicate attention work.
+`--parent CHECKPOINT` accepts a completed hash-verified V20/V21 checkpoint for
+a new scientific identity with a fresh optimizer (not an engineering resume).
+Protected-row invariance applies only to the frozen-encoder calibration arms.
+
 Training/dev identities and uniform sampling are unchanged from V20. Hidden
 bars are physically removed before both attention stages; fresh random16 masks
 in three quarters of batches, all64 in one quarter. Profile eager or captured
