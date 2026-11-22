@@ -9,7 +9,8 @@ def selected_rows(arm):
 
 def initialize(teacher,saved,calibration,arm=None):
     model=restore(saved)
-    model.repair_arm=arm or 'both_symmetric'
+    model.activity_change_prefloor=arm=='joint_prefloor'
+    model.repair_arm='joint_repaired' if model.activity_change_prefloor else arm or 'both_symmetric'
     if model.repair_arm.startswith('joint_'):
         model.requires_grad_(True)
         return model

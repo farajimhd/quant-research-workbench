@@ -60,13 +60,14 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
             error=(pred-target.log1p()).abs().expm1() if model.repair_arm in ('both_symmetric','metric') else log
             pair=mask[:,1:]&mask[:,:-1]&known[:,1:]&known[:,:-1]
             pair_weight=pair if frame_weight is None else pair*frame_weight
-            delta=(pred[:,1:]-pred[:,:-1])-(target[:,1:].log1p()-target[:,:-1].log1p())
+            change_code=code if getattr(model,'activity_change_prefloor',False) else pred
+            delta=(change_code[:,1:]-change_code[:,:-1])-(target[:,1:].log1p()-target[:,:-1].log1p())
             activity+=((torch.where(mask,error+.1*log,0)*weights).sum()/weights.sum().clamp_min(1)+.5*(torch.where(pair,delta.square(),0)*pair_weight).sum()/pair_weight.sum().clamp_min(1))/6
             if model.repair_arm in ('metric','metric_log','joint_metric_log','joint_repaired','joint_separated'):
                 actual=target[:,1:].log1p()-target[:,:-1].log1p()
                 moving=pair&(actual!=0)
                 moving_weight=moving if frame_weight is None else moving*frame_weight
-                logits=(pred[:,1:]-pred[:,:-1])/.1
+                logits=(change_code[:,1:]-change_code[:,:-1])/.1
                 term=F.binary_cross_entropy_with_logits(logits,(actual>0).to(logits.dtype),reduction='none')
                 direction+=(torch.where(moving,term,0)*moving_weight).sum()/moving_weight.sum().clamp_min(1)/6
     extra=shape+.05*wick+activity+.5*bins+.1*direction

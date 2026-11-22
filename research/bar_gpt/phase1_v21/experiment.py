@@ -63,9 +63,11 @@ def main():
     p.add_argument('--graphs',action='store_true')
     p.add_argument('--parent',type=Path)
     p.add_argument('--arms',default='range,both_log,both_symmetric,metric');a=p.parse_args();arms=a.arms.split(',')
-    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
+    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_prefloor','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
-    a.output.mkdir();torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
+    from ..phase1_v8.runtime import preflight
+    a.device='cuda';a.resume=False;a.source_revision=a.revision;preflight(a)
+    torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     import psutil,sys
     write_json(a.output/'process.json',dict(pid=os.getpid(),created=psutil.Process().create_time(),command=sys.argv))
     root=Path('D:/TradingML/runtimes/bar_gpt');data=root/'phase1-v8-learned-mae-20261117/dataset';verified=verify(data)

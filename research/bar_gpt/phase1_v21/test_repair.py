@@ -64,6 +64,26 @@ def test_selective_head_has_exact_channel_isolation():
         torch.testing.assert_close(result['model'][name][~rows],c['model'][name][~rows],rtol=0,atol=0)
 
 
+def test_prefloor_changes_only_auxiliary_activity_losses():
+    model,teacher,_=build()
+    saved=dict(model=copy.deepcopy(model.state_dict()),contract=dict(bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),input_calibration=None))
+    baseline=initialize(None,saved,None,'joint_repaired')
+    candidate=initialize(None,saved,None,'joint_prefloor')
+    x=torch.rand(2,64,27);v=torch.ones_like(x,dtype=torch.bool)
+    args=(x,v,x.exp(),torch.ones(2),torch.arange(16).expand(2,-1),torch.zeros(2,64,16),torch.ones(6,6))
+    for key in baseline(x,v,args[4])[2]:
+        torch.testing.assert_close(baseline(x,v,args[4])[2][key],candidate(x,v,args[4])[2][key],rtol=0,atol=0)
+    _,old=loss(baseline,*args);value,new=loss(candidate,*args)
+    for key in ('range','wick','range_bins','joint_base','candle_direction'):
+        torch.testing.assert_close(old[key],new[key],rtol=0,atol=0)
+    value.backward()
+    assert all(torch.isfinite(p.grad).all() for p in candidate.parameters() if p.grad is not None)
+    # All-invalid entries cannot contribute even to the pre-floor auxiliary loss.
+    invalid=list(args);invalid[1]=torch.zeros_like(v)
+    _,parts=loss(candidate,*invalid)
+    assert parts['activity']==0 and parts['activity_direction']==0
+
+
 def test_activity_weight_changes_only_declared_loss_family():
     model,teacher,_=build()
     saved=dict(model=copy.deepcopy(model.state_dict()),contract=dict(bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),input_calibration=None))
