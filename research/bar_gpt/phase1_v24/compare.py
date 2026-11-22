@@ -40,6 +40,10 @@ def main():
         if control:
             pairs=[dict(metric=k,control=control[k],candidate=v,ratio=v/control[k]) for k,v in m.items() if k.startswith(('masked/raw_mae/','all_visible/raw_mae/')) and control.get(k,0)>0]
             record['matched_control']=dict(name=controls[0]['name'],raw_geomean_ratio=math.exp(sum(math.log(max(p['ratio'],1e-9)) for p in pairs)/len(pairs)),groups_improved=sum(p['ratio']<1 for p in pairs),groups=len(pairs),worst=sorted(pairs,key=lambda p:-p['ratio'])[:15])
+            direction_pairs=[dict(metric=k,control=control[k],candidate=v,difference_pp=v-control[k]) for k,v in m.items() if k in control and k.endswith(('moving_direction_pct','balanced_direction_pct','magnitude_accuracy_pct')) and not k.startswith('bar_probe/')]
+            record['matched_control']['direction_range_worst']=sorted(direction_pairs,key=lambda p:p['difference_pp'])[:15]
+            record['matched_control']['direction_range_groups']=len(direction_pairs)
+            record['matched_control']['direction_range_groups_below_minus1pp']=sum(p['difference_pp'] < -1 for p in direction_pairs)
         worst.append(record)
     (root/'summary.json').write_text(json.dumps(summary,indent=2));(root/'worst-groups.json').write_text(json.dumps(worst,indent=2))
     lines=['# V24 XL temporal encoders','',
