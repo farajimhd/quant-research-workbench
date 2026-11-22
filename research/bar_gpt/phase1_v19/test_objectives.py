@@ -47,3 +47,15 @@ def test_visible_symmetry_without_hidden_underprediction_explosion():
     torch.testing.assert_close(relative_activity_loss(under,raw,valid,all_visible),relative_activity_loss(over,raw,valid,all_visible))
     torch.testing.assert_close(relative_activity_loss(under,raw,valid,visible),torch.tensor(.7,dtype=torch.float64))
 
+
+def test_wick_objective_uses_only_observed_price_triplets():
+    from .objectives import wick_loss
+    raw=torch.ones(1,2,18,dtype=torch.float64)
+    valid=torch.ones_like(raw,dtype=torch.bool);known=torch.ones(1,2,dtype=torch.bool)
+    code=torch.zeros_like(raw,requires_grad=True)
+    assert wick_loss(code,raw,valid,known)==0
+    for b in (0,6,12):raw[...,b+1]=2;raw[...,b+2]=.5
+    loss=wick_loss(code,raw,valid,known);loss.backward()
+    assert loss>0 and torch.isfinite(code.grad).all()
+    valid.zero_();assert wick_loss(code,raw*float('nan'),valid,known)==0
+

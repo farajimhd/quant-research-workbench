@@ -128,6 +128,7 @@ def main():
             'relative_all':'Relative01 plus inverse-aware price relative loss; preserve native price scales',
             'relative_visible_symmetric':'Same as relative_all, but visible activity uses symmetric multiplicative error to correct underprediction bias',
             'counts_only':'Frozen representation; lightweight bottleneck-only count correction constrained to the protected-coordinate nullspace'}
+        contract['hypotheses'].update(price100='Matched model and joint objective;100x inverse-relative price term to correct measured gradient imbalance',price100_shape='Price100 plus0.05 wick Huber in log-basis-point units, correcting unpenalized shape errors')
         contract['validation_boundary']='Development/audit/forensic examples never enter training or calibration'
         contract['diagnostic_stress_sha']=file_hash(a.stress_cases) if a.stress_cases else None
         write_json(a.output/'manifest.json',contract)

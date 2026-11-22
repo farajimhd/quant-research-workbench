@@ -220,3 +220,14 @@ This tests whether unpredictable hidden targets were dragging shared count
 levels down and degrading otherwise good all-visible predictions. Fresh AdamW,
 LR1e-6,6000 updates, equal-frame real-data pool; parent is the count-corrected
 checkpoint. Every group is compared with both parent and originalV18.
+
+Equal-frame split-gradient trial was quality-stopped after priceMAE exceeded2.05;
+partial checkpoint and STOP retained. A training-only gradient audit (no updates)
+found readout/decoder-bias body gradient norms0.36-0.51 versus price-related
+0.06-0.09 on all-visible batches. These limited gradient measurements motivate
+`price100`,100x inverse-relative price loss; `price100_shape` adds0.05 wick
+Huber in log-basis-point units. Wick targets require observed open, close and
+the relevant extreme; no imputed target enters this new objective. Matched
+6000-update arms keep architecture, uniform sampling, split-gradient policy,
+LR1e-6 and real training pool unchanged. Range and activity regressions remain
+disqualifying evidence; stronger price weighting is not assumed to solve them.

@@ -3,7 +3,23 @@ import torch
 from torch.nn import functional as F
 from ..phase1_v18.objectives import objective as previous,calibrate,constants
 
-ARMS=('control','relative01','relative1','unscaled_relative01','relative_all','relative_visible_symmetric','counts_only')
+ARMS=('control','relative01','relative1','unscaled_relative01','relative_all','relative_visible_symmetric','counts_only','price100','price100_shape')
+
+
+def wick_loss(code,raw,valid,known):
+    losses=[]
+    for b in (0,6,12):
+        for high,coordinate in ((True,b+2),(False,b+3)):
+            ix=b+1 if high else b+2
+            mask=valid[...,b]&valid[...,b+3]&valid[...,ix]
+            o=torch.where(mask,raw[...,b].double(),1).log();c=torch.where(mask,raw[...,b+3].double(),1).log()
+            edge=torch.where(mask,raw[...,ix].double(),1).log()
+            target=edge-torch.maximum(o,c) if high else torch.minimum(o,c)-edge
+            error=(code[...,coordinate].double()-target)*10000
+            weight=mask*torch.where(known,1.,.1)
+            term=F.smooth_l1_loss(error,torch.zeros_like(error),reduction='none')
+            losses.append((torch.where(mask,term,0)*weight).sum()/weight.sum().clamp_min(1))
+    return torch.stack(losses).mean()
 
 
 def relative_price_loss(logs,raw,valid):
@@ -48,9 +64,10 @@ def objective(model,teacher,pred,latent,valid,pos,raw,source_valid,arm,frames,sc
         tail=(F.smooth_l1_loss(relative,torch.zeros_like(relative),beta=.1,reduction='none')*weights).sum()/weights.sum().clamp_min(1)
         return level+change+.1*tail,dict(count_log_mse=level,count_delta_mse=change,count_relative=tail)
     loss,parts=previous(model,teacher,pred,latent,valid,pos,raw,source_valid,'joint',frames,scale_sq)
-    if arm=='control':return loss,dict(parts,activity_relative=loss.new_zeros(()),price_relative=loss.new_zeros(()))
+    if arm=='control':return loss,dict(parts,activity_relative=loss.new_zeros(()),price_relative=loss.new_zeros(()),wick=loss.new_zeros(()))
     code=teacher.decoder(model.denormalize(pred).float())*teacher.scale[:18]+teacher.mean[:18]
     known=torch.zeros_like(valid).scatter(1,pos,True) if arm=='relative_visible_symmetric' else None
     relative=relative_activity_loss(code,raw,source_valid,known)
-    price=relative_price_loss(teacher.decode(model.denormalize(pred).float())['logs'],raw,source_valid) if arm in ('relative_all','relative_visible_symmetric') else loss.new_zeros(())
-    return loss+(.1 if arm in ('relative01','unscaled_relative01','relative_all','relative_visible_symmetric') else 1.)*relative+price,dict(parts,activity_relative=relative,price_relative=price)
+    price=relative_price_loss(teacher.decode(model.denormalize(pred).float())['logs'],raw,source_valid) if arm in ('relative_all','relative_visible_symmetric','price100','price100_shape') else loss.new_zeros(())
+    wick=wick_loss(code,raw,source_valid,torch.zeros_like(valid).scatter(1,pos,True)) if arm=='price100_shape' else loss.new_zeros(())
+    return loss+(1. if arm=='relative1' else .1)*relative+(100. if arm in ('price100','price100_shape') else 1.)*price+.05*wick,dict(parts,activity_relative=relative,price_relative=price,wick=wick)

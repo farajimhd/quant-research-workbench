@@ -19,7 +19,7 @@ def backward(model,teacher,b,pos):
     prediction=model(latent,meta,pos)
     loss,parts=objective(model,teacher,prediction,latent,valid,pos,b.grid,source_valid,model.loss_arm,b.frames,model.activity_scale)
     loss.backward();norm=stable_clip(model.parameters())
-    return loss.detach(),torch.stack([parts[k].detach() for k in ('body','activity_log_mse','activity_delta_mse','activity_tail','activity_relative','price_relative')]),norm
+    return loss.detach(),torch.stack([parts[k].detach() for k in ('body','activity_log_mse','activity_delta_mse','activity_tail','activity_relative','price_relative','wick')]),norm
 
 
 class Replay:

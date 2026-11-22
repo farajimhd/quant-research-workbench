@@ -148,7 +148,7 @@ def train(model,teacher,manifest,a,contract,reporter):
                         if step%25==0:
                             speed=(windows-measure_windows)/max(.001,time.perf_counter()-measure)
                             recent_wait=device.wait_seconds-measure_wait
-                            reporter.log({'train/loss':float(loss),'train/body_loss':float(parts[0]),'train/activity_log_mse':float(parts[1]),'train/activity_delta_mse':float(parts[2]),'train/activity_tail':float(parts[3]),'train/activity_relative':float(parts[4]),'train/price_relative':float(parts[5]),
+                            reporter.log({'train/loss':float(loss),'train/body_loss':float(parts[0]),'train/activity_log_mse':float(parts[1]),'train/activity_delta_mse':float(parts[2]),'train/activity_tail':float(parts[3]),'train/activity_relative':float(parts[4]),'train/price_relative':float(parts[5]),'train/wick_loss':float(parts[6]),
                                           'train/learning_rate':lr,'train/gradient_norm':float(norm),'train/windows_per_second':speed,
                                           'train/loader_wait_seconds':recent_wait,'train/loader_wait_total_seconds':device.wait_seconds,'train/gpu_reserved_mib':torch.cuda.memory_reserved()/2**20},step)
                             reporter.update(stage='training',step=step,epoch=epoch+1,epochs=a.epochs,epoch_done=epoch_done,
