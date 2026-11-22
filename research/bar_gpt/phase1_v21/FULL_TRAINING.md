@@ -131,6 +131,36 @@ Checkpoint SHA256:
 Owner/workers exited; checkpoint hash and remote W&B metrics were verified.
 Per-group evidence is `phase1-v21-campaign-20261121/decoder01-comparison.json`.
 
+### Bounded extension and numerical check
+
+The same decoder-rate identity was extended to 5,000 updates with exact state
+resume, retaining the complete step-2,000 checkpoint separately. The unchanged
+promotion gate still failed: only 45/216 raw groups improved, worst masked quote
+MAE increased 51.5%, and worst moving-candle accuracy fell 1.94 percentage
+points. Balanced score was 0.59026 versus control 0.57668. The intermediate
+3,000/4,000 scores were 0.65219/0.58429 versus 0.59148/0.58698: improvement was
+not stable. The final checkpoint SHA256 is
+`3e2657083d599de388b2e524784c39546a6f2131ffddc1aa893b507997de75cc`.
+Evidence: `decoder01-comparison-extended.json` in the campaign runtime. Owner and
+workers exited, hashes and final remote W&B metrics were verified. Do not
+promote or blindly resume this trial.
+
+A paired readout-precision audit evaluated the final checkpoint on 11,146 fixed
+development windows. It reused identical FP32 decoder codes and masks, changing
+only subsequent coordinate assembly from FP32 to FP64. A synthetic test proves
+FP32 can erase a sub-ULP candle body, but the measured all-visible moving-candle
+accuracy differences were below 0.1 percentage point. Maximum relative raw-MAE
+change was below 4e-7. This numerical effect does not explain the major drift.
+No training transform, checkpoint or metric authority was changed by the audit.
+Source `83ea7805c449c2f0a2a07013b783158739dc2130`; receipts under
+`phase1-v21-precision-audit-20261122`.
+
+Reporter commit `8aeb85029` corrects future planned `qualification_complete`
+runs to W&B exit code zero while retaining that distinct local state. Four
+status tests pass; failure and deliberate-stop classifications stay unchanged.
+It was not injected into an immutable running snapshot, so earlier W&B runs
+retain their historical failed label despite completing their bounded work.
+
 The user approved 20 epochs despite the earlier reconstruction/direction
 tradeoffs, and subsequently explicitly allowed any learning rate. Three matched
 initial full-data trials selected a substantially smaller fine-tuning LR.
