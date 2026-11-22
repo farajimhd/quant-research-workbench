@@ -9,8 +9,11 @@ def selected_rows(arm):
 
 def initialize(teacher,saved,calibration,arm=None):
     model=restore(saved)
-    model.activity_change_prefloor=arm=='joint_prefloor'
+    model.activity_change_prefloor=arm in ('joint_prefloor','joint_basis_prefloor')
     model.repair_arm='joint_repaired' if model.activity_change_prefloor else arm or 'both_symmetric'
+    if arm=='joint_basis_prefloor':
+        from .temporal_basis import ActivityBasisLinear
+        model.decoder=ActivityBasisLinear(model.decoder)
     if model.repair_arm.startswith('joint_'):
         model.requires_grad_(True)
         return model

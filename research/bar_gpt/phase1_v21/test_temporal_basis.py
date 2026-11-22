@@ -28,3 +28,28 @@ def test_change_loss_has_no_dc_gradient_before_constraints():
     q=dct64()
     torch.testing.assert_close(q@q.T,torch.eye(64,dtype=q.dtype),atol=1e-13,rtol=1e-12)
 
+
+def test_checkpoint_restore_and_optimizer_continuation():
+    import copy
+    import pytest
+    from ..phase1_v20.test_model import build
+    from .temporal_basis import restore_basis
+    from ..phase1_v20.encoders import restore as legacy_restore
+    model,teacher,_=build()
+    model.decoder=ActivityBasisLinear(model.decoder)
+    contract=dict(bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),input_calibration=None,decoder_parameterization='activity_dct64_v1')
+    opt=torch.optim.AdamW(model.decoder.parameters(),lr=1e-5)
+    z=torch.randn(3,model.decoder.in_features)
+    model.decoder(z).square().mean().backward();opt.step();opt.zero_grad()
+    saved=dict(model=copy.deepcopy(model.state_dict()),contract=contract)
+    restored=restore_basis(saved)
+    torch.testing.assert_close(restored.decoder(z),model.decoder(z),rtol=0,atol=0)
+    resumed=torch.optim.AdamW(restored.decoder.parameters(),lr=1e-5)
+    resumed.load_state_dict(copy.deepcopy(opt.state_dict()))
+    for m,o in ((model,opt),(restored,resumed)):
+        m.decoder(z).square().mean().backward();o.step()
+    for name,value in model.decoder.state_dict().items():
+        torch.testing.assert_close(value,restored.decoder.state_dict()[name],rtol=0,atol=0)
+    with pytest.raises(KeyError):legacy_restore(saved)
+    with pytest.raises(ValueError):restore_basis(dict(saved,contract=dict(contract,decoder_parameterization='native_linear')))
+

@@ -1,4 +1,4 @@
-"""Experimental optimizer coordinates; not yet enabled in the training launcher."""
+"""Experimental optimizer coordinates with an explicit checkpoint contract."""
 import math
 import torch
 from torch import nn
@@ -39,4 +39,21 @@ class ActivityBasisLinear(nn.Module):
         z=F.linear(x,self.coefficient_weight,self.coefficient_bias).reshape(-1,64,18)
         activity=torch.einsum('tk,bkc->btc',self.inverse_basis,z[:,:,self.activity_indices])
         return z.index_copy(2,self.activity_indices,activity).flatten(1)
+
+
+def restore_basis(saved):
+    """Restore only the declared basis schema; never treat coefficients as bars."""
+    from ..phase1_v20.encoders import restore
+    if saved['contract'].get('decoder_parameterization')!='activity_dct64_v1':
+        raise ValueError('Explicit activity basis contract required')
+    state=saved['model'];w=state['decoder.coefficient_weight'];b=state['decoder.coefficient_bias']
+    template={k:v for k,v in state.items() if not k.startswith('decoder.')}
+    template.update({'decoder.weight':torch.zeros_like(w),'decoder.bias':torch.zeros_like(b)})
+    model=restore(dict(saved,model=template))
+    model.decoder=ActivityBasisLinear(model.decoder)
+    torch.testing.assert_close(state['decoder.inverse_basis'].cpu(),model.decoder.inverse_basis.cpu(),rtol=0,atol=0)
+    torch.testing.assert_close(state['decoder.activity_indices'].cpu(),model.decoder.activity_indices.cpu(),rtol=0,atol=0)
+    model.load_state_dict(state,strict=True)
+    model.activity_change_prefloor=True;model.repair_arm='joint_repaired'
+    return model
 
