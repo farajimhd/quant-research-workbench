@@ -68,3 +68,38 @@ receipt `parity.json`, run `phase1-v21-range-steps-parity-20261122`, W&B
 Original checkpoint SHAefd773910e06d53fbfd6f1b6280cad0be83886c75b9d6f652b0392718cec0433
 is unchanged. No V21 process remains active. Full training is still unqualified.
 
+## Training-bin pressure audit (2026-11-22)
+
+Source46e262694, runtime `phase1-v21-range-gradients-20261122`, W&B `i3xtph6q`.
+Frozen slow-temporal checkpoint;114599 training-pool windows and11146 dev
+windows,16/64-visible passes. Analytical derivative of the actual weighted
+range Huber and ordinal BCE terms matches autograd in a focused test.
+Execution8.85seconds;1542 source files hash-verified. No fitting or parameter
+updates. Checkpoint hash remains unchanged and no V21 process remains.
+Remote W&B history readback confirms training1m ask bin3 count197864; run finished.
+
+Of21,988,824 source-valid training range cells (three families),51.380% are
+zero,24.981% in0-0.05%,8.663% in0.05-0.1%,7.365% in0.1-0.25%,2.742% in
+0.25-0.5%,4.870% above0.5%. These describe the frozen experiment pool, NOT
+the186M-window full training dataset or independent sessions.
+
+Under16-visible evaluation, including the actual visible1/hidden0.1 weights,
+zero ranges contribute67.49% of total positive output-gradient magnitude
+(pressure to narrow);0-0.05% adds22.61%. Combined positive magnitude3.196e9
+exceeds negative2.197e9 before family/batch averaging. Larger target bins
+have negative average gradients (pressure to widen), so the loss does respond
+to their errors; its response is bounded by Huber saturation and ordinal
+logits. These are derivatives at predicted log range, not parameter gradients:
+other losses, model Jacobians, Adam and clipping are excluded. Do not equate
+this imbalance with proven causation or neglect necessary zero-range accuracy.
+
+Next paired hypothesis: training-derived inverse-square-root range-bin weights,
+normalized to preserve expected range-loss mass, can improve large-range
+retention without blanket amplification of the entire range objective. Apply
+only to the range Huber/ordinal terms; keep raw-price/activity objectives,
+architecture, initialization, masks and temporalLR control unchanged. Fit weights
+from training only, preserve all examples, and audit zero-range accuracy plus
+cheap-stock and activity regressions. This specific bin-conditioning test is
+different from prior global loss-weight and activity-timeframe sweeps. It is
+not yet implemented or qualified; no full20 run has been launched.
+
