@@ -8,8 +8,9 @@ def initialize(teacher,saved,calibration,arm=None):
     model.decoder.requires_grad_(True)
     model.repair_arm=arm or 'both_symmetric'
     active=torch.tensor([j%6 in ((2,3) if model.repair_arm=='range' else (2,3,4,5)) for j in range(1152)])
-    model.decoder.weight.register_hook(lambda g:g*active.to(g.device)[:,None])
-    model.decoder.bias.register_hook(lambda g:g*active.to(g.device))
+    model.register_buffer('active_rows',active,persistent=False)
+    model.decoder.weight.register_hook(lambda g:g*model.active_rows[:,None])
+    model.decoder.bias.register_hook(lambda g:g*model.active_rows)
     return model
 
 
