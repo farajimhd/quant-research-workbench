@@ -1,7 +1,7 @@
 """Matched bounded single-head hierarchical MAE experiments."""
 import os
 os.environ.update(PYTHONDONTWRITEBYTECODE='1',OMP_NUM_THREADS='1',MKL_NUM_THREADS='1')
-import argparse,copy,json,time
+import argparse,copy,gc,json,time
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -9,6 +9,7 @@ import torch
 import wandb
 from .model import initialize,set_gradient_scope
 from .objectives import loss
+from .step import PARTS,backward,qualified_replay
 from ..phase0_v3.experiment import cache
 from ..phase0_v1.metrics import Metrics,scalars
 from ..phase1_v17.metrics import ActivityMetrics,scalars as activity_scalars
@@ -58,6 +59,7 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--revision',required=True)
     p.add_argument('--steps',type=int,default=3000);p.add_argument('--lr',type=float,default=1e-6);p.add_argument('--bar-lr',type=float,default=1e-7)
     p.add_argument('--decoder-visible-only',action='store_true')
+    p.add_argument('--graphs',action='store_true')
     p.add_argument('--arms',default='frozen,joint,joint_median,joint_sqrt');a=p.parse_args();arms=a.arms.split(',')
     if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('frozen','joint','joint_median','joint_sqrt') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
@@ -83,17 +85,23 @@ def main():
         train=anchors(train);dev=anchors(dev);activity_scale,activity_cal=calibrate(train[2],train[1],train[3])
         contract=dict(source=a.revision,bar_parent=identity,window_parent_sha=file_hash(cp),data_hash=verified['hash'],supplement_hash=sm['hash'],split_hash=verified['source_split_hash'],input_calibration_sha=file_hash(refpath),steps=a.steps,lr=a.lr,bar_lr=a.bar_lr,seed=559,cache_seconds=time.perf_counter()-start,train_windows=len(train[0]),dev_windows=len(dev[0]),architecture='Feature attention4x1 to16D; temporal128x2 to512D; oneLinear512to1152 FP32 output head; no intermediate decoder',masking='16 random bars in3/4 batches; all64 in1/4; hidden bars removed before both attention stages',anchor='Training-only frozen epoch19 bar latent target, weight1; no second decoder in model/loss',activity_calibration=activity_cal,scope='Bounded real training pool; unchanged development; no full training')
         contract['decoder_visible_only']=a.decoder_visible_only
+        contract['graphs']=a.graphs
         profiles=[]
         for batch in (256,512,1024,2048,4096,8192):
-            torch.manual_seed(17);model=initialize(teacher,saved,cal).cuda();opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559);torch.cuda.reset_peak_memory_stats();began=None
+            torch.manual_seed(17);model=initialize(teacher,saved,cal).cuda();opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559);torch.cuda.reset_peak_memory_stats();began=None;replays={}
             for i in range(12):
                 ids=torch.randint(len(train[0]),(batch,),device='cuda',generator=g);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if i%4==3 else 16,g)
                 set_gradient_scope(model,pos.shape[1],a.decoder_visible_only)
-                opt.zero_grad(set_to_none=True);value,_=loss(model,x,v,raw,f,pos,z,activity_scale);value.backward();norm=stable_clip(model.parameters())
+                opt.zero_grad(set_to_none=True);inputs=(x,v,raw,f,pos,z)
+                if a.graphs:
+                    if pos.shape[1] not in replays:replays[pos.shape[1]],actual=qualified_replay(model,inputs,activity_scale,a.decoder_visible_only)
+                    else:actual=replays[pos.shape[1]](inputs)
+                else:actual=backward(model,inputs,activity_scale,a.decoder_visible_only)
+                value,_,norm=actual
                 if not bool(torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('Profile')
                 opt.step();torch.cuda.synchronize()
                 if i==3:began=time.perf_counter()
-            elapsed=time.perf_counter()-began;profiles.append(dict(batch=batch,cached_windows_per_second=8*batch/elapsed,peak_mib=torch.cuda.max_memory_allocated()/2**20));del model,opt
+            elapsed=time.perf_counter()-began;profiles.append(dict(batch=batch,cached_windows_per_second=8*batch/elapsed,peak_mib=torch.cuda.max_memory_allocated()/2**20,gradient_parity='16/64 every gradient passed' if a.graphs else 'eager'));del replays,model,opt,actual,value,norm,inputs;gc.collect();torch.cuda.empty_cache()
         batch=max(profiles,key=lambda x:x['cached_windows_per_second'])['batch'];contract.update(batch=batch,profiles=profiles);write_json(a.output/'manifest.json',dict(contract,arms=arms));results=[]
         for arm in arms:
             out=a.output/arm;out.mkdir();began=time.perf_counter();torch.manual_seed(17)
@@ -102,7 +110,7 @@ def main():
             if arm=='frozen':model.bar.requires_grad_(False)
             opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559)
             arm_contract=dict(contract,arm=arm,input_calibration=input_cal,bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()))
-            w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v20-joint',name=a.output.name+'-'+arm,config=arm_contract,dir=str(out),reinit=True);step=0;status='failed';curve=[];seconds=0.
+            w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v20-joint',name=a.output.name+'-'+arm,config=arm_contract,dir=str(out),reinit=True);step=0;status='failed';curve=[];seconds=0.;replays={}
             def save(path):torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),contract=arm_contract,step=step,rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state_all(),sampling_rng=g.get_state()),path)
             try:
                 tiny=copy.deepcopy(model);tiny_opt=optimizer(tiny,1e-5,1e-6);x,v,raw,f,z=[q[:1] for q in train];pos=positions(1,'cuda',64);tiny_curve=[]
@@ -117,7 +125,12 @@ def main():
                     if step:
                         tick=time.perf_counter();ids=torch.randint(len(train[0]),(batch,),device='cuda',generator=g);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if step%4==0 else 16,g)
                         set_gradient_scope(model,pos.shape[1],a.decoder_visible_only)
-                        opt.zero_grad(set_to_none=True);value,parts=loss(model,x,v,raw,f,pos,z,activity_scale);value.backward();norm=stable_clip(model.parameters())
+                        opt.zero_grad(set_to_none=True);inputs=(x,v,raw,f,pos,z)
+                        if a.graphs:
+                            if pos.shape[1] not in replays:replays[pos.shape[1]],actual=qualified_replay(model,inputs,activity_scale,a.decoder_visible_only)
+                            else:actual=replays[pos.shape[1]](inputs)
+                        else:actual=backward(model,inputs,activity_scale,a.decoder_visible_only)
+                        value,part_values,norm=actual;parts=dict(zip(PARTS,part_values))
                         if not bool(torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('Loss/gradient')
                         opt.step();torch.cuda.synchronize();seconds+=time.perf_counter()-tick
                         if step%100==0:
@@ -128,7 +141,7 @@ def main():
                         print(arm,step,{k:metrics[k] for k in ('all_visible/raw_mae/1s/trade_close','all_visible/candle/1s/trade/moving_direction_pct','activity/all_visible/1s/trade_volume/moving_direction_pct','bar_probe/raw_mae/1s/trade_close')},flush=True)
                 save(out/'checkpoint.pt');result=dict(arm=arm,checkpoint_sha=file_hash(out/'checkpoint.pt'),curve=curve,seconds=time.perf_counter()-began,wandb_url=w.url,cached_windows_per_second=step*batch/max(seconds,.001));write_json(out/'result.json',result);results.append(result);write_json(a.output/'comparison.json',results);status='complete'
             except BaseException:save(out/'checkpoint_partial.pt');raise
-            finally:w.summary['status']=status;w.finish(exit_code=0 if status=='complete' else 1)
+            finally:w.summary['status']=status;w.finish(exit_code=0 if status=='complete' else 1);replays.clear()
 
 
 if __name__=='__main__':main()

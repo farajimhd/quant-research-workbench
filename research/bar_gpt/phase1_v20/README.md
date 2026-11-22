@@ -62,3 +62,10 @@ architecture, parameters, loss, masks and data are unchanged. AdamW must skip
 the inactive decoder even after it has optimizer momentum; tested explicitly.
 This is an experimental gradient policy, not a claim that standard MAE requires
 it. It is recorded in the scientific contract and must survive any full resume.
+
+Optional `--graphs` captures joint forward/backward separately for16/64 visibility.
+Each new capture must match eager loss, components, norm and every parameter
+gradient on identical tensors before optimization. Optimizer steps remain outside
+capture; all raw/valid/time/target/position buffers update on every replay. No
+scientific precision change. Profile reports eager/captured qualification and
+memory separately; cached engineering speed is still not full-loader throughput.
