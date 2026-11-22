@@ -7,6 +7,13 @@ from ..phase1_v21.step import backward
 from ..phase1_v12.model import positions
 
 
+def choose_multiplier(selected,pilots,higher=False):
+    if not higher:return selected
+    if not any(q['multiplier']==3. and q['eligible'] for q in pilots):
+        raise ValueError('Higher LR failed training-only stability gate')
+    return 3.
+
+
 def calibrate_lr(model,initial,train,scale,admission,progress):
     probe_ids=torch.linspace(0,len(train[0])-1,128,device='cuda').long()
     probe=[x[probe_ids] for x in train]

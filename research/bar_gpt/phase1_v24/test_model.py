@@ -1,4 +1,5 @@
 import torch
+import pytest
 from ..phase1_v12.model import Config,positions
 from ..phase1_v19.model import Autoencoder
 from ..phase1_v22.model import PositionEncoder
@@ -30,3 +31,10 @@ def test_size_and_lr_contracts():
     model=Tiny();opt=optimizer(model,.3)
     assert [g['lr'] for g in opt.param_groups]==[9e-8,3e-7,1.5e-6,3e-6]
     assert len({id(p) for g in opt.param_groups for p in g['params']})==len(list(model.parameters()))
+
+
+def test_higher_lr_requires_stability_qualification():
+    from .qualification import choose_multiplier
+    assert choose_multiplier(.3,[dict(multiplier=3.,eligible=False)])==.3
+    with pytest.raises(ValueError):choose_multiplier(.3,[dict(multiplier=3.,eligible=False)],True)
+    assert choose_multiplier(.3,[dict(multiplier=3.,eligible=True)],True)==3.

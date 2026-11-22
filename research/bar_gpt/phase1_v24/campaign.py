@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import wandb
 from .model import build,optimizer,restore,SPECS
-from .qualification import calibrate_lr
+from .qualification import calibrate_lr,choose_multiplier
 from ..phase1_v23.metrics import evaluate
 from ..phase1_v21.objectives import loss
 from ..phase1_v21.step import backward,qualified_replay,PARTS
@@ -46,6 +46,7 @@ def ranking(metrics,reference):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--revision',required=True)
     p.add_argument('--windows',type=int,default=1048576);p.add_argument('--resume',action='store_true')
+    p.add_argument('--higher-lr-followup',action='store_true')
     a=p.parse_args();lr_multiplier=1.
     make_optimizer=lambda model:optimizer(model,lr_multiplier)
     if not 262144<=a.windows<=1048576 or a.windows%4096:raise ValueError('Bounded exposure, multiple of4096 required')
@@ -67,10 +68,10 @@ def main():
         normalization='fixed original training means/std; logclose/body/wicks/log1pactivity; no median/reference',
         objective='unchanged V21 joint_repaired + prefloor activity change',sampling='uniform with replacement, no weights',
         selection='equal216group geometric rawMAE ratios and mean direction error ratios, equal weights; report worst groups',
-        deadline_seconds=3600,campaign_deadline_seconds=28800,lr_selection="training-only three64step pilots")
+        deadline_seconds=3600,campaign_deadline_seconds=28800,lr_selection="training-only three64step pilots",higher_lr_followup=a.higher_lr_followup)
     if (out/'manifest.json').exists():
         old=json.loads((out/'manifest.json').read_text())
-        for key in ('parent_sha','data_hash','supplement_hash','windows_per_arm','lr_selection'):
+        for key in ('parent_sha','data_hash','supplement_hash','windows_per_arm','lr_selection','higher_lr_followup'):
             if old[key]!=manifest[key]:raise ValueError('Changed scientific resume: '+key)
         manifest=old;began=old['started']
         verify_resume_revision(old['source'],a.revision)
@@ -94,11 +95,12 @@ def main():
             parent=parent_model(template).cuda();detail,reference=evaluate(parent,teacher,dev)
             write_json(reference_path,reference);write_json(out/'parent-detail.json',detail);del parent
         results=json.loads((out/'comparison.json').read_text()) if (out/'comparison.json').exists() else []
-        specs=SPECS;run_count=len(specs)
+        specs=[dict(width=1152,depth=9),dict(width=1536,depth=10),dict(width=2688,depth=8)] if a.higher_lr_followup else SPECS
+        run_count=len(specs)
         for index,spec in enumerate(specs):
             if time.time()-began>28000:raise TimeoutError('Campaign deadline')
             seed=559
-            name=f"e{index+1:02d}-w{spec['width']}-d{spec['depth']}-s{seed}"
+            name=f"e{index+(6 if a.higher_lr_followup else 1):02d}-w{spec['width']}-d{spec['depth']}-s{seed}"+('-lr3' if a.higher_lr_followup else '')
             lr_multiplier=1.
             arm=out/name
             if (arm/'result.json').exists():continue
@@ -112,7 +114,7 @@ def main():
             initial={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
             contract=dict(manifest,execution_source=a.revision,architecture=spec,seed=seed,parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()),
                 representation_values=2048,
-                hypothesis='Larger temporal capacity improves range and raw reconstruction with empirically selected stable LR',
+                hypothesis='Longer matched-budget test of higher stability-qualified LR versus short-pilot choice' if a.higher_lr_followup else 'Larger temporal capacity improves range and raw reconstruction with empirically selected stable LR',
                 learning_rates='selected after training-only pilots',batch=None)
             runfile=arm/'wandb.json'
             wid=json.loads(runfile.read_text())['id'] if runfile.exists() else wandb.util.generate_id()
@@ -175,7 +177,9 @@ def main():
                     contract['actual_windows_per_arm']=a.windows
                     write_json(arm/'profile.json',profiles);w.config.update(contract,allow_val_change=True)
                     lr_multiplier,pilots=calibrate_lr(model,initial,train,activity_scale,admission,lambda **kw:progress(stage='LR calibration',experiment=index+1,name=name,elapsed=time.time()-start,deadline=3500,**kw))
-                    write_json(arm/'lr-pilots.json',pilots);contract['lr_multiplier']=lr_multiplier
+                    write_json(arm/'lr-pilots.json',pilots);contract['pilot_selected_multiplier']=lr_multiplier
+                    lr_multiplier=choose_multiplier(lr_multiplier,pilots,a.higher_lr_followup)
+                    contract['lr_multiplier']=lr_multiplier
                     model.load_state_dict(initial);opt=make_optimizer(model);contract['learning_rates']=[q['lr'] for q in opt.param_groups];w.config.update(contract,allow_val_change=True)
                     torch.manual_seed(17);g.manual_seed(seed)
                 write_json(arm/'manifest.json',contract);del initial

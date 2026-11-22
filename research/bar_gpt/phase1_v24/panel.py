@@ -14,9 +14,10 @@ def read(path,default=None):
 
 def render(root):
     p=read(root/'progress.json');rows=read(root/'comparison.json',[])
+    total=3 if read(root/'manifest.json').get('higher_lr_followup') else 5
     stage=p.get('stage','preparing');age=time.time()-p.get('updated',time.time())
     progress=Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.percentage:>3.0f}%'))
-    progress.add_task(f"Experiments {len(rows)}/5",total=5,completed=len(rows))
+    progress.add_task(f"Experiments {len(rows)}/{total}",total=total,completed=len(rows))
     if p.get('total'):progress.add_task('Training windows',total=p['total'],completed=p.get('seen',0))
     table=Table('Model','MAE ratio','Direction error ratio','Windows/s',expand=True)
     for r in rows:

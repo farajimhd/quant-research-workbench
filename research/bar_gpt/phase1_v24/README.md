@@ -13,6 +13,14 @@ among pilots with finite gradients, loss within 1.1x starting loss, and price-lo
 MAE within 1.25x its starting value. Development is never used for LR selection.
 These pilots are a bounded calibration, not proof of optimal LR.
 
+The campaign was explicitly expanded to eight total experiments after the
+initial results: all higher LR candidates passed the stability gates, but the
+short pilots selected 0.3x for 100M/200M versus 3x for the range-leading 50M.
+`--higher-lr-followup` runs 100M, 200M and 500M from the SAME original parent at
+3x, under new identities, in a separate runtime root. It reruns the stability
+gates and refuses a failed candidate. All data, masks, update counts, decoder,
+objective and initialization stay matched. Stop after these eight experiments.
+
 Base rates: feature 3e-7; inherited/additional temporal blocks 2e-6*(384/width);
 query/readout 1e-5*(384/width); decoder 1e-5. The chosen multiplier applies to all.
 AdamW, no weight decay, unit global gradient clipping. Fixed selected rates for
@@ -35,7 +43,9 @@ Use the pushed immutable deployment on the workstation, set
 PYTHONDONTWRITEBYTECODE=1, and run:
 
 ```powershell
-& C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -u -m research.bar_gpt.phase1_v24.campaign --output D:\TradingML\runtimes\bar_gpt\phase1-v24-xl-20261122 --revision <full-deployed-revision>
+$env:PYTHONDONTWRITEBYTECODE='1'
+Set-Location D:\TradingML\codes\bargpt-phase1-v24-50689d590
+& C:\Users\Mehdi\miniconda3\envs\ml4t\python.exe -B -u -m research.bar_gpt.phase1_v24.campaign --output D:\TradingML\runtimes\bar_gpt\phase1-v24-xl-reproduction --revision 50689d590e3e45c44d49d00fd390b8efa7af28b6
 ```
 
 The CLI verifies deployment hashes, workstation ownership, STOP markers, disk,
@@ -48,3 +58,8 @@ starting differences are measured explicitly, not assumed equivalent to the
 FP32 function-preserving expansion. Added layers must learn; decoder capacity
 cannot hide missing embedding information. Report range accuracy together with
 all-channel raw MAE, directional accuracy, price bands and worst regressions.
+
+The training snapshot is pinned above. Read-only `compare`, `checkpoint_audit`,
+`structure_audit` and `plot` commands were added afterward; use the documented
+audit revision or current laptop source for reports, without altering the
+training snapshot. All generated reports and figures must use runtime outputs.

@@ -22,7 +22,14 @@ def main():
         entry.update({k:row[k] for k in ('architecture','parameters','decoder_parameters','seconds','cached_windows_per_second','checkpoint_sha','wandb_url','ranking')})
         entry['sub_010_median_pct']=m.get('all_visible/audit/price_band_0_0.1/median_pct')
         entry['sub_010_count']=m.get('all_visible/audit/price_band_0_0.1/count')
+        entry['range_by_timeframe']={}
+        for frame in ('100ms','1s','10s','1m','1h','daily'):
+            values=[v for k,v in m.items() if k.startswith(f'all_visible/range/{frame}/') and k.endswith('/magnitude_accuracy_pct')]
+            if values:entry['range_by_timeframe'][frame]=sum(values)/len(values)
         entry['train_subset']=summarize('fixed first2048 training windows',row['train_metrics'])
+        folder=next(folder for folder in [root]+a.additional_root if (folder/row['name']/'manifest.json').exists())
+        contract=json.loads((folder/row['name']/'manifest.json').read_text())
+        entry['lr_multiplier']=contract['lr_multiplier'];entry['learning_rates']=contract['learning_rates']
         summary.append(entry)
         mae=[];direction=[]
         for k,v in m.items():
@@ -36,7 +43,7 @@ def main():
         worst.append(record)
     (root/'summary.json').write_text(json.dumps(summary,indent=2));(root/'worst-groups.json').write_text(json.dumps(worst,indent=2))
     lines=['# V24 XL temporal encoders','',
-        'Same trained V23 range-leading starting checkpoint; same data, masks, loss and decoder. Widthlr runs divide temporal learning rates by width/128, leaving feature and decoder rates unchanged. Function-preserving FP32 initialization; BF16 initial differences recorded separately.','',
+        'Same trained V23 range-leading starting checkpoint; same data, masks, loss and decoder. Each model uses training-only LR pilots and a common update/sample budget. Native initial precision differences are recorded.','',
         '| Model | Parameters | 1s close MAE | Masked close MAE | Candle direction | Activity balanced direction | Range accuracy | Sub-$0.10 median error | Windows/s |',
         '|---|---:|---:|---:|---:|---:|---:|---:|---:|']
     for r in summary:
