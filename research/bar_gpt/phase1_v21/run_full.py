@@ -29,6 +29,7 @@ ROOT=Path('D:/TradingML/runtimes/bar_gpt')
 
 def configure_activity(model,a):
     model.activity_weight=a.activity_weight
+    model.price_loss_weight=getattr(a,'price_loss_weight',1.)
     if a.activity_frame_counts:
         from ..v5.shards.phase1_contract import FRAMES
         c=json.loads(a.activity_frame_counts.read_text())['train']
@@ -91,6 +92,7 @@ def main():
     p.add_argument('--temporal-lr-multiplier',type=float,default=1.)
     p.add_argument('--activity-weight',type=float,default=1.)
     p.add_argument('--activity-frame-counts',type=Path)
+    p.add_argument('--price-loss-weight',type=float,default=1.)
     p.add_argument('--validation-every',type=int,default=1000);p.add_argument('--checkpoint-every',type=int,default=500)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
     p.add_argument('--restart-initialization',action='store_true')
@@ -102,6 +104,7 @@ def main():
     if not 1e-7<=a.min_learning_rate<=a.learning_rate<=1e-4:raise ValueError('LR bounds')
     if not 0<a.bar_lr_multiplier<=1 or not 0<a.temporal_lr_multiplier<=1:raise ValueError('LR multiplier bounds')
     if not 1<=a.activity_weight<=100:raise ValueError('Activity family weight bounds')
+    if not .001<=a.price_loss_weight<=1:raise ValueError('Price loss weight bounds')
     if min(a.warmup_steps,a.validation_every,a.checkpoint_every,a.profile_batches)<1 or a.max_updates<0:raise ValueError('Cadence bounds')
     if a.restart_initialization:
         if a.resume or (a.output/'checkpoint_last.proof.json').exists():raise ValueError('Use verified checkpoint resume')
@@ -142,6 +145,7 @@ def main():
             min_learning_rate=a.min_learning_rate,warmup_steps=a.warmup_steps,weight_decay=0.,
             bar_lr_multiplier=a.bar_lr_multiplier,temporal_lr_multiplier=a.temporal_lr_multiplier,
             activity_weight=a.activity_weight,
+            price_loss_weight=a.price_loss_weight,
             activity_frame_counts_sha=file_hash(a.activity_frame_counts) if a.activity_frame_counts else None,
             loss_source_sha=file_hash(Path(__file__).with_name('objectives.py')),
             base_loss_sha=file_hash(Path(__file__).with_name('joint_base.py')),

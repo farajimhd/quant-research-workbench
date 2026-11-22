@@ -1,4 +1,4 @@
-"""Read-only training-cache gradient audit; no optimizer or validation selection."""
+"""Training-cache gradient audit, with optional disposable tiny-fit gate."""
 import os
 os.environ.update(PYTHONDONTWRITEBYTECODE='1', OMP_NUM_THREADS='1', MKL_NUM_THREADS='1')
 import argparse
@@ -76,9 +76,12 @@ def main():
     p.add_argument('--batch-size', type=int, default=256)
     p.add_argument('--batches', type=int, default=2)
     p.add_argument('--stratified', action='store_true', help='Equal-count timeframe diagnostic, not population estimate')
+    p.add_argument('--tiny-price-weight', type=float, help='Optional separate disposable-model overfit gate')
     a = p.parse_args()
     if not 1 <= a.batch_size <= 512 or not 1 <= a.batches <= 4 or len(a.checkpoint) > 3:
         raise ValueError('Bounded audit required')
+    if a.tiny_price_weight is not None and not .001 <= a.tiny_price_weight <= 1:
+        raise ValueError('Price weight bounds')
     a.device = 'cuda'; a.resume = False
     preflight(a)
     root = Path('D:/TradingML/runtimes/bar_gpt')
@@ -102,7 +105,7 @@ def main():
         a.batch_size = len(ids)//a.batches
     else:
         ids = rng.choice(len(rows), a.batches*a.batch_size, replace=False)
-    records = []
+    records = []; tiny_results = []
     with lease(a.output):
         teacher, identity = load_teacher(root/'phase1-v12-frozen16-mae-20261121/teacher/teacher.pt',
                                         verified['source_split_hash'], 'cuda')
@@ -119,6 +122,22 @@ def main():
                 raise ValueError('Checkpoint split mismatch')
             if saved['contract'].get('bar_parent') != identity and saved['contract'].get('teacher') != identity:
                 raise ValueError('Anchor teacher mismatch')
+            if a.tiny_price_weight is not None:
+                tiny = initialize(None, saved, None, 'joint_repaired').cuda().train()
+                tiny.price_loss_weight = a.tiny_price_weight
+                opt = torch.optim.AdamW(tiny.parameters(), lr=1e-5, weight_decay=0.)
+                pos = positions(min(16, len(x)), 'cuda', 64)
+                args = (x[:16], v[:16], raw[:16], frames[:16], pos, old[:16], torch.ones(6, 6, device='cuda'))
+                curve = []
+                for step in range(101):
+                    value, _ = loss(tiny, *args)
+                    if step % 25 == 0: curve.append(float(value.detach()))
+                    if step < 100:
+                        opt.zero_grad(set_to_none=True); value.backward()
+                        torch.nn.utils.clip_grad_norm_(tiny.parameters(), 1., error_if_nonfinite=True)
+                        opt.step()
+                tiny_results.append(dict(checkpoint=str(cp), loss=curve, passed=curve[-1]<curve[0]))
+                del tiny, opt
             for balanced in (False, True):
                 model = initialize(None, saved, None, 'joint_repaired').cuda().train()
                 configure_activity(model, SimpleNamespace(activity_weight=1., activity_frame_counts=a.activity_frame_counts if balanced else None))
@@ -136,7 +155,7 @@ def main():
             split_hash=verified['source_split_hash'], teacher=identity, ids=ids.tolist(),
             frame_counts_sha=file_hash(a.activity_frame_counts),
             frames={str(int(f)): int((frames==f).sum()) for f in frames.unique()},
-            records=records, stratified=a.stratified, seconds=time.monotonic()-started,
+            records=records, tiny=tiny_results, stratified=a.stratified, seconds=time.monotonic()-started,
             limitation='Training-cache diagnostic only. Raw gradients before clipping/Adam; not causal proof or validation. joint_base includes the original raw/coordinate activity term.'))
 
 

@@ -7,7 +7,8 @@ from ..phase1_v12.model import gather
 
 
 def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,output,anchor_weight=1.,include_activity=True,level_output=None):
-    base,_=raw_objective(model,output if level_output is None else level_output,values,valid)
+    base,raw_parts=raw_objective(model,output if level_output is None else level_output,values,valid)
+    base=base+.5*(getattr(model,'price_loss_weight',1.)-1.)*raw_parts[0]
     known=torch.zeros_like(valid[...,0]).scatter(1,pos,True)
     if include_activity:
         level,change,tail=penalties(output['code'],raw,valid,known,frames,activity_scale,False)
