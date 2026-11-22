@@ -44,7 +44,7 @@ daily volume (+17.55%masked,+7.71%visible). Aggregate direction/range metrics
 have no>1pp regression. Against parent,180/216 raw groups improve,4 regress>5%,
 and no aggregate accuracy group regresses>1pp. Visible/masked1s close MAE
 0.20794/0.19346 dollars. Masked daily ask range accuracy82.604% versus
-control72.605%; all-visible84.187% versus parent78.850%.
+control72.707%; all-visible84.187% versus parent78.850%.
 
 However, aggregate accuracy hides a bin-level tradeoff: masked1m bid true
 0-0.05% range accuracy42.426% to30.534% versus parent (18432 cells). Ask
