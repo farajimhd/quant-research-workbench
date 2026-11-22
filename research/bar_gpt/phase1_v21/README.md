@@ -21,6 +21,15 @@ both with a small log-MSE and consecutive-bar change term. The symmetric
 criterion treats proportional over/underestimation equally; it is NOT native
 raw MAE. Targets appear only in loss/evaluation. No valid examples are clipped.
 
+User-requested `metric` arm adds differentiable surrogates to `both_symmetric`:
+ordinal BCE at the existing 0.05/0.1/0.25/0.5 percent range boundaries with a
+one-basis-point log-range temperature, and BCE for activity increases/decreases
+with0.1 log-unit temperature. Consecutive source-valid visible endpoints only;
+true unchanged activity pairs retain reconstruction/change losses but are not
+assigned an invented up/down class. Exact-zero range remains a separate known
+limitation; these threshold losses cannot guarantee an exact-zero output.
+Hard bin/sign accuracy is never falsely described as differentiable.
+
 Training/dev identities and uniform sampling are unchanged from V20. Hidden
 bars are physically removed before both attention stages; fresh random16 masks
 in three quarters of batches, all64 in one quarter. Profile eager or captured

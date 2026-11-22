@@ -61,8 +61,8 @@ def main():
     p.add_argument('--steps',type=int,default=3000);p.add_argument('--lr',type=float,default=1e-6);p.add_argument('--bar-lr',type=float,default=1e-7)
     p.add_argument('--decoder-visible-only',action='store_true')
     p.add_argument('--graphs',action='store_true')
-    p.add_argument('--arms',default='range,both_log,both_symmetric');a=p.parse_args();arms=a.arms.split(',')
-    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric') for k in arms):raise ValueError('New identity and valid arms required')
+    p.add_argument('--arms',default='range,both_log,both_symmetric,metric');a=p.parse_args();arms=a.arms.split(',')
+    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
     a.output.mkdir();torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     import psutil,sys

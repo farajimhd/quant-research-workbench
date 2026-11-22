@@ -6,7 +6,7 @@ from ..phase1_v19.objectives import wick_loss
 def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weight=1.):
     _,_,out=model(values,valid,pos)
     known=torch.zeros_like(valid[...,0]).scatter(1,pos,True)
-    terms=[]
+    terms=[];bin_terms=[]
     for b in (0,6,12):
         mask=valid[...,b+1]&valid[...,b+2]
         target=torch.log(torch.where(mask,raw[...,b+1].double(),1)/torch.where(mask,raw[...,b+2].double(),1))
@@ -15,9 +15,16 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         err=(prediction-target)*10000
         term=F.smooth_l1_loss(err,torch.zeros_like(err),reduction='none')
         terms.append((torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1))
+        if model.repair_arm=='metric':
+            edges=prediction.new_tensor([.0005,.001,.0025,.005]).log1p()
+            logits=(prediction[...,None]-edges)*10000
+            labels=(target[...,None]>edges).to(logits.dtype)
+            ordinal=F.binary_cross_entropy_with_logits(logits,labels,reduction='none').mean(-1)
+            bin_terms.append((torch.where(mask,ordinal,0)*weights).sum()/weights.sum().clamp_min(1))
     shape=torch.stack(terms).mean()
     wick=wick_loss(out['code'],raw,valid,known)
-    activity=shape.new_zeros(())
+    activity=shape.new_zeros(());direction=shape.new_zeros(())
+    bins=torch.stack(bin_terms).mean() if bin_terms else shape.new_zeros(())
     if model.repair_arm!='range':
         for j in (4,5,10,11,16,17):
             mask=valid[...,j];target=torch.where(mask,raw[...,j].double(),0)
@@ -26,8 +33,14 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
             log=(code-target.log1p()).square()
             # Multiplicatively symmetric error in (1+activity), used only
             # in the loss. No target-dependent reference reaches the decoder.
-            error=(pred-target.log1p()).abs().expm1() if model.repair_arm=='both_symmetric' else log
+            error=(pred-target.log1p()).abs().expm1() if model.repair_arm in ('both_symmetric','metric') else log
             pair=mask[:,1:]&mask[:,:-1]&known[:,1:]&known[:,:-1]
             delta=(pred[:,1:]-pred[:,:-1])-(target[:,1:].log1p()-target[:,:-1].log1p())
             activity+=((torch.where(mask,error+.1*log,0)*weights).sum()/weights.sum().clamp_min(1)+.5*torch.where(pair,delta.square(),0).sum()/pair.sum().clamp_min(1))/6
-    return shape+.05*wick+activity,dict(range=shape,wick=wick,activity=activity)
+            if model.repair_arm=='metric':
+                actual=target[:,1:].log1p()-target[:,:-1].log1p()
+                moving=pair&(actual!=0)
+                logits=(pred[:,1:]-pred[:,:-1])/.1
+                term=F.binary_cross_entropy_with_logits(logits,(actual>0).to(logits.dtype),reduction='none')
+                direction+=torch.where(moving,term,0).sum()/moving.sum().clamp_min(1)/6
+    return shape+.05*wick+activity+.5*bins+.1*direction,dict(range=shape,wick=wick,activity=activity,range_bins=bins,activity_direction=direction)
