@@ -55,6 +55,46 @@ Its run is `phase1-v21-activity-balanced-trial-20261122`, W&B `je3rp3xq`, source
 with its checkpoint and STOP preserved. Population imbalance is confirmed;
 gradient interference is a hypothesis requiring direct measurement.
 
+## Gradient diagnosis and price-level ablation
+
+`gradient_audit.py` measures separate objective gradients without updating the
+audited checkpoints. It records exact training-cache indices, hashes, masks,
+per-module norms and pairwise cosines. A second audit used 128 windows per
+timeframe (768 total), rather than interpreting a population sample containing
+only two daily windows. It ran at both 16-visible and 64-visible settings.
+On the retained parent, the unweighted temporal price-level gradient norm was
+about 1,387 masked / 716 visible, versus activity 23 / 37. At the rejected
+5,000-step checkpoint it was 3,263 / 2,335 versus activity 25 / 33. The bar
+anchor gradient was small. Activity/candle conflicts were sample-dependent;
+the temporal cosine was mildly negative in the stratified audit. These are
+pre-clipping, pre-Adam gradients, not causal proof or effective update norms.
+
+The next matched bounded trial changes only `--price-loss-weight 0.05`.
+This scales the price-level part of the inherited log-value objective, leaving
+its activity/coordinate terms and body/range/direction/anchor penalties intact.
+It adds no model input, reference, embedding field or decoder. A disposable
+16-window real-data overfit test reduced loss 32.52 to 14.01 in 100 updates.
+Compare with the same 2,000-update full-data control; do not promote based on
+the changed training-loss scale. Runtime hypothesis and acceptance record:
+`phase1-v21-campaign-20261121/price005-hypothesis.json`.
+
+The price-weight trial was rejected and gracefully stopped at update 1,334.
+At matched update 1,000, only 40/216 raw groups improved: 1s close MAE rose from
+$0.23989 to $0.40567, daily volume MAE from 824,605 to 2,599,517 and daily bid
+count MAE from 24,365 to 81,313. The balanced score worsened from 0.59795 to
+0.74190; the 500-update comparison was already worse. Thus large raw price
+gradients do not establish that reducing their weight improves this system.
+The pipeline measured 68,430 windows/s (8192 batch, 16 workers), 39.7-second
+startup, and passed 16/64-visible graph-gradient parity. Source is
+`5d476639c41190bc6243b43a3b4f1f2079184886`; W&B run `slfbgf84`; retained last
+checkpoint SHA256 is
+`03e601bd7bea1950855b321ac6fa6cbe783af6526a985b196453b1c67ea6b7f2`.
+STOP, optimizer state, logs and checkpoint are preserved; owner/workers exited.
+No full-training replacement has passed. Next diagnosis should distinguish
+optimizer-preconditioned updates and training-batch distribution from raw
+gradient magnitude before another weight sweep. The run's W&B failed status
+reflects the existing reporter's deliberate-stop handling, not a training crash.
+
 The user approved 20 epochs despite the earlier reconstruction/direction
 tradeoffs, and subsequently explicitly allowed any learning rate. Three matched
 initial full-data trials selected a substantially smaller fine-tuning LR.
