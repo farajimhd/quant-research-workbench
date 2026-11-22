@@ -5,7 +5,7 @@ import argparse,gc,json,time
 from pathlib import Path
 import numpy as np
 import torch
-from .model import restore,optimizer
+from .model import restore,optimizer,build
 from ..phase1_v8.runtime import preflight
 from ..phase1_v21.step import qualified_replay
 from ..phase1_v12.model import positions
@@ -29,6 +29,20 @@ def main():
         parts=cache(np.load(data/'train.npy',mmap_mode='r'))
         with torch.no_grad():old=torch.cat([teacher.encode(parts[0][i:i+512],parts[1][i:i+512]) for i in range(0,len(parts[0]),512)])
         train=(*parts,old);scale,_=calibrate(train[2],train[1],train[3])
+        # Extend the original short learning check to measure actual one-example
+        # fitting, rather than treating a10percent loss decrease as a near-zero fit.
+        torch.manual_seed(17);tiny=build(saved['parent_template'],**saved['architecture']).cuda();tiny_opt=optimizer(tiny)
+        x,v,raw,f,z=[q[:1] for q in train];inp=(x,v,raw,f,positions(1,'cuda',64),z)
+        replay,actual=qualified_replay(tiny,inp,scale);tiny_curve=[dict(step=0,loss=float(actual[0]))]
+        for step in range(1,2001):
+            tiny_opt.zero_grad(set_to_none=True);actual=replay(inp);tiny_opt.step()
+            if step%200==0:tiny_curve.append(dict(step=step,loss=float(actual[0])))
+        with torch.no_grad():
+            from ..phase1_v11.transforms import inverse
+            prediction=inverse(tiny(x,v,inp[4])[2]['logs']);mask=v[...,:18]
+            err=(prediction-raw).abs();per_channel=(torch.where(mask,err,0).sum((0,1))/mask.sum((0,1)).clamp_min(1)).tolist()
+        write_json(a.output/'extended-tiny.json',dict(curve=tiny_curve,all_visible_raw_mae_by_channel=per_channel,scope='Fresh readouts from same warm parent, same first training example; longer qualification only, candidate checkpoint untouched'))
+        del tiny,tiny_opt,replay;gc.collect();torch.cuda.empty_cache()
         for batch in (4096,8192,16384):
             if (a.output/'STOP').exists() or time.time()-started>600:raise InterruptedError('Profile deadline/STOP')
             model=restore(saved).cuda();opt=optimizer(model);graphs={};torch.cuda.reset_peak_memory_stats()
