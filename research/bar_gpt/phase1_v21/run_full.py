@@ -90,6 +90,7 @@ def main():
     p.add_argument('--warmup-steps',type=int,default=500)
     p.add_argument('--bar-lr-multiplier',type=float,default=1.)
     p.add_argument('--temporal-lr-multiplier',type=float,default=1.)
+    p.add_argument('--decoder-lr-multiplier',type=float,default=1.)
     p.add_argument('--activity-weight',type=float,default=1.)
     p.add_argument('--activity-frame-counts',type=Path)
     p.add_argument('--price-loss-weight',type=float,default=1.)
@@ -103,6 +104,7 @@ def main():
     if not 1<=a.epochs<=20 or not 1<=a.batch_size<=32768 or not 0<=a.workers<=32:raise ValueError('Bounds')
     if not 1e-7<=a.min_learning_rate<=a.learning_rate<=1e-4:raise ValueError('LR bounds')
     if not 0<a.bar_lr_multiplier<=1 or not 0<a.temporal_lr_multiplier<=1:raise ValueError('LR multiplier bounds')
+    if not 0<a.decoder_lr_multiplier<=1:raise ValueError('Decoder LR multiplier bounds')
     if not 1<=a.activity_weight<=100:raise ValueError('Activity family weight bounds')
     if not .001<=a.price_loss_weight<=1:raise ValueError('Price loss weight bounds')
     if min(a.warmup_steps,a.validation_every,a.checkpoint_every,a.profile_batches)<1 or a.max_updates<0:raise ValueError('Cadence bounds')
@@ -144,6 +146,7 @@ def main():
             epochs=a.epochs,batch_size=a.batch_size,workers=a.workers,seed=a.seed,learning_rate=a.learning_rate,
             min_learning_rate=a.min_learning_rate,warmup_steps=a.warmup_steps,weight_decay=0.,
             bar_lr_multiplier=a.bar_lr_multiplier,temporal_lr_multiplier=a.temporal_lr_multiplier,
+            decoder_lr_multiplier=a.decoder_lr_multiplier,
             activity_weight=a.activity_weight,
             price_loss_weight=a.price_loss_weight,
             activity_frame_counts_sha=file_hash(a.activity_frame_counts) if a.activity_frame_counts else None,

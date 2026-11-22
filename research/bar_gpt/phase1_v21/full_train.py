@@ -100,7 +100,7 @@ def brief(metrics, scope, step, seconds):
 
 def train(model, teacher, manifest, a, contract, reporter):
     groups=[]
-    for prefix,multiplier in (('bar.',a.bar_lr_multiplier),('temporal.',a.temporal_lr_multiplier),('decoder.',1.)):
+    for prefix,multiplier in (('bar.',a.bar_lr_multiplier),('temporal.',a.temporal_lr_multiplier),('decoder.',getattr(a,'decoder_lr_multiplier',1.))):
         groups.append(dict(params=[p for n,p in model.named_parameters() if n.startswith(prefix)],
                            lr=a.learning_rate*multiplier,lr_multiplier=multiplier))
     opt = torch.optim.AdamW(groups, lr=a.learning_rate, weight_decay=0., fused=True)
@@ -169,6 +169,7 @@ def train(model, teacher, manifest, a, contract, reporter):
                             elapsed=time.perf_counter()-tick; speed=(windows-before)/max(.001,elapsed)
                             reporter.log({'train/loss':float(value),'train/learning_rate':lr,'train/gradient_norm':float(norm),
                                 'train/bar_learning_rate':lr*a.bar_lr_multiplier,'train/temporal_learning_rate':lr*a.temporal_lr_multiplier,
+                                'train/decoder_learning_rate':lr*getattr(a,'decoder_lr_multiplier',1.),
                                 'train/windows_per_second':speed,'train/loader_wait_seconds':device.wait_seconds-wait,
                                 **{'train/'+k:float(v) for k,v in zip(PARTS,parts)}},step)
                             reporter.update(stage='training',step=step,epoch=epoch+1,epochs=a.epochs,epoch_done=epoch_done,
