@@ -28,13 +28,40 @@ and full count reconciliation are required. No market shards were reread to fit
 these weights; metadata fully resolved every selected window. This tests a
 population-imbalance hypothesis rather than assuming the cause is established.
 
+At matched 2,000 updates, blanket activity weight 10 improved only 95/216 raw-MAE
+groups and raised all-visible 1s close MAE from $0.23991 to $0.31661. It was
+rejected. Training-frequency activity weights improved 140/216 groups, lowered
+daily-volume MAE from 890,455 to 761,452 and daily bid-count MAE from 24,646 to 22,973.
+The latter also lowered visible/masked 1s close MAE to $0.22991/$0.27535 versus
+$0.23991/$0.28904. However, masked 10s ask errors regressed by up to 48%, so this
+is not evidence of a uniformly repaired model. The same balanced trial was
+extended with exact optimizer/RNG/traversal resume to a bounded 5,000 updates.
+These are fixed development-cache results, not full-validation results.
+Runtime receipts: `activity-repair-comparison-2000.json` and
+`activity-extended-control.json` in `phase1-v21-campaign-20261121`.
+
+The 5,000-update extension also failed promotion. Daily volume improved 24.6%
+and daily bid count improved 10.2% versus the matched control, but only 92/216
+raw groups improved. Worst masked 1s ask MAE rose 37.0%, 1s bid moving-candle
+direction fell 2.13 percentage points, and the balanced score worsened from
+0.57668 to 0.58653. The activity benefit persisted at steps 3,000 and 4,000, but
+price regressions fluctuated and did not resolve. Neither loss-weight trial is
+approved as a full-training replacement. No training process remains active.
+Preserved balanced-trial last checkpoint SHA256:
+`61ea23b31d93bdefe59dfd75543bd3c3fad9e9bccfdf85a8e0718674abf6c689`.
+Its run is `phase1-v21-activity-balanced-trial-20261122`, W&B `je3rp3xq`, source
+`f2d163f3213609ea3b0529595e2f1f53a387e7ef`. Full per-group comparisons are in
+`activity-balanced-comparison-extended.json`. The old full run remains stopped
+with its checkpoint and STOP preserved. Population imbalance is confirmed;
+gradient interference is a hypothesis requiring direct measurement.
+
 The user approved 20 epochs despite the earlier reconstruction/direction
 tradeoffs, and subsequently explicitly allowed any learning rate. Three matched
 initial full-data trials selected a substantially smaller fine-tuning LR.
 No model, input, decoder, objective, data split or validity rule changed between
 these LR trials. Both encoders and the single head train under `joint_repaired`.
 
-## Selected run
+## Historical selected run (stopped; do not resume blindly)
 
 - Runtime: `D:/TradingML/runtimes/bar_gpt/phase1-v21-full20-low-lr-20261121`.
 - Source: `0b404847bbbb8a9c1ef143e595e8f27d314c8a8c`, hash-verified immutable snapshot.
