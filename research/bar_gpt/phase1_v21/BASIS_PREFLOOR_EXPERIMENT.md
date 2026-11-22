@@ -57,3 +57,40 @@ Comparison command: `python -B -m research.bar_gpt.phase1_v21.compare_prefloor
 It requires the basis initialization receipt and records every initial metric
 delta, plus comparisons against control and parent. The initial price/function
 gate remains authoritative; floating-point activity differences are not hidden.
+
+## Longer result: partial gain, not full-training qualification
+
+Runtime `phase1-v21-basisprefloor3000-20261122`, same sourceeaebdbeb6. This profile
+selected8192 rather than4096; both arms use the same batch and sample sequence.
+Do not describe it as an exact resume. Control W&B`t6hwggmi`, candidate`pkubjxhl`.
+Durations328.1/323.1seconds; cached speed79,690/80,050windows/s. All3,000updates
+completed. The control reproduces the earlier8192-batch pre-floor trajectory.
+
+Candidate improves104/216raw groups versus control, but28regress more than5%;
+worst all-visible10s ask-low MAE is+19.04%. Worst accuracy regression is0.299pp.
+Selected candidate/control results:
+
+| Metric | Combined candidate | Pre-floor control |
+|---|---:|---:|
+| All-visible1s close MAE | $0.21176 | $0.21605 |
+| Masked1s close MAE | $0.21210 | $0.28347 |
+| 1s candle moving direction | 90.301% | 90.330% |
+| 1s volume moving direction | 79.282% | 79.253% |
+| Daily-volume raw MAE | 789,467 | 811,312 |
+| Daily bid-count raw MAE | 24,363 | 24,205 |
+
+Against the retained parent,150/216raw groups improve,12regress>5%, and5accuracy
+groups regress>1pp. Worst raw regression is20.72% for masked daily volume;
+worst accuracy regression is2.369pp for masked daily ask-range bins. This is a
+meaningful reduction in masked-price degradation relative to the isolated loss
+change, but does not satisfy full-training safeguards. Retain as a research
+candidate; do not launch20epochs or claim activity-direction repair. Earlier
+points remain noisy (e.g.1,500-step close MAE0.2488 vscontrol0.2168).
+
+Next useful diagnosis is matched raw-unit train/development generalization gaps,
+with source-valid counts and price/activity groups. Training loss alone does not
+distinguish overfit from objective/readout tradeoffs. Avoid another arbitrary
+LR/weight sweep or capacity change without that evidence.
+
+Control SHA`b205f29c78e83c4d0a79f575db411f5c17b5d938bbf65c5926e7add1c9f27a98`;
+candidate SHA`824f1341db42e46324b9543ecbaa2609d1687a05f48d888d61e3277e6ec4c351`.
