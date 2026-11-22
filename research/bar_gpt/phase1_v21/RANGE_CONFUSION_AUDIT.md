@@ -34,3 +34,37 @@ Reproduce with `python -B -m research.bar_gpt.phase1_v21.range_confusion_audit`
 and explicit `--before`, `--after`, and new runtime `--output` paths. Set
 `PYTHONDONTWRITEBYTECODE=1`. This analysis does not qualify a full training run.
 
+## Actual-update counterfactual (2026-11-22)
+
+Source791a68bb7, runtime `phase1-v21-range-steps-20261122`, W&B `l3gg3o1b`.
+Restored the retained slow-temporal checkpoint, all three optimizer groups,
+moments, RNG and traversal; applied eight disposable updates3001-3008. Each
+module counterfactual applies that module's actual finite update to the
+pre-step model; all parameters are restored afterward. These effects need not
+add because of interactions and finite precision. No checkpoint is written.
+
+Decoder-only updates reduce the mean predicted range across measured
+timeframe/family/visibility groups in8/8 steps (about0.00010-0.00020 basis
+points per step), and reduce the weighted range objective in8/8. They narrow
+24-29 of36 groups on masked steps and13-15 of18 on full-visible steps.
+Temporal-only updates widen the group mean in5/8 steps and narrow it in3/8;
+bar effects are smaller. The actual combined update decreases total loss in
+5/8 steps and the range objective in7/8, yet raw range MAE worsens in5-20
+groups per step. Neither decreasing the objective nor narrowing a prediction
+automatically means that its range-bin classification improves.
+
+This is local evidence of an objective/metric tradeoff, not proof that the
+decoder caused the accumulated validation regression. The magnitude is small,
+eight batches are not a full trajectory, and some predictions are too wide.
+Next test should quantify range objective gradients by target bin (including
+training prevalence) before choosing a targeted correction; do not infer that
+global range weighting, decoder expansion or freezing bar embeddings is needed.
+
+The diagnostic took7.92seconds. Seven focused tests passed. An independent
+eight-step replay without counterfactual evaluations produced exactly equal
+sampling hashes, before/after metrics, gradient norms and alignment values;
+receipt `parity.json`, run `phase1-v21-range-steps-parity-20261122`, W&B
+`1y6iuvmf`. Both remote runs finished; primary final loss12.063206599 read back.
+Original checkpoint SHAefd773910e06d53fbfd6f1b6280cad0be83886c75b9d6f652b0392718cec0433
+is unchanged. No V21 process remains active. Full training is still unqualified.
+
