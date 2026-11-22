@@ -13,9 +13,11 @@ def render(root):
     bar=Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.percentage:>3.0f}%'))
     bar.add_task(f'Experiments {len(rows)}/6',total=6,completed=len(rows))
     if p.get('total'):bar.add_task(stage,total=p['total'],completed=p.get('done',0))
-    table=Table('Experiment','Close $','Candle %','Range %','Activity %','Windows/s',expand=True)
+    table=Table('Arm','Status','Close $','Candle %','Range %','Act. %','k/s',expand=True)
     def f(v):return '—' if v is None else f'{v:.3f}'
-    for r in rows:table.add_row(r['name'],f(r['summary']['close_mae']),f(r['summary']['candle']),f(r['summary']['range']),f(r['summary']['activity']),f"{r.get('speed',0):,.0f}")
+    for r in rows:
+        s=r['best_gate']['summary'];label=r['name'].split('-')[0]+' '+r['mode']
+        table.add_row(label,'Rejected' if r['status']=='quality_rejected' else 'Complete',f(s['close_mae']),f(s['candle']),f(s['range']),f(s['activity']),f"{r.get('speed',0)/1000:.1f}")
     status=f"{p.get('name','Campaign' if stage=='complete' else 'Preparing')} | {stage} | update {age:.0f}s ago"
     if age>120 and stage not in ('complete','failed','stopped'):status+=' | STALE'
     speed=f"{p['speed']:,.0f}" if 'speed' in p else 'not measured'
@@ -23,7 +25,7 @@ def render(root):
     stats=f"Experiment {p.get('elapsed',0)/60:.1f}/60 min | {speed} windows/s | ETA {eta}"
     if stage=='complete':stats=f"All {len(rows)} experiments complete | summed experiment time {sum(r['seconds'] for r in rows)/60:.1f} min"
     if p.get('loss') is not None:stats+=f"\nLoss {p['loss']:.4g} | LR {p.get('lr',0):.2g}"
-    return Panel(Group(status,bar,stats,table,p.get('message','All metrics use source-valid masks. Weights stay local.')),title='BarGPT V26 | Preserve price and activity')
+    return Panel(Group(status,bar,stats,table,'Table: best retained checkpoints. Rejected means final state failed retention.',p.get('message','All metrics use source-valid masks. Weights stay local.')),title='BarGPT V26 | Preserve price and activity')
 
 
 def main():

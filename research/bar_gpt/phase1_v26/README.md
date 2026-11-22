@@ -41,7 +41,8 @@ to both branches and reports all-visible and hidden-only metrics separately.
 
 Data reuses the immutable V8 experiment train/development split and V19
 training supplement,114599 training and11146 development windows. It does
-not touch the held-out audit. Uniform sampling with replacement, unchanged
+not use the audit for training or selection. A preselected finalist and the
+assembly control are subsequently evaluated once with `final_audit.py`. Uniform sampling with replacement, unchanged
 training-only calibration, source masks, identities and hashes. Development
 is used for retention and selection, so results are development evidence,
 not independent audit or forecast-generalization evidence.
