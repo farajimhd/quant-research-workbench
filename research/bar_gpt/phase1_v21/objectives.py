@@ -32,7 +32,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
     wick=wick_loss(out['code'],raw,valid,known)
     activity=shape.new_zeros(());direction=shape.new_zeros(())
     bins=torch.stack(bin_terms).mean() if bin_terms else shape.new_zeros(())
-    if model.repair_arm!='range':
+    if model.repair_arm not in ('range','body_direction'):
         for j in (4,5,10,11,16,17):
             mask=valid[...,j];target=torch.where(mask,raw[...,j].double(),0)
             code=out['code'][...,j].double();pred=code.clamp_min(0)
@@ -52,7 +52,22 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
                 direction+=torch.where(moving,term,0).sum()/moving.sum().clamp_min(1)/6
     extra=shape+.05*wick+activity+.5*bins+.1*direction
     base=shape.new_zeros(());candle=shape.new_zeros(())
-    if model.repair_arm.startswith('joint_'):
+    if model.repair_arm=='body_direction':
+        body=shape.new_zeros(())
+        for b in (0,6,12):
+            mask=valid[...,b]&valid[...,b+3]
+            target=torch.log(torch.where(mask,raw[...,b].double(),1)/torch.where(mask,raw[...,b+3].double(),1))
+            error=(out['code'][...,b+1].double()-target)*10000
+            weights=mask*torch.where(known,1.,.1)
+            term=F.smooth_l1_loss(error,torch.zeros_like(error),reduction='none')
+            body+=(torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1)/3
+            moving=mask&known&(raw[...,b]!=raw[...,b+3])
+            logits=(out['logs'][...,b+3].double()-out['logs'][...,b].double())*10000
+            ce=F.binary_cross_entropy_with_logits(logits,(raw[...,b+3]>raw[...,b]).to(logits.dtype),reduction='none')
+            candle+=torch.where(moving,ce,0).sum()/moving.sum().clamp_min(1)/3
+        total=body+.5*candle+.01*shape
+        base=body
+    elif model.repair_arm.startswith('joint_'):
         base,_=joint_base(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,out,include_activity=model.repair_arm!='joint_repaired')
         if model.repair_arm in ('joint_metric_log','joint_repaired'):
             for b in (0,6,12):

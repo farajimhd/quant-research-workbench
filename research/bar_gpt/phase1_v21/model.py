@@ -2,6 +2,11 @@ import torch
 from ..phase1_v20.encoders import restore
 
 
+def selected_rows(arm):
+    coordinates=(1,) if arm=='body_direction' else (2,3) if arm=='range' else (2,3,4,5)
+    return torch.tensor([j%6 in coordinates for j in range(1152)])
+
+
 def initialize(teacher,saved,calibration,arm=None):
     model=restore(saved)
     model.repair_arm=arm or 'both_symmetric'
@@ -10,7 +15,7 @@ def initialize(teacher,saved,calibration,arm=None):
         return model
     model.requires_grad_(False)
     model.decoder.requires_grad_(True)
-    active=torch.tensor([j%6 in ((2,3) if model.repair_arm=='range' else (2,3,4,5)) for j in range(1152)])
+    active=selected_rows(model.repair_arm)
     model.register_buffer('active_rows',active,persistent=False)
     model.decoder.weight.register_hook(lambda g:g*model.active_rows[:,None])
     model.decoder.bias.register_hook(lambda g:g*model.active_rows)
@@ -20,7 +25,7 @@ def initialize(teacher,saved,calibration,arm=None):
 def verify_protected(model,saved):
     if model.repair_arm.startswith('joint_'):return
     old=saved['model']
-    active=torch.tensor([j%6 in ((2,3) if model.repair_arm=='range' else (2,3,4,5)) for j in range(1152)])
+    active=selected_rows(model.repair_arm)
     for name,value in model.state_dict().items():
         actual=value.detach().cpu()
         if name.startswith('decoder.'):

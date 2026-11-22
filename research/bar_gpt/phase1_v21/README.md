@@ -52,6 +52,14 @@ candle direction. This is an explicit objective revision, never an engineering
 resume. Removing the old activity tail term makes full-population overshoot
 validation especially necessary; no raw predictions or targets are clipped.
 
+`body_direction` calibrates only the existing log(open/close) rows after joint
+training, holding both encoders, close, wick and activity rows fixed. It uses
+body Huber in log-basis-points plus0.5 candle-direction BCE on observed visible
+moving candles and0.01 direct range loss. Hidden bars still have body magnitude
+loss but are not given a directional classification target in this ablation.
+Open/high/low predictions can change; close, activity and both embeddings must
+remain unchanged. This is not a second decoder or added embedding field.
+
 `validate` streams the complete unchanged validation population with bounded
 workers and prefetched pinned transfers. Captured inference/accumulation must
 match EVERY eager metric buffer on real input; warmup contributions are cleared.

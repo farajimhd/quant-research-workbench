@@ -8,7 +8,7 @@ from .objectives import loss
 def test_protected_rows_and_finite_masked_gradients():
     torch.set_num_threads(2);model,teacher,_=build()
     saved=dict(model=copy.deepcopy(model.state_dict()),contract=dict(bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),input_calibration=None))
-    for arm in ('range','both_log','both_symmetric','metric','metric_log'):
+    for arm in ('range','both_log','both_symmetric','metric','metric_log','body_direction'):
         m=initialize(None,saved,None,arm);opt=torch.optim.AdamW(m.decoder.parameters(),lr=1e-5,weight_decay=0)
         raw=torch.ones(2,64,27);raw[...,1]=1.1;raw[...,2]=.9
         values=raw.log();valid=torch.ones_like(raw,dtype=torch.bool);pos=torch.arange(16).expand(2,-1)
