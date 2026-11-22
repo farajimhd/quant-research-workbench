@@ -110,7 +110,8 @@ def main():
             if (arm/'result.json').exists():continue
             arm.mkdir(exist_ok=True);start=time.time();deadline=start+3500
             prior=arm/'checkpoint_last.pt';resume=torch.load(prior,map_location='cpu',weights_only=False) if a.resume and prior.exists() else None
-            if resume:deadline=start+max(0,3500-resume['elapsed_seconds'])
+            prior_elapsed=resume['elapsed_seconds'] if resume else manifest.get('qualification_elapsed_seconds',0)
+            deadline=start+max(0,3500-prior_elapsed)
             def admission():
                 if (out/'STOP').exists() or (out.parent/'STOP').exists():raise InterruptedError('Human STOP')
                 if time.time()>deadline-120:raise TimeoutError('Reserved completion/evaluation deadline reached')
@@ -129,7 +130,7 @@ def main():
             def save():
                 payload=dict(model=model.state_dict(),optimizer=opt.state_dict(),architecture=spec,parent_template=template,contract=contract,
                     step=step,seen=seen,seconds=seconds,curve=curve,best=best,rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state_all(),sampling_rng=g.get_state(),
-                    elapsed_seconds=time.time()-start+(resume['elapsed_seconds'] if resume else 0))
+                    elapsed_seconds=time.time()-start+prior_elapsed)
                 tmp=arm/'checkpoint_pending.pt';torch.save(payload,tmp);os.replace(tmp,prior)
             try:
                 with torch.no_grad():
@@ -147,7 +148,7 @@ def main():
                     torch.set_rng_state(resume['rng']);torch.cuda.set_rng_state_all(resume['cuda_rng']);g.set_state(resume['sampling_rng'])
                 else:
                     # Tiny fit has a fixed valid example, not a favorable sampled metric.
-                    progress(stage='tiny overfit',experiment=index+1,name=name,elapsed=time.time()-start,deadline=3500)
+                    progress(stage='tiny overfit',experiment=index+1,name=name,elapsed=time.time()-start+prior_elapsed,deadline=3500)
                     tiny=copy.deepcopy(model);to=make_optimizer(tiny);inputs=tuple(q[:1] for q in train)
                     x,v,raw,f,z=inputs;pos=positions(1,'cuda',64);tiny_curve=[]
                     for t in range(301):
@@ -165,27 +166,31 @@ def main():
                     del tiny,to,inputs,value,_;gc.collect();torch.cuda.empty_cache()
                     profiles=[]
                     for batch in (128,256):
-                        admission();progress(stage='profiling',experiment=index+1,name=name,batch=batch,elapsed=time.time()-start,deadline=3500)
+                        admission();progress(stage='profiling',experiment=index+1,name=name,batch=batch,elapsed=time.time()-start+prior_elapsed,deadline=3500)
                         model.load_state_dict(initial);opt=make_optimizer(model);replays={};torch.cuda.reset_peak_memory_stats()
                         for t in range(12):
                             ids=torch.arange(batch,device='cuda')%len(train[0]);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if t%4==3 else 16)
                             inp=(x,v,raw,f,pos,z);opt.zero_grad(set_to_none=True)
-                            if pos.shape[1] not in replays:replays[pos.shape[1]],actual=qualified_replay(model,inp,activity_scale)
+                            if a.extreme_2b:actual=backward(model,inp,activity_scale)
+                            elif pos.shape[1] not in replays:replays[pos.shape[1]],actual=qualified_replay(model,inp,activity_scale)
                             else:actual=replays[pos.shape[1]](inp)
                             if not bool(torch.isfinite(actual[0])&torch.isfinite(actual[2])):raise FloatingPointError('Profile')
                             opt.step()
                             if t==3:torch.cuda.synchronize();tick=time.perf_counter()
-                        torch.cuda.synchronize();profiles.append(dict(batch=batch,windows_per_second=8*batch/(time.perf_counter()-tick),peak_mib=torch.cuda.max_memory_allocated()/2**20,gradient_parity=True))
+                        torch.cuda.synchronize();profiles.append(dict(batch=batch,windows_per_second=8*batch/(time.perf_counter()-tick),peak_mib=torch.cuda.max_memory_allocated()/2**20,execution='eager' if a.extreme_2b else 'cuda_graph',gradient_parity=not a.extreme_2b))
                         del replays,opt,actual,inp;opt=None;gc.collect();torch.cuda.empty_cache()
                     batch=256;contract.update(batch=batch,profiles=profiles,fastest_profile_batch=max(profiles,key=lambda p:p['windows_per_second'])['batch'])
+                    write_json(arm/'profile.json',profiles)
                     estimate=a.windows/next(p['windows_per_second'] for p in profiles if p['batch']==batch)
-                    if estimate>2000 and index==0:
-                        a.windows=max(262144,int(a.windows*2000/estimate)//262144*262144)
-                    if a.windows/next(p['windows_per_second'] for p in profiles if p['batch']==batch)>2400:raise TimeoutError('Common exposure cannot fit within experiment deadline')
+                    training_budget=min(2000,max(0,deadline-time.time()-600)) if a.extreme_2b else 2000
+                    if estimate>training_budget and index==0:
+                        a.windows=max(262144,int(a.windows*training_budget/estimate)//262144*262144)
+                    maximum_seconds=min(2400,training_budget) if a.extreme_2b else 2400
+                    if a.windows/next(p['windows_per_second'] for p in profiles if p['batch']==batch)>maximum_seconds:raise TimeoutError('Common exposure cannot fit within experiment deadline')
                     manifest['actual_windows_per_arm']=a.windows;write_json(out/'manifest.json',manifest)
                     contract['actual_windows_per_arm']=a.windows
                     write_json(arm/'profile.json',profiles);w.config.update(contract,allow_val_change=True)
-                    lr_multiplier,pilots=calibrate_lr(model,initial,train,activity_scale,admission,lambda **kw:progress(stage='LR calibration',experiment=index+1,name=name,elapsed=time.time()-start,deadline=3500,**kw))
+                    lr_multiplier,pilots=calibrate_lr(model,initial,train,activity_scale,admission,lambda **kw:progress(stage='LR calibration',experiment=index+1,name=name,elapsed=time.time()-start+prior_elapsed,deadline=3500,**kw))
                     write_json(arm/'lr-pilots.json',pilots);contract['pilot_selected_multiplier']=lr_multiplier
                     lr_multiplier=choose_multiplier(lr_multiplier,pilots,a.higher_lr_followup)
                     contract['lr_multiplier']=lr_multiplier
@@ -198,7 +203,7 @@ def main():
                 while True:
                     admission()
                     if seen==0 or seen%evaluation_stride==0 or seen==a.windows:
-                        progress(stage='validating',experiment=index+1,name=name,seen=seen,total=a.windows,elapsed=time.time()-start,deadline=3500)
+                        progress(stage='validating',experiment=index+1,name=name,seen=seen,total=a.windows,elapsed=time.time()-start+prior_elapsed,deadline=3500)
                         detail,metrics=evaluate(model,teacher,dev);rank=ranking(metrics,reference)
                         write_json(arm/f'evaluation-{seen}.json',detail);write_json(arm/'latest-metrics.json',metrics)
                         curve.append(dict(step=step,seen=seen,metrics=metrics,ranking=rank));w.log({**{'development/'+k:v for k,v in metrics.items()},**{'comparison/'+k:v for k,v in rank.items()},'train/windows_seen':seen},step=step)
@@ -210,20 +215,21 @@ def main():
                     if seen>=a.windows:break
                     tick=time.perf_counter();ids=torch.randint(len(train[0]),(batch,),device='cuda',generator=g);x,v,raw,f,z=[q[ids] for q in train]
                     pos=positions(batch,'cuda',64 if (step+1)%4==0 else 16,g);inp=(x,v,raw,f,pos,z);opt.zero_grad(set_to_none=True)
-                    if pos.shape[1] not in graphs:graphs[pos.shape[1]],actual=qualified_replay(model,inp,activity_scale)
+                    if a.extreme_2b:actual=backward(model,inp,activity_scale)
+                    elif pos.shape[1] not in graphs:graphs[pos.shape[1]],actual=qualified_replay(model,inp,activity_scale)
                     else:actual=graphs[pos.shape[1]](inp)
                     value,parts,norm=actual
                     if not bool(torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('Training')
                     opt.step();torch.cuda.synchronize();seconds+=time.perf_counter()-tick;step+=1;seen+=batch
                     if step%50==0:
-                        speed=seen/max(seconds,1e-9);progress(stage='training',experiment=index+1,name=name,step=step,seen=seen,total=a.windows,loss=float(value),speed=speed,eta_seconds=(a.windows-seen)/speed,elapsed=time.time()-start,deadline=3500)
+                        speed=seen/max(seconds,1e-9);progress(stage='training',experiment=index+1,name=name,step=step,seen=seen,total=a.windows,loss=float(value),speed=speed,eta_seconds=(a.windows-seen)/speed,elapsed=time.time()-start+prior_elapsed,deadline=3500)
                         w.log({'train/loss':float(value),'train/windows_seen':seen,'train/cached_windows_per_second':speed,**{'train/'+k:float(v) for k,v in zip(PARTS,parts)}},step=step)
                 # Comparable train/dev gap on frozen first2048 training windows.
                 _,train_metrics=evaluate(model,teacher,tuple(q[:2048] for q in train))
                 w.log({'train_evaluation/'+k:v for k,v in train_metrics.items()},step=step)
                 result=dict(name=name,architecture=spec,seed=seed,ranking=curve[-1]['ranking'],metrics=curve[-1]['metrics'],train_metrics=train_metrics,
                     parameters=contract['parameters'],decoder_parameters=contract['decoder_parameters'],representation_values=contract['representation_values'],
-                    batch=batch,steps=step,seen=seen,seconds=time.time()-start,cached_windows_per_second=seen/seconds,checkpoint_sha=file_hash(prior),wandb_url=w.url)
+                    batch=batch,steps=step,seen=seen,seconds=time.time()-start+prior_elapsed,cached_windows_per_second=seen/seconds,checkpoint_sha=file_hash(prior),wandb_url=w.url)
                 write_json(arm/'result.json',result);results.append(result);write_json(out/'comparison.json',results);status='complete'
             except BaseException:
                 if opt is not None:save()
