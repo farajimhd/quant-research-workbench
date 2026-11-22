@@ -49,3 +49,20 @@ def test_whole_model_hidden_isolation_and_restore():
     assert [g['lr'] for g in groups]==[3e-7,5e-6,1.5e-4,3e-4]
     assigned=[id(p) for g in groups for p in g['params']]
     assert len(assigned)==len(set(assigned))==len(list(model.parameters()))
+
+
+def test_structure_audit_detects_crossings_and_constant_embedding():
+    from .structure_audit import audit
+    raw=torch.tensor([1.,2.,.5,1.5,10.,2.]*3).expand(2,64,18).clone()
+    logs=raw.clone()
+    for base in (0,6,12):
+        logs[...,base:base+4]=raw[...,base:base+4].log()
+        logs[...,base+4:base+6]=raw[...,base+4:base+6].log1p()
+    logs[...,6:10]+=torch.tensor(2.).log()
+    valid=torch.ones(2,64,27,dtype=torch.bool)
+    def fake(x,v,pos):return None,torch.zeros(len(x),64,32),dict(logs=x)
+    for visible,fields in ((64,512),(16,384)):
+        result=audit(fake,(logs,valid,raw,torch.ones(2)),visible)
+        assert result['quote_crossings']==fields
+        assert result['ohlc_violations']==result['nonfinite']==0
+        assert result['embedding_constant_coordinates']==2048

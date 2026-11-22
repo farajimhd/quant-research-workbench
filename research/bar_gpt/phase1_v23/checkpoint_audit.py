@@ -8,8 +8,9 @@ from ..phase1_v22.compare import summarize
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True)
-    root=p.parse_args().output;torch.set_num_threads(2);reports=[]
-    for result_path in sorted(root.glob('e*/result.json')):
+    p.add_argument('--additional-root',type=Path,action='append',default=[]);a=p.parse_args()
+    root=a.output;torch.set_num_threads(2);reports=[]
+    for result_path in sorted(f for folder in [root]+a.additional_root for f in folder.glob('e*/result.json')):
         result=json.loads(result_path.read_text());arm=result_path.parent
         last=torch.load(arm/'checkpoint_last.pt',map_location='cpu',weights_only=False)
         best=torch.load(arm/'checkpoint_best.pt',map_location='cpu',weights_only=False)
