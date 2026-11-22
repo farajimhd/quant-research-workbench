@@ -13,6 +13,18 @@ among pilots with finite gradients, loss within 1.1x starting loss, and price-lo
 MAE within 1.25x its starting value. Development is never used for LR selection.
 These pilots are a bounded calibration, not proof of optimal LR.
 
+After the user-requested OS maintenance pause, the user explicitly authorized
+one additional extreme arm: approximately **2 billion parameters**, not 2GB of
+weights. `--extreme-2b` runs width4608/depth11 (head dimension32), retaining the
+same feature encoder, 64x32 slots and 594-parameter decoder. This is a ninth,
+separately authorized experiment. The 60-minute bound still applies. Profiled
+throughput may reduce its exposure in 262,144-window increments; use
+`matched_compare --seen COUNT` against saved smaller-model evaluations at the
+same exposure count. Do not compare unequal endpoints as a matched experiment.
+All transformations, objective, masks, data, parent and LR-pilot protocol stay
+the same. This measures warm-start temporal scaling, not a language model or
+an isolated feature-capacity change. Run `qualify_extreme` on CPU first.
+
 The campaign was explicitly expanded to eight total experiments after the
 initial results: all higher LR candidates passed the stability gates, but the
 short pilots selected 0.3x for 100M/200M versus 3x for the range-leading 50M.

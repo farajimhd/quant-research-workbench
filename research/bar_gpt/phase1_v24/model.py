@@ -3,6 +3,7 @@ import torch
 from ..phase1_v23.model import expand_temporal,restore as restore_parent
 
 SPECS=[dict(width=2688,depth=8),dict(width=768,depth=10),dict(width=1152,depth=9),dict(width=1536,depth=10),dict(width=384,depth=6)]
+EXTREME_SPEC=dict(width=4608,depth=11)
 
 
 def build(parent,width,depth):

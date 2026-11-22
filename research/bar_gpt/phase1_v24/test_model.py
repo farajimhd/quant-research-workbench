@@ -4,7 +4,7 @@ from ..phase1_v12.model import Config,positions
 from ..phase1_v19.model import Autoencoder
 from ..phase1_v22.model import PositionEncoder
 from ..phase1_v23.model import expand_temporal
-from .model import optimizer,SPECS
+from .model import optimizer,SPECS,EXTREME_SPEC
 
 
 def test_expansion_from_six_block_parent_and_gradients():
@@ -31,6 +31,13 @@ def test_size_and_lr_contracts():
     model=Tiny();opt=optimizer(model,.3)
     assert [g['lr'] for g in opt.param_groups]==[9e-8,3e-7,1.5e-6,3e-6]
     assert len({id(p) for g in opt.param_groups for p in g['params']})==len(list(model.parameters()))
+
+
+def test_extreme_size_preserves_parent_head_geometry():
+    w,d=EXTREME_SPEC['width'],EXTREME_SPEC['depth']
+    count=8*w*w*d+11*w*d+4*w*w+226*w+8642
+    assert 1.9e9<count<2.1e9
+    assert w%384==0 and d>=6
 
 
 def test_higher_lr_requires_stability_qualification():

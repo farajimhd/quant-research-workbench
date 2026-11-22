@@ -12,6 +12,8 @@ def main():
         primary_manifest=json.loads((root/'manifest.json').read_text());extra_manifest=json.loads((additional/'manifest.json').read_text())
         for key in ('parent_sha','data_hash','supplement_hash','split_hash','windows_per_arm'):
             if primary_manifest[key]!=extra_manifest[key]:raise ValueError('Incomparable campaign: '+key)
+        if primary_manifest.get('actual_windows_per_arm')!=extra_manifest.get('actual_windows_per_arm'):
+            raise ValueError('Different exposure: use matched_compare at a shared recorded learning point')
         rows+=json.loads((additional/'comparison.json').read_text())
     rows.sort(key=lambda r:r['parameters'])
     summary=[summarize('V23 range-leading starting checkpoint',parent)];worst=[]

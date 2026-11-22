@@ -14,7 +14,8 @@ def read(path,default=None):
 
 def render(root):
     p=read(root/'progress.json');rows=read(root/'comparison.json',[])
-    total=3 if read(root/'manifest.json').get('higher_lr_followup') else 5
+    manifest=read(root/'manifest.json')
+    total=1 if manifest.get('extreme_2b') else 3 if manifest.get('higher_lr_followup') else 5
     stage=p.get('stage','preparing');age=time.time()-p.get('updated',time.time())
     progress=Progress(TextColumn('{task.description}'),BarColumn(),TextColumn('{task.percentage:>3.0f}%'))
     progress.add_task(f"Experiments {len(rows)}/{total}",total=total,completed=len(rows))
