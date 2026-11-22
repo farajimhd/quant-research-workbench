@@ -20,7 +20,7 @@ the fixed development set; no full-population quantile claim is made.
 Peak price readout LR3e-7, core6e-8, bar9e-9; activity1e-6. Warm up from1% of
 each peak for500 updates, then cosine decay to1% over20 full training epochs,
 using consumed windows rather than epochs rounded to batches. Fresh AdamW,
-zero weight decay, fused CUDA optimizer, BF16 encoder/FP32 heads. Calibration
+zero weight decay, fused CUDA optimizer, BF16 temporal/activity attention; FP32 price-feature attention, teacher and heads. Calibration
 is frozen from training only. No local true reference enters the decoder.
 
 `run_full --mode profile` compares full raw-loader/preparation/teacher/model/
@@ -57,3 +57,9 @@ $env:PYTHONDONTWRITEBYTECODE='1'
 W&B project:
 `mehdifaraji/bargpt-phase01-v26-full20`. Metrics and configuration are uploaded,
 never weights. `full_panel --output <run>` is a read-only Rich progress view.
+
+Memory admission is capped at85% of physical VRAM to fail before Windows GPU
+oversubscription. The4096-batch first profile filled96494MiB and was stopped
+through its preserved STOP marker;1024/2048 gave equal speed. TF32 high math is
+only eligible after raw errors, directional metrics and gradient parity pass
+`precision_probe`; its selection is recorded in the immutable contract.

@@ -82,13 +82,14 @@ def main():
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--price-lr',type=float,default=3e-7);p.add_argument('--activity-lr',type=float,default=1e-6)
     p.add_argument('--warmup-steps',type=int,default=500);p.add_argument('--validation-every',type=int,default=1000);p.add_argument('--checkpoint-every',type=int,default=250)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
-    p.add_argument('--profile-batches',type=int,default=32);p.add_argument('--profile-configs',default='1024:8,2048:8,4096:8,8192:8,4096:16,4096:32')
+    p.add_argument('--profile-batches',type=int,default=32);p.add_argument('--profile-configs',default='512:8,1024:8,2048:8,1024:16,1024:32')
+    p.add_argument('--matmul-precision',choices=('highest','high'),default='highest')
     a=p.parse_args();a.device='cuda';a.preparation='raw_gpu';a.seed=17;a.shard_prefetch=16;a.shard_prefetch_mib=64
     if not 1<=a.epochs<=20 or not 1<=a.batch_size<=16384 or not 0<=a.workers<=32:raise ValueError('Bounds')
     if not 1<=a.validation_batch_size<=16384 or not 0<=a.validation_workers<=32:raise ValueError('Validation bounds')
     if not 1e-9<=a.price_lr<=1e-4 or not 1e-9<=a.activity_lr<=1e-4:raise ValueError('LR bounds')
     if min(a.warmup_steps,a.validation_every,a.checkpoint_every,a.profile_batches)<1 or a.max_updates<0:raise ValueError('Cadence')
-    preflight(a);torch.set_num_threads(4);torch.set_float32_matmul_precision('highest');torch.manual_seed(a.seed);random.seed(a.seed);np.random.seed(a.seed)
+    preflight(a);torch.cuda.set_per_process_memory_fraction(.85);torch.set_num_threads(4);torch.set_float32_matmul_precision(a.matmul_precision);torch.manual_seed(a.seed);random.seed(a.seed);np.random.seed(a.seed)
     if file_hash(a.checkpoint)!=PARENT_SHA:raise ValueError('Selected V26 checkpoint changed')
     saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False);split=load_split(a.split);data=verify(a.data)
     if saved['contract']['split_hash']!=split['manifest_hash'] or data['source_split_hash']!=split['manifest_hash']:raise ValueError('Split differs')
@@ -96,11 +97,13 @@ def main():
     if identity['checkpoint_sha256']!=saved['contract']['anchor_teacher']:raise ValueError('Teacher changed')
     split=attach(split,Path(split['dataset']));split['splits']={}
     with lease(a.output):
-        if a.mode=='profile':return profile(a,teacher,split,saved)
+        if a.mode=='profile':
+            write_json(a.output/'manifest.json',dict(source=a.source_revision,parent_sha=PARENT_SHA,split_hash=split['manifest_hash'],counts=split['counts'],precision=a.matmul_precision,configs=a.profile_configs,batches=a.profile_batches,memory_fraction=.85))
+            return profile(a,teacher,split,saved)
         model=restore(saved).cuda();model.configure('independent')
         contract=dict(version='phase1-v26-full20',source=a.source_revision,parent_sha=PARENT_SHA,teacher=identity,
             split_hash=split['manifest_hash'],data_hash=data['hash'],counts=split['counts'],epochs=a.epochs,batch_size=a.batch_size,workers=a.workers,seed=a.seed,
-            price_lr=a.price_lr,activity_lr=a.activity_lr,warmup_steps=a.warmup_steps,weight_decay=0.,
+            price_lr=a.price_lr,activity_lr=a.activity_lr,warmup_steps=a.warmup_steps,weight_decay=0.,matmul_precision=a.matmul_precision,
             schedule='1percent floor to peak warmup; cosine to1percent floor over20 full epochs, consumed-window clock',
             initialization='Selected V26 weights; fresh optimizer and explicit new full-data scientific identity',
             loss='Unchanged V26 family losses and price teacher anchor; independent clipping',
