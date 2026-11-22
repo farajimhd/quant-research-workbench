@@ -54,6 +54,6 @@ def evaluate(model,data,progress=None,batch=256):
 
 def summary(metrics,mode='all_visible'):
     def avg(prefix,suffix):
-        v=[x for k,x in metrics.items() if k.startswith(prefix) and k.endswith(suffix)];return sum(v)/len(v) if v else None
+        v=[x for k,x in metrics.items() if k.startswith(prefix) and k.endswith(suffix) and metrics.get(k.rsplit('/',1)[0]+'/count',0)>0];return sum(v)/len(v) if v else None
     return dict(close_mae=metrics.get(mode+'/raw_mae/1s/trade_close'),candle=avg(mode+'/candle/','/moving_direction_pct'),
         range=avg(mode+'/range/','/bin_accuracy_pct'),activity=avg('activity/'+mode+'/','/balanced_direction_pct'))
