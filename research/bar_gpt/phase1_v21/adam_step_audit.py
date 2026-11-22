@@ -57,7 +57,7 @@ def measure(model,inputs,scale):
         if not torch.isfinite(pred).all():raise FloatingPointError('Nonfinite reconstruction')
         known=torch.zeros_like(valid[...,0]).scatter(1,pos,True)
         f=(frames[:,None]==torch.tensor(FRAMES,device=frames.device)).long().argmax(1)
-        group=torch.nn.functional.one_hot(f,6).T.double();scores={}
+        group=torch.nn.functional.one_hot(f,6).T.double();scores={};ranges={}
         for name,mask in (('visible',known),('hidden',~known)):
             v=valid[...,:18]&mask[...,None];counts=group@v.double().sum(1)
             errors=group@torch.where(v,(pred-target).abs(),0).sum(1)
@@ -65,13 +65,36 @@ def measure(model,inputs,scale):
             for fi,frame in enumerate(FRAME_NAMES):
                 for j,channel in enumerate(CHANNELS):
                     if c[fi][j]:scores[f'{name}/{frame}/{channel}']=dict(count=c[fi][j],mae=e[fi][j]/c[fi][j])
-    return total,dict(loss=float(total.detach()),components={k:float(v.detach()) for k,v in components.items()},raw=scores)
+            for b,family in ((0,'trade'),(6,'bid'),(12,'ask')):
+                valid_range=v[...,b+1]&v[...,b+2]
+                actual=10000*(target[...,b+1]/torch.where(valid_range,target[...,b+2],1)-1)
+                predicted=10000*(pred[...,b+1]/torch.where(valid_range,pred[...,b+2],1)-1)
+                counts=group@valid_range.double().sum(1)
+                signed=group@torch.where(valid_range,predicted-actual,0).sum(1)
+                absolute=group@torch.where(valid_range,(predicted-actual).abs(),0).sum(1)
+                for fi,frame in enumerate(FRAME_NAMES):
+                    if counts[fi]:ranges[f'{name}/{frame}/{family}']=dict(count=float(counts[fi]),signed_bp=float(signed[fi]/counts[fi]),mae_bp=float(absolute[fi]/counts[fi]))
+    return total,dict(loss=float(total.detach()),components={k:float(v.detach()) for k,v in components.items()},raw=scores,ranges=ranges)
+
+
+@contextmanager
+def isolated_update(model,before,after,module):
+    """Apply one module's actual step to the pre-step model, then restore all."""
+    if module not in ('bar','temporal','decoder'):raise ValueError('Unknown module')
+    try:
+        with torch.no_grad():
+            for name,p in model.named_parameters():p.copy_((after if name.startswith(module+'.') else before)[name])
+        yield
+    finally:
+        with torch.no_grad():
+            for name,p in model.named_parameters():p.copy_(after[name])
 
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True)
     p.add_argument('--source-revision',required=True);p.add_argument('--checkpoint',type=Path,action='append',required=True)
     p.add_argument('--steps',type=int,default=8);p.add_argument('--precision-diagnostic',action='store_true')
+    p.add_argument('--module-counterfactual',action='store_true')
     a=p.parse_args();a.device='cuda';a.resume=False
     if not 1<=a.steps<=16 or not 1<=len(a.checkpoint)<=2:raise ValueError('Bounded diagnostic')
     preflight(a);torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
@@ -89,8 +112,8 @@ def main():
             if sha!=json.loads((cp.parent/'result.json').read_text())['checkpoint_sha']:raise ValueError('Checkpoint changed')
             saved=torch.load(cp,map_location='cpu',weights_only=False);c=saved['contract']
             if c['split_hash']!=verified['source_split_hash'] or c['data_hash']!=verified['hash'] or c['supplement_hash']!=sm['hash'] or c['bar_parent']!=identity:raise ValueError('Contract mismatch')
-            if c['arm'] not in ('joint_prefloor','joint_basis_prefloor') or c.get('decoder_visible_only'):raise ValueError('Unsupported continuation contract')
-            model=(restore_basis(saved) if c['arm']=='joint_basis_prefloor' else initialize(None,saved,None,'joint_prefloor')).cuda().train()
+            if c['arm'] not in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal') or c.get('decoder_visible_only'):raise ValueError('Unsupported continuation contract')
+            model=(restore_basis(saved) if c['arm'].startswith('joint_basis_prefloor') else initialize(None,saved,None,'joint_prefloor')).cuda().train()
             opt=optimizer(model,c['lr'],c['bar_lr']);opt.load_state_dict(saved['optimizer'])
             g=torch.Generator(device='cuda');g.set_state(saved['sampling_rng'])
             torch.set_rng_state(saved['rng']);torch.cuda.set_rng_state_all(saved['cuda_rng'])
@@ -113,19 +136,26 @@ def main():
                 with torch.no_grad():
                     for n,p in model.named_parameters():
                         if p.grad is not None:dot[n.split('.')[0]]+=float(((p-original[n]).double()*p.grad.double()).sum())/coefficient
+                isolated={}
+                if a.module_counterfactual:
+                    updated={n:p.detach().clone() for n,p in model.named_parameters()}
+                    for module in ('bar','temporal','decoder'):
+                        with torch.no_grad(),isolated_update(model,original,updated,module):
+                            _,isolated[module]=measure(model,inputs,scale)
+                    del updated
                 del original
                 with torch.no_grad():_,after=measure(model,inputs,scale)
                 if a.precision_diagnostic:
                     with torch.no_grad(),full_precision(model):_,precision_after=measure(model,inputs,scale)
                 rows.append(dict(step=step,visible=pos.shape[1],preclip_gradient_norm=float(norm),before=before,after=after,
-                    first_order_loss_change_by_module=dot,fp32_before=precision_before,fp32_after=precision_after))
+                    first_order_loss_change_by_module=dot,fp32_before=precision_before,fp32_after=precision_after,isolated_module_updates=isolated))
                 print(cp.parent.name,step,before['loss'],after['loss'],flush=True)
             results[str(cp)]=rows;sampling.append(sequence)
             if file_hash(cp)!=sha:raise ValueError('Input checkpoint mutated')
             del model,opt,saved,total
         if len(sampling)==2 and sampling[0]!=sampling[1]:raise ValueError('Continuations used different examples/masks')
         write_json(a.output/'result.json',dict(source=a.source_revision,data_hash=verified['hash'],supplement_hash=sm['hash'],checkpoints=hashes,
-            sampling_hashes=sampling,results=results,precision_diagnostic=a.precision_diagnostic,seconds=time.monotonic()-started,
+            sampling_hashes=sampling,results=results,precision_diagnostic=a.precision_diagnostic,module_counterfactual=a.module_counterfactual,seconds=time.monotonic()-started,
             scope='Disposable sequential Adam updates with saved moments/RNG and unchanged LR, masks, clipping and objective. Same-batch before/after measurements, not validation or evidence of sustained generalization. Original checkpoints unchanged.'))
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]),verbose=False)
         w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v21-repair',name=a.output.name,dir=str(a.output),config=dict(source=a.source_revision,checkpoints=hashes,steps=a.steps,data_hash=verified['hash']))

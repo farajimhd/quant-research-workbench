@@ -21,6 +21,9 @@ def test_measure_preserves_objective_and_counts_visibility():
     torch.testing.assert_close(total,expected,rtol=0,atol=0)
     for key,row in result['raw'].items():
         assert row['count']==(32 if key.startswith('visible/') else 96)
+    for key,row in result['ranges'].items():
+        assert row['count']==(32 if key.startswith('visible/') else 96)
+        assert math.isfinite(row['signed_bp']) and row['mae_bp']>=0
     total.backward()
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None)
 
@@ -34,3 +37,17 @@ def test_precision_context_restores_config_even_on_failure():
             assert model.temporal.config.precision=='fp32'
             raise RuntimeError('test')
     assert model.temporal.config is original
+
+
+def test_isolated_update_restores_actual_parameters_on_failure():
+    import pytest
+    from .adam_step_audit import isolated_update
+    model,_,_=build()
+    before={n:p.detach().clone() for n,p in model.named_parameters()}
+    after={n:p+1 for n,p in before.items()}
+    with pytest.raises(RuntimeError):
+        with isolated_update(model,before,after,'temporal'):
+            for n,p in model.named_parameters():
+                torch.testing.assert_close(p,after[n] if n.startswith('temporal.') else before[n],rtol=0,atol=0)
+            raise RuntimeError('test')
+    for n,p in model.named_parameters():torch.testing.assert_close(p,after[n],rtol=0,atol=0)
