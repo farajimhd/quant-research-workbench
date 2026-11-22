@@ -11,7 +11,7 @@ from ..phase1_v12.model import gather
 class Branch(nn.Module):
     def __init__(self,channels,width,embedding):
         super().__init__();self.channels=tuple(channels);self.width=width;self.embedding=embedding
-        n=len(channels);self.ident=nn.Parameter(torch.randn(n,32)*.02)
+        self.register_buffer('indices',torch.tensor(channels));n=len(channels);self.ident=nn.Parameter(torch.randn(n,32)*.02)
         self.value=nn.Parameter(torch.randn(n,32)*.1)
         self.meta=nn.Linear(n+18,32)
         self.feature=AttentionBlock(32,4);self.bar=nn.Linear(n*32,32)
@@ -25,7 +25,7 @@ class Branch(nn.Module):
 
     def forward(self,scaled,valid,pos):
         x=gather(scaled,pos);v=gather(valid,pos)
-        values=x[...,list(self.channels)];mask=v[...,list(self.channels)]
+        values=x.index_select(-1,self.indices);mask=v.index_select(-1,self.indices)
         meta=torch.cat((mask.float(),x[...,18:],v[...,18:].float()),-1)
         b,t,n=values.shape
         h=values[...,None]*self.value+self.ident+self.meta(meta)[...,None,:]
@@ -45,6 +45,8 @@ class Model(nn.Module):
         for key in ('mean','scale','input_mean','input_scale','reference','activity_mean','activity_scale'):
             self.register_buffer(key,torch.tensor(calibration[key],dtype=torch.float32))
         self.register_buffer('loss_factor',torch.tensor([1000. if j in PRICES else 1. for j in range(18)]))
+        self.register_buffer('price_indices',torch.tensor(PRICES));self.register_buffer('activity_indices',torch.tensor(ACTIVITY))
+        self.register_buffer('range_edges',torch.tensor([.0005,.001,.0025,.005],dtype=torch.float64).log1p())
         self.branches=nn.ModuleDict();self.heads=nn.ModuleDict()
         definitions=[('shared',tuple(range(18)),384,64)] if kind=='shared' else [
             (name,channels,272,32) for name,channels in [('price',PRICES),('activity',ACTIVITY)] if kind in (name,'separate','fusion')]
@@ -63,8 +65,8 @@ class Model(nn.Module):
     def inputs(self,x,v):
         code,cm=coordinates(x[...,:18],v[...,:18]);features=torch.cat((code,x[...,18:]),-1)
         mask=torch.cat((cm,v[...,18:]),-1);scaled=(features-self.input_mean)/self.input_scale
-        act=relative_input(code[...,list(ACTIVITY)].double(),self.reference.double()).float()
-        scaled=scaled.clone();scaled[...,list(ACTIVITY)]=(act-self.activity_mean)/self.activity_scale
+        act=relative_input(code.index_select(-1,self.activity_indices).double(),self.reference.double()).float()
+        scaled=scaled.clone();scaled.index_copy_(-1,self.activity_indices,(act-self.activity_mean)/self.activity_scale)
         return torch.where(mask,scaled,0)
 
     def encode(self,x,v,pos):
@@ -80,7 +82,7 @@ class Model(nn.Module):
         # No target, metadata, positional tensor, or raw input enters this method.
         normalized=z.new_zeros((*z.shape[:-1],18));offset=0
         for name,head in self.heads.items():
-            n=head.in_features;normalized[...,list(self.branches[name].channels)]=head(z[...,offset:offset+n].float());offset+=n
+            n=head.in_features;normalized.index_copy_(-1,self.branches[name].indices,head(z[...,offset:offset+n].float()));offset+=n
         code=normalized*self.scale+self.mean
         constrained=torch.stack([code[...,j].clamp_min(0) if j%6 in (2,3,4,5) else code[...,j] for j in range(18)],-1)
         return dict(normalized=normalized,code=code,logs=decode(constrained,code.new_zeros(len(code),9),constrain=False))

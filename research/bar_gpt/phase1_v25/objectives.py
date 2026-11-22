@@ -28,10 +28,10 @@ def loss(model,out,x,v,raw,pos):
             target=(torch.where(mask,raw[...,b+1].double(),1)/torch.where(mask,raw[...,b+2].double(),1)).log()
             prediction=out['logs'][...,b+1].double()-out['logs'][...,b+2].double();error=(prediction-target)*10000
             ranges=ranges+mean(F.smooth_l1_loss(error,torch.zeros_like(error),reduction='none'),mask*weights)/3
-            edges=prediction.new_tensor([.0005,.001,.0025,.005]).log1p()
+            edges=model.range_edges
             term=F.binary_cross_entropy_with_logits((prediction[...,None]-edges)*10000,(target[...,None]>edges).double(),reduction='none').mean(-1)
             bins=bins+mean(term,mask*weights)/3
-        price=.5*channel[list(PRICES)].mean()+.1*mean(coordinate[...,list(PRICES)],cm[...,list(PRICES)].float())+.5*body+.05*wick_loss(out['code'],raw,v,known)+.1*ranges+.05*bins+.5*candle
+        price=.5*channel.index_select(-1,model.price_indices).mean()+.1*mean(coordinate.index_select(-1,model.price_indices),cm.index_select(-1,model.price_indices).float())+.5*body+.05*wick_loss(out['code'],raw,v,known)+.1*ranges+.05*bins+.5*candle
     if model.kind!='price':
         for j in ACTIVITY:
             mask=v[...,j];target=torch.where(mask,raw[...,j].double(),0).log1p();pred=out['code'][...,j].double()
@@ -39,5 +39,5 @@ def loss(model,out,x,v,raw,pos):
             delta=pred[:,1:]-pred[:,:-1];actual=target[:,1:]-target[:,:-1]
             activity=activity+(1.1*mean((pred-target).square(),mask*weights)+.5*mean((delta-actual).square(),pair.float()))/6
             direction=direction+mean(F.binary_cross_entropy_with_logits(delta/.1,(actual>0).double(),reduction='none'),(pair&(actual!=0)).float())/6
-        activity=activity+.1*direction+.5*channel[list(ACTIVITY)].mean()+.1*mean(coordinate[...,list(ACTIVITY)],cm[...,list(ACTIVITY)].float())
+        activity=activity+.1*direction+.5*channel.index_select(-1,model.activity_indices).mean()+.1*mean(coordinate.index_select(-1,model.activity_indices),cm.index_select(-1,model.activity_indices).float())
     return price+activity,dict(price=price,activity=activity,body=body,range=ranges,range_bins=bins,candle_direction=candle,activity_direction=direction)

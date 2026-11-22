@@ -47,7 +47,7 @@ def ranking(metrics,reference):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--revision',required=True)
-    p.add_argument('--windows',type=int,default=1048576);p.add_argument('--resume',action='store_true');a=p.parse_args()
+    p.add_argument('--windows',type=int,default=1048576);p.add_argument('--resume',action='store_true');p.add_argument('--repair-qualification',help='Exact prior revision, only when no main update/checkpoint exists');a=p.parse_args()
     if not 262144<=a.windows<=1048576 or a.windows%262144:raise ValueError('Bounded matched exposure')
     a.device='cuda';a.source_revision=a.revision;preflight(a);out=a.output;started=time.time()
     torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
@@ -63,6 +63,13 @@ def main():
             deadline_seconds=3600,campaign_deadline_seconds=28800)
         if (out/'manifest.json').exists():
             prior=json.loads((out/'manifest.json').read_text())
+            if a.repair_qualification:
+                first=out/'e01-shared-legacy-s559';failure=json.loads((first/'failure.json').read_text())
+                if prior['source']!=a.repair_qualification or failure['step']!=0 or any(out.glob('e*/checkpoint*.pt')) or (out/'comparison.json').exists():raise ValueError('Qualification-only repair guard')
+                archive=out/('qualification-attempt-'+prior['source'][:9]);archive.mkdir()
+                shutil.copyfile(out/'manifest.json',archive/'manifest.json');shutil.copyfile(first/'failure.json',archive/'failure.json')
+                prior['qualification_repair']=dict(previous_source=prior['source'],new_source=a.revision,reason='Registered device indices/constants for CUDA graph capture; no main updates',at=time.time())
+                prior['source']=a.revision;prior['charge_qualification_from']=prior['started'];write_json(out/'manifest.json',prior)
             for k in ('source','data_hash','supplement_hash','calibration_hash'):
                 if prior[k]!=manifest[k]:raise ValueError('Scientific resume mismatch: '+k)
             manifest=prior;started=prior['started'];a.windows=prior['windows']
@@ -79,7 +86,7 @@ def main():
             if (arm/'result.json').exists():continue
             arm.mkdir(exist_ok=True);begin=time.time();saved=None;checkpoint=arm/'checkpoint_last.pt'
             if a.resume and checkpoint.exists():saved=torch.load(checkpoint,map_location='cpu',weights_only=False)
-            prior_elapsed=saved['elapsed'] if saved else 0.;deadline=begin+3500-prior_elapsed
+            prior_elapsed=saved['elapsed'] if saved else max(0,begin-manifest['charge_qualification_from']) if index==0 and 'charge_qualification_from' in manifest else 0.;deadline=begin+3500-prior_elapsed
             def admit(reserve=240):
                 if (out/'STOP').exists() or (out.parent/'STOP').exists():raise InterruptedError('Human STOP preserved')
                 if time.time()>deadline-reserve:raise TimeoutError('Evaluation/checkpoint reserve reached')
