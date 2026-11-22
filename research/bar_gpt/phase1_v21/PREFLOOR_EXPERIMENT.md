@@ -63,3 +63,33 @@ regress more than5%; worst masked1s bid-high MAE increases39.1%. Two accuracy
 groups regress more than1pp (masked daily quote range bins). This is additional
 evidence against promoting the short trial.
 No source data, output constraints or exported embedding fields changed.
+
+## Longer qualification: rejected for full training
+
+Runtime `phase1-v21-prefloor3000-20261122` uses the same pinned source383d66139
+and parent, with new3,000-step identities rather than claiming an exact resume.
+The original1,000-step checkpoints remain intact. Control W&B `cclg9coe`,
+candidate `tfbwvd5x`. Both reproduced their earlier500/1,000-step reported
+metrics. Control/candidate durations329.2/324.3seconds, cached throughput
+79,492/80,202windows/s. The existing Rich panel was run in workstation session1.
+
+At3,000, candidate improves only85/216 raw groups over control, versus174 at
+1,000. Worst final regression is2.45% raw and0.41pp direction/bin accuracy;
+intermediate points are less stable (32raw groups exceed5% at1,500).
+Candidate/control all-visible1s close MAE is$0.21605/$0.22059, masked close
+$0.28347/$0.27685, daily-volume MAE811,312/822,544. Activity-volume moving
+direction is79.253%/79.271%, essentially unchanged from parent's79.246%.
+
+Against the retained parent, candidate improves135/216raw groups, but40 exceed
+5% regression and6accuracy groups exceed1pp regression. Worst masked1s bid-high
+MAE rises51.57%; worst masked daily ask-range bin accuracy falls2.39pp. Thus the
+pre-floor auxiliary change alone is not a robust repair. Do not launch20epochs
+from it or treat the1,000-step advantage as persistent. This does not prove the
+underlying mechanism irrelevant; it disproves sufficient benefit of this isolated
+change in this bounded matched test. It leaves the broader objective/readout
+interference and representation-quality questions unresolved.
+
+Control checkpoint SHA:
+`69d5d9ee9cf5553bd97cb166cc2f420c8c539681d0111ba5803b3b8aa13d2eca`.
+Candidate checkpoint SHA:
+`9fec0fbf3aced27378325f3f51511c1addde60437093e3315a0f74cb38884ba8`.
