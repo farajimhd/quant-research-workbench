@@ -4,7 +4,7 @@ from ..phase1_v20.model import set_gradient_scope
 from .objectives import loss
 from ..phase1_v10.step import stable_clip
 
-PARTS=('range','wick','activity','range_bins','activity_direction','joint_base')
+PARTS=('range','wick','activity','range_bins','activity_direction','joint_base','candle_direction')
 
 
 def backward(model,inputs,scale,decoder_visible_only=False):

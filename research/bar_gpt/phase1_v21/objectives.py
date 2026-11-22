@@ -51,9 +51,16 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
                 term=F.binary_cross_entropy_with_logits(logits,(actual>0).to(logits.dtype),reduction='none')
                 direction+=torch.where(moving,term,0).sum()/moving.sum().clamp_min(1)/6
     extra=shape+.05*wick+activity+.5*bins+.1*direction
-    base=shape.new_zeros(())
+    base=shape.new_zeros(());candle=shape.new_zeros(())
     if model.repair_arm.startswith('joint_'):
         base,_=joint_base(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,out)
-        total=base+(.1*extra if model.repair_arm=='joint_metric' else 0)
+        if model.repair_arm=='joint_metric':
+            for b in (0,6,12):
+                mask=valid[...,b]&valid[...,b+3]&(raw[...,b]!=raw[...,b+3])
+                logits=(out['logs'][...,b+3].double()-out['logs'][...,b].double())*10000
+                term=F.binary_cross_entropy_with_logits(logits,(raw[...,b+3]>raw[...,b]).to(logits.dtype),reduction='none')
+                weights=mask*torch.where(known,1.,.1)
+                candle+=(torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1)/3
+        total=base+(.1*extra+.05*candle if model.repair_arm=='joint_metric' else 0)
     else:total=extra
-    return total,dict(range=shape,wick=wick,activity=activity,range_bins=bins,activity_direction=direction,joint_base=base)
+    return total,dict(range=shape,wick=wick,activity=activity,range_bins=bins,activity_direction=direction,joint_base=base,candle_direction=candle)

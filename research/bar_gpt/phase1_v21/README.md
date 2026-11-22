@@ -36,9 +36,19 @@ Follow-up arms `joint_control` and `joint_metric` unfreeze BOTH encoders and the
 one head. They use the unchanged V20 full reconstruction/retention objective;
 `joint_metric` adds0.1 times the new range/activity/metric loss. The baseline
 loss reuses the same forward tensors, avoiding duplicate attention work.
+It also adds0.05 times candle-direction BCE (one-basis-point temperature,
+source-valid nonflat open/close pairs), explicitly targeting the inherited
+daily candle-direction regression. Unchanged candles retain reconstruction
+and body losses; they are not falsely labeled up or down.
 `--parent CHECKPOINT` accepts a completed hash-verified V20/V21 checkpoint for
 a new scientific identity with a fresh optimizer (not an engineering resume).
 Protected-row invariance applies only to the frozen-encoder calibration arms.
+
+`validate` streams the complete unchanged validation population with bounded
+workers and prefetched pinned transfers. Captured inference/accumulation must
+match EVERY eager metric buffer on real input; warmup contributions are cleared.
+Python window counters advance once per real batch. A profile is explicitly
+partial; only exact full-population coverage can produce a complete result.
 
 Training/dev identities and uniform sampling are unchanged from V20. Hidden
 bars are physically removed before both attention stages; fresh random16 masks
