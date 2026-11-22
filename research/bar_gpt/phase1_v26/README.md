@@ -87,3 +87,53 @@ Append `--resume` only for unchanged source/data/science. W&B project is
 never checkpoints. `panel.py --output <runtime>` displays Rich status,
 validation speed/ETA and quality. No scheduled automation or full training
 is launched by this campaign.
+
+## Observed outcome, 2026-11-22
+
+Training revision: `aaf589aaa5b22c8baf058281c135f7ec72f66d78`.
+The six conditions took14.4 minutes summed experiment time; the longest took
+3.81 minutes. Cache preparation took8.8 seconds. There were no training crashes.
+Gradual unfreezing stopped at2048 updates because1h trade-count MAE rose50.57%;
+the other four training arms completed4096 updates each. Assembly had no updates.
+
+The development-selected candidate is **e03-independent-s559**, update2048:
+10,523,256 parameters,64x64 exported slots,792 stored decoder parameters.
+Development candle direction89.748%, range-bin accuracy36.129%, activity
+balanced direction68.538%, moving activity direction99.723%, exact-flat activity
+recall6.169%. Raw price/activity MAE geometric means improved2.21%/4.03% over
+assembly, with worst-group regressions7.87%/21.37%. The second seed supported
+the independent approach. Fusion was not the balanced-error winner.
+
+The preselected candidate's8258-window audit **did not show uniform improvement**:
+activity raw MAE improved2.85%, price raw MAE worsened1.58%, and1s trade-close MAE
+rose from$0.37556 to$0.40099. Candle direction was89.296% versus89.237% for the
+assembly. Audit sub-$0.10 median relative error remained315.16%, versus325.21%
+for assembly, across82208 valid price-feature observations. This is not a zero
+denominator artifact: nonpositive and below1e-8 price denominator counts were0.
+All retained development/audit structure and nonfinite counters were0, and no
+embedding coordinates were constant. Hidden8/hidden48 candle direction remains
+near52%/51%, so high all-visible direction is not evidence of forecasting skill.
+
+**Recommendation:** retain the independent architecture and both baseline/finalist
+checkpoints, but address low-price absolute scale recovery before full training.
+This campaign establishes preservation of price/activity strengths, not sufficient
+all-scale reconstruction or improved future prediction. No full run was launched.
+
+Pinned checkpoint under workstation runtime root:
+`phase1-v26-preserve-20261122/e03-independent-s559/checkpoint_best.pt`.
+SHA256: `4200b11d6330db1c3556ee9f3cfb594d3196819f1978cd00cc5785f5260a146b`.
+Restore with `phase1_v26.model.restore(torch.load(path, map_location='cpu',
+weights_only=False))`; `model.encode(x, valid, positions)` exports the slots and
+`model.decode(slots)` reconstructs without raw inputs or target references.
+
+Exact native resume audit at2048→2050 reproduced model parameters, optimizer,
+losses, global RNG and traversal RNG with zero differences. All six W&B runs
+have the expected validation history points, and contain no model/checkpoint
+uploads. W&B automatically creates Parquet history artifacts; these are logs,
+not model weights. The workstation training and monitoring processes exited.
+
+Runtime evidence: `phase1-v26-preserve-20261122/comparison-report.md`,
+`retained-comparison.json`, `wandb-readback.json`, `independent-activity-parity.json`,
+the per-arm curves/profiles/checkpoints, plus sibling
+`phase1-v26-final-audit-20261122` and `phase1-v26-resume-audit-20261122`.
+Rebuild the report using `report.py --output <campaign> --audit <audit-directory>`.

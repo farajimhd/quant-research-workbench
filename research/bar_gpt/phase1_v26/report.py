@@ -9,7 +9,7 @@ from ..v5.shards.phase1_contract import file_hash,write_json
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);a=p.parse_args();root=a.output
+    p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--audit',type=Path);a=p.parse_args();root=a.output
     results=json.loads((root/'comparison.json').read_text());reference=results[0]['metrics'];rows=[]
     for r in results:
         arm=root/r['name'];curve=json.loads((arm/'curve.json').read_text())
@@ -43,6 +43,23 @@ def main():
         'No forecasting-generalization conclusion follows from these reconstruction metrics. Hidden8 and hidden48 are separately retained in JSON, with raw errors, directional metrics, variance and structure diagnostics.']
     for r in rows:
         if not r['last_gate']['accepted']:text+=['',r['name']+' rejected final state: '+ '; '.join(r['last_gate']['reasons'])]
+    if a.audit:
+        audit=json.loads((a.audit/'result.json').read_text())
+        if audit['winner']!=winner['name']:raise ValueError('Audit selection differs')
+        control=audit['results'][rows[0]['name']];selected=audit['results'][winner['name']];gate=selected['audit_retention']
+        text+=['','## Fixed audit partition','',f"{audit['audit_windows']} windows, evaluated only after development selection. No retuning or reselection. Earlier campaigns may have used this partition; it is not asserted historically untouched.",'',
+            '| Metric | Assembly | Selected independent model |','|---|---:|---:|']
+        for key,label in [('close_mae','1s trade-close MAE $'),('candle','Candle direction %'),('range','Range-bin accuracy %'),('activity','Activity balanced direction %')]:
+            text.append(f"| {label} | {control['summary'][key]:.5f} | {selected['summary'][key]:.5f} |")
+        text+=['',f"Audit family raw-MAE ratios: price {gate['ratios']['price']['geomean']:.5f}, activity {gate['ratios']['activity']['geomean']:.5f}. Retention passed: {gate['accepted']}. This is a trade-off, not uniform improvement.",'',
+            '| Price band $ | Valid feature observations | Assembly median relative error % | Selected median relative error % |','|---|---:|---:|---:|']
+        for lo,hi in ((0,.1),(.1,1),(1,5),(5,20),(20,100),(100,'inf')):
+            prefix=f'all_visible/audit/price_band_{lo}_{hi}/';m=selected['metrics'];b=control['metrics']
+            text.append(f"| {lo} to {hi} | {m[prefix+'count']:,} | {b[prefix+'median_pct']:.4f} | {m[prefix+'median_pct']:.4f} |")
+        text+=['','**Do not start full training yet:** sub-$0.10 median relative error remains over300%. Independent branches preserve the parent strengths, but this is not accurate reconstruction across all price scales.',
+            'All reported denominator and structural counters, raw MAE by all18 channels/timeframes, relative means/medians/P90, activity errors and masked conditions are retained in the audit JSON files.',
+            f"Retained checkpoint development readback maximum scalar difference: {selected['development_readback_max_error']:.3g}.",
+            'Training evaluation uses the fixed first2048 training windows; its distribution differs from development, so dollar-MAE gaps alone do not establish overfitting.']
     (root/'comparison-report.md').write_text('\n'.join(text)+'\n',encoding='utf-8');print(json.dumps(dict(winner=winner['name'],rows=len(rows))))
 
 
