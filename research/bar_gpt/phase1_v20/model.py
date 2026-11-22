@@ -7,6 +7,12 @@ from ..phase0_v3.model import Autoencoder as BarAutoencoder
 from ..phase1_v11.transforms import decode as inverse_coordinates
 
 
+def set_gradient_scope(model,visible_count,decoder_visible_only=False):
+    # Both encoders still receive MAE gradients. Only shared output calibration
+    # is protected from gradients of unknown bars during this optional ablation.
+    model.decoder.requires_grad_(not decoder_visible_only or visible_count==64)
+
+
 class JointAutoencoder(nn.Module):
     def __init__(self,bar,temporal,mean,scale,weight,bias):
         super().__init__();self.bar=bar;self.temporal=temporal

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 import torch
 import wandb
-from .model import initialize
+from .model import initialize,set_gradient_scope
 from .objectives import loss
 from ..phase0_v3.experiment import cache
 from ..phase0_v1.metrics import Metrics,scalars
@@ -57,6 +57,7 @@ def optimizer(model,lr,bar_lr):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--revision',required=True)
     p.add_argument('--steps',type=int,default=3000);p.add_argument('--lr',type=float,default=1e-6);p.add_argument('--bar-lr',type=float,default=1e-7)
+    p.add_argument('--decoder-visible-only',action='store_true')
     p.add_argument('--arms',default='frozen,joint,joint_median,joint_sqrt');a=p.parse_args();arms=a.arms.split(',')
     if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('frozen','joint','joint_median','joint_sqrt') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
@@ -81,11 +82,13 @@ def main():
             return (*items,z)
         train=anchors(train);dev=anchors(dev);activity_scale,activity_cal=calibrate(train[2],train[1],train[3])
         contract=dict(source=a.revision,bar_parent=identity,window_parent_sha=file_hash(cp),data_hash=verified['hash'],supplement_hash=sm['hash'],split_hash=verified['source_split_hash'],input_calibration_sha=file_hash(refpath),steps=a.steps,lr=a.lr,bar_lr=a.bar_lr,seed=559,cache_seconds=time.perf_counter()-start,train_windows=len(train[0]),dev_windows=len(dev[0]),architecture='Feature attention4x1 to16D; temporal128x2 to512D; oneLinear512to1152 FP32 output head; no intermediate decoder',masking='16 random bars in3/4 batches; all64 in1/4; hidden bars removed before both attention stages',anchor='Training-only frozen epoch19 bar latent target, weight1; no second decoder in model/loss',activity_calibration=activity_cal,scope='Bounded real training pool; unchanged development; no full training')
+        contract['decoder_visible_only']=a.decoder_visible_only
         profiles=[]
         for batch in (256,512,1024,2048,4096,8192):
             torch.manual_seed(17);model=initialize(teacher,saved,cal).cuda();opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559);torch.cuda.reset_peak_memory_stats();began=None
             for i in range(12):
                 ids=torch.randint(len(train[0]),(batch,),device='cuda',generator=g);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if i%4==3 else 16,g)
+                set_gradient_scope(model,pos.shape[1],a.decoder_visible_only)
                 opt.zero_grad(set_to_none=True);value,_=loss(model,x,v,raw,f,pos,z,activity_scale);value.backward();norm=stable_clip(model.parameters())
                 if not bool(torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('Profile')
                 opt.step();torch.cuda.synchronize()
@@ -113,6 +116,7 @@ def main():
                     if time.perf_counter()-began>3000 or (a.output/'STOP').exists():raise InterruptedError('Deadline/STOP')
                     if step:
                         tick=time.perf_counter();ids=torch.randint(len(train[0]),(batch,),device='cuda',generator=g);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if step%4==0 else 16,g)
+                        set_gradient_scope(model,pos.shape[1],a.decoder_visible_only)
                         opt.zero_grad(set_to_none=True);value,parts=loss(model,x,v,raw,f,pos,z,activity_scale);value.backward();norm=stable_clip(model.parameters())
                         if not bool(torch.isfinite(value)&torch.isfinite(norm)):raise FloatingPointError('Loss/gradient')
                         opt.step();torch.cuda.synchronize();seconds+=time.perf_counter()-tick

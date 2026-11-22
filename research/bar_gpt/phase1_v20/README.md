@@ -53,3 +53,12 @@ the existing prepared27 values (log prices,log1p activities,nine time fields)
 and27 validity flags; window input has64 bars, optional visible positions.
 The bar export returns16D independently per bar; the window export returns512D.
 CPU tests cover exact export parity and confirm no decoder in either state.
+
+Optional matched ablation `--decoder-visible-only` trains the one output head
+only on64-visible updates; BOTH attention encoders still receive gradients on
+16-visible MAE updates. Hypothesis: unknown-bar activity targets bias shared
+output calibration downward, harming all-visible reconstruction. Forward
+architecture, parameters, loss, masks and data are unchanged. AdamW must skip
+the inactive decoder even after it has optimizer momentum; tested explicitly.
+This is an experimental gradient policy, not a claim that standard MAE requires
+it. It is recorded in the scientific contract and must survive any full resume.

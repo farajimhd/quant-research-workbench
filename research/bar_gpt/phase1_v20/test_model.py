@@ -56,3 +56,15 @@ def test_standalone_exports_have_no_decoder_and_match(tmp_path):
         torch.testing.assert_close(window(x,v,p),m(x,v,p)[1],rtol=0,atol=0)
     restored=restore(dict(model=m.state_dict(),contract=contract))
     torch.testing.assert_close(restored(x,v,p)[2]['logs'],m(x,v,p)[2]['logs'],rtol=0,atol=0)
+
+
+def test_optional_masked_head_freeze_preserves_adam_state_weights():
+    from .model import set_gradient_scope
+    m,_,_=build();opt=torch.optim.AdamW(m.parameters(),lr=1e-4)
+    x=torch.rand(2,64,27);v=torch.ones_like(x,dtype=torch.bool)
+    for n in (64,16):
+        set_gradient_scope(m,n,True);before=m.decoder.weight.detach().clone()
+        opt.zero_grad(set_to_none=True);m(x,v,positions(2,'cpu',n))[2]['logs'].square().mean().backward();opt.step()
+        if n==16:
+            torch.testing.assert_close(m.decoder.weight,before,rtol=0,atol=0)
+            assert any(p.grad is not None and p.grad.abs().sum()>0 for p in m.bar.encoder.parameters())
