@@ -23,7 +23,7 @@ def render(root):
     stats=f"Experiment {p.get('elapsed',0)/60:.1f}/60 min | {speed} windows/s | ETA {eta}"
     if stage=='complete':stats=f"All {len(rows)} experiments complete | summed experiment time {sum(r['seconds'] for r in rows)/60:.1f} min"
     if p.get('loss') is not None:stats+=f"\nLoss {p['loss']:.4g} | LR {p.get('lr',0):.2g}"
-    return Panel(Group(status,bar,stats,table,p.get('message','All metrics use source-valid masks. Weights stay local.')),title='BarGPT V25 · price / activity / masking')
+    return Panel(Group(status,bar,stats,table,p.get('message','All metrics use source-valid masks. Weights stay local.')),title='BarGPT V26 | Preserve price and activity')
 
 
 def main():
