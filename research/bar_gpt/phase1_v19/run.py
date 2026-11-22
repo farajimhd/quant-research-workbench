@@ -23,6 +23,8 @@ from research.mlops.env import discover_env_files,load_env_files
 
 
 def make_model(saved,cal):
+    if saved['contract'].get('count_warmup') or saved['contract']['loss_arm']=='counts_only':
+        raise ValueError('Count-only decoder calibration is diagnostic; it cannot silently become unrestricted full training')
     model=Autoencoder(Config(**saved['contract']['config']),cal['mean'],cal['scale'],architecture(saved['contract'])).cuda()
     model.load_state_dict(saved['model']);configure(model,saved['contract']);return model
 
