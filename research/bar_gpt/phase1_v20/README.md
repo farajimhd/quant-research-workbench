@@ -69,3 +69,10 @@ gradient on identical tensors before optimization. Optimizer steps remain outsid
 capture; all raw/valid/time/target/position buffers update on every replay. No
 scientific precision change. Profile reports eager/captured qualification and
 memory separately; cached engineering speed is still not full-loader throughput.
+
+`bar_probe` fits a separate diagnostic linear readout on training bars only,
+with fixed ridge1e-6 and strictly observed coordinate targets. Compare the old
+and joint16D encoders under the same probe, rather than mistaking coordinate
+drift under the old fixed readout for information loss. This readout is never
+part of joint training, the deployed model, or either encoder export. The
+unchanged development split supplies all reported probe metrics.
