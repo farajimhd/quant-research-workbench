@@ -16,7 +16,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         err=(prediction-target)*10000
         term=F.smooth_l1_loss(err,torch.zeros_like(err),reduction='none')
         terms.append((torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1))
-        if model.repair_arm in ('metric','joint_metric'):
+        if model.repair_arm in ('metric','metric_log','joint_metric'):
             edges=prediction.new_tensor([.0005,.001,.0025,.005]).log1p()
             logits=(prediction[...,None]-edges)*10000
             labels=(target[...,None]>edges).to(logits.dtype)
@@ -38,7 +38,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
             pair=mask[:,1:]&mask[:,:-1]&known[:,1:]&known[:,:-1]
             delta=(pred[:,1:]-pred[:,:-1])-(target[:,1:].log1p()-target[:,:-1].log1p())
             activity+=((torch.where(mask,error+.1*log,0)*weights).sum()/weights.sum().clamp_min(1)+.5*torch.where(pair,delta.square(),0).sum()/pair.sum().clamp_min(1))/6
-            if model.repair_arm in ('metric','joint_metric'):
+            if model.repair_arm in ('metric','metric_log','joint_metric'):
                 actual=target[:,1:].log1p()-target[:,:-1].log1p()
                 moving=pair&(actual!=0)
                 logits=(pred[:,1:]-pred[:,:-1])/.1

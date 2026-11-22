@@ -29,6 +29,8 @@ true unchanged activity pairs retain reconstruction/change losses but are not
 assigned an invented up/down class. Exact-zero range remains a separate known
 limitation; these threshold losses cannot guarantee an exact-zero output.
 Hard bin/sign accuracy is never falsely described as differentiable.
+`metric_log` adds the same metric surrogates to the log-MSE activity arm,
+separating activity scale loss choice from directional/range supervision.
 
 Follow-up arms `joint_control` and `joint_metric` unfreeze BOTH encoders and the
 one head. They use the unchanged V20 full reconstruction/retention objective;
