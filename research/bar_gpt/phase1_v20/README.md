@@ -76,3 +76,11 @@ and joint16D encoders under the same probe, rather than mistaking coordinate
 drift under the old fixed readout for information loss. This readout is never
 part of joint training, the deployed model, or either encoder export. The
 unchanged development split supplies all reported probe metrics.
+
+See `RESULTS.md` for measured outcomes and qualification limits. Rebuild the
+complete six-arm comparison (after all arms finish) with:
+`python -B -m research.bar_gpt.phase1_v20.compare --root
+D:/TradingML/runtimes/bar_gpt --output
+D:/TradingML/runtimes/bar_gpt/phase1-v19-campaign-20261121/v20-comparison.json`.
+The command checks checkpoint hashes and final evaluation steps and reports
+the worst raw-MAE and directional/range regressions, not only selected averages.
