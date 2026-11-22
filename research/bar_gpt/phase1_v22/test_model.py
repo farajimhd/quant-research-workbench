@@ -45,4 +45,3 @@ def test_full_loss_no_hidden_input_and_restore():
         torch.testing.assert_close(restored(x,valid,pos)[2]['logs'],actual[2]['logs'])
         empty,_=loss(m,x,torch.zeros_like(valid),x.exp(),torch.ones(2),pos,torch.zeros(2,64,16),torch.ones(6,6))
         assert empty==0
-

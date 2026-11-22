@@ -16,7 +16,7 @@ def main():
     if snapshot.exists():raise FileExistsError(snapshot)
     if not runtime.is_dir():raise FileNotFoundError('Required workstation runtime root')
     archive=runtime/('source-v22-'+revision[:9]+'.tar')
-    subprocess.run(['git','archive','--format=tar','-o',str(archive),revision,'research/bar_gpt','research/mlops','research/__init__.py'],cwd=repo,check=True)
+    subprocess.run(['git','archive','--format=tar','-o',str(archive),revision,'research/bar_gpt','research/mlops','research/__init__.py','pipelines'],cwd=repo,check=True)
     snapshot.mkdir()
     with tarfile.open(archive) as tar:tar.extractall(snapshot,filter='data')
     files={}
