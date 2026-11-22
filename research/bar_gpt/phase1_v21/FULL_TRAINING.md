@@ -95,6 +95,42 @@ optimizer-preconditioned updates and training-batch distribution from raw
 gradient magnitude before another weight sweep. The run's W&B failed status
 reflects the existing reporter's deliberate-stop handling, not a training crash.
 
+## Loader and optimizer diagnostics; slower decoder trial
+
+The exact ordered CPU loader prefix covered 1,048,576 windows in 128 batches
+(32.24 seconds). Of these batches, 79 contained six timeframes, 44 contained
+five, and five contained four. Daily windows were 2.114% versus 2.032% of the
+full training population. The median dominant-timeframe share per batch was
+43.1%; the maximum was 93.2%. This rules out pure-timeframe ordering or missing
+daily windows in that prefix, but not batch distribution variance. Source
+`de46d088f192fac2433adaeb3c9eae05fb308756`; receipt
+`phase1-v21-loader-audit-20261122/result.json`. Last-bar scale summaries in that
+receipt must not be described as whole-window statistics.
+
+The saved-Adam audit used 128 training windows per timeframe, two checkpoints,
+and both visibility modes. Under fixed bias-corrected second moments and saved
+group LRs, the stopped full run's masked decoder activity norm was 3.217 versus
+price-level 0.791; temporal price remained larger (9.268 versus activity 0.638).
+This reverses the decoder's raw-gradient ranking. These quantities exclude
+momentum, next-step variance and clipping: they are not actual Adam updates.
+Source `3505ef761f1707b33f2cae8b885ea84ec8c667b3`; receipt
+`phase1-v21-adam-audit-20261122/result.json`.
+
+A matched trial then changed only `--decoder-lr-multiplier 0.1`, retaining the
+original objective and encoder LRs. Source `241426407c170a37fc1fc10a3e57e2a4f87870a1`;
+runtime `phase1-v21-decoder01-trial-20261122`; W&B `ikhewtws`. It completed 2,000
+updates at roughly 65-70K windows/s. Compared with control, masked 1s close MAE
+improved $0.28904 to $0.23122, all-visible close worsened $0.23991 to $0.24326,
+and daily volume improved 1.35%. The balanced score improved 0.60109 to 0.59567,
+but daily ask moving-candle accuracy fell 1.84 percentage points. Scores were
+worse at 500 and 1,000 updates. Only 90/216 raw groups improved at 2,000, though
+the worst raw regression was 3.60%. This is a retained tradeoff, not a supported
+full-training replacement under the declared direction-regression criterion.
+Checkpoint SHA256:
+`ee66197a5b475f7f4d7bcb1b1e24c1c58fc8cb067b6820087dcc3f05ba78e9a0`.
+Owner/workers exited; checkpoint hash and remote W&B metrics were verified.
+Per-group evidence is `phase1-v21-campaign-20261121/decoder01-comparison.json`.
+
 The user approved 20 epochs despite the earlier reconstruction/direction
 tradeoffs, and subsequently explicitly allowed any learning rate. Three matched
 initial full-data trials selected a substantially smaller fine-tuning LR.
