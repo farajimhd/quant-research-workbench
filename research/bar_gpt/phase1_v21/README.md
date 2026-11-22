@@ -100,6 +100,11 @@ optimizer and RNG. Parent/STOP/data artifacts stay intact. Each arm has a
 
 ## Approved full training
 
+**Latest authority:** see [FULL_TRAINING.md](FULL_TRAINING.md). The user later
+allowed any LR. Matched full-data trials selected peak1e-6/floor1e-7 with explicit
+encoder multipliers; the original1e-4 settings below describe the initial trial,
+not the recommended continuation command.
+
 The user subsequently approved20 full epochs despite the documented quality
 tradeoffs, with cosine LR1e-4 to1e-6. `run_full` implements a NEW scientific
 identity initialized from the retained body-calibrated checkpoint. Both encoders
