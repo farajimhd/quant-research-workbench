@@ -3,6 +3,7 @@ from functools import lru_cache
 from torch.nn import functional as F
 from ..phase1_v19.objectives import wick_loss
 from .joint_base import loss as joint_base
+from ..phase1_v11.transforms import decode as inverse_coordinates
 
 
 @lru_cache(maxsize=8)
@@ -10,19 +11,31 @@ def range_edges(device):
     return torch.tensor([.0005,.001,.0025,.005],device=device,dtype=torch.float64).log1p()
 
 
+def routed_output(output,active):
+    """Identical forward values; choose coordinate routes for this loss only."""
+    code=output['code']
+    routed=torch.stack([code[...,j] if j%6 in active else code[...,j].detach() for j in range(18)],-1)
+    constrained=torch.stack([routed[...,j].clamp_min(0) if j%6 in (2,3,4,5) else routed[...,j] for j in range(18)],-1)
+    logs=inverse_coordinates(constrained,code.new_zeros(len(code),9),constrain=False)
+    return dict(output,logs=logs)
+
+
 def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weight=1.):
     latent,_,out=model(values,valid,pos)
+    separated=model.repair_arm=='joint_separated'
+    range_out=routed_output(out,(2,3)) if separated else out
+    candle_out=routed_output(out,(1,)) if separated else out
     known=torch.zeros_like(valid[...,0]).scatter(1,pos,True)
     terms=[];bin_terms=[]
     for b in (0,6,12):
         mask=valid[...,b+1]&valid[...,b+2]
         target=torch.log(torch.where(mask,raw[...,b+1].double(),1)/torch.where(mask,raw[...,b+2].double(),1))
-        prediction=out['logs'][...,b+1].double()-out['logs'][...,b+2].double()
+        prediction=range_out['logs'][...,b+1].double()-range_out['logs'][...,b+2].double()
         weights=mask*torch.where(known,1.,.1)
         err=(prediction-target)*10000
         term=F.smooth_l1_loss(err,torch.zeros_like(err),reduction='none')
         terms.append((torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1))
-        if model.repair_arm in ('metric','metric_log','joint_metric_log','joint_repaired'):
+        if model.repair_arm in ('metric','metric_log','joint_metric_log','joint_repaired','joint_separated'):
             edges=range_edges(prediction.device)
             logits=(prediction[...,None]-edges)*10000
             labels=(target[...,None]>edges).to(logits.dtype)
@@ -44,7 +57,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
             pair=mask[:,1:]&mask[:,:-1]&known[:,1:]&known[:,:-1]
             delta=(pred[:,1:]-pred[:,:-1])-(target[:,1:].log1p()-target[:,:-1].log1p())
             activity+=((torch.where(mask,error+.1*log,0)*weights).sum()/weights.sum().clamp_min(1)+.5*torch.where(pair,delta.square(),0).sum()/pair.sum().clamp_min(1))/6
-            if model.repair_arm in ('metric','metric_log','joint_metric_log','joint_repaired'):
+            if model.repair_arm in ('metric','metric_log','joint_metric_log','joint_repaired','joint_separated'):
                 actual=target[:,1:].log1p()-target[:,:-1].log1p()
                 moving=pair&(actual!=0)
                 logits=(pred[:,1:]-pred[:,:-1])/.1
@@ -68,15 +81,15 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         total=body+.5*candle+.01*shape
         base=body
     elif model.repair_arm.startswith('joint_'):
-        base,_=joint_base(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,out,include_activity=model.repair_arm!='joint_repaired')
-        if model.repair_arm in ('joint_metric_log','joint_repaired'):
+        base,_=joint_base(model,values,valid,raw,frames,pos,old_latent,activity_scale,latent,out,include_activity=model.repair_arm not in ('joint_repaired','joint_separated'),level_output=routed_output(out,(0,4,5)) if separated else None)
+        if model.repair_arm in ('joint_metric_log','joint_repaired','joint_separated'):
             for b in (0,6,12):
                 mask=valid[...,b]&valid[...,b+3]&(raw[...,b]!=raw[...,b+3])
-                logits=(out['logs'][...,b+3].double()-out['logs'][...,b].double())*10000
+                logits=(candle_out['logs'][...,b+3].double()-candle_out['logs'][...,b].double())*10000
                 term=F.binary_cross_entropy_with_logits(logits,(raw[...,b+3]>raw[...,b]).to(logits.dtype),reduction='none')
                 weights=mask*torch.where(known,1.,.1)
                 candle+=(torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1)/3
-        if model.repair_arm=='joint_repaired':
+        if model.repair_arm in ('joint_repaired','joint_separated'):
             # Keep raw-price, body, wick and bar-anchor objectives. Replace the
             # old overlapping activity penalties with the tested log objective.
             total=base+activity+.1*shape+.05*bins+.1*direction+.5*candle

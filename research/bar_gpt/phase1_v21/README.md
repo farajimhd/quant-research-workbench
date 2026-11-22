@@ -60,6 +60,17 @@ loss but are not given a directional classification target in this ablation.
 Open/high/low predictions can change; close, activity and both embeddings must
 remain unchanged. This is not a second decoder or added embedding field.
 
+`joint_separated` is matched to `joint_repaired`: same architecture, predictions,
+loss values and coefficients, but deliberate gradient routing. The raw-price
+level loss updates level coordinates; range losses update wick coordinates;
+candle classification updates body coordinates. The coordinate reconstruction,
+body and wick objectives still teach their own coordinates. Both attention
+encoders receive these gradients through the same512D bottleneck. This tests
+whether absolute-price error compensation is disrupting shape learning. It
+does not add a forward bypass, input field, decoder, or parameter; there is only
+one attention pass. Tests require identical forward outputs/loss values and
+verify that level-loss gradients cannot reach body/wick output rows.
+
 `validate` streams the complete unchanged validation population with bounded
 workers and prefetched pinned transfers. Captured inference/accumulation must
 match EVERY eager metric buffer on real input; warmup contributions are cleared.

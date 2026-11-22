@@ -32,11 +32,26 @@ def test_joint_control_matches_parent_and_metric_trains_encoders():
     actual,_=loss(control,values,valid,raw,frames,pos,old,scale)
     expected,_=parent_loss(control,values,valid,raw,frames,pos,old,scale)
     torch.testing.assert_close(actual,expected,rtol=0,atol=0)
-    for arm in ('joint_metric_log','joint_repaired'):
+    for arm in ('joint_metric_log','joint_repaired','joint_separated'):
         metric=initialize(None,saved,None,arm);value,_=loss(metric,values,valid,raw,frames,pos,old,scale);value.backward()
         assert torch.isfinite(value)
         for module in (metric.bar,metric.temporal,metric.decoder):
             assert any(p.grad is not None and p.grad.abs().sum()>0 for p in module.parameters())
+
+
+def test_loss_routes_change_gradients_not_predictions_or_loss_values():
+    from .objectives import routed_output
+    m,teacher,_=build();out=m.decode(torch.randn(2,m.decoder.in_features))
+    level=routed_output(out,(0,4,5));torch.testing.assert_close(level['logs'],out['logs'],rtol=0,atol=0)
+    level['logs'].sum().backward();g=m.decoder.weight.grad.reshape(64,18,-1)
+    assert g[:,[1,2,3,7,8,9,13,14,15]].count_nonzero()==0
+    assert g[:,[0,6,12]].abs().sum()>0
+    saved=dict(model=copy.deepcopy(m.state_dict()),contract=dict(bar_config=vars(teacher.config),temporal_config=vars(m.temporal.config),input_calibration=None))
+    x=torch.rand(2,64,27);raw=x.exp();v=torch.ones_like(x,dtype=torch.bool);pos=torch.arange(16).expand(2,-1)
+    args=(x,v,raw,torch.ones(2),pos,torch.zeros(2,64,16),torch.ones(6,6))
+    normal=initialize(None,saved,None,'joint_repaired');separated=initialize(None,saved,None,'joint_separated')
+    expected,_=loss(normal,*args);actual,_=loss(separated,*args)
+    torch.testing.assert_close(actual,expected,rtol=0,atol=0)
 
 
 def test_selective_head_has_exact_channel_isolation():
