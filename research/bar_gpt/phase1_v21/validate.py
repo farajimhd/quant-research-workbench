@@ -81,6 +81,8 @@ def main():
     if a.output.exists():raise ValueError('New evaluation identity required')
     if not 1<=a.batch_size<=8192 or not 0<=a.workers<=32 or not 1<=a.seconds<=3000 or a.limit_batches<0:raise ValueError('Bounds')
     a.output.mkdir();a.validation_batch_size=a.batch_size;a.validation_workers=a.workers
+    import psutil,sys
+    write_json(a.output/'process.json',dict(pid=os.getpid(),created=psutil.Process().create_time(),command=sys.argv))
     a.preparation='raw_gpu';a.seed=17;a.prefetch=4;a.shard_prefetch=16;a.shard_prefetch_mib=64
     torch.set_num_threads(4);torch.set_float32_matmul_precision('highest')
     root=Path('D:/TradingML/runtimes/bar_gpt');manifest=load_split(root/'phase1-v6-cohort-balanced-v4/split.json')
@@ -98,6 +100,7 @@ def main():
         source=device=None;began=time.perf_counter();status='failed';count=0;replay=None
         w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v21-repair',name=a.output.name,dir=str(a.output),config=contract)
         try:
+            write_json(a.output/'progress.json',dict(stage='loading',windows=0,total=total,seconds=0,windows_per_second=0,eta_seconds=None))
             source=loader(manifest,a,'validation');device=DeviceBatches(source,'cuda');startup=time.perf_counter()-began
             index=0
             while count<total and (not a.limit_batches or index<a.limit_batches):
@@ -121,6 +124,9 @@ def main():
             write_json(a.output/'metrics.json',detail)
             result=dict(metrics=measured,windows=count,full_population=not a.limit_batches,seconds=elapsed,startup_seconds=startup,loader_wait_seconds=device.wait_seconds,peak_mib=torch.cuda.max_memory_allocated()/2**20,checkpoint_sha=sha,wandb_url=w.url,gradient_free_graph_parity='every metric accumulator')
             write_json(a.output/'result.json',result);w.log({'validation/'+k:v for k,v in measured.items()},step=index+1);status='complete';print(json.dumps({k:v for k,v in result.items() if k!='metrics'}),flush=True)
+            write_json(a.output/'progress.json',dict(stage='complete',windows=count,total=total,seconds=elapsed,windows_per_second=count/elapsed,eta_seconds=0))
+        except BaseException as exc:
+            write_json(a.output/'failure.json',dict(error=repr(exc),windows=count,seconds=time.perf_counter()-began));raise
         finally:
             if device:device.close()
             if source:close_loader(source)
