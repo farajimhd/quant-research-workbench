@@ -68,7 +68,7 @@ def main():
     p.add_argument('--graphs',action='store_true')
     p.add_argument('--parent',type=Path)
     p.add_argument('--arms',default='range,both_log,both_symmetric,metric');a=p.parse_args();arms=a.arms.split(',')
-    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
+    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
     from ..phase1_v8.runtime import preflight
     a.device='cuda';a.resume=False;a.source_revision=a.revision;preflight(a)
@@ -96,9 +96,16 @@ def main():
         contract['decoder_visible_only']=a.decoder_visible_only
         contract['graphs']=a.graphs
         contract['intervention']='Head arms freeze encoders; joint arms train both encoders. Head arms freeze and close/body rows; fit existing wick/activity output rows only. No new head. Diagnostic calibration.'
+        from .range_balance import calibrate as range_calibrate,attach as attach_range
+        range_cal=range_calibrate(train[2],train[1]) if 'joint_basis_prefloor_range_balanced' in arms else None
+        def build(arm):
+            m=initialize(teacher,saved,cal,arm).cuda()
+            if arm=='joint_basis_prefloor_range_balanced':attach_range(m,range_cal)
+            return m
+        contract['range_calibration']=range_cal
         profiles=[]
         for batch in (256,512,1024,2048,4096,8192):
-            torch.manual_seed(17);model=initialize(teacher,saved,cal,arms[0]).cuda();opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559);torch.cuda.reset_peak_memory_stats();began=None;replays={}
+            torch.manual_seed(17);model=build(arms[0]);opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559);torch.cuda.reset_peak_memory_stats();began=None;replays={}
             for i in range(12):
                 ids=torch.randint(len(train[0]),(batch,),device='cuda',generator=g);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if i%4==3 else 16,g)
                 set_gradient_scope(model,pos.shape[1],a.decoder_visible_only)
@@ -116,12 +123,13 @@ def main():
         for arm in arms:
             out=a.output/arm;out.mkdir();began=time.perf_counter();torch.manual_seed(17)
             input_cal=None
-            model=initialize(teacher,saved,cal,arm).cuda()
+            model=build(arm)
             if arm=='frozen':model.bar.requires_grad_(False)
             opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559)
             arm_contract=dict(contract,arm=arm,input_calibration=input_cal,repair_arm=arm,training_scope='joint' if arm.startswith('joint_') else 'protected_head',bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()))
             arm_contract['decoder_parameterization']='activity_dct64_v1' if arm.startswith('joint_basis_prefloor') else 'native_linear'
             arm_contract['temporal_lr_multiplier']=model.temporal_lr_multiplier
+            arm_contract['range_calibration']=range_cal if arm=='joint_basis_prefloor_range_balanced' else None
             w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v21-repair',name=a.output.name+'-'+arm,config=arm_contract,dir=str(out),reinit=True);step=0;status='failed';curve=[];seconds=0.;replays={}
             def save(path):torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),contract=arm_contract,step=step,rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state_all(),sampling_rng=g.get_state()),path)
             try:
@@ -171,3 +179,4 @@ def main():
 
 
 if __name__=='__main__':main()
+

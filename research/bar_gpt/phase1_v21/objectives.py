@@ -32,15 +32,19 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         target=torch.log(torch.where(mask,raw[...,b+1].double(),1)/torch.where(mask,raw[...,b+2].double(),1))
         prediction=range_out['logs'][...,b+1].double()-range_out['logs'][...,b+2].double()
         weights=mask*torch.where(known,1.,.1)
+        range_denominator=weights.sum().clamp_min(1)
+        if hasattr(model,'range_bin_weights'):
+            from .range_balance import bins as range_bins
+            weights=weights*model.range_bin_weights[b//6,range_bins(target)]
         err=(prediction-target)*10000
         term=F.smooth_l1_loss(err,torch.zeros_like(err),reduction='none')
-        terms.append((torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1))
+        terms.append((torch.where(mask,term,0)*weights).sum()/range_denominator)
         if model.repair_arm in ('metric','metric_log','joint_metric_log','joint_repaired','joint_separated'):
             edges=range_edges(prediction.device)
             logits=(prediction[...,None]-edges)*10000
             labels=(target[...,None]>edges).to(logits.dtype)
             ordinal=F.binary_cross_entropy_with_logits(logits,labels,reduction='none').mean(-1)
-            bin_terms.append((torch.where(mask,ordinal,0)*weights).sum()/weights.sum().clamp_min(1))
+            bin_terms.append((torch.where(mask,ordinal,0)*weights).sum()/range_denominator)
     shape=torch.stack(terms).mean()
     wick=wick_loss(out['code'],raw,valid,known)
     activity=shape.new_zeros(());direction=shape.new_zeros(())

@@ -9,10 +9,10 @@ def selected_rows(arm):
 
 def initialize(teacher,saved,calibration,arm=None):
     model=restore(saved)
-    model.activity_change_prefloor=arm in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal')
-    model.temporal_lr_multiplier=.1 if arm=='joint_basis_prefloor_slow_temporal' else 1.
+    model.activity_change_prefloor=arm in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced')
+    model.temporal_lr_multiplier=.1 if arm in ('joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced') else 1.
     model.repair_arm='joint_repaired' if model.activity_change_prefloor else arm or 'both_symmetric'
-    if arm in ('joint_basis_prefloor','joint_basis_prefloor_slow_temporal'):
+    if arm in ('joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced'):
         from .temporal_basis import ActivityBasisLinear
         model.decoder=ActivityBasisLinear(model.decoder)
     if model.repair_arm.startswith('joint_'):
@@ -36,3 +36,4 @@ def verify_protected(model,saved):
         if name.startswith('decoder.'):
             torch.testing.assert_close(actual[~active],old[name][~active],rtol=0,atol=0)
         else:torch.testing.assert_close(actual,old[name],rtol=0,atol=0)
+
