@@ -19,7 +19,7 @@ def compare(old,new,step):
 def main():
     p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True)
     p.add_argument('--control',default='joint_repaired');p.add_argument('--candidate',default='joint_prefloor');a=p.parse_args()
-    if a.control not in ('joint_repaired','joint_prefloor') or a.candidate not in ('joint_prefloor','joint_basis_prefloor') or a.control==a.candidate:
+    if a.control not in ('joint_repaired','joint_prefloor','joint_basis_prefloor') or a.candidate not in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal') or a.control==a.candidate:
         raise ValueError('Explicit supported comparison arms required')
     manifest=json.loads((a.run/'manifest.json').read_text())
     rows=[]
@@ -30,7 +30,7 @@ def main():
         rows.append(r)
     c,n=rows
     initial_delta={k:n['curve'][0]['metrics'][k]-v for k,v in c['curve'][0]['metrics'].items() if k!='evaluation_seconds'}
-    if a.candidate=='joint_basis_prefloor':
+    if a.candidate.startswith('joint_basis_prefloor'):
         parity=json.loads((a.run/a.candidate/'initial-parity.json').read_text())
         if [r['visible'] for r in parity]!=[16,64] or not all(r['price_exact'] for r in parity):raise ValueError('Missing basis initialization gate')
         # Real code-level parity is checked before training. Preserve all initial

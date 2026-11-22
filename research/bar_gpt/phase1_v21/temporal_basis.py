@@ -55,5 +55,7 @@ def restore_basis(saved):
     torch.testing.assert_close(state['decoder.activity_indices'].cpu(),model.decoder.activity_indices.cpu(),rtol=0,atol=0)
     model.load_state_dict(state,strict=True)
     model.activity_change_prefloor=True;model.repair_arm='joint_repaired'
+    model.temporal_lr_multiplier=saved['contract'].get('temporal_lr_multiplier',1.)
+    if not 0<model.temporal_lr_multiplier<=1:raise ValueError('Temporal LR contract')
     return model
 

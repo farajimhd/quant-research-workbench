@@ -53,3 +53,23 @@ def test_checkpoint_restore_and_optimizer_continuation():
     with pytest.raises(KeyError):legacy_restore(saved)
     with pytest.raises(ValueError):restore_basis(dict(saved,contract=dict(contract,decoder_parameterization='native_linear')))
 
+
+def test_temporal_lr_changes_no_forward_values_or_other_group_rates():
+    import copy
+    from ..phase1_v20.test_model import build
+    from .model import initialize
+    from .experiment import optimizer
+    from .temporal_basis import restore_basis
+    m,teacher,_=build()
+    contract=dict(bar_config=vars(teacher.config),temporal_config=vars(m.temporal.config),input_calibration=None)
+    saved=dict(model=copy.deepcopy(m.state_dict()),contract=contract)
+    control=initialize(None,saved,None,'joint_basis_prefloor')
+    candidate=initialize(None,saved,None,'joint_basis_prefloor_slow_temporal')
+    for k,v in control.state_dict().items():torch.testing.assert_close(v,candidate.state_dict()[k],rtol=0,atol=0)
+    opt=optimizer(candidate,1e-6,3e-8)
+    assert [g['lr'] for g in opt.param_groups]==[3e-8,1e-7,1e-6]
+    ids=[id(p) for g in opt.param_groups for p in g['params']]
+    assert len(ids)==len(set(ids))==len(list(candidate.parameters()))
+    restored=restore_basis(dict(model=candidate.state_dict(),contract=dict(contract,decoder_parameterization='activity_dct64_v1',temporal_lr_multiplier=.1)))
+    assert restored.temporal_lr_multiplier==.1
+

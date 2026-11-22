@@ -52,6 +52,11 @@ def evaluate(model,teacher,data):
 
 
 def optimizer(model,lr,bar_lr):
+    multiplier=getattr(model,'temporal_lr_multiplier',1.)
+    if multiplier!=1.:
+        return torch.optim.AdamW([dict(params=model.bar.parameters(),lr=bar_lr),
+            dict(params=model.temporal.parameters(),lr=lr*multiplier),
+            dict(params=model.decoder.parameters(),lr=lr)],weight_decay=0.,fused=True)
     other=[p for n,p in model.named_parameters() if not n.startswith('bar.')]
     return torch.optim.AdamW([dict(params=model.bar.parameters(),lr=bar_lr),dict(params=other,lr=lr)],weight_decay=0.,fused=True)
 
@@ -63,7 +68,7 @@ def main():
     p.add_argument('--graphs',action='store_true')
     p.add_argument('--parent',type=Path)
     p.add_argument('--arms',default='range,both_log,both_symmetric,metric');a=p.parse_args();arms=a.arms.split(',')
-    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_prefloor','joint_basis_prefloor','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
+    if a.output.exists() or len(set(arms))!=len(arms) or any(k not in ('range','both_log','both_symmetric','metric','metric_log','joint_control','joint_metric_log','joint_repaired','joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_separated','body_direction') for k in arms):raise ValueError('New identity and valid arms required')
     if not 0<=a.steps<=10000 or not 1e-8<=a.bar_lr<=a.lr<=1e-4:raise ValueError('Experiment bounds')
     from ..phase1_v8.runtime import preflight
     a.device='cuda';a.resume=False;a.source_revision=a.revision;preflight(a)
@@ -115,11 +120,12 @@ def main():
             if arm=='frozen':model.bar.requires_grad_(False)
             opt=optimizer(model,a.lr,a.bar_lr);g=torch.Generator(device='cuda').manual_seed(559)
             arm_contract=dict(contract,arm=arm,input_calibration=input_cal,repair_arm=arm,training_scope='joint' if arm.startswith('joint_') else 'protected_head',bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()))
-            arm_contract['decoder_parameterization']='activity_dct64_v1' if arm=='joint_basis_prefloor' else 'native_linear'
+            arm_contract['decoder_parameterization']='activity_dct64_v1' if arm.startswith('joint_basis_prefloor') else 'native_linear'
+            arm_contract['temporal_lr_multiplier']=model.temporal_lr_multiplier
             w=wandb.init(entity='mehdifaraji',project='bargpt-phase01-v21-repair',name=a.output.name+'-'+arm,config=arm_contract,dir=str(out),reinit=True);step=0;status='failed';curve=[];seconds=0.;replays={}
             def save(path):torch.save(dict(model=model.state_dict(),optimizer=opt.state_dict(),contract=arm_contract,step=step,rng=torch.get_rng_state(),cuda_rng=torch.cuda.get_rng_state_all(),sampling_rng=g.get_state()),path)
             try:
-                if arm=='joint_basis_prefloor':
+                if arm.startswith('joint_basis_prefloor'):
                     # Explicit floating-point parity gate, without consuming the
                     # subsequent experiment RNG stream or changing native prices.
                     with torch.random.fork_rng(devices=[0]),torch.no_grad():
