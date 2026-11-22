@@ -60,10 +60,14 @@ def restore_basis(saved):
     if kind not in ('activity_dct64_v1','activity_dct64_nonlinear32_v1'):
         raise ValueError('Explicit activity basis contract required')
     state=saved['model'];w=state['decoder.coefficient_weight'];b=state['decoder.coefficient_bias']
-    template={k:v for k,v in state.items() if not k.startswith('decoder.')}
+    extra=saved['contract'].get('temporal_extra_identity_block',False)
+    template={k:v for k,v in state.items() if not k.startswith('decoder.') and not (extra and k.startswith('temporal.blocks.extra.'))}
     template.update({'decoder.weight':torch.zeros_like(w),'decoder.bias':torch.zeros_like(b)})
     model=restore(dict(saved,model=template))
     model.decoder=(ActivityBasisNonlinear(model.decoder) if kind=='activity_dct64_nonlinear32_v1' else ActivityBasisLinear(model.decoder))
+    if extra:
+        from .temporal_depth import attach
+        attach(model)
     torch.testing.assert_close(state['decoder.inverse_basis'].cpu(),model.decoder.inverse_basis.cpu(),rtol=0,atol=0)
     torch.testing.assert_close(state['decoder.activity_indices'].cpu(),model.decoder.activity_indices.cpu(),rtol=0,atol=0)
     model.load_state_dict(state,strict=True)

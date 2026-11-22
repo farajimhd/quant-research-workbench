@@ -9,16 +9,19 @@ def selected_rows(arm):
 
 def initialize(teacher,saved,calibration,arm=None):
     model=restore(saved)
-    model.activity_change_prefloor=arm in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32')
-    model.temporal_lr_multiplier=.1 if arm in ('joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32') else 1.
+    model.activity_change_prefloor=arm in ('joint_prefloor','joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra')
+    model.temporal_lr_multiplier=.1 if arm in ('joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra') else 1.
     model.repair_arm='joint_repaired' if model.activity_change_prefloor else arm or 'both_symmetric'
-    if arm in ('joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32'):
+    if arm in ('joint_basis_prefloor','joint_basis_prefloor_slow_temporal','joint_basis_prefloor_range_balanced','joint_basis_prefloor_nonlinear32','joint_basis_prefloor_temporal_extra'):
         from .temporal_basis import ActivityBasisLinear
         model.decoder=ActivityBasisLinear(model.decoder)
         if arm=='joint_basis_prefloor_nonlinear32':
             from .temporal_basis import ActivityBasisNonlinear
             native=restore(saved).decoder
             model.decoder=ActivityBasisNonlinear(native)
+    if arm=='joint_basis_prefloor_temporal_extra':
+        from .temporal_depth import attach
+        attach(model)
     if model.repair_arm.startswith('joint_'):
         model.requires_grad_(True)
         return model
