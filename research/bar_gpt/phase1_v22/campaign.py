@@ -62,9 +62,11 @@ def main():
         deadline_seconds=3600,campaign_deadline_seconds=28800)
     if (out/'manifest.json').exists():
         old=json.loads((out/'manifest.json').read_text())
-        for key in ('source','parent_sha','data_hash','supplement_hash','windows_per_arm'):
+        for key in ('parent_sha','data_hash','supplement_hash','windows_per_arm'):
             if old[key]!=manifest[key]:raise ValueError('Changed scientific resume: '+key)
         manifest=old;began=old['started']
+        if old['source']!=a.revision:
+            manifest.setdefault('engineering_resumes',[]).append(dict(revision=a.revision,time=time.time(),reason='W&B terminal summary API fix; no model/objective/data changes'))
     else:manifest['started']=began;write_json(out/'manifest.json',manifest)
     with lease(out):
         progress(stage='preparing immutable GPU cache',experiment=0)
@@ -103,7 +105,7 @@ def main():
                 if time.time()>deadline-120:raise TimeoutError('Reserved completion/evaluation deadline reached')
             torch.manual_seed(17);model=build(template,**spec).cuda()
             initial={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
-            contract=dict(manifest,architecture=spec,seed=seed,parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()),
+            contract=dict(manifest,execution_source=a.revision,architecture=spec,seed=seed,parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()),
                 representation_values=int(spec['kind'][5:])*64 if spec['kind'].startswith('slots') else int(spec['kind'][6:]),
                 hypothesis='Position preservation / representation capacity / feature width ablation; eighth repeats best seed',
                 learning_rates=dict(feature=3e-7,inherited_temporal=1e-5,new=3e-4),batch=None)
@@ -189,9 +191,10 @@ def main():
                 write_json(arm/'result.json',result);results.append(result);write_json(out/'comparison.json',results);status='complete'
             except BaseException:
                 if opt is not None:save()
+                progress(stage='failed',experiment=index+1,name=name,step=step,seen=seen)
                 write_json(arm/'failure.json',dict(traceback=traceback.format_exc(),step=step,seen=seen,seconds=time.time()-start));raise
             finally:
-                w.summary.update(status=status,checkpoint_upload=False);w.finish(exit_code=0 if status=='complete' else 1)
+                w.summary.update(dict(status=status,checkpoint_upload=False));w.finish(exit_code=0 if status=='complete' else 1)
                 graphs.clear();del model,opt;gc.collect();torch.cuda.empty_cache()
         progress(stage='complete',experiment=8,best=min(results,key=lambda r:r['ranking']['score'])['name'])
 
