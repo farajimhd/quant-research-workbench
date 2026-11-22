@@ -44,6 +44,14 @@ and body losses; they are not falsely labeled up or down.
 a new scientific identity with a fresh optimizer (not an engineering resume).
 Protected-row invariance applies only to the frozen-encoder calibration arms.
 
+`joint_repaired` addresses the observed joint-control drift: retain raw-price,
+body, wick and bar-anchor terms, but replace the overlapping old activity
+level/change/quartic/relative terms with the successful log-calibration activity
+objective. Add0.1 direct range,0.05 ordinal range,0.1 activity direction and0.5
+candle direction. This is an explicit objective revision, never an engineering
+resume. Removing the old activity tail term makes full-population overshoot
+validation especially necessary; no raw predictions or targets are clipped.
+
 `validate` streams the complete unchanged validation population with bounded
 workers and prefetched pinned transfers. Captured inference/accumulation must
 match EVERY eager metric buffer on real input; warmup contributions are cleared.

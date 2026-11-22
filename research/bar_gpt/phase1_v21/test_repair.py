@@ -32,9 +32,11 @@ def test_joint_control_matches_parent_and_metric_trains_encoders():
     actual,_=loss(control,values,valid,raw,frames,pos,old,scale)
     expected,_=parent_loss(control,values,valid,raw,frames,pos,old,scale)
     torch.testing.assert_close(actual,expected,rtol=0,atol=0)
-    metric=initialize(None,saved,None,'joint_metric_log');value,_=loss(metric,values,valid,raw,frames,pos,old,scale);value.backward()
-    for module in (metric.bar,metric.temporal,metric.decoder):
-        assert any(p.grad is not None and p.grad.abs().sum()>0 for p in module.parameters())
+    for arm in ('joint_metric_log','joint_repaired'):
+        metric=initialize(None,saved,None,arm);value,_=loss(metric,values,valid,raw,frames,pos,old,scale);value.backward()
+        assert torch.isfinite(value)
+        for module in (metric.bar,metric.temporal,metric.decoder):
+            assert any(p.grad is not None and p.grad.abs().sum()>0 for p in module.parameters())
 
 
 def test_selective_head_has_exact_channel_isolation():
