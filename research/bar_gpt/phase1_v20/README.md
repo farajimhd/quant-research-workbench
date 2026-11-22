@@ -46,3 +46,10 @@ Command: `python -B -m research.bar_gpt.phase1_v20.experiment --output
 D:/TradingML/runtimes/bar_gpt/phase1-v20-joint-singlehead-20261121 --revision SHA`.
 No full training launch is included: compare all old metrics and standalone bar
 probe results, then qualify a finalist over the complete unchanged validation.
+
+`encoders` exports standalone bar/window encoders from a hash-verified completed
+candidate. Neither artifact contains decoder weights. Their input contract is
+the existing prepared27 values (log prices,log1p activities,nine time fields)
+and27 validity flags; window input has64 bars, optional visible positions.
+The bar export returns16D independently per bar; the window export returns512D.
+CPU tests cover exact export parity and confirm no decoder in either state.

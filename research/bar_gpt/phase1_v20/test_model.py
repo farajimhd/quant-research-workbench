@@ -41,3 +41,18 @@ def test_real_objective_gradients_and_source_masks():
     assert all(q.grad is None or torch.isfinite(q.grad).all() for q in m.parameters())
     v.zero_();value,_=loss(m,x,v,raw*float('nan'),frames,p,old,torch.ones(6,6))
     assert value==0
+
+
+def test_standalone_exports_have_no_decoder_and_match(tmp_path):
+    from .encoders import export,load,restore
+    m,_,_=build();m.eval()
+    contract=dict(bar_config=vars(m.bar.config),temporal_config=vars(m.temporal.config),input_calibration=None)
+    export(m,contract,tmp_path);bar=load(tmp_path/'bar_encoder.pt');window=load(tmp_path/'window_encoder.pt')
+    x=torch.rand(2,64,27);v=torch.ones_like(x,dtype=torch.bool)
+    assert not any('decoder' in k for k in window.state_dict())
+    torch.testing.assert_close(bar(x,v),m.bar.encode(x,v),rtol=0,atol=0)
+    for n in (16,64):
+        p=positions(2,'cpu',n)
+        torch.testing.assert_close(window(x,v,p),m(x,v,p)[1],rtol=0,atol=0)
+    restored=restore(dict(model=m.state_dict(),contract=contract))
+    torch.testing.assert_close(restored(x,v,p)[2]['logs'],m(x,v,p)[2]['logs'],rtol=0,atol=0)
