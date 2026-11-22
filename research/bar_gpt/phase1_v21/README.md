@@ -97,3 +97,44 @@ D:/TradingML/runtimes/bar_gpt/phase1-v21-protected-20261121 --revision SHA
 The experiment refuses existing output identities; checkpoints include
 optimizer and RNG. Parent/STOP/data artifacts stay intact. Each arm has a
 3,000-second deadline; profiling and final evaluation fit inside60 minutes.
+
+## Approved full training
+
+The user subsequently approved20 full epochs despite the documented quality
+tradeoffs, with cosine LR1e-4 to1e-6. `run_full` implements a NEW scientific
+identity initialized from the retained body-calibrated checkpoint. Both encoders
+and the single head train under `joint_repaired`; calibration-only parameter
+freezing is intentionally removed. AdamW weight decay stays zero. A500-update
+linear warmup starts at1e-6 before cosine decay over consumed windows. All
+parameter groups use the requested schedule. The frozen teacher is a loss-only
+anchor and never supplies decoder input.
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.bar_gpt.phase1_v21.run_full --mode profile --output D:/TradingML/runtimes/bar_gpt/phase1-v21-full-profile-20261121 --source-revision SHA
+python -B -m research.bar_gpt.phase1_v21.run_full --mode train --output D:/TradingML/runtimes/bar_gpt/phase1-v21-full20-20261121 --source-revision SHA --epochs 20 --batch-size 8192 --workers 16
+```
+
+Select batch/workers from actual
+complete-pipeline measurements. Profiles do not update the parent checkpoint.
+The runner verifies immutable deployment, exact parent/full-validation hashes,
+teacher identity and split. It uses ordered bounded prefetch and GPU staging.
+Graph qualification compares every gradient at16/64 visibility; visible-only
+teacher work is checked against the original full-teacher anchor objective.
+
+Full validation runs after every epoch, with fixed seed917 and8,192/16 loader
+configuration. Fixed development validation runs every1,000 updates by default.
+All raw/directional/range metrics are uploaded; train loss has its own W&B series.
+Checkpoint selection balances raw errors, direction and range. A10x development
+raw-error regression triggers a checkpointed quality-attention stop; smaller
+regressions remain visible for the requested scheduled review. The prior gate
+requiring improvement after one pass no longer vetoes the user's approved trial.
+
+Resume with the same output and `--resume .../checkpoint_last.pt`, preserving
+batch, workers, model, data, schedule and all scientific settings. Last/best
+checkpoints include optimizer, RNG, exact traversal cursor, consumed windows and
+scheduler state with verified write/readback proofs. Ordered prefix replay can
+take time late in an epoch; it never silently changes row order. A changed
+scientific experiment requires a new identity. A bounded `--max-updates` canary
+can resume into the same20-epoch run without resetting optimizer or schedule.
+Use `full_panel --output RUN` for the read-only workstation display.
