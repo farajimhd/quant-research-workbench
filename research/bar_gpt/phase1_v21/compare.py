@@ -12,14 +12,18 @@ def main():
           (('parent','phase1-v20-joint-singlehead-20261121/joint'),('v18','phase1-v18-joint-20261121/joint'))}
     results=[]
     for arm in manifest['arms']:
-        path=directory/arm;r=json.loads((path/'result.json').read_text())
+        path=directory/arm
+        if not (path/'result.json').exists():
+            results.append(dict(arm=arm,status='incomplete',partial_checkpoint=(path/'checkpoint_partial.pt').exists(),eligible_for_selection=False))
+            continue
+        r=json.loads((path/'result.json').read_text())
         if file_hash(path/'checkpoint.pt')!=r['checkpoint_sha'] or r['curve'][-1]['step']!=manifest['steps']:raise ValueError('Incomplete/changed trial')
         m=r['curve'][-1]['metrics'];comparisons={}
         for name,reference in refs.items():
             ratio=sorted(((v/reference[k],k) for k,v in m.items() if k.startswith(('all_visible/raw_mae/','masked/raw_mae/')) and reference.get(k,0)>0),reverse=True)
             delta=sorted(((v-reference[k],k) for k,v in m.items() if k in reference and k.startswith(('all_visible/','activity/all_visible/')) and k.endswith(('moving_direction_pct','bin_accuracy_pct'))))
             comparisons[name]=dict(worst_mae_ratios=ratio[:20],worst_accuracy_delta_pp=delta[:20],mae_regressions_above_1pct=sum(x>1.01 for x,k in ratio),accuracy_regressions_above_half_pp=sum(x<-.5 for x,k in delta))
-        result=dict(arm=arm,checkpoint_sha=r['checkpoint_sha'],seconds=r['seconds'],speed=r['cached_windows_per_second'],wandb_url=r['wandb_url'],metrics={k:m[k] for k in KEYS},comparisons=comparisons)
+        result=dict(arm=arm,status='complete',checkpoint_sha=r['checkpoint_sha'],seconds=r['seconds'],speed=r['cached_windows_per_second'],wandb_url=r['wandb_url'],metrics={k:m[k] for k in KEYS},comparisons=comparisons)
         results.append(result);print(arm,result['metrics'],flush=True)
     write_json(directory/'quality-comparison.json',dict(results=results,source=manifest['source'],scope='Development only; hard accuracy distinct from differentiable training surrogate'))
 

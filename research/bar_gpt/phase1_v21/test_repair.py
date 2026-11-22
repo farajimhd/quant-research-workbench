@@ -35,3 +35,13 @@ def test_joint_control_matches_parent_and_metric_trains_encoders():
     metric=initialize(None,saved,None,'joint_metric');value,_=loss(metric,values,valid,raw,frames,pos,old,scale);value.backward()
     for module in (metric.bar,metric.temporal,metric.decoder):
         assert any(p.grad is not None and p.grad.abs().sum()>0 for p in module.parameters())
+
+
+def test_selective_head_has_exact_channel_isolation():
+    from .selective import combine
+    m,_,_=build();p=dict(model=copy.deepcopy(m.state_dict()));c=copy.deepcopy(p)
+    c['model']['decoder.weight']+=.01;c['model']['decoder.bias']+=.02
+    result=combine(p,c);rows=torch.arange(1152)%18==4
+    for name in ('decoder.weight','decoder.bias'):
+        torch.testing.assert_close(result['model'][name][rows],p['model'][name][rows],rtol=0,atol=0)
+        torch.testing.assert_close(result['model'][name][~rows],c['model'][name][~rows],rtol=0,atol=0)
