@@ -91,10 +91,22 @@ range accuracy 39.21%, candle direction 87.69% and activity balanced direction
 checkpointed at step47 (12,032 exposures); 500M higher-LR has not started.
 The checkpoint includes optimizer and RNG/traversal state; SHA256
 `59fcf4d412c81a0052cdfdaeb3eb6ef775f66721159be5a1a10ebb99a6523a3b`.
-Training PID21832 and the panel exited; GPU utilization was 0%. The STOP marker
-remains in force. Runtime `pause-receipt.json` records the exact state. No
-automatic restart. Resume must preserve the same source/W&B identity and account
-explicitly for user-requested maintenance downtime in the campaign wall budget.
+Training PID21832 and the panel exited; GPU utilization was 0%. Runtime
+`pause-receipt.json` records the exact state. The user subsequently authorized
+resumption after the OS update. The checkpoint hash was reverified; the STOP
+was archived as `STOP.os-maintenance.resolved-20261122`, not discarded. PID7284
+resumed the same source, optimizer/RNG state and W&B identity. The original
+campaign wall guard was retained because even including the approximately
+12-minute maintenance pause it remained within budget. The 200M higher-LR run
+then completed at step4096: close MAE $0.4787, range39.39%, candle90.57%,
+activity50.94%. It does not outperform the faster 50M arm on these aggregates.
+
+The user separately authorized one approximately2B-parameter extreme, bringing
+the bounded campaign to nine total experiments. Exact model size is
+1,955,104,706 parameters (width4608/depth11), with the same 594-parameter decoder.
+CPU qualification on real windows measured maximum FP32 expansion errors of
+2.86e-6 (16 visible bars) and 3.81e-6 (64 visible bars). Source:
+`aa7dcd044c7ae7f281a4cbc1d00a4da1e5940955`. The model is not yet claimed trained.
 
 Final comparison and recommendation will be recorded after the bounded
 higher-LR follow-ups and structural audit finish. Initial five-arm evidence
