@@ -27,6 +27,18 @@ from research.mlops.env import discover_env_files, load_env_files
 ROOT=Path('D:/TradingML/runtimes/bar_gpt')
 
 
+def configure_activity(model,a):
+    model.activity_weight=a.activity_weight
+    if a.activity_frame_counts:
+        from ..v5.shards.phase1_contract import FRAMES
+        c=json.loads(a.activity_frame_counts.read_text())['train']
+        counts=[c['windows_by_timeframe_us'][str(int(f))] for f in FRAMES]
+        if c['ambiguous_partial_multiframe_windows'] or min(counts)<=0 or sum(counts)!=c['expected_total']:
+            raise ValueError('Incomplete training-only timeframe calibration')
+        model.register_buffer('activity_frame_codes',torch.tensor(FRAMES,device='cuda'),persistent=False)
+        model.register_buffer('activity_frame_weights',torch.tensor([sum(counts)/(6*n) for n in counts],device='cuda'),persistent=False)
+
+
 def profile(a, teacher, manifest, saved):
     results=[];scale=torch.ones(6,6,device='cuda')
     for pair in a.profile_configs.split(','):
@@ -34,7 +46,7 @@ def profile(a, teacher, manifest, saved):
         if not 1<=a.batch_size<=32768 or not 0<=a.workers<=32:raise ValueError('Profile bounds')
         torch.manual_seed(a.seed)
         model=initialize(None,saved,None,'joint_repaired').cuda().train()
-        model.activity_weight=a.activity_weight
+        configure_activity(model,a)
         opt=torch.optim.AdamW(model.parameters(),lr=a.min_learning_rate,weight_decay=0.,fused=True)
         source=loader(manifest,a,'train');device=None;replays={};replay=None;actual=batch=pos=None
         started=time.perf_counter();torch.cuda.reset_peak_memory_stats();count=0
@@ -78,6 +90,7 @@ def main():
     p.add_argument('--bar-lr-multiplier',type=float,default=1.)
     p.add_argument('--temporal-lr-multiplier',type=float,default=1.)
     p.add_argument('--activity-weight',type=float,default=1.)
+    p.add_argument('--activity-frame-counts',type=Path)
     p.add_argument('--validation-every',type=int,default=1000);p.add_argument('--checkpoint-every',type=int,default=500)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
     p.add_argument('--restart-initialization',action='store_true')
@@ -105,6 +118,10 @@ def main():
     if receipt['checkpoint_sha']!=sha:raise ValueError('Parent checkpoint changed')
     saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False)
     split=load_split(a.split);data=verify(a.data)
+    if a.activity_frame_counts:
+        fc=json.loads(a.activity_frame_counts.read_text())
+        if fc['split_hash']!=split['manifest_hash'] or fc['train']['expected_total']!=split['counts']['train']:
+            raise ValueError('Activity frame calibration/split mismatch')
     if data['source_split_hash']!=split['manifest_hash'] or saved['contract']['split_hash']!=split['manifest_hash']:
         raise ValueError('Data split mismatch')
     full=json.loads(a.full_reference.read_text())
@@ -116,7 +133,7 @@ def main():
     with lease(a.output):
         if a.mode=='profile':return profile(a,teacher,split,saved)
         model=initialize(None,saved,None,'joint_repaired').cuda()
-        model.activity_weight=a.activity_weight
+        configure_activity(model,a)
         contract=dict(version='phase1-v21-full20',source=a.source_revision,
             bar_config=saved['contract']['bar_config'],temporal_config=saved['contract']['temporal_config'],
             input_calibration=saved['contract']['input_calibration'],repair_arm='joint_repaired',
@@ -125,6 +142,7 @@ def main():
             min_learning_rate=a.min_learning_rate,warmup_steps=a.warmup_steps,weight_decay=0.,
             bar_lr_multiplier=a.bar_lr_multiplier,temporal_lr_multiplier=a.temporal_lr_multiplier,
             activity_weight=a.activity_weight,
+            activity_frame_counts_sha=file_hash(a.activity_frame_counts) if a.activity_frame_counts else None,
             loss_source_sha=file_hash(Path(__file__).with_name('objectives.py')),
             base_loss_sha=file_hash(Path(__file__).with_name('joint_base.py')),
             full_reference_sha=file_hash(a.full_reference),

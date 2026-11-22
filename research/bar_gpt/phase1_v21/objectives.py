@@ -44,25 +44,31 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
     shape=torch.stack(terms).mean()
     wick=wick_loss(out['code'],raw,valid,known)
     activity=shape.new_zeros(());direction=shape.new_zeros(())
+    frame_weight=None
+    if hasattr(model,'activity_frame_weights'):
+        frame_weight=((frames[:,None]==model.activity_frame_codes).to(model.activity_frame_weights.dtype)*model.activity_frame_weights).sum(-1)[:,None]
     bins=torch.stack(bin_terms).mean() if bin_terms else shape.new_zeros(())
     if model.repair_arm not in ('range','body_direction'):
         for j in (4,5,10,11,16,17):
             mask=valid[...,j];target=torch.where(mask,raw[...,j].double(),0)
             code=out['code'][...,j].double();pred=code.clamp_min(0)
             weights=mask*torch.where(known,1.,.1)
+            if frame_weight is not None:weights=weights*frame_weight
             log=(code-target.log1p()).square()
             # Multiplicatively symmetric error in (1+activity), used only
             # in the loss. No target-dependent reference reaches the decoder.
             error=(pred-target.log1p()).abs().expm1() if model.repair_arm in ('both_symmetric','metric') else log
             pair=mask[:,1:]&mask[:,:-1]&known[:,1:]&known[:,:-1]
+            pair_weight=pair if frame_weight is None else pair*frame_weight
             delta=(pred[:,1:]-pred[:,:-1])-(target[:,1:].log1p()-target[:,:-1].log1p())
-            activity+=((torch.where(mask,error+.1*log,0)*weights).sum()/weights.sum().clamp_min(1)+.5*torch.where(pair,delta.square(),0).sum()/pair.sum().clamp_min(1))/6
+            activity+=((torch.where(mask,error+.1*log,0)*weights).sum()/weights.sum().clamp_min(1)+.5*(torch.where(pair,delta.square(),0)*pair_weight).sum()/pair_weight.sum().clamp_min(1))/6
             if model.repair_arm in ('metric','metric_log','joint_metric_log','joint_repaired','joint_separated'):
                 actual=target[:,1:].log1p()-target[:,:-1].log1p()
                 moving=pair&(actual!=0)
+                moving_weight=moving if frame_weight is None else moving*frame_weight
                 logits=(pred[:,1:]-pred[:,:-1])/.1
                 term=F.binary_cross_entropy_with_logits(logits,(actual>0).to(logits.dtype),reduction='none')
-                direction+=torch.where(moving,term,0).sum()/moving.sum().clamp_min(1)/6
+                direction+=(torch.where(moving,term,0)*moving_weight).sum()/moving_weight.sum().clamp_min(1)/6
     extra=shape+.05*wick+activity+.5*bins+.1*direction
     base=shape.new_zeros(());candle=shape.new_zeros(())
     if model.repair_arm=='body_direction':

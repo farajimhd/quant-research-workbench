@@ -19,6 +19,15 @@ identity, initialized from the same retained V21 parent, not an engineering resu
 The trial must compare all raw/direction/range groups with matched early full-data
 traversal before promotion. Current operational identity is always ACTIVE_RUN.json.
 
+A second bounded ablation uses `--activity-frame-counts` with the frozen runtime
+coverage receipt. Exact training-manifest counts show daily windows are only
+3,792,045/186,575,722 (2.03%). Only TRAIN counts derive fixed weights
+`N/(6*N_timeframe)` for activity level/change/direction terms; price/shape losses,
+sampling, valid masks and raw reported metrics stay unchanged. Source split hash
+and full count reconciliation are required. No market shards were reread to fit
+these weights; metadata fully resolved every selected window. This tests a
+population-imbalance hypothesis rather than assuming the cause is established.
+
 The user approved 20 epochs despite the earlier reconstruction/direction
 tradeoffs, and subsequently explicitly allowed any learning rate. Three matched
 initial full-data trials selected a substantially smaller fine-tuning LR.

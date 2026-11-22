@@ -75,3 +75,18 @@ def test_activity_weight_changes_only_declared_loss_family():
     torch.testing.assert_close(new-old,9*(parts['activity']+.1*parts['activity_direction']))
     new.backward()
     assert all(torch.isfinite(p.grad).all() for p in m.parameters() if p.grad is not None)
+
+
+def test_activity_frame_balance_preserves_other_objectives():
+    model,teacher,_=build()
+    saved=dict(model=copy.deepcopy(model.state_dict()),contract=dict(bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),input_calibration=None))
+    m=initialize(None,saved,None,'joint_repaired');x=torch.rand(2,64,27);v=torch.ones_like(x,dtype=torch.bool)
+    args=(x,v,x.exp(),torch.tensor([1,2]),torch.arange(16).expand(2,-1),torch.zeros(2,64,16),torch.ones(6,6))
+    original,old=loss(m,*args)
+    m.register_buffer('activity_frame_codes',torch.tensor([1,2]),persistent=False)
+    m.register_buffer('activity_frame_weights',torch.ones(2),persistent=False)
+    same,_=loss(m,*args);torch.testing.assert_close(same,original)
+    m.activity_frame_weights.copy_(torch.tensor([.5,2.]));weighted,new=loss(m,*args)
+    for k in ('range','wick','range_bins','joint_base','candle_direction'):torch.testing.assert_close(new[k],old[k],rtol=0,atol=0)
+    weighted.backward();assert torch.isfinite(weighted)
+    assert 'activity_frame_weights' not in m.state_dict()
