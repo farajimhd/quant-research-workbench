@@ -9,7 +9,7 @@ One focused test verifies accuracy differences and rejects mismatched targets;
 the real saved-evaluation CLI also completed successfully.
 
 Masked1m ask ranges0.1-0.25%:13,546 cells, correct31.382% to24.671% (-6.710pp).
-Predictions below0.1% grow9,130 to10,070; correct4,251 to3,342. Bid in the same
+Predictions below0.1% grow9,131 to10,070; correct4,251 to3,342. Bid in the same
 group loses6.436pp across13,596 cells. These are cells, not independent samples.
 Masked daily ask ranges>0.5% dominate9,583 of10,215 valid cells; their accuracy
 falls78.723% to75.290%. Predictions in the adjacent0.25-0.5% bin grow1,682
@@ -33,3 +33,4 @@ loss revision needs a new identity, parity and worst-group qualification.
 Reproduce with `python -B -m research.bar_gpt.phase1_v21.range_confusion_audit`
 and explicit `--before`, `--after`, and new runtime `--output` paths. Set
 `PYTHONDONTWRITEBYTECODE=1`. This analysis does not qualify a full training run.
+
