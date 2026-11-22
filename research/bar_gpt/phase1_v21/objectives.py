@@ -1,7 +1,13 @@
 import torch
+from functools import lru_cache
 from torch.nn import functional as F
 from ..phase1_v19.objectives import wick_loss
 from .joint_base import loss as joint_base
+
+
+@lru_cache(maxsize=8)
+def range_edges(device):
+    return torch.tensor([.0005,.001,.0025,.005],device=device,dtype=torch.float64).log1p()
 
 
 def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weight=1.):
@@ -17,7 +23,7 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         term=F.smooth_l1_loss(err,torch.zeros_like(err),reduction='none')
         terms.append((torch.where(mask,term,0)*weights).sum()/weights.sum().clamp_min(1))
         if model.repair_arm in ('metric','metric_log','joint_metric'):
-            edges=prediction.new_tensor([.0005,.001,.0025,.005]).log1p()
+            edges=range_edges(prediction.device)
             logits=(prediction[...,None]-edges)*10000
             labels=(target[...,None]>edges).to(logits.dtype)
             ordinal=F.binary_cross_entropy_with_logits(logits,labels,reduction='none').mean(-1)
