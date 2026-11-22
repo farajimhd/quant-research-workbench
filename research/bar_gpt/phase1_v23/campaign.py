@@ -44,7 +44,9 @@ def ranking(metrics,reference):
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--revision',required=True)
-    p.add_argument('--windows',type=int,default=8388608);p.add_argument('--resume',action='store_true');a=p.parse_args()
+    p.add_argument('--windows',type=int,default=8388608);p.add_argument('--resume',action='store_true')
+    p.add_argument('--width-scaled-followup',action='store_true');a=p.parse_args()
+    make_optimizer=lambda model:optimizer(model,width_scaled=a.width_scaled_followup)
     if not 1048576<=a.windows<=16777216 or a.windows%4096:raise ValueError('Bounded exposure, multiple of4096 required')
     a.device='cuda';a.source_revision=a.revision;preflight(a)
     root=Path('D:/TradingML/runtimes/bar_gpt');out=a.output;began=time.time();invocation_started=began
@@ -64,10 +66,10 @@ def main():
         normalization='fixed original training means/std; logclose/body/wicks/log1pactivity; no median/reference',
         objective='unchanged V21 joint_repaired + prefloor activity change',sampling='uniform with replacement, no weights',
         selection='equal216group geometric rawMAE ratios and mean direction error ratios, equal weights; report worst groups',
-        deadline_seconds=3600,campaign_deadline_seconds=28800)
+        deadline_seconds=3600,campaign_deadline_seconds=28800,width_scaled_followup=a.width_scaled_followup)
     if (out/'manifest.json').exists():
         old=json.loads((out/'manifest.json').read_text())
-        for key in ('parent_sha','data_hash','supplement_hash','windows_per_arm'):
+        for key in ('parent_sha','data_hash','supplement_hash','windows_per_arm','width_scaled_followup'):
             if old[key]!=manifest[key]:raise ValueError('Changed scientific resume: '+key)
         manifest=old;began=old['started']
         verify_resume_revision(old['source'],a.revision)
@@ -90,13 +92,14 @@ def main():
             parent=parent_model(template).cuda();detail,reference=evaluate(parent,teacher,dev)
             write_json(reference_path,reference);write_json(out/'parent-detail.json',detail);del parent
         results=json.loads((out/'comparison.json').read_text()) if (out/'comparison.json').exists() else []
-        specs=[dict(width=128,depth=2),dict(width=256,depth=4),dict(width=384,depth=6)]
-        for index in range(4):
+        specs=[dict(width=256,depth=4),dict(width=384,depth=6)] if a.width_scaled_followup else [dict(width=128,depth=2),dict(width=256,depth=4),dict(width=384,depth=6)]
+        run_count=2 if a.width_scaled_followup else 4
+        for index in range(run_count):
             if time.time()-began>28000:raise TimeoutError('Campaign deadline; no new experiment')
-            if index<3:spec=specs[index];seed=559
+            if index<len(specs):spec=specs[index];seed=559
             else:
                 winner=min(results,key=lambda r:r['ranking']['score']);spec=winner['architecture'];seed=997
-            name=f"e{index+1:02d}-w{spec['width']}-d{spec['depth']}-s{seed}"
+            name=f"e{index+(5 if a.width_scaled_followup else 1):02d}-w{spec['width']}-d{spec['depth']}-s{seed}"+('-widthlr' if a.width_scaled_followup else '')
             arm=out/name
             if (arm/'result.json').exists():continue
             arm.mkdir(exist_ok=True);start=time.time();deadline=start+3500
@@ -109,8 +112,8 @@ def main():
             initial={k:v.detach().cpu().clone() for k,v in model.state_dict().items()}
             contract=dict(manifest,execution_source=a.revision,architecture=spec,seed=seed,parameters=sum(p.numel() for p in model.parameters()),decoder_parameters=sum(p.numel() for p in model.decoder.parameters()),
                 representation_values=2048,
-                hypothesis='Larger temporal width/depth from matched V22 checkpoint; fourth repeats best seed',
-                learning_rates=dict(feature=3e-7,inherited_temporal=1e-5,new=3e-4),batch=None)
+                hypothesis='Width-scaled temporal Adam LR mitigates measured functional-update amplification' if a.width_scaled_followup else 'Larger temporal width/depth from matched V22 checkpoint; fourth repeats best seed',
+                learning_rates=dict(feature=3e-7,inherited_temporal=1e-5/(spec['width']/128 if a.width_scaled_followup else 1),new_temporal=3e-4/(spec['width']/128 if a.width_scaled_followup else 1),decoder=3e-4),batch=None)
             runfile=arm/'wandb.json'
             wid=json.loads(runfile.read_text())['id'] if runfile.exists() else wandb.util.generate_id()
             write_json(runfile,dict(id=wid,project='bargpt-phase01-v23-large'))
@@ -132,13 +135,13 @@ def main():
                         if not torch.isfinite(actual).all() or error>.02:raise ValueError('Initial mixed-precision expansion drift')
                     write_json(arm/'initial-parity.json',dict(cpu_parity='unit tests FP32',cuda=parity));del parent
                 if resume:
-                    contract=resume['contract'];batch=contract['batch'];model.load_state_dict(resume['model']);opt=optimizer(model);opt.load_state_dict(resume['optimizer'])
+                    contract=resume['contract'];batch=contract['batch'];model.load_state_dict(resume['model']);opt=make_optimizer(model);opt.load_state_dict(resume['optimizer'])
                     step=resume['step'];seen=resume['seen'];seconds=resume['seconds'];curve=resume['curve'];best=resume['best']
                     torch.set_rng_state(resume['rng']);torch.cuda.set_rng_state_all(resume['cuda_rng']);g.set_state(resume['sampling_rng'])
                 else:
                     # Tiny fit has a fixed valid example, not a favorable sampled metric.
                     progress(stage='tiny overfit',experiment=index+1,name=name,elapsed=time.time()-start,deadline=3500)
-                    tiny=copy.deepcopy(model);to=optimizer(tiny);inputs=tuple(q[:1] for q in train)
+                    tiny=copy.deepcopy(model);to=make_optimizer(tiny);inputs=tuple(q[:1] for q in train)
                     x,v,raw,f,z=inputs;pos=positions(1,'cuda',64);tiny_curve=[]
                     for t in range(1001):
                         to.zero_grad(set_to_none=True);value,_=loss(tiny,x,v,raw,f,pos,z,activity_scale)
@@ -151,7 +154,7 @@ def main():
                     profiles=[]
                     for batch in (1024,2048,4096):
                         admission();progress(stage='profiling',experiment=index+1,name=name,batch=batch,elapsed=time.time()-start,deadline=3500)
-                        model.load_state_dict(initial);opt=optimizer(model);replays={};torch.cuda.reset_peak_memory_stats()
+                        model.load_state_dict(initial);opt=make_optimizer(model);replays={};torch.cuda.reset_peak_memory_stats()
                         for t in range(12):
                             ids=torch.arange(batch,device='cuda')%len(train[0]);x,v,raw,f,z=[q[ids] for q in train];pos=positions(batch,'cuda',64 if t%4==3 else 16)
                             inp=(x,v,raw,f,pos,z);opt.zero_grad(set_to_none=True)
@@ -166,7 +169,7 @@ def main():
                     estimate=a.windows/next(p['windows_per_second'] for p in profiles if p['batch']==batch)
                     if estimate>2400:raise TimeoutError('Planned matched exposure exceeds reserved experiment budget; do not start partial training')
                     write_json(arm/'profile.json',profiles);w.config.update(contract,allow_val_change=True)
-                    model.load_state_dict(initial);opt=optimizer(model);torch.manual_seed(17);g.manual_seed(seed)
+                    model.load_state_dict(initial);opt=make_optimizer(model);torch.manual_seed(17);g.manual_seed(seed)
                 write_json(arm/'manifest.json',contract);del initial
                 # Every arm sees exactly the same sampled-window count. Batch-size
                 # choices can alter optimizer steps, which are explicitly reported.
@@ -208,7 +211,7 @@ def main():
             finally:
                 w.summary.update(dict(status=status,checkpoint_upload=False));w.finish(exit_code=0 if status=='complete' else 1)
                 graphs.clear();del model,opt;gc.collect();torch.cuda.empty_cache()
-        progress(stage='complete',experiment=4,best=min(results,key=lambda r:r['ranking']['score'])['name'])
+        progress(stage='complete',experiment=run_count,best=min(results,key=lambda r:r['ranking']['score'])['name'])
 
 
 if __name__=='__main__':main()

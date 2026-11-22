@@ -44,3 +44,8 @@ def test_whole_model_hidden_isolation_and_restore():
     torch.testing.assert_close(model.decoder.weight,base.decoder.weight,rtol=0,atol=0)
     recovered=restore(dict(model=model.state_dict(),parent_template=saved,architecture=dict(width=256,depth=4)))
     torch.testing.assert_close(recovered(x,valid,pos)[2]['code'],out)
+    from .model import optimizer
+    groups=optimizer(model,width_scaled=True).param_groups
+    assert [g['lr'] for g in groups]==[3e-7,5e-6,1.5e-4,3e-4]
+    assigned=[id(p) for g in groups for p in g['params']]
+    assert len(assigned)==len(set(assigned))==len(list(model.parameters()))

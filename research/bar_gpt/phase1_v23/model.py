@@ -4,7 +4,7 @@ from dataclasses import replace
 import torch
 from torch import nn
 from ..phase1_v15.model import CountAttention
-from ..phase1_v22.model import restore as restore_v22,PositionEncoder,optimizer
+from ..phase1_v22.model import restore as restore_v22,PositionEncoder,optimizer as base_optimizer
 
 
 def expand_temporal(old,width,depth):
@@ -58,3 +58,14 @@ def build(parent,width=128,depth=2):
 
 def restore(saved):
     m=build(saved['parent_template'],**saved['architecture']);m.load_state_dict(saved['model']);return m
+
+
+def optimizer(model,lr=3e-4,width_scaled=False):
+    if not width_scaled:return base_optimizer(model,lr)
+    factor=model.temporal.config.width/128
+    inherited=[];fresh=[]
+    for name,p in model.temporal.named_parameters():
+        (inherited if name.startswith(('stem.','blocks.')) or name in ('position','cls') else fresh).append(p)
+    return torch.optim.AdamW([dict(params=model.bar.parameters(),lr=3e-7),
+        dict(params=inherited,lr=1e-5/factor),dict(params=fresh,lr=lr/factor),
+        dict(params=model.decoder.parameters(),lr=lr)],weight_decay=0.,fused=next(model.parameters()).is_cuda)
