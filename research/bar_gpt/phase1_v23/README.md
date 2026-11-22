@@ -1,5 +1,8 @@
 # V23 larger temporal encoder campaign
 
+See [DECISION.md](DECISION.md) for the completed six-run results, limitations and
+pinned research checkpoint.
+
 New bounded follow-up to V22:128wide x2blocks control,256x4,384x6; repeat the best
 configuration with another sampling seed. Feature encoder remains width16,
 four heads,16D output. Every arm exports64x32; decoder is the SAME learned shared
