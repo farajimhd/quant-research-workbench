@@ -20,7 +20,7 @@ def main():
     p.add_argument('--arm',type=Path,action='append',required=True);a=p.parse_args()
     a.device='cuda';a.source_revision=a.revision;a.resume=False;preflight(a)
     root=Path('D:/TradingML/runtimes/bar_gpt');dataset=root/'phase1-v8-learned-mae-20261117/dataset'
-    manifest=verify(dataset);torch.set_num_threads(4);torch.set_float32_matmul_precision('highest');started=time.time()
+    manifest=verify(dataset,parts=('train','development','audit'));torch.set_num_threads(4);torch.set_float32_matmul_precision('highest');started=time.time()
     teacher,identity=load_teacher(root/'phase1-v12-frozen16-mae-20261121/teacher/teacher.pt',manifest['source_split_hash'],'cuda')
     data=cache(np.load(dataset/'audit.npy',mmap_mode='r'))
     with torch.no_grad():z=torch.cat([teacher.encode(data[0][i:i+512],data[1][i:i+512]) for i in range(0,len(data[0]),512)])
