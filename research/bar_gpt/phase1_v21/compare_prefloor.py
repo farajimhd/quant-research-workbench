@@ -17,16 +17,25 @@ def compare(old,new,step):
 
 
 def main():
-    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True);a=p.parse_args()
+    p=argparse.ArgumentParser();p.add_argument('--run',type=Path,required=True)
+    p.add_argument('--control',default='joint_repaired');p.add_argument('--candidate',default='joint_prefloor');a=p.parse_args()
+    if a.control not in ('joint_repaired','joint_prefloor') or a.candidate not in ('joint_prefloor','joint_basis_prefloor') or a.control==a.candidate:
+        raise ValueError('Explicit supported comparison arms required')
     manifest=json.loads((a.run/'manifest.json').read_text())
     rows=[]
-    for arm in ('joint_repaired','joint_prefloor'):
+    for arm in (a.control,a.candidate):
         folder=a.run/arm;r=json.loads((folder/'result.json').read_text())
         if file_hash(folder/'checkpoint.pt')!=r['checkpoint_sha'] or r['curve'][-1]['step']!=manifest['steps']:
             raise ValueError('Incomplete or changed checkpoint')
         rows.append(r)
     c,n=rows
-    if c['curve'][0]['metrics']!=n['curve'][0]['metrics']:
+    initial_delta={k:n['curve'][0]['metrics'][k]-v for k,v in c['curve'][0]['metrics'].items() if k!='evaluation_seconds'}
+    if a.candidate=='joint_basis_prefloor':
+        parity=json.loads((a.run/a.candidate/'initial-parity.json').read_text())
+        if [r['visible'] for r in parity]!=[16,64] or not all(r['price_exact'] for r in parity):raise ValueError('Missing basis initialization gate')
+        # Real code-level parity is checked before training. Preserve all initial
+        # metric deltas rather than hiding FP32 basis-conversion differences.
+    elif c['curve'][0]['metrics']!=n['curve'][0]['metrics']:
         for k,v in c['curve'][0]['metrics'].items():
             if k!='evaluation_seconds' and not math.isclose(n['curve'][0]['metrics'][k],v,rel_tol=1e-8,abs_tol=1e-10):
                 raise ValueError('Initial metric mismatch: '+k)
@@ -36,6 +45,7 @@ def main():
         if control['step']!=candidate['step']:raise ValueError('Unmatched validation steps')
         comparisons.append(compare(control['metrics'],candidate['metrics'],control['step']))
     result=dict(source=manifest['source'],comparisons=comparisons,
+        initial_metric_deltas=initial_delta,
         versus_parent={r['arm']:[compare(r['curve'][0]['metrics'],point['metrics'],point['step']) for point in r['curve']] for r in rows},
         trials=[{k:r[k] for k in ('arm','checkpoint_sha','seconds','cached_windows_per_second','wandb_url')} for r in rows],
         scope='Matched development only; no full-run promotion. Accuracy includes low-count groups; inspect detailed counts before interpreting extremes.')
