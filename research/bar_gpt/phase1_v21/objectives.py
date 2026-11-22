@@ -92,7 +92,8 @@ def loss(model,values,valid,raw,frames,pos,old_latent,activity_scale,anchor_weig
         if model.repair_arm in ('joint_repaired','joint_separated'):
             # Keep raw-price, body, wick and bar-anchor objectives. Replace the
             # old overlapping activity penalties with the tested log objective.
-            total=base+activity+.1*shape+.05*bins+.1*direction+.5*candle
+            activity_weight=getattr(model,'activity_weight',1.)
+            total=base+activity_weight*(activity+.1*direction)+.1*shape+.05*bins+.5*candle
         else:total=base+(.1*extra+.05*candle if model.repair_arm=='joint_metric_log' else 0)
     else:total=extra
     return total,dict(range=shape,wick=wick,activity=activity,range_bins=bins,activity_direction=direction,joint_base=base,candle_direction=candle)

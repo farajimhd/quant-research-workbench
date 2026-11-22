@@ -1,5 +1,24 @@
 # V21 full-population continuation
 
+## Two-epoch intervention
+
+The low-LR run was gracefully stopped after two complete validations during the
+2026-11-22 monitor review. Initial/epoch1/epoch2 balanced scores were
+0.59115/0.59061/0.59818 (lower is better). Daily trade-volume raw MAE reached
+2.70x initial, daily quote-count MAE about2.44x, and moving-direction metrics
+declined despite much better range classification. Daily volume error changed
+from underprediction to a large positive bias; this is not just an aggregate
+dollar-MAE comparison. All source data and predecessor checkpoints remain intact.
+
+The next bounded matched trial uses `--activity-weight 10`: multiply the existing
+log-activity level/change loss and its direction surrogate together by10. This
+tests activity-family underweighting against strong price/body/range supervision.
+It adds no output, decoder, reference or embedding field and does not clip data.
+Default weight1 preserves the previous objective. This is a NEW scientific
+identity, initialized from the same retained V21 parent, not an engineering resume.
+The trial must compare all raw/direction/range groups with matched early full-data
+traversal before promotion. Current operational identity is always ACTIVE_RUN.json.
+
 The user approved 20 epochs despite the earlier reconstruction/direction
 tradeoffs, and subsequently explicitly allowed any learning rate. Three matched
 initial full-data trials selected a substantially smaller fine-tuning LR.

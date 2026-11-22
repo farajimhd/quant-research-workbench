@@ -62,3 +62,16 @@ def test_selective_head_has_exact_channel_isolation():
     for name in ('decoder.weight','decoder.bias'):
         torch.testing.assert_close(result['model'][name][rows],p['model'][name][rows],rtol=0,atol=0)
         torch.testing.assert_close(result['model'][name][~rows],c['model'][name][~rows],rtol=0,atol=0)
+
+
+def test_activity_weight_changes_only_declared_loss_family():
+    model,teacher,_=build()
+    saved=dict(model=copy.deepcopy(model.state_dict()),contract=dict(bar_config=vars(teacher.config),temporal_config=vars(model.temporal.config),input_calibration=None))
+    m=initialize(None,saved,None,'joint_repaired')
+    x=torch.rand(2,64,27);v=torch.ones_like(x,dtype=torch.bool)
+    args=(x,v,x.exp(),torch.ones(2),torch.arange(16).expand(2,-1),torch.zeros(2,64,16),torch.ones(6,6))
+    old,parts=loss(m,*args);m.activity_weight=10.
+    new,_=loss(m,*args)
+    torch.testing.assert_close(new-old,9*(parts['activity']+.1*parts['activity_direction']))
+    new.backward()
+    assert all(torch.isfinite(p.grad).all() for p in m.parameters() if p.grad is not None)
