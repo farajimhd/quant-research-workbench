@@ -240,8 +240,31 @@ Subsequent engineering resumes must retain `--fork-from` as well as `--resume`
 so the scientific contract and ancestor hash remain identical.
 
 CLI additions: `--schedule epoch_cosine --lr-peak 1e-4 --lr-floor 1e-6
---fork-from D:\TradingML\runtimes\bar_gpt\phase1-v26-full20-20261122\checkpoint_last.pt`.
+--fork-from D:\TradingML\runtimes\bar_gpt\phase1-v26-full20-20261122\checkpoint_lr_fork_66079.pt`.
 Use a NEW output directory for the first fork; model/data/masks, lightweight
 decoder, throughput settings and W&B checkpoint-upload prohibition are unchanged.
 Nine focused tests passed, including both cosine endpoints,20 distinct values,
 epoch-based restoration, existing model tests and failure recovery.
+
+Native continuation: `phase1-v26-full20-epochcos-20261122-r1`, source
+`5724804ee68511128ee92f1fa12f1c8510e26934`; W&B
+https://wandb.ai/mehdifaraji/bargpt-phase01-v26-full20/runs/nkuoy2g8 .
+Supervisor15696, trainer8752 creation1795409013.9884884. Initial native
+checkpoint verification confirmed identical weights, Adam state, RNG and cursor
+to the preserved ancestor, and LR/peak1e-4 in price_bar,price_core,price_readout
+and activity groups. Evidence: `fork-verification.json` in the new runtime.
+The initial fork development reference was1s close MAE0.165258 and hidden48
+MAE0.172384; these precede any higher-LR updates and are not improvement claims.
+
+The first launch attempt (without-r1) failed before training because the
+supervisor created the fresh output directory before trainer admission. Its
+records remain preserved. The supervisor now publishes initial ownership in
+the runtime parent until the trainer creates its directory; ten focused tests
+passed, including this fresh-directory regression.
+
+The user's overnight monitoring request remains active for this continuation.
+An in-session observer checks health every30s and journals snapshots every5min
+under `overnight-monitor-20261122.jsonl`, through2026-11-23T16:34:33Z. It exits
+with an alert for failures, stale heartbeat, or stalled counters. Agent review
+of learning and recovery remains in the active task; no scheduled automation
+was created. The old-run observer exited when its trainer stopped.
