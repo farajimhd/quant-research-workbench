@@ -102,7 +102,7 @@ def timeframe_table(metrics, title, width):
     if width < 100:
         headers = ("Frame", "Close $", "Price T/B/A %", "Act V/B/A %")
     else:
-        headers = ("Frame", "Trade close $", "Trade dir %", "Bid dir %", "Ask dir %",
+        headers = ("Frame", "Close MAE $", "Trade dir %", "Bid dir %", "Ask dir %",
                    "Vol bal %", "Bid size bal %", "Ask size bal %")
     for i, label in enumerate(headers):
         table.add_column(label, justify="left" if i == 0 else "right",
@@ -179,10 +179,10 @@ def render(state, now=None, width=120):
     frames = timeframe_table(metrics,
         f"VALIDATION ({latest.get('scope', 'pending')}) | step {latest.get('step', 'pending')} | loss {number(latest.get('loss'))}", width)
     resources = Group(
-        Text(f"Speed {number(state.get('windows_per_second'), precision=0)} w/s | GPU {number(state.get('gpu_util'), '%', 0)} | LR {state.get('learning_rate', 0):.2e} | train loss {number(state.get('loss'))}", style="cyan"),
+        Text(f"Speed {number(state.get('windows_per_second'), precision=0)} w/s | GPU {number(state.get('gpu_util'), '%', 0)} | LR {format(state['learning_rate'], '.2e') if state.get('learning_rate') is not None else 'n/a'} | train loss {number(state.get('loss'))}", style="cyan"),
         Text(f"Epoch ETA {number(state.get('epoch_eta_seconds'), ' s', 0)} | loader wait {number(state.get('loader_wait_seconds'), ' s')} | eval {number(state.get('validation_windows_per_second'), ' w/s', 0)}", style="dim")
     )
-    legend = "Price: open-close moving direction. Activity: previous-bar balanced direction."
+    legend = "Close MAE: trade. Price: open-close moving direction. Activity: previous-bar balanced direction."
     if width < 100:
         legend = "T=trade, B=bid, A=ask, V=volume; activity balanced."
     content = [

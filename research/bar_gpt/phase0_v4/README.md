@@ -390,3 +390,22 @@ VT capability is enabled on the actual console handle. `--keep-open` retains
 stopped status; `panel-status.json` reports viewer PID, mode and advancing frames
 separately from trainer progress. A render test rejects erase-line/screen control
 sequences during updates. Narrow/plain/failure/completion rendering is tested.
+
+### Training and validation panel comparison
+
+The resumed run enables `--training-panel-metrics`. Every250 optimizer updates,
+the same model evaluates a frozen11146-window training sample followed by the
+existing development set. Training rows are evenly spaced within each timeframe
+of the certified frozen training subset, matching development timeframe counts.
+`training-panel-sample.json` freezes the source hash and exact row indices; a
+changed selection is rejected on resume. No gradient update or model selection
+uses these diagnostic results. This is a training-sample reconstruction check,
+not a full-population training evaluation or a forecasting metric.
+
+Both tables share columns, carry their checkpoint steps, and fit the workstation
+120x30 console. Reports are loaded only when their modification times change.
+Training uses `training_sample/*` in W&B and `training_sample-latest.json` locally;
+validation retains its separate report and summary. The checkpoint-preserving
+transition at5048 retained the original W&B run, optimizer and traversal state.
+Initial training-sample evaluation took0.90s, versus roughly52s per250 training
+updates. Subsequent measured durations remain available in the reports.
