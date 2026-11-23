@@ -10,8 +10,26 @@ from rich.console import Console
 from . import train as engine
 from .metrics import Metrics
 from .model import Autoencoder
-from .panel import render
+from .panel import render, EvaluationReader, DISPLAY_FRAMES
 from rich.live import Live
+
+
+def test_panel_evaluation_step_matching_and_compact_frames(tmp_path):
+    import json
+    metrics = {f"raw_mae/{frame}/trade_close": 1.23 for frame in DISPLAY_FRAMES}
+    (tmp_path / "development-latest.json").write_text(json.dumps(dict(step=25, metrics=metrics)))
+    reader = EvaluationReader(tmp_path)
+    state = dict(state="running", updated=100,
+                 latest_evaluation=dict(scope="development", step=25))
+    enriched = reader.enrich(state)
+    assert enriched["timeframe_metrics"] == metrics
+    output = io.StringIO()
+    Console(file=output, width=60).print(render(enriched, now=100, width=60))
+    text = output.getvalue()
+    assert all(frame in text for frame in DISPLAY_FRAMES)
+    assert len(text.splitlines()) <= 25
+    state["latest_evaluation"]["step"] = 50
+    assert reader.enrich(state)["timeframe_metrics"] == {}
 
 
 def test_panel_updates_without_erasing_previous_frame():

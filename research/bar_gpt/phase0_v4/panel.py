@@ -25,6 +25,38 @@ TERMINAL_STATES = {
     "interrupted_use_last_checkpoint",
 }
 
+# Display order follows the canonical six Phase1 timeframes. Reading the already
+# reduced report avoids importing Torch or doing any validation work in the viewer.
+DISPLAY_FRAMES = ("100ms", "1s", "10s", "1m", "1h", "daily")
+
+
+class EvaluationReader:
+    """Cache complete evaluation reports; never mix metrics from different steps."""
+
+    def __init__(self, root):
+        self.root, self.stamp, self.report = root, None, {}
+
+    def enrich(self, state):
+        latest = state.get("latest_evaluation", {})
+        scope = latest.get("scope")
+        if scope not in ("development", "validation"):
+            return state
+        path = self.root / f"{scope}-latest.json"
+        try:
+            stamp = (scope, path.stat().st_mtime_ns)
+            if stamp != self.stamp:
+                report = json.loads(path.read_text(encoding="utf-8"))
+                self.report, self.stamp = report, stamp
+        except (OSError, ValueError):
+            pass
+        state = dict(state)
+        state["timeframe_metrics"] = (
+            self.report.get("metrics", {})
+            if self.stamp and self.stamp[0] == scope and self.report.get("step") == latest.get("step")
+            else {}
+        )
+        return state
+
 
 def number(value, suffix="", precision=2):
     """Unknown is not zero; omit numerical claims until a measurement exists."""
@@ -64,7 +96,7 @@ class SolidBar:
         yield bar
 
 
-def render(state, now=None):
+def render(state, now=None, width=120):
     """Pure renderer, allowing narrow-terminal and stale-state tests without GPU."""
     now = time.time() if now is None else now
     age = now - state.get("updated", 0)
@@ -134,7 +166,7 @@ def render(state, now=None):
         ),
         ("Learning rate", f"{state['learning_rate']:.2e}" if state.get("learning_rate") else "n/a"),
         (
-            "Loader startup / epoch wait",
+            "Loader startup / wait",
             number(state.get("loader_startup_seconds"), " s")
             + " / "
             + number(state.get("loader_wait_seconds"), " s"),
@@ -155,15 +187,48 @@ def render(state, now=None):
     for label, value, style in (
         ("Scope / step", f"{latest.get('scope', 'pending')} / {latest.get('step', 'n/a')}", "cyan"),
         ("Loss", number(latest.get("loss"), precision=5), "yellow"),
-        ("1s close MAE", number(latest.get("close_mae"), " $", 4), "yellow"),
-        ("1s candle direction", number(latest.get("candle_direction"), "%"), "magenta"),
-        ("1s volume balanced dir.", number(latest.get("activity_direction"), "%"), "magenta"),
     ):
         quality.add_row(label, Text(value, style=style))
+    metrics = state.get("timeframe_metrics", {})
+    frames = Table(title="LATEST COMPLETED EVALUATION BY TIMEFRAME", title_justify="left",
+                   box=None, padding=(0, 1), expand=True)
+    for label, style in (("Frame", "cyan"), ("Trade close\nMAE $", "yellow"),
+                         ("Trade\ndir %", "magenta"), ("Bid\ndir %", "magenta"),
+                         ("Ask\ndir %", "magenta"), ("Volume\nbal dir %", "green"),
+                         ("Bid size\nbal dir %", "green"), ("Ask size\nbal dir %", "green")):
+        frames.add_column(label, justify="left" if label == "Frame" else "right", style=style)
+    for frame in DISPLAY_FRAMES:
+        frames.add_row(frame, number(metrics.get(f"raw_mae/{frame}/trade_close"), precision=4),
+            *[number(metrics.get(f"candle/{frame}/{family}/moving_direction_pct"))
+              for family in ("trade", "bid", "ask")],
+            *[number(metrics.get(f"activity_direction/{frame}/{channel}/balanced_accuracy_pct"))
+              for channel in ("trade_volume", "bid_size", "ask_size")])
+    resources = Columns([performance, quality], padding=(0, 3))
+    legend = "Price direction: open to close, moving candles. Activity: previous bar, class-balanced."
+    if width < 100:
+        # Keep all six frames and all three families visible on small consoles;
+        # combine values with an explicit order rather than truncating numbers.
+        frames = Table(title="COMPLETED EVALUATION", box=None, padding=(0, 1))
+        for label in ("Frame", "Close $", "Price dir %\nT / B / A", "Activity bal %\nV / B / A"):
+            frames.add_column(label, justify="right")
+        for frame in DISPLAY_FRAMES:
+            price = [metrics.get(f"candle/{frame}/{f}/moving_direction_pct") for f in ("trade", "bid", "ask")]
+            activity = [metrics.get(f"activity_direction/{frame}/{f}/balanced_accuracy_pct") for f in ("trade_volume", "bid_size", "ask_size")]
+            frames.add_row(frame, number(metrics.get(f"raw_mae/{frame}/trade_close")),
+                           "/".join(number(v, precision=1) for v in price),
+                           "/".join(number(v, precision=1) for v in activity))
+        resources = Group(
+            Text(f"Train {number(state.get('windows_per_second'), precision=0)} | eval {number(state.get('validation_windows_per_second'), precision=0)} windows/s", style="cyan"),
+            Text(f"Train loss {number(state.get('loss'))} | eval loss {number(latest.get('loss'))}", style="yellow"),
+            Text(f"{latest.get('scope', 'pending')} at step {latest.get('step', 'n/a')}")
+        )
+        legend = "T=trade, B=bid, A=ask, V=volume. Activity: balanced."
     content = [
         Text(heading, style=color),
         progress,
-        Columns([performance, quality], padding=(0, 3)),
+        resources,
+        frames,
+        Text(legend, style="dim"),
     ]
     if state.get("error"):
         content.append(Text(str(state["error"]), style="red"))
@@ -191,6 +256,7 @@ def main():
         os.environ["TERM"] = "xterm-256color"
     console = Console(legacy_windows=False if vt else None)
     last = {}
+    evaluation = EvaluationReader(args.run)
 
     def read():
         nonlocal last
@@ -200,19 +266,19 @@ def main():
             # Keep the last trustworthy observation if a publication is briefly
             # unavailable. Its age still increases, making staleness visible.
             pass
-        return last
+        return evaluation.enrich(last)
 
     if args.once or not console.is_terminal:
-        console.print(render(read()))
+        console.print(render(read(), width=console.width))
         return
     try:
         # Home and overwrite a buffered frame; do not erase every previous line.
         # This is the ONLY refresh loop, avoiding duplicate timer-driven paints.
-        with Live(render(read()), console=console, screen=vt, auto_refresh=False) as live:
+        with Live(render(read(), width=console.width), console=console, screen=vt, auto_refresh=False) as live:
             frames = 0
             while True:
                 state = read()
-                live.update(render(state), refresh=True)
+                live.update(render(state, width=console.width), refresh=True)
                 frames += 1
                 if frames == 1 or frames % 10 == 0:
                     # This viewer receipt proves the interactive mode and advancing
