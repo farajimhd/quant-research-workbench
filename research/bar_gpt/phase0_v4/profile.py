@@ -9,6 +9,7 @@ import copy
 import json
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 import numpy as np
 import torch
@@ -16,6 +17,7 @@ import torch
 from .model import Autoencoder, Config
 from .data import forward_batch
 from .objectives import objective
+from .metrics import Metrics
 from ..phase1_v7.full_data import prepare_raw
 from ..phase2_v2.train import load_checkpoint
 from ..v5.shards.phase1_contract import write_json, file_hash
@@ -63,6 +65,8 @@ def main():
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--steps", type=int, default=100)
+    parser.add_argument("--chunk-bars", type=int, default=0)
+    parser.add_argument("--evaluate", action="store_true")
     parser.add_argument(
         "--modes",
         default="sdpa-fp32-eager,math-fp32-eager,sdpa-fp32-graph,math-fp32-graph,sdpa-bf16-graph,math-bf16-graph,sdpa-fp16-graph",
@@ -87,7 +91,10 @@ def main():
     initial = {**saved["model"], "_extra_state": saved["model_extra"]}
 
     def create():
-        model = Autoencoder(parameters, Config(**saved["contract"]["config"])).cuda()
+        config = Config(**saved["contract"]["config"])
+        if args.chunk_bars:
+            config = replace(config, chunk_bars=args.chunk_bars)
+        model = Autoencoder(parameters, config).cuda()
         model.load_state_dict(initial)
         return model
 
@@ -106,6 +113,16 @@ def main():
         optimizer.load_state_dict(copy.deepcopy(saved["optimizer"]))
         replay = None
         try:
+            if args.evaluate:
+                development = np.load(root / "phase1-v8-learned-mae-20261117/dataset/development.npy", mmap_mode="r")
+                metric = Metrics("cuda")
+                with torch.no_grad():
+                    for start in range(0, len(development), 256):
+                        dev_batch = prepare_raw(development[start:start+256], native=True).to("cuda")
+                        out, values, valid = forward_batch(model, dev_batch)
+                        metric.add(model, out, values, valid, dev_batch)
+                write_json(args.output / (mode + "-development.json"), metric.result())
+                del out, values, valid, dev_batch, metric
             measured_loss, norm, logs = backward(model, batch)
             difference = sum(
                 (p.grad.double() - g.double()).square().sum()

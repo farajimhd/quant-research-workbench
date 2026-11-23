@@ -51,6 +51,8 @@ def render(state, now=None):
     now = time.time() if now is None else now
     age = now - state.get("updated", 0)
     status = state.get("state", "waiting for trainer")
+    if status in TERMINAL_STATES:
+        now = state.get("updated", now)
     stale = age > 30 and status not in TERMINAL_STATES
     color = "red" if status == "failed" or stale else "green" if status == "complete" else "cyan"
     heading = f"{status.upper()} | {state.get('stage', 'no status received')}"

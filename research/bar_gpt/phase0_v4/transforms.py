@@ -34,15 +34,18 @@ def coordinates(logs, valid):
     code, mask = code.clone(), mask.clone()
     for bid, ask, trade in GROUPS:
         indices = (bid, ask, trade)
-        observed = valid[..., list(indices)]
-        values = torch.where(observed, logs[..., list(indices)], 0)
+        # Stacking device views avoids an implicit CPU index tensor during CUDA
+        # graph capture. The order and validity semantics remain identical.
+        observed = torch.stack([valid[..., j] for j in indices], -1)
+        values = torch.where(observed, torch.stack([logs[..., j] for j in indices], -1), 0)
         count = observed.sum(-1)
         reference = values.sum(-1) / count.clamp_min(1)
         completed = torch.where(observed, values, reference.unsqueeze(-1))
         code[..., trade] = reference
         code[..., bid] = completed[..., 0] - reference
         code[..., ask] = completed[..., 1] - reference
-        mask[..., list(indices)] = (count > 0).unsqueeze(-1)
+        for index in indices:
+            mask[..., index] = count > 0
     completed_volume = code[..., 4] - code[..., 10] - code[..., 16]
     safe_count = torch.where(valid[..., 5], logs[..., 5], 0)
     code[..., 5] = torch.where(valid[..., 5], completed_volume - safe_count, 0)

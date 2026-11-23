@@ -33,12 +33,13 @@ def objective(model, out, values, valid):
     counts = source_valid.reshape(-1, 18).sum(0)
     channel = torch.where(source_valid, element, 0).reshape(-1, 18).sum(0) / counts.clamp_min(1)
 
-    def family(indices):
-        present = counts[indices] > 0
-        return (channel[indices] * present).sum() / present.sum().clamp_min(1)
+    def family(columns):
+        present = counts.reshape(3, 6)[:, columns] > 0
+        selected = channel.reshape(3, 6)[:, columns]
+        return (selected * present).sum() / present.sum().clamp_min(1)
 
-    price = family([j for j in range(18) if j % 6 < 4])
-    activity = family([j for j in range(18) if j % 6 >= 4])
+    price = family(slice(0, 4))
+    activity = family(slice(4, 6))
     target_code = torch.where(mask, code, model.mean[:18])
     coordinate_error = F.smooth_l1_loss(
         out["normalized"], (target_code - model.mean[:18]) / model.scale[:18], reduction="none"
