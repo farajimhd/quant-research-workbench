@@ -9,7 +9,7 @@ import torch
 from ..phase1_v11.data import verify
 from ..phase1_v7.full_data import prepare_raw, gpu_inputs
 from ..v5.shards.phase1_contract import write_json
-from .transforms import coordinates, decode, raw_values
+from .transforms import coordinates, decode, raw_values, TRANSFORM_VERSION
 
 
 def prepare(data, output):
@@ -17,7 +17,7 @@ def prepare(data, output):
 
 Every source-valid bar receives equal weight, including repeated windows.
 Validation never enters the fit. Existing split/manifest verification is reused.
-The calibration format is versioned because V1-V3 statistics are incompatible.
+The format is versioned: statistics from earlier transforms are incompatible.
 """
     if not output.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):
         raise ValueError('Output must be under D:/TradingML/runtimes')
@@ -50,10 +50,11 @@ The calibration format is versioned because V1-V3 statistics are incompatible.
     scale = (sums[2]/sums[0]-mean.square()).clamp_min(0).sqrt()
     # Floors protect constant fields, without clipping any input observation.
     scale = torch.maximum(scale, torch.tensor([1e-5]*18+[.001]*9))
-    result = dict(version='phase0-v4-symmetric-activity', data_hash=manifest['hash'],
+    result = dict(version=TRANSFORM_VERSION, data_hash=manifest['hash'],
                   split_hash=manifest['source_split_hash'], files=manifest['files'],
                   rows=len(rows), bars=len(rows)*64, counts=sums[0].tolist(),
-                  parameters=dict(mean=mean.tolist(), scale=scale.tolist()),
+                  parameters=dict(mean=mean.tolist(), scale=scale.tolist(),
+                                  transform_version=TRANSFORM_VERSION),
                   roundtrip_max_relative_over_max_one=maximum,
                   seconds=time.monotonic()-started,
                   policy='Training subset only; uniform bar exposures; no sample weights')

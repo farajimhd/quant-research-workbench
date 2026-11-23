@@ -1,9 +1,10 @@
 """Information preservation, decoder isolation and actual optimization checks."""
 import itertools
+import pytest
 import torch
 from .model import Autoencoder, Config
 from .objectives import objective
-from .transforms import coordinates, decode, raw_values, GROUPS
+from .transforms import coordinates, decode, raw_values, GROUPS, TRANSFORM_VERSION
 
 
 def example(dtype=torch.float64):
@@ -18,15 +19,18 @@ def example(dtype=torch.float64):
 
 def parameters():
     """Identity normalization is for synthetic tests only, not production fitting."""
-    return dict(mean=[0.]*27, scale=[1.]*27)
+    return dict(mean=[0.]*27, scale=[1.]*27, transform_version=TRANSFORM_VERSION)
 
 
 def test_all_activity_missing_patterns_roundtrip():
     raw, values = example()
-    # Both triples independently cover all 8 validity patterns, including empty.
+    # Nonzero count must survive even when volume and both quote sizes are absent.
+    raw[0, 5] = 37
+    values[0, 5] = raw[0, 5].log1p()
+    # Cover all 64 combinations of activity validity, independently of values.
     for bits in itertools.product((False, True), repeat=6):
         valid = torch.ones_like(values, dtype=torch.bool)
-        for index, bit in zip(sum(GROUPS, ()), bits):
+        for index, bit in zip((4, 5, 10, 11, 16, 17), bits):
             valid[..., index] = bit
         poisoned = torch.where(valid, values, float('nan'))
         code, mask = coordinates(poisoned[..., :18], valid[..., :18])
@@ -36,6 +40,41 @@ def test_all_activity_missing_patterns_roundtrip():
                                    rtol=1e-12, atol=1e-12)
         for group in GROUPS:
             assert bool(mask[..., list(group)].all()) == any(bool(valid[0, j]) for j in group)
+        for index in (5, 11, 17):
+            assert mask[0, index] == valid[0, index]
+
+
+@pytest.mark.parametrize('volume,count', [(0., 0.), (0., 7.), (1000., 0.),
+                                         (1000., 25.), (1e12, 1e8)])
+def test_zero_safe_ratio_semantics(volume, count):
+    _, values = example()
+    values[0, 4] = torch.tensor(volume, dtype=values.dtype).log1p()
+    values[0, 5] = torch.tensor(count, dtype=values.dtype).log1p()
+    valid = torch.ones_like(values, dtype=torch.bool)
+    code, _ = coordinates(values[..., :18], valid[..., :18])
+    torch.testing.assert_close(code[..., 5], values[..., 4]-values[..., 5])
+    restored = raw_values(decode(code))
+    torch.testing.assert_close(restored[..., [4, 5]],
+                               torch.tensor([[volume, count]], dtype=values.dtype),
+                               rtol=1e-12, atol=1e-12)
+    # Standalone inverse must use the predicted volume: shifting its reference
+    # by log(2) doubles count+1 at fixed ratio, with no target supplied.
+    code[..., 4] += torch.log(torch.tensor(2., dtype=values.dtype))
+    changed = raw_values(decode(code))
+    torch.testing.assert_close(changed[..., 5], restored[..., 5]*2+1,
+                               rtol=1e-12, atol=1e-12)
+
+
+def test_rejects_old_calibration_and_checkpoint_semantics():
+    old = parameters()
+    old.pop('transform_version')
+    with pytest.raises(ValueError, match='calibration'):
+        Autoencoder(old)
+    model = Autoencoder(parameters())
+    state = model.state_dict()
+    state['_extra_state'] = dict(transform_version='phase0-v4-symmetric-activity')
+    with pytest.raises(ValueError, match='checkpoint'):
+        model.load_state_dict(state)
 
 
 def test_partial_prices_and_unusual_valid_geometry():
@@ -102,7 +141,7 @@ def test_tiny_optimizer_learning():
     # offset so the decoder must learn rather than start at the answer.
     mean = torch.cat((code[0], values[0, 18:])).tolist()
     mean = [x+.05 for x in mean]
-    model = Autoencoder(dict(mean=mean, scale=[1.]*27))
+    model = Autoencoder(dict(mean=mean, scale=[1.]*27, transform_version=TRANSFORM_VERSION))
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0)
     initial = float(objective(model, model(values, valid), values, valid)[0].detach())
     for step in range(240):

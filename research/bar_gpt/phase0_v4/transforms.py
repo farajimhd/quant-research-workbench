@@ -7,8 +7,9 @@ values must already satisfy the canonical contract. We never clip source values.
 import torch
 from ..phase1_v11.transforms import coordinates as price_coordinates
 
-# Each triple is (bid, ask, trade). Quantities and counts have separate scales.
-GROUPS = ((10, 16, 4), (11, 17, 5))
+TRANSFORM_VERSION = 'phase0-v4-symmetric-quantity-trade-ratio-v2'
+# Only quantities share a reference. Quote counts remain independent log1p.
+GROUPS = ((10, 16, 4),)
 
 
 def coordinates(logs, valid):
@@ -22,6 +23,11 @@ With missing fields, r is the valid-member mean and missing logs are filled
 with r. Thus all three completed deviations still sum to zero. All coordinates
 of a nonempty triple are supervised; raw reconstruction still uses SOURCE masks.
 An entirely absent triple has zero coordinates and no coordinate supervision.
+
+Trade-count slot5 stores completed_log_volume-log1p(trade_count). Completion
+uses the SAME volume recovered from the quantity coordinates, including when
+volume is absent. Thus a valid count survives missing volume without a decoder
+mask or true-reference argument. Bid/ask counts retain independent log1p values.
 """
     code, mask = price_coordinates(logs, valid)
     code, mask = code.clone(), mask.clone()
@@ -36,6 +42,11 @@ An entirely absent triple has zero coordinates and no coordinate supervision.
         code[..., bid] = completed[..., 0] - reference
         code[..., ask] = completed[..., 1] - reference
         mask[..., list(indices)] = (count > 0).unsqueeze(-1)
+    completed_volume = code[..., 4] - code[..., 10] - code[..., 16]
+    safe_count = torch.where(valid[..., 5], logs[..., 5], 0)
+    code[..., 5] = torch.where(valid[..., 5], completed_volume - safe_count, 0)
+    for index in (11, 17):
+        code[..., index] = torch.where(valid[..., index], logs[..., index], 0)
     return code, mask
 
 
@@ -59,6 +70,8 @@ The algebra also preserves unusual source-valid OHLC/quote configurations.
         logs[..., bid] = reference + code[..., bid]
         logs[..., ask] = reference + code[..., ask]
         logs[..., trade] = reference - code[..., bid] - code[..., ask]
+    # Invert the zero-safe ratio with PREDICTED volume, not the true volume.
+    logs[..., 5] = logs[..., 4] - code[..., 5]
     return logs
 
 

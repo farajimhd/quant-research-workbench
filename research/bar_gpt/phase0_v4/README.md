@@ -21,14 +21,22 @@ source-valid contract. Valid observations are never clipped or reordered.
 
 For quantities, let `b=log1p(bid_size)`, `a=log1p(ask_size)`, and
 `t=log1p(trade_volume)`. Define `r=(b+a+t)/3`, `db=b-r`, `da=a-r`.
-Store `r` at slot4, `db` at slot10, and `da` at slot16. The independent count
-triple uses slots5,11,17 with the same rule. The inverse is:
+Store `r` at slot4, `db` at slot10, and `da` at slot16. The quantity inverse is:
 
 ```text
 bid   = expm1(r + db)
 ask   = expm1(r + da)
-trade = expm1(r - db - da)
+trade_volume = expm1(r - db - da)
 ```
+
+Trade-count slot5 now stores the zero-safe average-size-like coordinate
+`z=log1p(trade_volume)-log1p(trade_count)`. It represents the log of
+`(1+volume)/(1+count)`, not exact average trade size. Recover the count using
+`expm1(predicted_log_volume-z)`, where `predicted_log_volume=r-db-da`.
+This preserves zero volume with nonzero count, zero count, and both zero.
+Slots11 and17 remain independent `log1p(bid_count)` and `log1p(ask_count)`;
+the former shared-count reference is removed. Targets remain all18 raw fields,
+including trade count: it is transformed, not discarded.
 
 For partial triples, compute r from valid members only and fill absent members
 with r before forming deviations. Their completed deviations still sum to zero.
@@ -36,6 +44,13 @@ Supervise all three coordinates whenever at least one member exists. An absent
 triple has zero coordinates and no coordinate loss. Raw/log reconstruction is
 always supervised only where the ORIGINAL source mask is valid. The decoder
 needs neither that mask nor the true reference to recover valid values.
+
+When trade volume is absent but count is valid, construct z using the completed
+volume from the quantity coordinates (the valid-quantity mean, or zero when
+all quantities are absent). The decoder recovers this same completed volume,
+so count remains recoverable without a mask-dependent inverse. Count-coordinate
+supervision follows count validity alone. Missing quote counts are filled with
+zero and excluded from supervision. A valid zero is never treated as missing.
 
 This is invertible algebra, not a guarantee of lossless neural compression.
 Reference errors affect all three quantities; asymmetric errors in db/da can
@@ -70,6 +85,11 @@ subset, verifies its manifest/split, and audits inverse reconstruction in
 original units. It never fits validation. Sampling is uniform bar exposures,
 so overlapping/repeated windows retain their original multiplicity. Source
 and calibration hashes are retained. V1-V3 calibration is incompatible.
+The earlier V4 shared-count calibration is also incompatible. Refit calibration
+using `prepare.py`; its parameters must carry
+`transform_version=phase0-v4-symmetric-quantity-trade-ratio-v2`. The constructor
+rejects unversioned/older calibration, and checkpoint extra state seals the same
+coordinate semantics so matching tensor shapes cannot silently load old weights.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'
@@ -104,13 +124,20 @@ bar independence, embedding-only decode, state restoration, FP32 readout under
 autocast, finite gradients, empty supervision, and an actual240-update easy fit.
 These tests establish runnable algebra/model behavior, not validation quality.
 
-Implementation verification on2026-11-23: five tests passed locally. A separate
+Initial implementation verification on2026-11-23: five tests passed locally. A separate
 CPU smoke through the certified raw adapter used four training windows
 (256 independent bars), produced finite gradients and completed an optimizer
 update. Maximum native roundtrip error divided by max(1,abs(target)) was
 3.263e-6. The smoke used small-sample training calibration only and is not a
 full calibration or a held-out evaluation. Receipt:
 `D:/TradingML/runtimes/bar_gpt/phase0-v4-implementation-20261123/native-smoke.json`.
+That receipt predates the trade-ratio change. The revised transform passes11
+tests, including zero/count edge cases, all64 activity validity combinations,
+predicted-volume dependency, finite gradients, and rejection of incompatible
+calibration/checkpoint semantics. No full training or full calibration has run.
+The revised certified-loader CPU smoke also passed256 bars with finite gradients
+and an optimizer update; maximum native roundtrip error/max(1,abs(target)) was
+3.219e-6. Its separate receipt is `native-ratio-smoke.json` in the same runtime.
 
 ```powershell
 $env:PYTHONDONTWRITEBYTECODE='1'

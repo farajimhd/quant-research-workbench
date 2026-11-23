@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import torch
 from torch import nn
 from ..phase0_v2.model import AttentionBlock
-from .transforms import coordinates, decode, raw_values
+from .transforms import coordinates, decode, raw_values, TRANSFORM_VERSION
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,8 @@ targets. Frozen training-only calibration is part of the model state.
 """
     def __init__(self, parameters, config=Config()):
         super().__init__()
+        if parameters.get('transform_version') != TRANSFORM_VERSION:
+            raise ValueError('Incompatible calibration: refit for the trade-ratio transform')
         if (min(config.width, config.heads, config.layers, config.embedding,
                 config.chunk_bars) < 1 or config.width % config.heads):
             raise ValueError('Positive dimensions and width divisible by heads required')
@@ -49,6 +51,15 @@ targets. Frozen training-only calibration is part of the model state.
         self.readout = nn.Sequential(nn.LayerNorm(config.width),
                                      nn.Linear(config.width, config.embedding))
         self.decoder = nn.Linear(config.embedding, 18)
+
+    def get_extra_state(self):
+        """Seal coordinate semantics in checkpoints, not just their tensor shapes."""
+        return dict(transform_version=TRANSFORM_VERSION)
+
+    def set_extra_state(self, state):
+        """Reject weights carrying another interpretation of the same 18 slots."""
+        if state.get('transform_version') != TRANSFORM_VERSION:
+            raise ValueError('Incompatible checkpoint transform')
 
     def encode(self, values, valid):
         """Accept (...,27) canonical logs/time fields and boolean validity flags."""
