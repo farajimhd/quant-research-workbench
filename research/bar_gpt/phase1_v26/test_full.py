@@ -1,6 +1,6 @@
 import copy
 import torch
-from .full_train import learning_rate
+from .full_train import learning_rate,epoch_learning_rate
 from ..phase2_v2.train import save_checkpoint,load_checkpoint,rng_state,restore_rng
 
 
@@ -27,3 +27,15 @@ def test_panel_exposes_units_quality_and_failure():
         console=Console(width=width)
         with console.capture() as captured:console.print(render(dict(state='failed',error='loader failure',cheap_price_median_pct=315.2)))
         text=captured.get();assert 'loader failure' in text and '315.2%' in text and 'windows/s' in text
+
+
+def test_twenty_epoch_cosine_values_include_both_endpoints():
+    values=[epoch_learning_rate(epoch,20) for epoch in range(20)]
+    assert values[0]==1e-4 and values[-1]==1e-6
+    assert len(set(values))==20
+    assert all(a>b for a,b in zip(values,values[1:]))
+    # Restoring the epoch index determines LR; optimizer update count cannot
+    # advance or reset this schedule, including a resume halfway through epoch1.
+    assert epoch_learning_rate(0,20)==values[0]
+    assert epoch_learning_rate(9,20)==values[9]
+    assert epoch_learning_rate(20,20)==1e-6

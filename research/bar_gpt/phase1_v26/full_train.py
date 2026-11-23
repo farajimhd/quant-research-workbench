@@ -33,6 +33,13 @@ def quality(metrics, reference):
     return gate['score'],gate
 
 
+def epoch_learning_rate(epoch,epochs,peak=1e-4,floor=1e-6):
+    """Twenty epoch-held values include both endpoints (indices0 through19)."""
+    if epochs<2 or not 0<floor<=peak:raise ValueError('Invalid epoch cosine schedule')
+    if epoch>=epochs-1:return floor
+    return floor+.5*(peak-floor)*(1+math.cos(math.pi*max(0,epoch)/(epochs-1)))
+
+
 @torch.no_grad()
 def validate(model, manifest, a, reporter, step, epoch):
     state = rng_state(); model.eval()
@@ -98,17 +105,28 @@ def brief(metrics, scope, step, seconds):
 def train(model, teacher, manifest, a, contract, reporter):
     opt=optimizer(model,dict(price=a.price_lr,activity=a.activity_lr))
     step=epoch=cursor=epoch_done=windows=0; phase='train'; best=float('inf')
-    if a.resume:
-        saved=load_checkpoint(a.resume, contract)
+    fork=getattr(a,'fork_from',None)
+    epoch_cosine=getattr(a,'schedule','window_cosine')=='epoch_cosine'
+    if a.resume or fork:
+        if a.resume:saved=load_checkpoint(a.resume, contract)
+        else:
+            peek=torch.load(fork,map_location='cpu',weights_only=False)
+            saved=load_checkpoint(fork,peek['contract'])
+            for key in ('split_hash','data_hash','counts','teacher','batch_size','workers','seed','loss','visibility','matmul_precision','epochs'):
+                if saved['contract'][key]!=contract[key]:raise ValueError('Fork changes protected contract: '+key)
         model.load_state_dict(saved['model']); opt.load_state_dict(saved['optimizer'])
         step,epoch,cursor,epoch_done,windows,phase,best=(saved[k] for k in ('step','epoch','cursor','epoch_done','windows','phase','best'))
         cursor=cursor[1]; restore_rng(saved['rng'])
+        if fork and not a.resume:best=float('inf')
+        if epoch_cosine:
+            for group in opt.param_groups:group['peak']=a.lr_peak;group['lr']=epoch_learning_rate(epoch,a.epochs,a.lr_peak,a.lr_floor)
         reporter.update(checkpoint_step=step,epoch_done=epoch_done,windows=windows)
     def checkpoint(name='checkpoint_last.pt'):
         save_checkpoint(a.output/name, dict(contract=contract, model=model.state_dict(), optimizer=opt.state_dict(),
             parents=model.parents,fusion=False,seed=559,mode='independent',rng=rng_state(), step=step, epoch=epoch, cursor=(epoch,cursor), epoch_done=epoch_done,
             windows=windows, phase=phase, best=best,
-            scheduler=dict(kind='warmup_cosine_windows', consumed=windows, total=a.epochs*manifest['counts']['train'])))
+            scheduler=(dict(kind='epoch_cosine',epoch=epoch,epochs=a.epochs,peak=a.lr_peak,floor=a.lr_floor)
+                if epoch_cosine else dict(kind='warmup_cosine_windows', consumed=windows, total=a.epochs*manifest['counts']['train']))))
         reporter.update(checkpoint_step=step)
     # Development-only cache is small and remains fixed across evaluations.
     reporter.update(stage='loading development cache')
@@ -137,6 +155,10 @@ def train(model, teacher, manifest, a, contract, reporter):
         else: reference=json.loads((a.output/'development-reference.json').read_text())
         while epoch<a.epochs:
             if phase=='train':
+                if epoch_cosine:
+                    lr=epoch_learning_rate(epoch,a.epochs,a.lr_peak,a.lr_floor)
+                    for group in opt.param_groups:group['lr']=lr
+                    reporter.log({'schedule/epoch':epoch+1,'schedule/learning_rate':lr},step)
                 reporter.update(stage='loading / restoring traversal',epoch=epoch+1,epochs=a.epochs,step=step)
                 state=rng_state(); source=loader(manifest,a,'train',epoch); device=None
                 try:
@@ -147,8 +169,9 @@ def train(model, teacher, manifest, a, contract, reporter):
                     for index in range(cursor,len(source)):
                         if (a.output/'STOP').exists() or (a.output.parent/'STOP').exists(): checkpoint(); return 'stopped'
                         batch=device.pop(); pos=positions(len(batch.grid),'cuda',64 if (step+1)%4==0 else 16); ap=positions(len(batch.grid),'cuda',56)
-                        factor=learning_rate(windows,a.epochs*manifest['counts']['train'],1.,.01,a.warmup_steps*a.batch_size)
-                        for group in opt.param_groups:group['lr']=group['peak']*factor
+                        if not epoch_cosine:
+                            factor=learning_rate(windows,a.epochs*manifest['counts']['train'],1.,.01,a.warmup_steps*a.batch_size)
+                            for group in opt.param_groups:group['lr']=group['peak']*factor
                         lr=max(group['lr'] for group in opt.param_groups)
                         if len(batch.grid)==a.batch_size:
                             if pos.shape[1] not in replays:

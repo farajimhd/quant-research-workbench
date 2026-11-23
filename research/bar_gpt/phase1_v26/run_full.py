@@ -9,7 +9,7 @@ from .model import restore
 from .train import optimizer
 from .full_step import qualify
 from .full_validate import Accumulator,Replay as ValidationReplay
-from .full_train import train
+from .full_train import train,epoch_learning_rate
 from ..phase1_v12.model import positions
 from ..phase1_v12.data import load_teacher,resume_contract
 from ..phase1_v11.pipeline import loader,DeviceBatches
@@ -82,6 +82,9 @@ def main():
     p.add_argument('--prefetch',type=int,default=4);p.add_argument('--price-lr',type=float,default=3e-7);p.add_argument('--activity-lr',type=float,default=1e-6)
     p.add_argument('--warmup-steps',type=int,default=500);p.add_argument('--validation-every',type=int,default=1000);p.add_argument('--checkpoint-every',type=int,default=250)
     p.add_argument('--max-updates',type=int,default=0);p.add_argument('--resume',type=Path)
+    p.add_argument('--fork-from',type=Path)
+    p.add_argument('--schedule',choices=('window_cosine','epoch_cosine'),default='window_cosine')
+    p.add_argument('--lr-peak',type=float,default=1e-4);p.add_argument('--lr-floor',type=float,default=1e-6)
     p.add_argument('--profile-batches',type=int,default=32);p.add_argument('--profile-configs',default='512:8,1024:8,2048:8,1024:16,1024:32')
     p.add_argument('--matmul-precision',choices=('highest','high'),default='highest')
     a=p.parse_args();a.device='cuda';a.preparation='raw_gpu';a.seed=17;a.shard_prefetch=16;a.shard_prefetch_mib=64
@@ -89,6 +92,10 @@ def main():
     if not 1<=a.validation_batch_size<=16384 or not 0<=a.validation_workers<=32:raise ValueError('Validation bounds')
     if not 1e-9<=a.price_lr<=1e-4 or not 1e-9<=a.activity_lr<=1e-4:raise ValueError('LR bounds')
     if min(a.warmup_steps,a.validation_every,a.checkpoint_every,a.profile_batches)<1 or a.max_updates<0:raise ValueError('Cadence')
+    if not 0<a.lr_floor<=a.lr_peak<=1e-3:raise ValueError('LR endpoints')
+    if a.schedule=='epoch_cosine' and a.epochs<2:raise ValueError('At least two cosine values required')
+    if a.fork_from and a.schedule!='epoch_cosine':raise ValueError('Scientific fork requires explicit new schedule')
+    if a.fork_from and not a.resume and (a.output/'wandb-identity.json').exists():raise ValueError('Fork needs a new run identity')
     preflight(a);torch.cuda.set_per_process_memory_fraction(.85);torch.set_num_threads(4);torch.set_float32_matmul_precision(a.matmul_precision);torch.manual_seed(a.seed);random.seed(a.seed);np.random.seed(a.seed)
     if file_hash(a.checkpoint)!=PARENT_SHA:raise ValueError('Selected V26 checkpoint changed')
     saved=torch.load(a.checkpoint,map_location='cpu',weights_only=False);split=load_split(a.split);data=verify(a.data)
@@ -111,6 +118,12 @@ def main():
             validation_batch_size=a.validation_batch_size,validation_workers=a.validation_workers,
             validation_every=a.validation_every,checkpoint_every=a.checkpoint_every,parameters=sum(p.numel() for p in model.parameters()),
             representation='64x64',decoder_parameters=792,authorization='User approved20 epochs on full Phase1 after V26 audit; optimize pipeline',checkpoint_upload=False)
+        if a.schedule=='epoch_cosine':
+            contract.update(version='phase1-v26-full20-epoch-cosine',schedule='20 epoch-held cosine values; identical LR in ALL parameter groups; no warmup',
+                lr_peak=a.lr_peak,lr_floor=a.lr_floor,lr_values=[epoch_learning_rate(i,a.epochs,a.lr_peak,a.lr_floor) for i in range(a.epochs)],
+                initialization='Continue weights, Adam state, RNG and exact data cursor from preserved checkpoint; new scientific W&B identity',
+                fork_checkpoint_sha=file_hash(a.fork_from) if a.fork_from else None,
+                price_lr=a.lr_peak,activity_lr=a.lr_peak,warmup_steps=0)
         if a.resume:contract=resume_contract(contract,a.resume)
         config=dict(model=contract,workers=a.workers,engineering_revision=a.source_revision,output=str(a.output),resume=str(a.resume) if a.resume else None)
         write_json(a.output/(f'resume-{int(time.time())}.json' if a.resume else 'manifest.json'),config)

@@ -219,3 +219,29 @@ Checkpoint59000 SHA256:
 Remote W&B readback confirmed the same run advancing beyond the old failure
 point with the new engineering revision. Rich panel6204 was restarted.
 Runtime `wandb-repair-20261122.json` retains recovery and live verification.
+
+## User-directed uniform epoch cosine, 2026-11-22
+
+The user requested stopping the conservative-LR run and applying cosine1e-4
+to1e-6 to all groups, with20 updates over20 epochs. Interpretation:20 distinct
+epoch-held LR values, not20 optimizer updates. Epoch index0 uses1e-4; index19
+uses1e-6, with `floor + .5*(peak-floor)*(1+cos(pi*epoch/19))` between them.
+No warmup or per-group multipliers remain in this mode.
+
+The prior run stopped cleanly at66079; checkpoint SHA256
+`b5ed5440f4e4ec6406d382d46512b70e78053d68bce051cef66fb9aecb149d4a`.
+Supervisor confirmed trainer/workers exited and GPU idle; its STOP remains.
+This is a new scientific identity, linked through `--fork-from`. Weights,
+Adam moments, RNG, global step and exact data cursor continue from the checkpoint.
+The original20-epoch data horizon remains: the rest of epoch1 uses1e-4, with
+subsequent changes at epoch boundaries. No dataset prefix is retrained merely
+to reset epoch numbering. Best/reference metrics reset to the fork checkpoint.
+Subsequent engineering resumes must retain `--fork-from` as well as `--resume`
+so the scientific contract and ancestor hash remain identical.
+
+CLI additions: `--schedule epoch_cosine --lr-peak 1e-4 --lr-floor 1e-6
+--fork-from D:\TradingML\runtimes\bar_gpt\phase1-v26-full20-20261122\checkpoint_last.pt`.
+Use a NEW output directory for the first fork; model/data/masks, lightweight
+decoder, throughput settings and W&B checkpoint-upload prohibition are unchanged.
+Nine focused tests passed, including both cosine endpoints,20 distinct values,
+epoch-based restoration, existing model tests and failure recovery.
