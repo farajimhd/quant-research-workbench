@@ -9,6 +9,22 @@ from .objectives import objective
 from .transforms import coordinates, decode, raw_values, GROUPS, TRANSFORM_VERSION
 
 
+def test_bf16_blocks_keep_readout_and_optimizer_parameters_fp32():
+    model = Autoencoder(parameters())
+    model.configure_execution("math", "bf16", summary_only=True)
+    _, values = example(torch.float32)
+    valid = torch.ones_like(values, dtype=torch.bool)
+    # Portable CPU test: this laptop's oneDNN build lacks BF16 backward.
+    # CUDA profiling separately exercises the actual workstation kernels.
+    with torch.backends.mkldnn.flags(enabled=False):
+        out = model(values, valid)
+        assert out["logs"].dtype == out["embedding"].dtype == torch.float32
+        loss, _ = objective(model, out, values, valid)
+        loss.backward()
+        assert torch.isfinite(loss)
+        assert all(p.dtype == torch.float32 and torch.isfinite(p.grad).all() for p in model.parameters())
+
+
 @pytest.mark.parametrize("attention", ["sdpa", "math"])
 def test_final_summary_query_preserves_outputs_and_gradients(attention):
     """Dropping unused final queries must preserve every trainable gradient."""

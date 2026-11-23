@@ -44,6 +44,8 @@ def parser():
         "--split", type=Path, default=root / "phase1-v6-cohort-balanced-v4/split.json"
     )
     result.add_argument("--resume", type=Path)
+    result.add_argument("--precision", choices=("fp32", "bf16"), default="fp32")
+    result.add_argument("--precision-fork", action="store_true", help="Start a separate BF16 experiment from a verified FP32 checkpoint")
     result.add_argument("--engineering-resume", action="store_true", help="Permit only the qualified FP32 execution transition; preserve scientific contract")
     result.add_argument("--training-panel-metrics", action="store_true", help="Evaluate a fixed train-only sample alongside development")
     result.add_argument("--epochs", type=int, default=20)
@@ -113,7 +115,14 @@ def main():
         raise ValueError("Keep per-worker prefetch bounded to8 or fewer batches")
     if not 0 < args.min_learning_rate <= args.learning_rate:
         raise ValueError("Require0 < minimum LR <= peak LR")
-    if args.resume and args.resume.resolve().parent != args.output.resolve():
+    if args.precision_fork:
+        if not args.resume or args.precision != "bf16" or not args.optimized or args.engineering_resume or not args.training_panel_metrics:
+            raise ValueError("Precision fork requires BF16, optimized execution and a parent checkpoint")
+        if args.output.exists():
+            raise ValueError("A precision fork requires a fresh output directory")
+    if args.precision == "bf16" and not args.optimized:
+        raise ValueError("BF16 requires the profiled optimized block path")
+    if args.resume and not args.precision_fork and args.resume.resolve().parent != args.output.resolve():
         raise ValueError("Resume in the SAME run directory to preserve identity")
     args.preparation = "raw_gpu"
     args.shard_prefetch = 16
@@ -159,7 +168,7 @@ def main():
     if args.optimized:
         if args.device != "cuda":
             raise ValueError("Optimized replay requires CUDA")
-        model.configure_execution("math", "fp32", summary_only=True)
+        model.configure_execution("math", args.precision, summary_only=True)
     contract = dict(
         version=TRANSFORM_VERSION,
         source=args.source_revision,
@@ -177,14 +186,28 @@ def main():
         seed=args.seed,
         learning_rate=args.learning_rate,
         min_learning_rate=args.min_learning_rate,
-        precision="FP32",
+        precision="FP32" if args.precision == "fp32" else "BF16 blocks; FP32 residuals, norms, stem, embedding, decoder, objective and optimizer state",
         scheduler="cosine_by_consumed_windows",
         objective="equal price/activity SmoothL1 plus0.1 coordinate loss",
         selection="best fixed-development objective; inspect all quality metrics before promotion",
     )
     if args.optimized:
-        contract["execution"] = "fp32_math_summary_query_cuda_graph_v1"
+        contract["execution"] = f"{args.precision}_math_summary_query_cuda_graph_v1"
     transition = None
+    if args.precision_fork:
+        peek = torch.load(args.resume, map_location="cpu", weights_only=False)
+        previous = peek["contract"]
+        saved = load_checkpoint(args.resume, previous)
+        comparable = copy.deepcopy(contract)
+        comparable["precision"] = "FP32"
+        comparable["execution"] = "fp32_math_summary_query_cuda_graph_v1"
+        verify_engineering_transition(previous, comparable)
+        args.resume_contract = previous
+        transition = dict(kind="new_precision_experiment", previous=previous, current=contract,
+                          checkpoint_sha256=file_hash(args.resume), step=saved["step"],
+                          preserved=["model", "optimizer", "rng", "cursor", "windows"],
+                          reset="new experiment identity and best-selection baseline")
+        del peek, saved
     if args.engineering_resume:
         if not args.resume or not args.optimized:
             raise ValueError("Engineering resume requires --resume and --optimized")
@@ -200,11 +223,11 @@ def main():
     if args.resume:
         load_checkpoint(args.resume, getattr(args, "resume_contract", contract))
     identity_model = contract
-    if args.resume:
+    if args.resume and not args.precision_fork:
         # Preserve the founder's scientific W&B signature. Actual execution and
         # checkpoint contracts remain explicit and separately verified above.
         identity_model = json.loads((args.output / "manifest.json").read_text())["model"]
-        if args.optimized:
+        if args.engineering_resume:
             verify_engineering_transition(identity_model, contract)
     run_config = dict(
         model=identity_model,
@@ -218,7 +241,8 @@ def main():
     )
     with lease(args.output):
         if transition:
-            receipt = args.output / f"engineering-transition-{transition['step']}-{args.source_revision[:9]}.json"
+            prefix = "precision-fork" if args.precision_fork else "engineering-transition"
+            receipt = args.output / f"{prefix}-{transition['step']}-{args.source_revision[:9]}.json"
             if receipt.exists():
                 raise FileExistsError("Transition receipt already exists; inspect before retrying")
             write_json(receipt, transition)

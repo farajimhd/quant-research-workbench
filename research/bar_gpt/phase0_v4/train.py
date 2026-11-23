@@ -243,8 +243,13 @@ def train(model, manifest, args, contract, reporter):
             if evaluate(model, manifest, args, reporter, step, panel_sample, "training_sample") is None:
                 return "stopped"
             if args.resume:
-                if evaluate(model, manifest, args, reporter, step, development) is None:
+                initial = evaluate(model, manifest, args, reporter, step, development)
+                if initial is None:
                     return "stopped"
+                if getattr(args, "precision_fork", False):
+                    best = initial["loss"]
+                    checkpoint("checkpoint_best.pt")
+                    checkpoint()
         if not args.resume:
             initial = evaluate(model, manifest, args, reporter, step, development)
             if initial is None:
