@@ -410,7 +410,11 @@ transition at5048 retained the original W&B run, optimizer and traversal state.
 Initial training-sample evaluation took0.90s, versus roughly52s per250 training
 updates. Subsequent measured durations remain available in the reports.
 
-### BF16 continuation comparison (2026-11-23)
+### BF16 continuation comparison (superseded, 2026-11-23)
+
+This continuation was an incorrect interpretation of the user's request. The
+user required random initialization. It was stopped at48808 and labelled
+superseded in W&B; its checkpoints and metrics remain preserved as provenance.
 
 At the user's request, FP32 stopped at step47912: epoch1 complete and5.2% of
 epoch2 consumed. Its immutable parent is `checkpoint_fp32_before_bf16_47912.pt`
@@ -452,3 +456,21 @@ Evidence: `D:/TradingML/runtimes/bar_gpt/phase0-v4-bf16-compare-20261123`.
 The new run logs its FP32 reference as `comparison_fp32/*`, and its own ongoing
 `training_sample/*`, `development/*` and `validation/*` metrics. No checkpoints
 are uploaded to W&B. The panel explicitly labels the active precision.
+
+### Corrected BF16 run from random initialization
+
+Active run: `phase0-v4-attention16-bf16-random-full20-20261123`, source `77b433e9f`,
+W&B https://wandb.ai/mehdifaraji/bargpt-phase0-v4/runs/c75kl8i7 . This run has
+**no resume checkpoint**, starts at step0, uses seed17, and begins a fresh
+20-epoch schedule and fresh optimizer. It uses the same original calibration,
+data split, batch4096, optimizer settings and architecture, with BF16 block
+computation and the profiled graph/chunk262144 implementation.
+
+`checkpoint_initial.pt` and its proof retain the actual step0 state. Independent
+CPU verification reconstructed the original FP32 initializer from source
+`ed70db3f8` and confirmed exact equality of all36 model-state tensors. The
+optimizer state was empty, consumed windows0, and manifest resume null.
+`random-initialization-proof.json` and `launch-verification.json` preserve this
+evidence. Remote W&B readback confirmed new training through step250 at23.76K
+windows/s. The workstation panel now follows this corrected run. The preceding
+continuation must not be used as the from-scratch BF16 comparison.
