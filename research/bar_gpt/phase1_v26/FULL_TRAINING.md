@@ -165,3 +165,11 @@ Reproduce from a pushed, verified snapshot with `kernel_probe`,
 `--output D:\TradingML\runtimes\bar_gpt\UNIQUE_RUN` and `--checkpoint PATH`.
 Run only with the training owner gracefully stopped. Detailed JSON metrics and
 Chrome traces remain in the runtime directories; no checkpoints were uploaded.
+Comparison W&B run (separate from the active trainer so concurrent summary
+updates cannot overwrite its evidence):
+https://wandb.ai/mehdifaraji/bargpt-phase01-v26-full20/runs/k26p17160 .
+All five disposable GPU profiling/trajectory processes were verified exited.
+The original trainer resumed under PID26728, creation1795392386.496, owned by
+DESKTOP-SAAI85T\Mehdi. CPU traversal restoration took82.3s; after graph warmup,
+step17925 reported8797windows/s and98% GPU utilization. No optimization gain
+is claimed for that observation. The workstation SSH Rich panel was restarted.
