@@ -38,3 +38,34 @@ uses `python -B -m research.bar_gpt.phase0_v5.panel --run RUN --keep-open`.
 The launcher records source/data/calibration hashes, fresh initialization,
 optimizer and traversal state. STOP requests preserve a resumable checkpoint.
 Reconstruction quality does not establish forecasting usefulness.
+
+## Workstation baseline, 2026-11-23
+
+Source snapshot: `10d06cbfc1a5bb49f1d83d35e0776b308d5bef4a`.
+All 31 focused tests passed, followed by a real full-loader CUDA smoke run.
+Transforms, loss, metrics, data adapter and scheduler are byte-identical to V4.
+The previous attention run `c75kl8i7` stopped gracefully at step 11,811; its
+checkpoint and logs remain in its original runtime directory.
+
+Measured complete-pipeline profiles (warm steady-state, not epoch averages):
+
+| Precision | Windows/batch | Workers | Windows/s | Loader startup |
+|---|---:|---:|---:|---:|
+| FP32 | 4,096 | 8 | 156,330 | 13.6 s |
+| BF16 hidden layers | 4,096 | 8 | 168,588 | 13.7 s |
+| FP32 | 8,192 | 16 | 159,507 | 28.2 s |
+| FP32 | 4,096 | 16 | 154,449 | 27.1 s |
+
+Selected FP32/4096/8 to preserve the precision and batch comparison with V1
+and the original V4 FP32 run. The BF16 gain was only 7.8%; gradient relative
+L2 drift was 0.00243. FP32 graph parity passed. The larger batch gain was
+small, and 16 workers doubled startup without improving 4096-batch speed.
+
+Run: `phase0-v5-mlp16-fp32-random-full20-20261123`, W&B
+`mehdifaraji/bargpt-phase0-v5-mlp16/rz5xaifz`. It uses fresh seed-17 weights,
+20 epochs, cosine 1e-4→1e-6, prefetch 4, development/training-sample metrics
+every 1,000 updates, checkpoint every 500, and full validation each epoch.
+Both train and validation cover the unchanged Phase1 split. Detailed profiles,
+selection rationale and exact launch command are under the workstation runtime
+`bar_gpt/phase0-v5-setup-20261123/`. Learning quality remains to be measured;
+these speed results are not evidence that the new representation is better.

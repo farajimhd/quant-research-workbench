@@ -1,1 +1,1 @@
-"""Single-bar feature-attention autoencoder with learned activity references."""
+"""Single-bar residual MLP baseline with V4's reversible activity coordinates."""
