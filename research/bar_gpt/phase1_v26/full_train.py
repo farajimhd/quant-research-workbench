@@ -11,6 +11,7 @@ from .train import PARTS,optimizer
 from .full_validate import Accumulator, Replay as ValidationReplay
 from ..phase1_v25.metrics import evaluate as development_evaluate
 from .gates import check
+from .reporting import ReportingFailure
 from ..phase0_v3.experiment import cache
 from ..phase1_v12.model import positions
 from ..phase1_v11.pipeline import loader, DeviceBatches
@@ -102,6 +103,7 @@ def train(model, teacher, manifest, a, contract, reporter):
         model.load_state_dict(saved['model']); opt.load_state_dict(saved['optimizer'])
         step,epoch,cursor,epoch_done,windows,phase,best=(saved[k] for k in ('step','epoch','cursor','epoch_done','windows','phase','best'))
         cursor=cursor[1]; restore_rng(saved['rng'])
+        reporter.update(checkpoint_step=step,epoch_done=epoch_done,windows=windows)
     def checkpoint(name='checkpoint_last.pt'):
         save_checkpoint(a.output/name, dict(contract=contract, model=model.state_dict(), optimizer=opt.state_dict(),
             parents=model.parents,fusion=False,seed=559,mode='independent',rng=rng_state(), step=step, epoch=epoch, cursor=(epoch,cursor), epoch_done=epoch_done,
@@ -197,6 +199,9 @@ def train(model, teacher, manifest, a, contract, reporter):
         if windows!=a.epochs*manifest['counts']['train']: raise ValueError('Training population incomplete')
         checkpoint('checkpoint_final.pt')
         return 'complete'
+    except ReportingFailure:
+        checkpoint()
+        raise
     except KeyboardInterrupt:
         checkpoint();return 'stopped'
     finally:

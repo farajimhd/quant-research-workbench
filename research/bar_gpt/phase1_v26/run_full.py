@@ -19,7 +19,7 @@ from ..phase2_v2.train import lease
 from ..v5.data_v3 import load_split,close_loader
 from ..v5.loader_index_v1 import attach
 from ..v5.shards.phase1_contract import file_hash,write_json
-from ..v5.reporting_v1 import Reporter
+from .reporting import Reporter,ReportingFailure
 from research.mlops.env import discover_env_files,load_env_files
 
 ROOT=Path('D:/TradingML/runtimes/bar_gpt')
@@ -120,8 +120,26 @@ def main():
         write_json(a.output/'launch.json',dict(argv=__import__('sys').argv,source=a.source_revision))
         try:
             result=train(model,teacher,split,a,contract,reporter);write_json(a.output/'result.json',dict(status=result,wandb_url=reporter.run.url));reporter.finish(result)
+        except ReportingFailure as exc:
+            import traceback
+            proof=json.loads((a.output/'checkpoint_last.proof.json').read_text())
+            failure=dict(error=repr(exc),traceback=traceback.format_exc(),pid=os.getpid(),checkpoint_sha=proof['sha256'],step=proof['step'])
+            write_json(a.output/f'failure-{time.time_ns()}.json',failure)
+            write_json(a.output/'reporting-retry.json',failure)
+            reporter.close_local('recovering_reporting',repr(exc))
+            print(failure['traceback'],flush=True)
+            # Checkpoint, journal, local status and workers have all been closed.
+            # A broken W&B atexit handler must not mask the receipt or block exit.
+            os._exit(75)
         except BaseException as exc:
-            write_json(a.output/f'failure-{int(time.time())}.json',dict(error=repr(exc)));reporter.finish('failed',repr(exc));raise
+            import traceback
+            failure=dict(error=repr(exc),traceback=traceback.format_exc())
+            write_json(a.output/f'failure-{time.time_ns()}.json',failure)
+            try:reporter.finish('failed',repr(exc))
+            except Exception as cleanup:
+                failure['cleanup_error']=repr(cleanup);write_json(a.output/f'cleanup-failure-{time.time_ns()}.json',failure)
+                reporter.close_local('failed',repr(exc))
+            raise
 
 
 if __name__=='__main__':main()

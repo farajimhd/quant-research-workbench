@@ -173,3 +173,33 @@ The original trainer resumed under PID26728, creation1795392386.496, owned by
 DESKTOP-SAAI85T\Mehdi. CPU traversal restoration took82.3s; after graph warmup,
 step17925 reported8797windows/s and98% GPU utilization. No optimization gain
 is claimed for that observation. The workstation SSH Rich panel was restarted.
+
+## W&B transport recovery, 2026-11-22
+
+Trainer26728 exited near step58725 after Windows error64 in W&B's local async
+service-client socket. The W&B internal log recorded HTTP200 uploads immediately
+before the disconnect. It does not establish why the local service connection
+was reset; no numerical/model failure is evidenced. Failure cleanup then raised
+MailboxClosedError, and closing the launcher stream hid the original exception.
+Checkpoint58000 remained valid (SHA256
+`5e7d356e91159dc5afae46c0de191b456bbe63b32e8341c87bd0d744332b2d3c`).
+
+V26 now wraps ONLY recognized logging-transport failures, after appending local
+metrics. The trainer checkpoints current model/optimizer/scheduler/RNG/cursor
+on that exception, saves the chained traceback, closes local reporting and
+exits75 without invoking the broken W&B shutdown hooks. Other exceptions retain
+their original traceback; cleanup errors are recorded separately. Standard
+log streams remain open through interpreter shutdown.
+
+`full_launch --supervise` runs a finite parent process, not a scheduled task.
+It permits at most three retries,30s apart, only for exit75 plus a child-owned
+receipt matching the checkpoint proof. It verifies child/observed descendant
+exit before retrying; remaining workers or changed receipts fail closed.
+Human STOP markers prevent launch/retry. Each retry uses the same run directory,
+W&B identity and exact checkpoint state. Model, objective, masks, LR, batching,
+precision and kernels are unchanged. Initial recovery from the historical
+failure replays work after58000; those previously logged steps remain in history.
+
+Validation: eight focused tests passed, including injected transport failures,
+local-journal preservation, nontransport rejection, bounded supervisor retries,
+STOP handling and exact serialized optimizer/RNG next-update recovery.
