@@ -20,6 +20,7 @@ TERMINAL_STATES = {
     "failed",
     "stopped",
     "bounded_complete",
+    "qualification_complete",
     "interrupted_use_last_checkpoint",
 }
 

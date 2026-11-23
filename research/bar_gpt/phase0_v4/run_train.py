@@ -170,7 +170,9 @@ def main():
         write_json(args.output / "manifest.json", run_config)
         try:
             state = train(model, manifest, args, contract, reporter)
-            reporter.finish(state)
+            # The shared reporter uses this established success label for bounded
+            # work; passing a new label would incorrectly mark W&B as failed.
+            reporter.finish("qualification_complete" if state == "bounded_complete" else state)
         except ReportingFailure as error:
             # Do not call a known-broken SDK again while closing local evidence.
             reporter.close_local("failed", repr(error))
