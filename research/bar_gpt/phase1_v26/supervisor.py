@@ -13,15 +13,19 @@ def supervise(arguments,console_log,limit=3,delay=30):
     if '--output' not in arguments:raise ValueError('Run output required')
     root=Path(arguments[arguments.index('--output')+1]).resolve()
     if not root.is_relative_to(Path('D:/TradingML/runtimes').resolve()):raise ValueError('Runtime authority')
-    root.mkdir(parents=True,exist_ok=True)
+    if not root.parent.is_dir():raise FileNotFoundError('Runtime parent must exist')
     command=[sys.executable,'-B','-u','-m','research.bar_gpt.phase1_v26.full_launch','--console-log',str(console_log),*arguments]
     attempts=[]
     for attempt in range(limit+1):
         if (root/'STOP').exists() or (root.parent/'STOP').exists():return 0
         child=subprocess.Popen(command,stdin=subprocess.DEVNULL);owner=psutil.Process(child.pid)
         descendants={};row=dict(attempt=attempt,pid=child.pid,created=owner.create_time(),started=time.time());attempts.append(row)
-        write_json(root/'supervisor.json',dict(pid=os.getpid(),attempts=attempts,restart_limit=limit))
+        published=root.exists()
+        initial=root/'supervisor.json' if published else root.parent/f'supervisor-{root.name}.json'
+        write_json(initial,dict(pid=os.getpid(),attempts=attempts,restart_limit=limit))
         while child.poll() is None:
+            if not published and root.is_dir():
+                write_json(root/'supervisor.json',dict(pid=os.getpid(),attempts=attempts,restart_limit=limit));published=True
             try:
                 for p in owner.children(recursive=True):descendants[(p.pid,p.create_time())]=p
             except psutil.NoSuchProcess:pass
@@ -30,7 +34,7 @@ def supervise(arguments,console_log,limit=3,delay=30):
         alive=[p for p in descendants.values() if p.is_running()]
         if alive:_,alive=psutil.wait_procs(alive,timeout=30)
         row['remaining_owned_pids']=[p.pid for p in alive]
-        write_json(root/'supervisor.json',dict(pid=os.getpid(),attempts=attempts,restart_limit=limit))
+        write_json(root/'supervisor.json' if root.is_dir() else initial,dict(pid=os.getpid(),attempts=attempts,restart_limit=limit))
         if alive:raise RuntimeError('Owned descendants still live; refusing overlapping restart')
         if child.returncode!=RETRY_EXIT or attempt==limit:return child.returncode
         # Only the trainer emits this receipt AFTER a complete checkpoint save.

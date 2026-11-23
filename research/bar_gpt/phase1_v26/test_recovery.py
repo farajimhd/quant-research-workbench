@@ -39,3 +39,18 @@ def test_supervisor_only_retries_owned_checkpointed_transport(monkeypatch,tmp_pa
     (tmp_path/'STOP').write_text('human stop')
     assert supervisor.supervise(['--output',str(tmp_path)],tmp_path/'console.log',delay=0)==0
     assert len(commands)==attempts
+
+
+def test_supervisor_does_not_precreate_fresh_trainer_directory(monkeypatch,tmp_path):
+    root=tmp_path/'fresh'
+    class Child:
+        pid=123
+        returncode=0
+        def __init__(self,*args,**kwargs):
+            assert not root.exists()
+            root.mkdir()  # Native trainer's fail-closed fresh-run admission.
+        def poll(self):return 0
+    monkeypatch.setattr(supervisor.subprocess,'Popen',Child)
+    monkeypatch.setattr(supervisor.psutil,'Process',lambda pid:SimpleNamespace(create_time=lambda:1.))
+    monkeypatch.setattr(supervisor.Path,'is_relative_to',lambda *args:True)
+    assert supervisor.supervise(['--output',str(root)],tmp_path/'console.log',delay=0)==0
