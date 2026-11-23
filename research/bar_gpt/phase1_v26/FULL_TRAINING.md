@@ -99,3 +99,69 @@ Checkpoint1000 proof has SHA256
 Remote W&B readback confirmed running state, training counters at1975,
 development metrics and no uploaded weight files. The Rich panel is running
 through a workstation SSH terminal; a physical desktop window was not verified.
+
+## Operator optimization qualification, 2026-11-22
+
+User requested a substantial speedup relative to historical100K/s runs. The
+current trainer was gracefully checkpointed at17160 (SHA256
+`bf85596f14f9ccd4d68ea6edbbc17fc3d3cc49213bae6b9b67dd4ebbd55be042`), and its
+exact process and workers exited before isolated GPU measurements. The pause
+marker was retained under an operator-specific name for the subsequent resume.
+
+Native operator traces under `phase1-v26-kernel-profile-20261122` showed about
+88ms per16-visible update and194ms per64-visible update (batch1024). Small-head
+feature attention, FP32 stable temporal attention, and activity attention were
+major costs; loader waiting was negligible. The272-wide/eight-head activity
+branch has34-value heads and uses a math fallback. Installed Torch2.12.0+cu132
+reports `is_flash_attention_available()==False` despite the enabled flag;
+Triton is not installed. GPU utilization is not proof of optimal kernel use.
+
+Matched graph-only measurements, including preparation/teacher/backward but
+excluding optimizer/loader, used the live checkpoint and unchanged masks:
+
+| Candidate | Weighted windows/s | Gain versus paired baseline | Decision |
+| --- | ---: | ---: | --- |
+| Original | 8,781 | — | Retained |
+| Explicit tiny feature attention | 9,886 | 12.6% | Failed strict gradient parity |
+| Zero-pad unaligned heads, preserve original scale | 9,385 | 6.9% | Failed gradient and directional qualification |
+| Combined tiny + padding | 10,741 | 22.3% | Rejected after matched trajectory |
+| FP32-only tiny feature attention | 9,383 | 6.7% | Rejected after matched trajectory |
+| Dense FP32 feature/stable temporal attention | 9,716 | 10.5% | Failed strict gradient parity |
+
+The first three variants are recorded in `phase1-v26-attention-profile-20261122`;
+FP32 variants in `phase1-v26-attention-fp32-profile-20261122` (paired baseline8794/s).
+No architecture, parameter, precision setting, mask, or objective was changed.
+Zero padding uses the ORIGINAL head-dimension scale, not the padded scale.
+
+Because rounding differences failed elementwise gradient tolerance, a separate
+behavioral qualification was run; this did not erase those failures. Identical
+checkpoint/Adam state,128 matched1024-window updates and fixed development
+validation were compared before/after. Acceptance required all raw-MAE and
+relative-quantile ratios within2%, every directional/accuracy difference within
+0.1 percentage points, and no nonfinite regression. Teacher anchors were shared
+baseline outputs in this trajectory test; raw-pipeline gradient/speed tests
+separately included candidate teacher execution. These are bounded development
+checks, not a claim of long-horizon equivalence.
+
+`phase1-v26-kernel-trajectory-20261122`: combined candidate's pre-update daily
+trade-volume hidden48 balanced direction fell44.615%→26.392% (18.223pp);
+padding alone changed a directional group by17.194pp. Both failed. The FP32-only
+trajectory (`phase1-v26-fp32-trajectory-20261122`) preserved raw errors closely
+before updates, but changed a directional group by1.064pp before and4.188pp
+after; worst relative-quantile ratio after updates was1.02060. It also failed.
+Small hidden-group counts and near-zero prediction changes can amplify these
+discrete metrics; the recorded differences must not be treated as macro scores.
+
+No faster kernel was promoted. Experimental kernels are opt-in probe utilities,
+not installed by the full-training launcher. Resume retains original source
+`0f0130792`, scientific contract, optimizer/scheduler/RNG/traversal, and W&B run.
+The completed measurements establish modest unqualified kernel gains, not a
+safe substantial improvement or a route to100K/s. Future work could evaluate
+a FlashAttention-capable environment or hardware-aligned architecture, with
+fresh numerical/quality qualification; neither was silently substituted here.
+
+Reproduce from a pushed, verified snapshot with `kernel_probe`,
+`attention_probe`, and `trajectory_probe`, each taking `--source-revision SHA`,
+`--output D:\TradingML\runtimes\bar_gpt\UNIQUE_RUN` and `--checkpoint PATH`.
+Run only with the training owner gracefully stopped. Detailed JSON metrics and
+Chrome traces remain in the runtime directories; no checkpoints were uploaded.
