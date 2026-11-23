@@ -203,3 +203,19 @@ failure replays work after58000; those previously logged steps remain in history
 Validation: eight focused tests passed, including injected transport failures,
 local-journal preservation, nontransport rejection, bounded supervisor retries,
 STOP handling and exact serialized optimizer/RNG next-update recovery.
+An injected native Windows launcher exception also retained its traceback and
+printed an atexit sentinel successfully after `main()` returned.
+
+Verified deployment `f8f18c191103ea9e209257d477bf34e2178e3043` (1642 files).
+Supervisor6652 launched trainer11120, creation1795407293.1812732, ownerMehdi.
+Original58000 checkpoint and proof were copied to
+`checkpoint_before_wandb_repair_58000.pt` and hash-verified before launch.
+Loader restoration took318.17s. Replayed step58725 reproduced the original
+loss11.455550139718019 exactly. Training then passed the old failure point;
+step59125 measured8801windows/s,98% GPU utilization. Development validation59000
+completed in4.24s (1s close MAE0.183109,hidden48 MAE0.181722 dollars).
+Checkpoint59000 SHA256:
+`7860aaa73618a113e3248ab299811fe808587a2214dc78ef3505a4ef172699a6`.
+Remote W&B readback confirmed the same run advancing beyond the old failure
+point with the new engineering revision. Rich panel6204 was restarted.
+Runtime `wandb-repair-20261122.json` retains recovery and live verification.
