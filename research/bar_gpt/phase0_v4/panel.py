@@ -214,7 +214,7 @@ def render(state, now=None, width=120):
     if state.get("error"):
         content.append(Text(str(state["error"]), style="red"))
     content.append(Text(f"Step {state.get('step', 'n/a')} | saved {state.get('checkpoint_step', 'n/a')} | windows/s (64 bars each)", style="dim"))
-    return Panel(Group(*content), title="Phase0 V4 | same-bar reconstruction", border_style=color)
+    return Panel(Group(*content), title=f"Phase0 V4 | {state.get('precision', 'FP32')} | same-bar reconstruction", border_style=color)
 
 
 def main():
@@ -237,17 +237,26 @@ def main():
         os.environ["TERM"] = "xterm-256color"
     console = Console(legacy_windows=False if vt else None)
     last = {}
+    precision = None
     evaluation = EvaluationReader(args.run)
     training_evaluation = EvaluationReader(args.run, "latest_training_evaluation", "training_timeframe_metrics")
 
     def read():
-        nonlocal last
+        nonlocal last, precision
         try:
             last = json.loads((args.run / "progress.json").read_text())
         except (OSError, ValueError):
             # Keep the last trustworthy observation if a publication is briefly
             # unavailable. Its age still increases, making staleness visible.
             pass
+        if precision is None:
+            try:
+                manifest = json.loads((args.run / "manifest.json").read_text())
+                precision = manifest.get("arguments", {}).get("precision", "fp32").upper()
+            except (OSError, ValueError):
+                pass
+        if precision is not None:
+            last = dict(last, precision=precision)
         return training_evaluation.enrich(evaluation.enrich(last))
 
     if args.once or not console.is_terminal:

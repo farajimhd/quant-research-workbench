@@ -409,3 +409,46 @@ validation retains its separate report and summary. The checkpoint-preserving
 transition at5048 retained the original W&B run, optimizer and traversal state.
 Initial training-sample evaluation took0.90s, versus roughly52s per250 training
 updates. Subsequent measured durations remain available in the reports.
+
+### BF16 continuation comparison (2026-11-23)
+
+At the user's request, FP32 stopped at step47912: epoch1 complete and5.2% of
+epoch2 consumed. Its immutable parent is `checkpoint_fp32_before_bf16_47912.pt`
+(SHA256 `38c42054a7d327a2c0371a29e8593b6045689d6f122df6527925414473946ff9`).
+The original run, STOP marker, epoch1 full validation and all logs remain intact.
+
+New run `phase0-v4-attention16-bf16-full20-20261123` uses source `20b7c464c`
+and W&B `mehdifaraji/bargpt-phase0-v4/edcyq5nv`. `--precision bf16
+--precision-fork` explicitly creates a new experiment while restoring weights,
+optimizer, RNG and traversal. The original20-epoch cosine schedule continues;
+it is not restarted for another20 epochs. Best-checkpoint selection is initialized
+from the new run's initial BF16 development evaluation. A precision fork rejects
+changes to data, architecture, batch size, loss or optimizer settings.
+
+BF16 applies to attention projections, attention arithmetic and feed-forward
+operations. Master weights, optimizer state, residuals, norms, scalar stem,
+16D readout, decoder, transformation and objective remain FP32. Raw reporting
+retains FP64 inversions. No decoder precision or target semantics changed.
+
+Matched checkpoint tests on all11146 development windows gave:
+
+| Mode | Development loss |1s close MAE $|1s candle direction %|1s volume balanced direction %|
+|---|---:|---:|---:|---:|
+| FP32 |17.18757|0.58736|50.31851|31.71709|
+| BF16 |16.49680|0.56375|50.36206|31.81653|
+
+Neither produced nonfinite outputs. This is an immediate precision comparison,
+not evidence that BF16 training learns better. Continued training changes weights;
+later differences must not all be attributed to precision.
+
+Full-loader100-update profiles at batch4096/workers8/prefetch4 measured19.34K
+windows/s in FP32,23.42K in BF16 with chunk32768, and23.78K with chunk262144.
+The larger chunk was selected, retaining the same training batches. Reserved
+memory was29,704MiB; loader wait0.262s across110 updates. BF16 matched gradient
+relative L2 difference was2.85%, so this remains a separately labelled precision
+experiment. The old150K windows/s target is still not achieved.
+
+Evidence: `D:/TradingML/runtimes/bar_gpt/phase0-v4-bf16-compare-20261123`.
+The new run logs its FP32 reference as `comparison_fp32/*`, and its own ongoing
+`training_sample/*`, `development/*` and `validation/*` metrics. No checkpoints
+are uploaded to W&B. The panel explicitly labels the active precision.
