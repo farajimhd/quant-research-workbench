@@ -31,6 +31,24 @@ def number(value, suffix="", precision=2):
     return "n/a" if value is None else f"{value:,.{precision}f}{suffix}"
 
 
+def enable_virtual_terminal():
+    """Enable buffered ANSI frames instead of legacy per-cell console writes."""
+    if os.name != "nt" or not sys.stdout.isatty():
+        return os.name != "nt"
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.GetConsoleMode.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    kernel.SetConsoleMode.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    handle = kernel.GetStdHandle(-11)
+    mode = wintypes.DWORD()
+    if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+        return False
+    return bool(kernel.SetConsoleMode(handle, mode.value | 0x0004))
+
+
 class SolidBar:
     """Use solid cells even on consoles where Rich's thin bar looks like dashes."""
 
@@ -99,17 +117,9 @@ def render(state, now=None):
     performance = Table(
         title="TRAINING & RESOURCES", title_justify="left", box=None, padding=(0, 1)
     )
-    performance.add_column("Metric", style="dim")
-    performance.add_column("Value", justify="right", style="cyan")
+    performance.add_column("Metric", style="dim", width=25)
+    performance.add_column("Value", justify="right", style="cyan", width=23)
     rows = (
-        (
-            "Session elapsed",
-            (
-                number(now - state["session_started"], " s", 0)
-                if state.get("session_started")
-                else "n/a"
-            ),
-        ),
         ("Train speed", number(state.get("windows_per_second"), " windows/s")),
         ("Validation speed", number(state.get("validation_windows_per_second"), " windows/s")),
         (
@@ -135,17 +145,13 @@ def render(state, now=None):
             + " / "
             + number(state.get("gpu_memory_mib"), " MiB", 0),
         ),
-        (
-            "Update / saved update",
-            f"{state.get('step', 'n/a')} / {state.get('checkpoint_step', 'n/a')}",
-        ),
     )
     for left, right in rows:
         performance.add_row(left, Text(right, style="yellow" if left == "Train loss" else "cyan"))
     latest = state.get("latest_evaluation", {})
     quality = Table(title="LATEST EVALUATION", title_justify="left", box=None, padding=(0, 1))
-    quality.add_column("Metric", style="dim")
-    quality.add_column("Value", justify="right")
+    quality.add_column("Metric", style="dim", width=24)
+    quality.add_column("Value", justify="right", width=22)
     for label, value, style in (
         ("Scope / step", f"{latest.get('scope', 'pending')} / {latest.get('step', 'n/a')}", "cyan"),
         ("Loss", number(latest.get("loss"), precision=5), "yellow"),
@@ -161,7 +167,7 @@ def render(state, now=None):
     ]
     if state.get("error"):
         content.append(Text(str(state["error"]), style="red"))
-    content.append(Text("Rates: windows/s. Each window supplies 64 independent bars.", style="dim"))
+    content.append(Text(f"Step {state.get('step', 'n/a')} | saved {state.get('checkpoint_step', 'n/a')} | windows/s (64 bars each)", style="dim"))
     return Panel(Group(*content), title="Phase0 V4 | same-bar reconstruction", border_style=color)
 
 
@@ -170,13 +176,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--once", action="store_true")
-    parser.add_argument("--keep-open", action="store_true", help="Keep final status visible until Ctrl+C")
+    parser.add_argument(
+        "--keep-open", action="store_true", help="Keep final status visible until Ctrl+C"
+    )
     args = parser.parse_args()
     # Redirected Windows streams often default to cp1252, which cannot encode
     # solid bars. Real consoles and UTF-8 log readers both support these glyphs.
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    console = Console()
+    vt = enable_virtual_terminal()
+    console = Console(legacy_windows=False if vt else None)
     last = {}
 
     def read():
@@ -193,10 +202,12 @@ def main():
         console.print(render(read()))
         return
     try:
-        with Live(render(read()), console=console, refresh_per_second=1) as live:
+        # Home and overwrite a buffered frame; do not erase every previous line.
+        # This is the ONLY refresh loop, avoiding duplicate timer-driven paints.
+        with Live(render(read()), console=console, screen=vt, auto_refresh=False) as live:
             while True:
                 state = read()
-                live.update(render(state))
+                live.update(render(state), refresh=True)
                 if state.get("state") in TERMINAL_STATES and not args.keep_open:
                     break
                 time.sleep(1)

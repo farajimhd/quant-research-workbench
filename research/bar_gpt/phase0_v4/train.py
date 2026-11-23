@@ -19,6 +19,7 @@ from .data import forward_batch
 from .metrics import Metrics
 from .objectives import objective
 from .schedule import learning_rate
+from .execution import Replay
 
 
 def stop_requested(args):
@@ -153,6 +154,7 @@ def train(model, manifest, args, contract, reporter):
     step = epoch = cursor = epoch_windows = windows = 0
     phase = "train"
     best = float("inf")
+    replay = None
     total_windows = args.epochs * manifest["counts"]["train"]
     reporter.update(
         epochs=args.epochs, epoch_total=manifest["counts"]["train"], session_started=time.time()
@@ -256,13 +258,21 @@ def train(model, manifest, args, contract, reporter):
                         for group in optimizer.param_groups:
                             group["lr"] = rate
                         optimizer.zero_grad(set_to_none=True)
-                        out, values, valid = forward_batch(model, batch)
-                        loss, parts = objective(model, out, values, valid)
-                        loss.backward()
-                        norm = torch.nn.utils.clip_grad_norm_(
-                            model.parameters(), 1.0, error_if_nonfinite=True
-                        )
-                        if not torch.isfinite(loss):
+                        if getattr(args, "optimized", False) and batch_windows == args.batch_size:
+                            if replay is None:
+                                reporter.update(stage="capturing optimized training graph")
+                                replay = Replay(model, batch)
+                            loss, norm, _, parts = replay(batch)
+                        else:
+                            # Tail batches preserve every sample through the eager
+                            # path instead of padding or silently discarding rows.
+                            out, values, valid = forward_batch(model, batch)
+                            loss, parts = objective(model, out, values, valid)
+                            loss.backward()
+                            norm = torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), 1.0, error_if_nonfinite=True
+                            )
+                        if not bool(torch.isfinite(loss) & torch.isfinite(norm)):
                             raise FloatingPointError("Nonfinite update rejected")
                         optimizer.step()
                         step += 1

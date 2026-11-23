@@ -10,6 +10,7 @@ import json
 import time
 import traceback
 from dataclasses import replace
+from types import SimpleNamespace
 from pathlib import Path
 import numpy as np
 import torch
@@ -18,44 +19,13 @@ from .model import Autoencoder, Config
 from .data import forward_batch
 from .objectives import objective
 from .metrics import Metrics
+from .execution import Replay, backward
 from ..phase1_v7.full_data import prepare_raw
 from ..phase2_v2.train import load_checkpoint
 from ..v5.shards.phase1_contract import write_json, file_hash
-
-
-def backward(model, batch):
-    """The same model, objective and gradient clipping as the actual trainer."""
-    out, values, valid = forward_batch(model, batch)
-    loss, _ = objective(model, out, values, valid)
-    loss.backward()
-    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=False)
-    return loss.detach(), norm.detach(), out["logs"].detach()
-
-
-class Replay:
-    """Capture forward/backward only; optimizer updates remain separately visible."""
-
-    def __init__(self, model, batch):
-        stream = torch.cuda.Stream()
-        stream.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(stream):
-            for _ in range(3):
-                model.zero_grad(set_to_none=True)
-                backward(model, batch)
-        torch.cuda.current_stream().wait_stream(stream)
-        model.zero_grad(set_to_none=True)
-        self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph, stream=stream):
-            self.output = backward(model, batch)
-        self.parameters = list(model.parameters())
-        self.gradients = [p.grad for p in self.parameters]
-
-    def __call__(self):
-        # Other evaluations can replace p.grad; graph buffers themselves persist.
-        for parameter, gradient in zip(self.parameters, self.gradients):
-            parameter.grad = gradient
-        self.graph.replay()
-        return self.output
+from ..v5.data_v3 import load_split, close_loader
+from ..v5.loader_index_v1 import attach
+from ..phase1_v11.pipeline import loader, DeviceBatches
 
 
 def main():
@@ -68,6 +38,12 @@ def main():
     parser.add_argument("--chunk-bars", type=int, default=0)
     parser.add_argument("--evaluate", action="store_true")
     parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Profile real full-population loader and GPU transfers",
+    )
+    parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--matmul-precision", choices=("highest", "high"), default="highest")
     parser.add_argument(
         "--modes",
@@ -101,7 +77,7 @@ def main():
         return model
 
     model = create()
-    reference_loss, _, reference_logs = backward(model, batch)
+    reference_loss, _, reference_logs, _ = backward(model, batch)
     reference_gradients = [p.grad.detach().clone() for p in model.parameters()]
     reference_logs = reference_logs.clone()
     reference_loss = float(reference_loss)
@@ -114,19 +90,24 @@ def main():
         torch.set_float32_matmul_precision(args.matmul_precision)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0, fused=True)
         optimizer.load_state_dict(copy.deepcopy(saved["optimizer"]))
-        replay = None
+        replay = source = device = None
+        startup = 0.0
         try:
             if args.evaluate:
-                development = np.load(root / "phase1-v8-learned-mae-20261117/dataset/development.npy", mmap_mode="r")
+                development = np.load(
+                    root / "phase1-v8-learned-mae-20261117/dataset/development.npy", mmap_mode="r"
+                )
                 metric = Metrics("cuda")
                 with torch.no_grad():
                     for start in range(0, len(development), 256):
-                        dev_batch = prepare_raw(development[start:start+256], native=True).to("cuda")
+                        dev_batch = prepare_raw(development[start : start + 256], native=True).to(
+                            "cuda"
+                        )
                         out, values, valid = forward_batch(model, dev_batch)
                         metric.add(model, out, values, valid, dev_batch)
                 write_json(args.output / (mode + "-development.json"), metric.result())
                 del out, values, valid, dev_batch, metric
-            measured_loss, norm, logs = backward(model, batch)
+            measured_loss, norm, logs, _ = backward(model, batch)
             difference = sum(
                 (p.grad.double() - g.double()).square().sum()
                 for p, g in zip(model.parameters(), reference_gradients)
@@ -148,18 +129,39 @@ def main():
                 for p, expected in zip(model.parameters(), gradients):
                     torch.testing.assert_close(p.grad, expected, rtol=3e-3, atol=2e-5)
             torch.cuda.reset_peak_memory_stats()
+            if args.stream:
+                manifest = load_split(root / "phase1-v6-cohort-balanced-v4/split.json")
+                manifest = attach(manifest, Path(manifest["dataset"]))
+                manifest["splits"] = {}
+                stream_args = SimpleNamespace(
+                    output=args.output / mode,
+                    batch_size=args.batch_size,
+                    workers=args.workers,
+                    prefetch=4,
+                    seed=17,
+                    preparation="raw_gpu",
+                    shard_prefetch=16,
+                    shard_prefetch_mib=64,
+                )
+                started = time.perf_counter()
+                source = loader(manifest, stream_args, "train", 0)
+                device = DeviceBatches(iter(source), "cuda")
+                startup = time.perf_counter() - started
             for step in range(args.steps + 10):
                 if step == 10:
                     torch.cuda.synchronize()
                     began = time.perf_counter()
+                current = device.pop() if device is not None else batch
                 if replay is None:
                     model.zero_grad(set_to_none=True)
-                    loss, norm, _ = backward(model, batch)
+                    loss, norm, _, _ = backward(model, current)
                 else:
-                    loss, norm, _ = replay()
+                    loss, norm, _, _ = replay(current)
                 if not bool(torch.isfinite(loss) & torch.isfinite(norm)):
                     raise FloatingPointError("Nonfinite benchmark update")
                 optimizer.step()
+                if device is not None:
+                    device.advance()
             torch.cuda.synchronize()
             seconds = time.perf_counter() - began
             row = dict(
@@ -168,12 +170,19 @@ def main():
                 windows_per_second=args.steps * args.batch_size / seconds,
                 peak_mib=torch.cuda.max_memory_allocated() / 2**20,
                 reserved_mib=torch.cuda.max_memory_reserved() / 2**20,
+                loader_startup_seconds=startup,
+                loader_wait_seconds=device.wait_seconds if device is not None else None,
                 matched_drift=drift,
                 status="profiled_not_quality_approved",
             )
         except Exception as error:
             row = dict(mode=mode, status="rejected", error=repr(error))
             (args.output / (mode + "-error.txt")).write_text(traceback.format_exc())
+        finally:
+            if device is not None:
+                device.close()
+            if source is not None:
+                close_loader(source)
         results.append(row)
         write_json(
             args.output / "profiles.json",
@@ -186,7 +195,11 @@ def main():
                 summary_only=args.summary_only,
                 matmul_precision=args.matmul_precision,
                 results=results,
-                scope="cached real-data pipeline; development qualification still required",
+                scope=(
+                    "full-data loader plus GPU updates"
+                    if args.stream
+                    else "cached real-data GPU updates"
+                ),
             ),
         )
         print(json.dumps(row), flush=True)

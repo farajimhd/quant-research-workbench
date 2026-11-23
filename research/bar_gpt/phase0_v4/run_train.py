@@ -67,6 +67,11 @@ def parser():
     result.add_argument("--layers", type=int, default=2)
     result.add_argument("--heads", type=int, default=4)
     result.add_argument("--chunk-bars", type=int, default=4096)
+    result.add_argument(
+        "--optimized",
+        action="store_true",
+        help="Qualified FP32 math attention, final-summary queries and CUDA graph replay",
+    )
     return result
 
 
@@ -103,10 +108,13 @@ def main():
     )
     # Both exact binaries were verified as Microsoft-signed Windows UI processes
     # on this workstation. They are not training owners; no wildcard is allowed.
-    preflight(args, desktop_paths=(
-        r"c:\windows\system32\applicationframehost.exe",
-        r"c:\windows\immersivecontrolpanel\systemsettings.exe",
-    ))
+    preflight(
+        args,
+        desktop_paths=(
+            r"c:\windows\system32\applicationframehost.exe",
+            r"c:\windows\immersivecontrolpanel\systemsettings.exe",
+        ),
+    )
     torch.set_num_threads(4)
     torch.manual_seed(args.seed)
     random.seed(args.seed)
@@ -130,6 +138,10 @@ def main():
         chunk_bars=args.chunk_bars,
     )
     model = Autoencoder(calibration["parameters"], config).to(args.device)
+    if args.optimized:
+        if args.device != "cuda":
+            raise ValueError("Optimized replay requires CUDA")
+        model.configure_execution("math", "fp32", summary_only=True)
     contract = dict(
         version=TRANSFORM_VERSION,
         source=args.source_revision,
@@ -152,6 +164,8 @@ def main():
         objective="equal price/activity SmoothL1 plus0.1 coordinate loss",
         selection="best fixed-development objective; inspect all quality metrics before promotion",
     )
+    if args.optimized:
+        contract["execution"] = "fp32_math_summary_query_cuda_graph_v1"
     if args.resume:
         load_checkpoint(args.resume, contract)  # Reject identity mismatch before remote logging.
     run_config = dict(
