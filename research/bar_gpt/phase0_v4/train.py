@@ -238,6 +238,10 @@ def train(model, manifest, args, contract, reporter):
     development = np.load(args.data / "development.npy", mmap_mode="r")
     panel_sample = training_panel_sample(args, development) if getattr(args, "training_panel_metrics", False) else None
     checkpoint()  # A verified recovery point exists before lengthy initialization.
+    if not args.resume:
+        # Keep one bounded initialization receipt so from-scratch experiments can
+        # prove they began with identical random weights, not a trained parent.
+        checkpoint("checkpoint_initial.pt")
     try:
         if panel_sample is not None:
             if evaluate(model, manifest, args, reporter, step, panel_sample, "training_sample") is None:
