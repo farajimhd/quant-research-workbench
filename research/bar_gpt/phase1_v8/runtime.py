@@ -5,7 +5,7 @@ import psutil,torch
 from ..v5.shards.phase1_contract import file_hash,write_json
 
 
-def preflight(args):
+def preflight(args, *, desktop_paths=()):
     if not args.output.resolve().is_relative_to(Path('D:/TradingML/runtimes').resolve()):raise ValueError('Runtime authority required')
     if (args.output/'STOP').exists() or (args.output.parent/'STOP').exists():raise RuntimeError('STOP remains in force')
     if args.device=='cuda':
@@ -30,6 +30,9 @@ def preflight(args):
             if pid==own.pid or pid==4:continue
             # Verified Windows sign-in surface can appear in WDDM compute inventory.
             if name=='c:\\windows\\system32\\logonui.exe':continue
+            # Callers may name additional verified Windows desktop components.
+            # Exact paths only; default behavior of existing campaigns is unchanged.
+            if name in desktop_paths:continue
             if name.startswith(('c:\\windows\\','c:\\program files\\','c:\\program files (x86)\\')) and Path(name).name in desktop:continue
             other.append(dict(pid=pid,name=name))
         write_json(args.output/'gpu-ownership.json',dict(other_compute_owners=other))

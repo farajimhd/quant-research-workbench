@@ -101,7 +101,12 @@ def main():
         ),
         flush=True,
     )
-    preflight(args)
+    # Both exact binaries were verified as Microsoft-signed Windows UI processes
+    # on this workstation. They are not training owners; no wildcard is allowed.
+    preflight(args, desktop_paths=(
+        r"c:\windows\system32\applicationframehost.exe",
+        r"c:\windows\immersivecontrolpanel\systemsettings.exe",
+    ))
     torch.set_num_threads(4)
     torch.manual_seed(args.seed)
     random.seed(args.seed)
