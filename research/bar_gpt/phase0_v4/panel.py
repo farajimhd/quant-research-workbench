@@ -12,7 +12,6 @@ from pathlib import Path
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.columns import Columns
 from rich.table import Table
 from rich.text import Text
 
@@ -33,13 +32,14 @@ DISPLAY_FRAMES = ("100ms", "1s", "10s", "1m", "1h", "daily")
 class EvaluationReader:
     """Cache complete evaluation reports; never mix metrics from different steps."""
 
-    def __init__(self, root):
+    def __init__(self, root, latest_key="latest_evaluation", metrics_key="timeframe_metrics"):
         self.root, self.stamp, self.report = root, None, {}
+        self.latest_key, self.metrics_key = latest_key, metrics_key
 
     def enrich(self, state):
-        latest = state.get("latest_evaluation", {})
+        latest = state.get(self.latest_key, {})
         scope = latest.get("scope")
-        if scope not in ("development", "validation"):
+        if scope not in ("development", "validation", "training_sample"):
             return state
         path = self.root / f"{scope}-latest.json"
         try:
@@ -50,7 +50,7 @@ class EvaluationReader:
         except (OSError, ValueError):
             pass
         state = dict(state)
-        state["timeframe_metrics"] = (
+        state[self.metrics_key] = (
             self.report.get("metrics", {})
             if self.stamp and self.stamp[0] == scope and self.report.get("step") == latest.get("step")
             else {}
@@ -94,6 +94,27 @@ class SolidBar:
         bar.append("\u2591" * (width - filled), style="bright_black")
         bar.append(f" {self.fraction:6.1%}")
         yield bar
+
+
+def timeframe_table(metrics, title, width):
+    """One column definition serves both populations, making comparison direct."""
+    table = Table(title=title, title_justify="left", box=None, padding=(0, 1), expand=True)
+    if width < 100:
+        headers = ("Frame", "Close $", "Price T/B/A %", "Act V/B/A %")
+    else:
+        headers = ("Frame", "Trade close $", "Trade dir %", "Bid dir %", "Ask dir %",
+                   "Vol bal %", "Bid size bal %", "Ask size bal %")
+    for i, label in enumerate(headers):
+        table.add_column(label, justify="left" if i == 0 else "right",
+                         width=([6, 8, 15, 15][i] if width < 100 else 6 if i == 0 else 12),
+                         style="cyan" if i == 0 else "yellow" if i == 1 else "magenta")
+    for frame in DISPLAY_FRAMES:
+        price = [metrics.get(f"candle/{frame}/{family}/moving_direction_pct") for family in ("trade", "bid", "ask")]
+        activity = [metrics.get(f"activity_direction/{frame}/{channel}/balanced_accuracy_pct") for channel in ("trade_volume", "bid_size", "ask_size")]
+        values = (["/".join(number(v, precision=1) for v in group) for group in (price, activity)]
+                  if width < 100 else [number(v) for v in price + activity])
+        table.add_row(frame, number(metrics.get(f"raw_mae/{frame}/trade_close"), precision=2 if width < 100 else 4), *values)
+    return table
 
 
 def render(state, now=None, width=120):
@@ -141,92 +162,34 @@ def render(state, now=None, width=120):
             state.get("validation_total", 0),
         ),
     ):
+        if label.startswith("Validation") and state.get("stage") not in ("development", "validation") and not coverage_mismatch:
+            continue
+        if label.startswith("Training") and state.get("stage") in ("development", "validation"):
+            continue
         progress.add_row(
             Text(f"{label} | {done:,}/{total:,} windows" if total else f"{label} | not started")
         )
         if total:
             progress.add_row(SolidBar(total, done))
-    performance = Table(
-        title="TRAINING & RESOURCES", title_justify="left", box=None, padding=(0, 1)
-    )
-    performance.add_column("Metric", style="dim", width=25)
-    performance.add_column("Value", justify="right", style="cyan", width=23)
-    rows = (
-        ("Train speed", number(state.get("windows_per_second"), " windows/s")),
-        ("Validation speed", number(state.get("validation_windows_per_second"), " windows/s")),
-        (
-            "Train / validation ETA",
-            number(state.get("epoch_eta_seconds"), " s", 0)
-            + " / "
-            + number(state.get("validation_eta_seconds"), " s", 0),
-        ),
-        (
-            "Train loss",
-            number(state.get("loss"), precision=5),
-        ),
-        ("Learning rate", f"{state['learning_rate']:.2e}" if state.get("learning_rate") else "n/a"),
-        (
-            "Loader startup / wait",
-            number(state.get("loader_startup_seconds"), " s")
-            + " / "
-            + number(state.get("loader_wait_seconds"), " s"),
-        ),
-        (
-            "GPU utilization / memory",
-            number(state.get("gpu_util"), "%", 0)
-            + " / "
-            + number(state.get("gpu_memory_mib"), " MiB", 0),
-        ),
-    )
-    for left, right in rows:
-        performance.add_row(left, Text(right, style="yellow" if left == "Train loss" else "cyan"))
     latest = state.get("latest_evaluation", {})
-    quality = Table(title="LATEST EVALUATION", title_justify="left", box=None, padding=(0, 1))
-    quality.add_column("Metric", style="dim", width=24)
-    quality.add_column("Value", justify="right", width=22)
-    for label, value, style in (
-        ("Scope / step", f"{latest.get('scope', 'pending')} / {latest.get('step', 'n/a')}", "cyan"),
-        ("Loss", number(latest.get("loss"), precision=5), "yellow"),
-    ):
-        quality.add_row(label, Text(value, style=style))
     metrics = state.get("timeframe_metrics", {})
-    frames = Table(title="LATEST COMPLETED EVALUATION BY TIMEFRAME", title_justify="left",
-                   box=None, padding=(0, 1), expand=True)
-    for label, style in (("Frame", "cyan"), ("Trade close\nMAE $", "yellow"),
-                         ("Trade\ndir %", "magenta"), ("Bid\ndir %", "magenta"),
-                         ("Ask\ndir %", "magenta"), ("Volume\nbal dir %", "green"),
-                         ("Bid size\nbal dir %", "green"), ("Ask size\nbal dir %", "green")):
-        frames.add_column(label, justify="left" if label == "Frame" else "right", style=style)
-    for frame in DISPLAY_FRAMES:
-        frames.add_row(frame, number(metrics.get(f"raw_mae/{frame}/trade_close"), precision=4),
-            *[number(metrics.get(f"candle/{frame}/{family}/moving_direction_pct"))
-              for family in ("trade", "bid", "ask")],
-            *[number(metrics.get(f"activity_direction/{frame}/{channel}/balanced_accuracy_pct"))
-              for channel in ("trade_volume", "bid_size", "ask_size")])
-    resources = Columns([performance, quality], padding=(0, 3))
-    legend = "Price direction: open to close, moving candles. Activity: previous bar, class-balanced."
+    training = state.get("latest_training_evaluation", {})
+    train_table = timeframe_table(state.get("training_timeframe_metrics", {}),
+        f"TRAINING SAMPLE | step {training.get('step', 'pending')} | loss {number(training.get('loss'))}", width)
+    frames = timeframe_table(metrics,
+        f"VALIDATION ({latest.get('scope', 'pending')}) | step {latest.get('step', 'pending')} | loss {number(latest.get('loss'))}", width)
+    resources = Group(
+        Text(f"Speed {number(state.get('windows_per_second'), precision=0)} w/s | GPU {number(state.get('gpu_util'), '%', 0)} | LR {state.get('learning_rate', 0):.2e} | train loss {number(state.get('loss'))}", style="cyan"),
+        Text(f"Epoch ETA {number(state.get('epoch_eta_seconds'), ' s', 0)} | loader wait {number(state.get('loader_wait_seconds'), ' s')} | eval {number(state.get('validation_windows_per_second'), ' w/s', 0)}", style="dim")
+    )
+    legend = "Price: open-close moving direction. Activity: previous-bar balanced direction."
     if width < 100:
-        # Keep all six frames and all three families visible on small consoles;
-        # combine values with an explicit order rather than truncating numbers.
-        frames = Table(title="COMPLETED EVALUATION", box=None, padding=(0, 1))
-        for label in ("Frame", "Close $", "Price dir %\nT / B / A", "Activity bal %\nV / B / A"):
-            frames.add_column(label, justify="right")
-        for frame in DISPLAY_FRAMES:
-            price = [metrics.get(f"candle/{frame}/{f}/moving_direction_pct") for f in ("trade", "bid", "ask")]
-            activity = [metrics.get(f"activity_direction/{frame}/{f}/balanced_accuracy_pct") for f in ("trade_volume", "bid_size", "ask_size")]
-            frames.add_row(frame, number(metrics.get(f"raw_mae/{frame}/trade_close")),
-                           "/".join(number(v, precision=1) for v in price),
-                           "/".join(number(v, precision=1) for v in activity))
-        resources = Group(
-            Text(f"Train {number(state.get('windows_per_second'), precision=0)} | eval {number(state.get('validation_windows_per_second'), precision=0)} windows/s", style="cyan"),
-            Text(f"Train loss {number(state.get('loss'))} | eval loss {number(latest.get('loss'))}", style="yellow"),
-            Text(f"{latest.get('scope', 'pending')} at step {latest.get('step', 'n/a')}")
-        )
-        legend = "T=trade, B=bid, A=ask, V=volume. Activity: balanced."
+        legend = "T=trade, B=bid, A=ask, V=volume; activity balanced."
     content = [
         Text(heading, style=color),
         progress,
         resources,
+        train_table,
         frames,
         Text(legend, style="dim"),
     ]
@@ -257,6 +220,7 @@ def main():
     console = Console(legacy_windows=False if vt else None)
     last = {}
     evaluation = EvaluationReader(args.run)
+    training_evaluation = EvaluationReader(args.run, "latest_training_evaluation", "training_timeframe_metrics")
 
     def read():
         nonlocal last
@@ -266,7 +230,7 @@ def main():
             # Keep the last trustworthy observation if a publication is briefly
             # unavailable. Its age still increases, making staleness visible.
             pass
-        return evaluation.enrich(last)
+        return training_evaluation.enrich(evaluation.enrich(last))
 
     if args.once or not console.is_terminal:
         console.print(render(read(), width=console.width))

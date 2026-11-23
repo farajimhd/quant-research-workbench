@@ -45,6 +45,7 @@ def parser():
     )
     result.add_argument("--resume", type=Path)
     result.add_argument("--engineering-resume", action="store_true", help="Permit only the qualified FP32 execution transition; preserve scientific contract")
+    result.add_argument("--training-panel-metrics", action="store_true", help="Evaluate a fixed train-only sample alongside development")
     result.add_argument("--epochs", type=int, default=20)
     result.add_argument(
         "--batch-size", type=int, default=256, help="Windows; each contains64 independent bars"

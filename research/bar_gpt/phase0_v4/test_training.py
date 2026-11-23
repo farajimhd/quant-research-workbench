@@ -258,3 +258,19 @@ def test_panel_rejects_inconsistent_completion_label():
     )
     assert "COVERAGE MISMATCH" in output.getvalue()
     assert "Validation (partial)" in output.getvalue()
+
+
+def test_training_diagnostics_leave_validation_summary_intact(tmp_path, monkeypatch):
+    batch, values, valid = fixture_batch()
+    monkeypatch.setattr(engine, "forward_batch", lambda model, batch: (model(values, valid), values, valid))
+    monkeypatch.setattr(engine, "prepare_raw", lambda rows, native: batch)
+    args = SimpleNamespace(output=tmp_path, device="cpu", validation_batch_size=1, log_every=1)
+    recorder = Recorder()
+    recorder.state["latest_evaluation"] = {"step": 19, "scope": "development"}
+    result = engine.evaluate(Autoencoder(parameters()), {}, args, recorder, 20,
+                             np.zeros(1), "training_sample")
+    assert result["step"] == 20
+    assert recorder.state["latest_training_evaluation"]["step"] == 20
+    assert recorder.state["latest_evaluation"]["step"] == 19
+    assert (tmp_path / "training_sample-latest.json").exists()
+    assert not (tmp_path / "development-latest.json").exists()

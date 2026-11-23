@@ -11,7 +11,7 @@ import torch
 
 from ..phase1_v11.pipeline import loader, DeviceBatches
 from ..v5.data_v3 import close_loader
-from ..v5.shards.phase1_contract import write_json
+from ..v5.shards.phase1_contract import write_json, file_hash
 from ..phase1_v7.full_data import prepare_raw
 from ..phase2_v2.train import rng_state, restore_rng, save_checkpoint, load_checkpoint
 from ..phase1_v26.reporting import ReportingFailure
@@ -28,7 +28,7 @@ def stop_requested(args):
 
 
 @torch.no_grad()
-def evaluate(model, manifest, args, reporter, step, rows=None):
+def evaluate(model, manifest, args, reporter, step, rows=None, scope=None):
     """Evaluate either fixed development rows or the ENTIRE validation split.
 
     An interrupted pass returns None and cannot become a best checkpoint. Completed
@@ -39,7 +39,8 @@ def evaluate(model, manifest, args, reporter, step, rows=None):
     metric = Metrics(args.device)
     source = device = None
     start = time.perf_counter()
-    scope = "development" if rows is not None else "validation"
+    scope = scope or ("development" if rows is not None else "validation")
+    training_sample = scope == "training_sample"
     total = len(rows) if rows is not None else manifest["counts"]["validation"]
     try:
         if rows is not None:
@@ -67,7 +68,7 @@ def evaluate(model, manifest, args, reporter, step, rows=None):
                 return None
             out, values, valid = forward_batch(model, batch)
             metric.add(model, out, values, valid, batch)
-            if index % args.log_every == 0:
+            if index % args.log_every == 0 and not training_sample:
                 elapsed = time.perf_counter() - start
                 speed = metric.windows / max(elapsed, 0.001)
                 reporter.update(
@@ -113,6 +114,10 @@ def evaluate(model, manifest, args, reporter, step, rows=None):
             },
             step,
         )
+        if training_sample:
+            reporter.update(latest_training_evaluation=dict(scope=scope, step=step,
+                            loss=result["loss"], windows=total, seconds=elapsed))
+            return result
         reporter.update(
             validation_complete=True,
             validation_windows=total,
@@ -138,6 +143,34 @@ def evaluate(model, manifest, args, reporter, step, rows=None):
         if source is not None:
             close_loader(source)
         model.train(previous_mode)
+
+
+def training_panel_sample(args, development):
+    """Freeze train-only rows with the same timeframe counts as development.
+
+    Even spacing within each timeframe avoids taking only the beginning of the
+    frozen population. These are diagnostic reconstruction metrics, never inputs
+    to model selection or gradient updates. Persist exact source row identities.
+    """
+    path = args.data / "train.npy"
+    rows = np.load(path, mmap_mode="r")
+    indices = []
+    for frame, count in zip(*np.unique(development["timeframe_us"], return_counts=True)):
+        candidates = np.flatnonzero(rows["timeframe_us"] == frame)
+        if len(candidates) < count:
+            raise ValueError("Not enough training rows for matched timeframe diagnostics")
+        indices.extend(candidates[np.linspace(0, len(candidates)-1, int(count), dtype=np.int64)].tolist())
+    indices = np.asarray(sorted(indices), dtype=np.int64)
+    receipt = dict(source=str(path), source_sha256=file_hash(path), indices=indices.tolist(),
+                   windows=len(indices), selection="evenly spaced per timeframe; development-matched counts")
+    receipt_path = args.output / "training-panel-sample.json"
+    if receipt_path.exists():
+        import json
+        if json.loads(receipt_path.read_text()) != receipt:
+            raise ValueError("Frozen training diagnostic sample changed")
+    else:
+        write_json(receipt_path, receipt)
+    return rows[indices]
 
 
 def train(model, manifest, args, contract, reporter):
@@ -203,8 +236,15 @@ def train(model, manifest, args, contract, reporter):
         reporter.update(**progress)
 
     development = np.load(args.data / "development.npy", mmap_mode="r")
+    panel_sample = training_panel_sample(args, development) if getattr(args, "training_panel_metrics", False) else None
     checkpoint()  # A verified recovery point exists before lengthy initialization.
     try:
+        if panel_sample is not None:
+            if evaluate(model, manifest, args, reporter, step, panel_sample, "training_sample") is None:
+                return "stopped"
+            if args.resume:
+                if evaluate(model, manifest, args, reporter, step, development) is None:
+                    return "stopped"
         if not args.resume:
             initial = evaluate(model, manifest, args, reporter, step, development)
             if initial is None:
@@ -317,6 +357,10 @@ def train(model, manifest, args, contract, reporter):
                         if step % args.checkpoint_every == 0:
                             checkpoint()
                         if step % args.validation_every == 0:
+                            if panel_sample is not None:
+                                if evaluate(model, manifest, args, reporter, step, panel_sample, "training_sample") is None:
+                                    checkpoint()
+                                    return "stopped"
                             result = evaluate(model, manifest, args, reporter, step, development)
                             if result is None:
                                 checkpoint()
