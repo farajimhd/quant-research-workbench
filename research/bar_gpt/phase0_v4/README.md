@@ -319,3 +319,74 @@ PID33272, through the existing idle manual panel task (zero triggers). Its previ
 definition was preserved as `previous-panel-task.xml` in the setup runtime.
 No new scheduled automation was created. Live process identities are historical
 receipts and must be rechecked before signalling anything.
+
+### Paused run and throughput qualification (2026-11-23)
+
+The user requested a stop and a target above 150K **windows/s**. The original
+run stopped at step1074, with optimizer/RNG/traversal checkpoint and proof pinned
+as `checkpoint_before_optimization_1074.pt` and its `.proof.json`. Its SHA256 is
+`404a4330b9ffcdfea9518fae6c7c87d8533cb64e4fd62c381ea285523b309c70`.
+The original STOP marker remains; the full training has **not** been resumed.
+
+Operator profiling attributed about53% of GPU time to FP32 feature attention.
+Loader waiting was only0.519s over the original run. Small parameter count does
+not imply little work: each window executes64 independent28-token transformers.
+
+| Execution | Batch windows | Measured windows/s | Evidence scope |
+|---|---:|---:|---|
+| Original FP32 |4096|10,978|Original sustained training interval|
+| FP32 explicit attention + graphs |1024|15,002|Cached real data|
+| FP32 plus final-summary queries |4096|19,935|Cached real data|
+| Same, full loader,8 workers/prefetch4 |4096|19,313|100 timed updates +10 warmup|
+| FP16 block operations |4096|25,763|Cached; not promoted|
+| TF32 plus larger batch |8192|19,713|Full loader; not promoted|
+
+The safe candidate uses FP32, explicit attention, chunk32768, final-block
+summary queries only, and CUDA graphs. Every feature still supplies keys/values;
+unused final token outputs are removed without changing model weights, decoder,
+input contract, objective, or embedding size. A CPU output/gradient parity test
+and checkpoint-matched workstation comparisons cover this optimization.
+The production launcher exposes it as `--optimized`; original defaults remain.
+Tail batches use eager execution and are not discarded.
+
+Against the same pinned checkpoint on all11,146 frozen development windows,
+FP32 gradient relative L2 difference was9.86e-6 and maximum predicted-log
+difference7.15e-6. Maximum raw-MAE difference across channels/timeframes was
+0.000263 native units; maximum activity direction recall difference was
+0.00481 percentage points. These establish numerical equivalence at this
+checkpoint, not improved learning. BF16 gradient drift reached15.8%, FP16
+0.99%, and TF32 1.23%; these modes remain experimental. FP32 full-loader startup
+was14.0s; cumulative loader wait0.266s across110 updates. GPU reserved memory
+was20,838MiB. Graph-private allocations make the allocator's allocated-memory
+peak misleading; use reserved/device measurements instead.
+
+**150K windows/s was not achieved.** The qualified improvement is about76%.
+Larger batches and reduced precision did not approach the target. Further large
+gains likely require a different encoder computation or kernel implementation;
+do not silently replace the architecture to claim an engineering speedup.
+
+Evidence root: `D:/TradingML/runtimes/bar_gpt/phase0-v4-optimize-20261123`.
+It contains operator profiles, per-mode development metrics, profiling failures,
+full-loader results, and W&B receipt. Metrics-only comparison run:
+https://wandb.ai/mehdifaraji/bargpt-phase0-v4/runs/hz501ffp . No checkpoints uploaded.
+Reproduce the qualified full-loader benchmark from snapshot `f251b1613`:
+
+```powershell
+$env:PYTHONDONTWRITEBYTECODE='1'
+python -B -m research.bar_gpt.phase0_v4.profile `
+  --checkpoint D:/TradingML/runtimes/bar_gpt/phase0-v4-attention16-full20-20261123/checkpoint_before_optimization_1074.pt `
+  --output D:/TradingML/runtimes/bar_gpt/phase0-v4-optimize-reproduction `
+  --source-revision f251b1613 --batch-size 4096 --steps 100 `
+  --chunk-bars 32768 --summary-only --stream --modes math-fp32-graph
+```
+
+Resume guards still reject changed source/execution contracts. No checkpoint
+contract was rewritten. A later engineering transition must preserve and verify
+the original identity and optimizer state explicitly.
+
+The panel uses solid block bars, compact colored metric tables, a single
+refresh loop and VT alternate-screen overwrite instead of line erasure. Windows
+VT capability is enabled on the actual console handle. `--keep-open` retains
+stopped status; `panel-status.json` reports viewer PID, mode and advancing frames
+separately from trainer progress. A render test rejects erase-line/screen control
+sequences during updates. Narrow/plain/failure/completion rendering is tested.

@@ -11,6 +11,24 @@ from . import train as engine
 from .metrics import Metrics
 from .model import Autoencoder
 from .panel import render
+from rich.live import Live
+
+
+def test_panel_updates_without_erasing_previous_frame():
+    """Alternate-screen updates overwrite in place rather than blanking lines."""
+    output = io.StringIO()
+    console = Console(file=output, width=100, height=30, force_terminal=True,
+                      force_interactive=True, legacy_windows=False,
+                      _environ={"TERM": "xterm-256color"})
+    with Live(render(dict(state="running", updated=100), now=100), console=console,
+              screen=True, auto_refresh=False) as live:
+        output.seek(0)
+        output.truncate()
+        live.update(render(dict(state="running", updated=101), now=101), refresh=True)
+        update = output.getvalue()
+        assert "\x1b[H" in update
+        assert "\x1b[2K" not in update
+        assert "\x1b[2J" not in update
 from .schedule import learning_rate
 from .test_model import example, parameters
 from .transforms import coordinates

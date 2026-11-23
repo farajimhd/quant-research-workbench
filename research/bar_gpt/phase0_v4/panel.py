@@ -185,6 +185,10 @@ def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
     vt = enable_virtual_terminal()
+    if vt and os.environ.get("TERM") in ("dumb", "unknown"):
+        # Capability was checked on the actual console handle, so an inherited
+        # noninteractive launcher label must not disable its live rendering.
+        os.environ["TERM"] = "xterm-256color"
     console = Console(legacy_windows=False if vt else None)
     last = {}
 
@@ -205,9 +209,18 @@ def main():
         # Home and overwrite a buffered frame; do not erase every previous line.
         # This is the ONLY refresh loop, avoiding duplicate timer-driven paints.
         with Live(render(read()), console=console, screen=vt, auto_refresh=False) as live:
+            frames = 0
             while True:
                 state = read()
                 live.update(render(state), refresh=True)
+                frames += 1
+                if frames == 1 or frames % 10 == 0:
+                    # This viewer receipt proves the interactive mode and advancing
+                    # redraws without modifying the trainer's progress authority.
+                    receipt = dict(pid=os.getpid(), updated=time.time(), frames=frames,
+                                   virtual_terminal=vt, alternate_screen=vt,
+                                   columns=console.width, rows=console.height)
+                    (args.run / "panel-status.json").write_text(json.dumps(receipt), encoding="utf-8")
                 if state.get("state") in TERMINAL_STATES and not args.keep_open:
                     break
                 time.sleep(1)
