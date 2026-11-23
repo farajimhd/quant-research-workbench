@@ -1,8 +1,17 @@
 """Same-bar supervision: equal price/activity families plus coordinate accuracy."""
 
 import torch
+from functools import lru_cache
 from torch.nn import functional as F
 from .transforms import coordinates
+
+
+@lru_cache(maxsize=16)
+def loss_factors(price_factor, device, dtype):
+    """Create an immutable device constant during warmup, outside graph capture."""
+    return torch.tensor(
+        [price_factor if j % 6 < 4 else 1.0 for j in range(18)], device=device, dtype=dtype
+    )
 
 
 def objective(model, out, values, valid):
@@ -17,9 +26,7 @@ def objective(model, out, values, valid):
     source_valid = valid[..., :18]
     # Mask BEFORE arithmetic so invalid NaN/Inf placeholders cannot poison grads.
     target = torch.where(source_valid, values[..., :18], out["logs"].detach())
-    factors = values.new_tensor(
-        [model.config.price_factor if j % 6 < 4 else 1.0 for j in range(18)]
-    )
+    factors = loss_factors(model.config.price_factor, values.device, values.dtype)
     error = (out["logs"] - target) * factors
     element = F.smooth_l1_loss(error, torch.zeros_like(error), reduction="none")
     # Explicit flattening also supports a single unbatched (27,) input.

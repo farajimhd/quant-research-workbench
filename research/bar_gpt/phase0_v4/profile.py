@@ -8,6 +8,7 @@ import argparse
 import copy
 import json
 import time
+import traceback
 from pathlib import Path
 import numpy as np
 import torch
@@ -151,6 +152,7 @@ def main():
             )
         except Exception as error:
             row = dict(mode=mode, status="rejected", error=repr(error))
+            (args.output / (mode + "-error.txt")).write_text(traceback.format_exc())
         results.append(row)
         write_json(
             args.output / "profiles.json",

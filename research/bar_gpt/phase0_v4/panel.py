@@ -7,6 +7,7 @@ os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
 import argparse
 import json
 import time
+import sys
 from pathlib import Path
 from rich.console import Console, Group
 from rich.live import Live
@@ -168,6 +169,10 @@ def main():
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    # Redirected Windows streams often default to cp1252, which cannot encode
+    # solid bars. Real consoles and UTF-8 log readers both support these glyphs.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     console = Console()
     last = {}
 
