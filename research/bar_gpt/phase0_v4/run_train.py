@@ -46,6 +46,7 @@ def parser():
     result.add_argument("--resume", type=Path)
     result.add_argument("--precision", choices=("fp32", "bf16"), default="fp32")
     result.add_argument("--precision-fork", action="store_true", help="Start a separate BF16 experiment from a verified FP32 checkpoint")
+    result.add_argument("--precision-comparison", type=Path, help="Verified profiling directory containing the matched FP32 development report")
     result.add_argument("--engineering-resume", action="store_true", help="Permit only the qualified FP32 execution transition; preserve scientific contract")
     result.add_argument("--training-panel-metrics", action="store_true", help="Evaluate a fixed train-only sample alongside development")
     result.add_argument("--epochs", type=int, default=20)
@@ -222,6 +223,14 @@ def main():
         del peek, saved
     if args.resume:
         load_checkpoint(args.resume, getattr(args, "resume_contract", contract))
+    comparison = None
+    if args.precision_comparison:
+        if not args.precision_fork:
+            raise ValueError("A matched precision comparison belongs to a new precision fork")
+        profile = json.loads((args.precision_comparison / "profiles.json").read_text())
+        if profile["checkpoint_sha"] != file_hash(args.resume):
+            raise ValueError("Comparison checkpoint differs from the parent")
+        comparison = json.loads((args.precision_comparison / "math-fp32-graph-development.json").read_text())
     identity_model = contract
     if args.resume and not args.precision_fork:
         # Preserve the founder's scientific W&B signature. Actual execution and
@@ -251,6 +260,9 @@ def main():
         reporter = Reporter(args.output, run_config, mode=args.wandb, project="bargpt-phase0-v4")
         write_json(args.output / "manifest.json", run_config)
         try:
+            if comparison:
+                write_json(args.output / "comparison-fp32-development.json", comparison)
+                reporter.log({f"comparison_fp32/{key}": value for key, value in comparison["metrics"].items()}, transition["step"])
             state = train(model, manifest, args, contract, reporter)
             # The shared reporter uses this established success label for bounded
             # work; passing a new label would incorrectly mark W&B as failed.
