@@ -11,7 +11,7 @@ from pathlib import Path
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress_bar import ProgressBar
+from rich.columns import Columns
 from rich.table import Table
 from rich.text import Text
 
@@ -28,6 +28,21 @@ TERMINAL_STATES = {
 def number(value, suffix="", precision=2):
     """Unknown is not zero; omit numerical claims until a measurement exists."""
     return "n/a" if value is None else f"{value:,.{precision}f}{suffix}"
+
+
+class SolidBar:
+    """Use solid cells even on consoles where Rich's thin bar looks like dashes."""
+
+    def __init__(self, total, completed):
+        self.fraction = min(1.0, max(0.0, completed / total))
+
+    def __rich_console__(self, console, options):
+        width = max(1, options.max_width - 8)
+        filled = round(width * self.fraction)
+        bar = Text("\u2588" * filled, style="bold cyan")
+        bar.append("\u2591" * (width - filled), style="bright_black")
+        bar.append(f" {self.fraction:6.1%}")
+        yield bar
 
 
 def render(state, now=None):
@@ -77,10 +92,12 @@ def render(state, now=None):
             Text(f"{label} | {done:,}/{total:,} windows" if total else f"{label} | not started")
         )
         if total:
-            progress.add_row(ProgressBar(total=total, completed=done))
-    performance = Table.grid(padding=(0, 2), expand=True)
-    performance.add_column()
-    performance.add_column(justify="right")
+            progress.add_row(SolidBar(total, done))
+    performance = Table(
+        title="TRAINING & RESOURCES", title_justify="left", box=None, padding=(0, 1)
+    )
+    performance.add_column("Metric", style="dim")
+    performance.add_column("Value", justify="right", style="cyan")
     rows = (
         (
             "Session elapsed",
@@ -99,11 +116,10 @@ def render(state, now=None):
             + number(state.get("validation_eta_seconds"), " s", 0),
         ),
         (
-            "Loss / learning rate",
-            number(state.get("loss"), precision=5)
-            + " / "
-            + (f"{state['learning_rate']:.2e}" if state.get("learning_rate") else "n/a"),
+            "Train loss",
+            number(state.get("loss"), precision=5),
         ),
+        ("Learning rate", f"{state['learning_rate']:.2e}" if state.get("learning_rate") else "n/a"),
         (
             "Loader startup / epoch wait",
             number(state.get("loader_startup_seconds"), " s")
@@ -122,23 +138,27 @@ def render(state, now=None):
         ),
     )
     for left, right in rows:
-        performance.add_row(Text(left), Text(right))
+        performance.add_row(left, Text(right, style="yellow" if left == "Train loss" else "cyan"))
     latest = state.get("latest_evaluation", {})
-    quality = Text(
-        f"Latest {latest.get('scope', 'evaluation pending')} | step {latest.get('step', 'n/a')}\n"
-    )
-    quality.append("Evaluation loss " + number(latest.get("loss"), precision=5) + "\n")
-    quality.append("1s close MAE " + number(latest.get("close_mae"), " $", 4))
-    quality.append(" | candle direction " + number(latest.get("candle_direction"), "%"))
-    quality.append(
-        "\n1s volume balanced direction " + number(latest.get("activity_direction"), "%")
-    )
-    content = [Text(heading, style=color), progress, performance, quality]
+    quality = Table(title="LATEST EVALUATION", title_justify="left", box=None, padding=(0, 1))
+    quality.add_column("Metric", style="dim")
+    quality.add_column("Value", justify="right")
+    for label, value, style in (
+        ("Scope / step", f"{latest.get('scope', 'pending')} / {latest.get('step', 'n/a')}", "cyan"),
+        ("Loss", number(latest.get("loss"), precision=5), "yellow"),
+        ("1s close MAE", number(latest.get("close_mae"), " $", 4), "yellow"),
+        ("1s candle direction", number(latest.get("candle_direction"), "%"), "magenta"),
+        ("1s volume balanced dir.", number(latest.get("activity_direction"), "%"), "magenta"),
+    ):
+        quality.add_row(label, Text(value, style=style))
+    content = [
+        Text(heading, style=color),
+        progress,
+        Columns([performance, quality], padding=(0, 3)),
+    ]
     if state.get("error"):
         content.append(Text(str(state["error"]), style="red"))
-    content.append(
-        Text("Rates count windows; each window supplies64 independent bar examples.", style="dim")
-    )
+    content.append(Text("Rates: windows/s. Each window supplies 64 independent bars.", style="dim"))
     return Panel(Group(*content), title="Phase0 V4 | same-bar reconstruction", border_style=color)
 
 

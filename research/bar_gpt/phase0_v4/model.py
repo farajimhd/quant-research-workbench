@@ -31,6 +31,8 @@ class AttentionBlock(nn.Module):
     def __init__(self, width, heads):
         super().__init__()
         self.heads = heads
+        self.attention_implementation = "sdpa"
+        self.compute_precision = "fp32"
         self.norm1 = nn.LayerNorm(width)
         self.qkv = nn.Linear(width, 3 * width)
         self.projection = nn.Linear(width, width)
@@ -42,15 +44,31 @@ class AttentionBlock(nn.Module):
         bars, features, width = tokens.shape
         # Q asks what a token needs, K describes what each token offers, and V
         # carries the information to combine. One projection produces all three.
-        projected = self.qkv(self.norm1(tokens))
-        projected = projected.reshape(bars, features, 3, self.heads, width // self.heads)
-        query, key, value = projected.permute(2, 0, 3, 1, 4).unbind(0)
-        # The attention axis is features, NEVER bars. Multiple heads can learn
-        # different relationships (e.g. prices versus activity) in parallel.
-        attended = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
-        attended = attended.transpose(1, 2).reshape(bars, features, width)
-        tokens = tokens + self.projection(attended)
-        return tokens + self.ff(self.norm2(tokens))
+        normalized = self.norm1(tokens)
+        dtype = torch.bfloat16 if self.compute_precision == "bf16" else torch.float16
+        mixed = self.compute_precision != "fp32"
+        # Experimental precision is restricted to the expensive block operations.
+        # Residual state, normalization, stem, bottleneck and decoder remain FP32.
+        with torch.autocast(tokens.device.type, dtype=dtype, enabled=mixed):
+            projected = self.qkv(normalized)
+            projected = projected.reshape(bars, features, 3, self.heads, width // self.heads)
+            query, key, value = projected.permute(2, 0, 3, 1, 4).unbind(0)
+            # A small explicit attention matrix can outperform a fused kernel
+            # designed for long sequences. This is measured, never assumed.
+            if self.attention_implementation == "math":
+                weights = torch.softmax(
+                    query @ key.transpose(-2, -1) * (width // self.heads) ** -0.5, dim=-1
+                )
+                attended = weights @ value
+            else:
+                attended = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
+            attended = attended.transpose(1, 2).reshape(bars, features, width)
+            projected = self.projection(attended)
+        tokens = tokens + projected.float()
+        normalized = self.norm2(tokens)
+        with torch.autocast(tokens.device.type, dtype=dtype, enabled=mixed):
+            correction = self.ff(normalized)
+        return tokens + correction.float()
 
 
 class Autoencoder(nn.Module):
@@ -95,6 +113,19 @@ class Autoencoder(nn.Module):
     def get_extra_state(self):
         """Seal coordinate semantics in checkpoints, not just their tensor shapes."""
         return dict(transform_version=TRANSFORM_VERSION)
+
+    def configure_execution(self, attention="sdpa", precision="fp32"):
+        """Select benchmark kernels without changing weights or decoder inputs.
+
+        Defaults preserve the original FP32 path. Nondefault modes are qualification
+        options only until matched gradients and full development metrics approve them.
+        Callers must record these non-state settings in their execution manifest.
+        """
+        if attention not in ("sdpa", "math") or precision not in ("fp32", "bf16", "fp16"):
+            raise ValueError("Unknown execution mode")
+        for block in self.blocks:
+            block.attention_implementation = attention
+            block.compute_precision = precision
 
     def set_extra_state(self, state):
         """Reject weights carrying another interpretation of the same 18 slots."""
