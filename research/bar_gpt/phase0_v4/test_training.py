@@ -27,7 +27,9 @@ def test_panel_evaluation_step_matching_and_compact_frames(tmp_path):
     Console(file=output, width=60).print(render(enriched, now=100, width=60))
     text = output.getvalue()
     assert all(frame in text for frame in DISPLAY_FRAMES)
-    assert len(text.splitlines()) <= 25
+    # Two population tables plus global status fit the workstation 30-row viewport.
+    assert len(text.splitlines()) <= 30
+    assert text.index("RUN STATUS") < text.index("TRAINING SAMPLE") < text.index("VALIDATION")
     state["latest_evaluation"]["step"] = 50
     assert reader.enrich(state)["timeframe_metrics"] == {}
 

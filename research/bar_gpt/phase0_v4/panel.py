@@ -178,10 +178,28 @@ def render(state, now=None, width=120):
         f"TRAINING SAMPLE | step {training.get('step', 'pending')} | loss {number(training.get('loss'))}", width)
     frames = timeframe_table(metrics,
         f"VALIDATION ({latest.get('scope', 'pending')}) | step {latest.get('step', 'pending')} | loss {number(latest.get('loss'))}", width)
-    resources = Group(
-        Text(f"Speed {number(state.get('windows_per_second'), precision=0)} w/s | GPU {number(state.get('gpu_util'), '%', 0)} | LR {format(state['learning_rate'], '.2e') if state.get('learning_rate') is not None else 'n/a'} | train loss {number(state.get('loss'))}", style="cyan"),
-        Text(f"Epoch ETA {number(state.get('epoch_eta_seconds'), ' s', 0)} | loader wait {number(state.get('loader_wait_seconds'), ' s')} | eval {number(state.get('validation_windows_per_second'), ' w/s', 0)}", style="dim")
-    )
+    # Stable label/value pairs make the run-level status distinct from the two
+    # population-specific metric tables. Values stay next to their headings.
+    global_metrics = Table.grid(padding=(0, 1), expand=True)
+    pairs = 3 if width >= 100 else 2
+    for _ in range(pairs):
+        global_metrics.add_column(ratio=1, no_wrap=True)
+    entries = [
+        ("Train loss", number(state.get("loss"), precision=4)),
+        ("Train speed", number(state.get("windows_per_second"), " w/s", 0)),
+        ("Epoch ETA", number(state.get("epoch_eta_seconds"), " s", 0)),
+        ("Learning rate", format(state["learning_rate"], ".2e") if state.get("learning_rate") is not None else "n/a"),
+        ("Eval speed", number(state.get("validation_windows_per_second"), " w/s", 0)),
+        ("GPU / memory", number(state.get("gpu_util"), "%", 0) + " / " + number(state.get("gpu_memory_mib", 0) / 1024, " GiB", 1) if state.get("gpu_memory_mib") is not None else "n/a"),
+    ]
+    for start in range(0, len(entries), pairs):
+        cells = []
+        for label, value in entries[start:start+pairs]:
+            cell = Text(f"{label:<13} ", style="dim")
+            cell.append(value, style="bold cyan")
+            cells.append(cell)
+        global_metrics.add_row(*cells)
+    resources = Panel(global_metrics, title="RUN STATUS", title_align="left", border_style="blue")
     legend = "Close MAE: trade. Price: open-close moving direction. Activity: previous-bar balanced direction."
     if width < 100:
         legend = "T=trade, B=bid, A=ask, V=volume; activity balanced."
