@@ -160,7 +160,7 @@ def train(model, manifest, args, contract, reporter):
         epochs=args.epochs, epoch_total=manifest["counts"]["train"], session_started=time.time()
     )
     if args.resume:
-        saved = load_checkpoint(args.resume, contract)
+        saved = load_checkpoint(args.resume, getattr(args, "resume_contract", contract))
         model.load_state_dict({**saved["model"], "_extra_state": saved["model_extra"]})
         optimizer.load_state_dict(saved["optimizer"])
         step, epoch, cursor = saved["step"], saved["epoch"], saved["cursor"][1]

@@ -7,6 +7,7 @@ import os
 os.environ.update(PYTHONDONTWRITEBYTECODE="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
 
 import argparse
+import copy
 import json
 import random
 import subprocess
@@ -43,6 +44,7 @@ def parser():
         "--split", type=Path, default=root / "phase1-v6-cohort-balanced-v4/split.json"
     )
     result.add_argument("--resume", type=Path)
+    result.add_argument("--engineering-resume", action="store_true", help="Permit only the qualified FP32 execution transition; preserve scientific contract")
     result.add_argument("--epochs", type=int, default=20)
     result.add_argument(
         "--batch-size", type=int, default=256, help="Windows; each contains64 independent bars"
@@ -73,6 +75,21 @@ def parser():
         help="Qualified FP32 math attention, final-summary queries and CUDA graph replay",
     )
     return result
+
+
+def verify_engineering_transition(previous, current):
+    """Allow source/chunk/kernel changes, never data, architecture or optimizer choices."""
+    old, new = copy.deepcopy(previous), copy.deepcopy(current)
+    if old.get("precision") != "FP32" or new.get("execution") != "fp32_math_summary_query_cuda_graph_v1":
+        raise ValueError("Only the qualified FP32 transition is allowed")
+    if old.get("execution") not in (None, new["execution"]):
+        raise ValueError("Unknown previous execution mode")
+    for contract in (old, new):
+        contract.pop("source", None)
+        contract.pop("execution", None)
+        contract["config"].pop("chunk_bars", None)
+    if old != new:
+        raise ValueError("Engineering resume cannot change the scientific/traversal contract")
 
 
 def main():
@@ -166,10 +183,31 @@ def main():
     )
     if args.optimized:
         contract["execution"] = "fp32_math_summary_query_cuda_graph_v1"
+    transition = None
+    if args.engineering_resume:
+        if not args.resume or not args.optimized:
+            raise ValueError("Engineering resume requires --resume and --optimized")
+        peek = torch.load(args.resume, map_location="cpu", weights_only=False)
+        previous = peek["contract"]
+        saved = load_checkpoint(args.resume, previous)
+        verify_engineering_transition(previous, contract)
+        args.resume_contract = previous
+        transition = dict(previous=previous, current=contract,
+                          checkpoint_sha256=file_hash(args.resume), step=saved["step"],
+                          preserved=["model", "optimizer", "rng", "cursor", "windows", "best"])
+        del peek, saved
     if args.resume:
-        load_checkpoint(args.resume, contract)  # Reject identity mismatch before remote logging.
+        load_checkpoint(args.resume, getattr(args, "resume_contract", contract))
+    identity_model = contract
+    if args.resume:
+        # Preserve the founder's scientific W&B signature. Actual execution and
+        # checkpoint contracts remain explicit and separately verified above.
+        identity_model = json.loads((args.output / "manifest.json").read_text())["model"]
+        if args.optimized:
+            verify_engineering_transition(identity_model, contract)
     run_config = dict(
-        model=contract,
+        model=identity_model,
+        execution_model=contract,
         output=str(args.output),
         resume=str(args.resume) if args.resume else None,
         arguments={
@@ -178,6 +216,11 @@ def main():
         },
     )
     with lease(args.output):
+        if transition:
+            receipt = args.output / f"engineering-transition-{transition['step']}-{args.source_revision[:9]}.json"
+            if receipt.exists():
+                raise FileExistsError("Transition receipt already exists; inspect before retrying")
+            write_json(receipt, transition)
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]), verbose=False)
         os.environ.setdefault("WANDB_ENTITY", "mehdifaraji")
         reporter = Reporter(args.output, run_config, mode=args.wandb, project="bargpt-phase0-v4")
