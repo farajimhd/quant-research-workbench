@@ -246,8 +246,8 @@ The extended local suite has25 passing tests. A separate certified-adapter
 metrics smoke covered256 bars and emitted999 populated metrics with no nonfinite
 outputs, using only four training windows. This is implementation evidence,
 not held-out performance. Receipt: `native-quality-smoke.json` under the same
-implementation runtime below. Online W&B and workstation throughput have not
-been qualified for this new trainer yet.
+implementation runtime below. Online W&B and workstation throughput were not
+qualified at that implementation stage; the subsequent native launch is below.
 
 Initial implementation verification on2026-11-23: five tests passed locally. A separate
 CPU smoke through the certified raw adapter used four training windows
@@ -259,7 +259,7 @@ full calibration or a held-out evaluation. Receipt:
 That receipt predates the trade-ratio change. The revised transform passes11
 tests, including zero/count edge cases, all64 activity validity combinations,
 predicted-volume dependency, finite gradients, and rejection of incompatible
-calibration/checkpoint semantics. No full training or full calibration has run.
+calibration/checkpoint semantics. At that stage no full training or full calibration had run.
 The revised certified-loader CPU smoke also passed256 bars with finite gradients
 and an optimizer update; maximum native roundtrip error/max(1,abs(target)) was
 3.219e-6. Its separate receipt is `native-ratio-smoke.json` in the same runtime.
@@ -268,3 +268,54 @@ and an optimizer update; maximum native roundtrip error/max(1,abs(target)) was
 $env:PYTHONDONTWRITEBYTECODE='1'
 python -B -m pytest research/bar_gpt/phase0_v4 --import-mode=importlib -o consider_namespace_packages=true -p no:cacheprovider --basetemp D:/TradingML/runtimes/bar_gpt/phase0-v4-tests -q
 ```
+
+## Native qualification and full launch, 2026-11-23
+
+Active full run: `phase0-v4-attention16-full20-20261123`, W&B
+https://wandb.ai/mehdifaraji/bargpt-phase0-v4/runs/okxwqm75 .
+Immutable source: `ed70db3f88f0c2c7be33ec9edb40a7d30282459c` in
+`D:/TradingML/codes/bargpt-phase1-v26-ed70db3f8` (the existing deployment helper
+retains its V26 directory prefix; the executed module is Phase0 V4).
+
+Training-only calibration completed on67,606 windows /4,326,784 bar exposures
+in9.45s. Maximum native roundtrip error/max(1,abs(target)) was9.536e-7.
+Calibration path: `phase0-v4-setup-20261123/calibration.json` under the BarGPT
+runtime root; SHA256 `6d4eec7e421eb76c9fe25bb0a30031c69af3a5eb8768610f6dcadd83bb6d6738`.
+Full split:186,575,722 training and47,750,007 validation windows per epoch;
+manifest identity `d60f707c91c54b72ec7a11a9119334cc973351be699c8b6d5f3d724957640d63`.
+
+A100-update native qualification completed at batch256 with development metrics
+at0,50,100 and verified checkpoints. W&B1vaqlwwg is labelled
+`phase0-v4-qualification-b256-20261123`. The inherited reporter initially treated
+the new bounded-completion label as failure; the label mapping was fixed and
+the qualification's remote terminal status corrected. It was not a training crash.
+Its original runtime and checkpoints remain preserved.
+
+Cached real-data profiling measured about6.79K windows/s at256/4096
+(batch/chunk),7.12K at256/8192,9.83K at1024/8192 and11.11K at4096/8192.
+The larger chunk passed same-input forward parity. These short kernel profiles
+are retained in `phase0-v4-setup-20261123/chunk-profiles.json`; they are not
+full-population quality experiments. Selected full-run settings: batch4096,
+chunk8192,8 loader workers,prefetch4,validation batch1024/workers8,FP32,
+20 epochs,cosine1e-4→1e-6,development every250 updates,checkpoint every100,
+and train logging every25. Architecture remains19,010 parameters with16D output.
+
+Actual full-pipeline intervals at150–425 updates measured10.8–10.9K windows/s,
+about93% GPU utilization and25,824MiB resident memory. Startup was10.46s;
+loader waiting was about0.31s through275 updates. Development250 completed
+at about17K windows/s. Development loss fell653.0597→520.1743;1s trade-close
+MAE57.2300→47.8039 dollars. Directional quality remains weak at this early stage;
+these are initialization-learning observations, not a selected-model claim.
+Remote W&B readback confirmed training through425 and development250, with no
+checkpoint files uploaded. Evidence is `wandb-readback.json` in the full run.
+
+Trainer PID46472, creation1795450562.1832273, ownerDESKTOP-SAAI85T/Mehdi,
+was independently verified. The preflight now accepts two exact Microsoft-signed
+desktop executable paths for V4 only (ApplicationFrameHost and SystemSettings);
+other callers keep their previous GPU ownership policy. No unrelated job was stopped.
+`launch.py` supplies persistent Windows standard handles and a runtime console
+log for detached WMI launches. The Rich panel runs in interactive session1,
+PID33272, through the existing idle manual panel task (zero triggers). Its previous
+definition was preserved as `previous-panel-task.xml` in the setup runtime.
+No new scheduled automation was created. Live process identities are historical
+receipts and must be rechecked before signalling anything.
