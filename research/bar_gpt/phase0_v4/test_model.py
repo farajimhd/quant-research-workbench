@@ -1,11 +1,30 @@
 """Information preservation, decoder isolation and actual optimization checks."""
 
 import itertools
+import copy
 import pytest
 import torch
 from .model import Autoencoder, Config
 from .objectives import objective
 from .transforms import coordinates, decode, raw_values, GROUPS, TRANSFORM_VERSION
+
+
+@pytest.mark.parametrize("attention", ["sdpa", "math"])
+def test_final_summary_query_preserves_outputs_and_gradients(attention):
+    """Dropping unused final queries must preserve every trainable gradient."""
+    torch.manual_seed(91)
+    reference = Autoencoder(parameters())
+    candidate = copy.deepcopy(reference)
+    candidate.configure_execution(attention, "fp32", summary_only=True)
+    _, values = example(torch.float32)
+    valid = torch.ones_like(values, dtype=torch.bool)
+    expected = reference(values, valid)
+    actual = candidate(values, valid)
+    torch.testing.assert_close(actual["logs"], expected["logs"], rtol=1e-5, atol=1e-5)
+    objective(reference, expected, values, valid)[0].backward()
+    objective(candidate, actual, values, valid)[0].backward()
+    for left, right in zip(reference.parameters(), candidate.parameters()):
+        torch.testing.assert_close(left.grad, right.grad, rtol=2e-4, atol=2e-4)
 
 
 def example(dtype=torch.float64):

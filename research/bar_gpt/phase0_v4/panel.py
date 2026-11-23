@@ -170,6 +170,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--keep-open", action="store_true", help="Keep final status visible until Ctrl+C")
     args = parser.parse_args()
     # Redirected Windows streams often default to cp1252, which cannot encode
     # solid bars. Real consoles and UTF-8 log readers both support these glyphs.
@@ -196,7 +197,7 @@ def main():
             while True:
                 state = read()
                 live.update(render(state))
-                if state.get("state") in TERMINAL_STATES:
+                if state.get("state") in TERMINAL_STATES and not args.keep_open:
                     break
                 time.sleep(1)
     except KeyboardInterrupt:

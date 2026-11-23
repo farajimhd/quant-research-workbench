@@ -33,6 +33,7 @@ class AttentionBlock(nn.Module):
         self.heads = heads
         self.attention_implementation = "sdpa"
         self.compute_precision = "fp32"
+        self.summary_only = False
         self.norm1 = nn.LayerNorm(width)
         self.qkv = nn.Linear(width, 3 * width)
         self.projection = nn.Linear(width, width)
@@ -53,6 +54,11 @@ class AttentionBlock(nn.Module):
             projected = self.qkv(normalized)
             projected = projected.reshape(bars, features, 3, self.heads, width // self.heads)
             query, key, value = projected.permute(2, 0, 3, 1, 4).unbind(0)
+            if self.summary_only:
+                # The final encoder readout uses only token zero. Its keys and
+                # values still include EVERY feature, but other query outputs
+                # cannot affect it and need not be computed or differentiated.
+                query = query[:, :, :1]
             # A small explicit attention matrix can outperform a fused kernel
             # designed for long sequences. This is measured, never assumed.
             if self.attention_implementation == "math":
@@ -62,8 +68,10 @@ class AttentionBlock(nn.Module):
                 attended = weights @ value
             else:
                 attended = F.scaled_dot_product_attention(query, key, value, dropout_p=0.0)
-            attended = attended.transpose(1, 2).reshape(bars, features, width)
+            attended = attended.transpose(1, 2).reshape(bars, -1, width)
             projected = self.projection(attended)
+        if self.summary_only:
+            tokens = tokens[:, :1]
         tokens = tokens + projected.float()
         normalized = self.norm2(tokens)
         with torch.autocast(tokens.device.type, dtype=dtype, enabled=mixed):
@@ -114,7 +122,7 @@ class Autoencoder(nn.Module):
         """Seal coordinate semantics in checkpoints, not just their tensor shapes."""
         return dict(transform_version=TRANSFORM_VERSION)
 
-    def configure_execution(self, attention="sdpa", precision="fp32"):
+    def configure_execution(self, attention="sdpa", precision="fp32", summary_only=False):
         """Select benchmark kernels without changing weights or decoder inputs.
 
         Defaults preserve the original FP32 path. Nondefault modes are qualification
@@ -126,6 +134,8 @@ class Autoencoder(nn.Module):
         for block in self.blocks:
             block.attention_implementation = attention
             block.compute_precision = precision
+            block.summary_only = False
+        self.blocks[-1].summary_only = summary_only
 
     def set_extra_state(self, state):
         """Reject weights carrying another interpretation of the same 18 slots."""

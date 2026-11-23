@@ -67,6 +67,8 @@ def main():
     parser.add_argument("--steps", type=int, default=100)
     parser.add_argument("--chunk-bars", type=int, default=0)
     parser.add_argument("--evaluate", action="store_true")
+    parser.add_argument("--summary-only", action="store_true")
+    parser.add_argument("--matmul-precision", choices=("highest", "high"), default="highest")
     parser.add_argument(
         "--modes",
         default="sdpa-fp32-eager,math-fp32-eager,sdpa-fp32-graph,math-fp32-graph,sdpa-bf16-graph,math-bf16-graph,sdpa-fp16-graph",
@@ -108,7 +110,8 @@ def main():
     for mode in args.modes.split(","):
         attention, precision, graph = mode.split("-")
         model = create()
-        model.configure_execution(attention, precision)
+        model.configure_execution(attention, precision, args.summary_only)
+        torch.set_float32_matmul_precision(args.matmul_precision)
         optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.0, fused=True)
         optimizer.load_state_dict(copy.deepcopy(saved["optimizer"]))
         replay = None
@@ -164,6 +167,7 @@ def main():
                 seconds=seconds,
                 windows_per_second=args.steps * args.batch_size / seconds,
                 peak_mib=torch.cuda.max_memory_allocated() / 2**20,
+                reserved_mib=torch.cuda.max_memory_reserved() / 2**20,
                 matched_drift=drift,
                 status="profiled_not_quality_approved",
             )
@@ -178,6 +182,9 @@ def main():
                 checkpoint_sha=file_hash(args.checkpoint),
                 batch_size=args.batch_size,
                 steps=args.steps,
+                chunk_bars=args.chunk_bars or saved["contract"]["config"]["chunk_bars"],
+                summary_only=args.summary_only,
+                matmul_precision=args.matmul_precision,
                 results=results,
                 scope="cached real-data pipeline; development qualification still required",
             ),
