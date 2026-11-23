@@ -268,3 +268,73 @@ under `overnight-monitor-20261122.jsonl`, through2026-11-23T16:34:33Z. It exits
 with an alert for failures, stale heartbeat, or stalled counters. Agent review
 of learning and recovery remains in the active task; no scheduled automation
 was created. The old-run observer exited when its trainer stopped.
+
+### Overnight quality stop and bounded diagnosis
+
+The uniform epoch-cosine continuation stopped at step67000 after921 new
+updates: the existing emergency worst-group MAE guard fired. This was a
+learning regression, not a process failure. Supervisor recorded exit0 and no
+remaining owned children. The observer exited on `quality_attention`;
+it is not evidence of a still-running full training job.
+
+All-visible 1s trade-close MAE rose from0.165258 to5.495402 dollars; hidden48
+MAE rose from0.172384 to5.507173. Across timeframe/channel groups the price
+MAE geometric ratio was11.5682 and activity6.10387 relative to the fork.
+The parent66079 checkpoint remains pinned; the stopped67000 checkpoint and
+`quality-alert.json` remain intact. The failed schedule is not automatically
+restarted by the engineering-failure supervisor.
+
+`optimizer_probe.py` compares retained versus fresh Adam state using the same
+parent weights, seed73391, sampled windows/masks, unchanged architecture/loss,
+batch1024 and uniform1e-4 for every group. These are cached training-subset
+diagnostics, not full-stream replications or a replacement training schedule.
+Each arm has a900-second deadline and writes metrics/configuration to W&B;
+no checkpoints are uploaded or promoted.
+
+In `phase1-v26-epochcos-optimizer-diagnosis-20261122`, both1024-step arms failed
+retention gates. Retained Adam: close MAE0.868854, price ratio3.14292,
+activity ratio1.27868. Fresh Adam: close MAE1.046085, price ratio3.79194,
+activity ratio2.54456. W&B identities are6le0rqas andiugl86fo respectively.
+Resetting Adam alone therefore did not establish a safe recovery.
+
+The longer matched test is `phase1-v26-epochcos-optimizer-long-20261122`,
+4096 updates per arm, source713a1b2b81afe51998d7aa8a1ee7309ca7960134.
+Retained Adam ended at close MAE2.555194, price ratio5.41737 and activity
+ratio1.73733, again failing retention. Its W&B identity isqjm73zx1.
+Fresh Adam ended at close MAE1.423800, price ratio3.60515 and activity
+ratio1.40750, also failing retention (W&Bcbim99dd). Both arms completed in
+under490seconds; remote W&B readback confirmed finished state at4096.
+Lower uniform rates are explicitly diagnostic controls; the user-requested
+full-run schedule remains paused and unchanged pending a supported decision.
+
+Three2048-update retained-Adam controls completed on the same cached data and
+seed, source50691d904a4fcc2f4d861aed0632c25bd3aa653b:
+
+| Uniform LR | 1s close MAE ($) | Price MAE ratio | Activity MAE ratio | Candle / range / activity direction (%) | W&B |
+| --- | ---: | ---: | ---: | --- | --- |
+| 1e-6 | 0.185837 | 1.02457 | 0.96680 | 90.55 / 38.94 / 68.37 | r00ivgb6 |
+| 3e-6 | 0.351715 | 1.42639 | 0.97633 | 90.55 / 38.92 / 68.38 | b19q7usp |
+| 1e-5 | 0.869753 | 2.49413 | 1.00615 | 90.66 / 38.88 / 69.17 | kq471rit |
+
+Ratios are geometric means of all-visible timeframe/channel raw MAE ratios
+to the preserved66079 checkpoint, not ratios of aggregate dollar MAE. All
+three final evaluations failed the existing gates. At1e-6 the aggregate
+ratios were close to baseline, but worst price group was1.25046 and three
+price-band medians exceeded their limits. Some intermediate evaluations
+passed; those did not establish sustained improvement. No gate was relaxed.
+
+Control runtimes are `phase1-v26-epochcos-lr{1e6,3e6,1e5}-diagnosis-20261122`.
+Each contains reference, manifest, learning points, gates and completion
+receipt. The initial reference close MAE was0.165258. These short controls
+support rejecting the abrupt uniform1e-4 continuation; they do not establish
+an optimal LR or prove long-run convergence impossible. Adam reset alone did
+not fix it. The source objective includes basis-point-scaled price shape
+terms and an inherited latent anchor; their interaction is a possible cause,
+not a confirmed defect from this experiment.
+
+Operational decision: preserve both full-run checkpoints and leave the full
+run stopped. Reverting to the earlier group-specific rates would change the
+user's explicit uniform schedule and has not been done automatically. The
+finite diagnostic processes exited; no scheduled monitoring automation was
+created. Recovery tests were rerun locally:5 passed. W&B stores metrics and
+configuration only; the diagnostic runs uploaded zero artifacts.
