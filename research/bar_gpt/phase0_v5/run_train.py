@@ -49,6 +49,7 @@ def parser():
     result.add_argument("--precision-comparison", type=Path, help="Verified profiling directory containing the matched FP32 development report")
     result.add_argument("--engineering-resume", action="store_true", help="Permit only the qualified FP32 execution transition; preserve scientific contract")
     result.add_argument("--training-panel-metrics", action="store_true", help="Evaluate a fixed train-only sample alongside development")
+    result.add_argument("--graph-validation", action="store_true", help="Qualified complete-metric CUDA replay; retain original validation batch size")
     result.add_argument("--epochs", type=int, default=20)
     result.add_argument(
         "--batch-size", type=int, default=256, help="Windows; each contains64 independent bars"
@@ -89,6 +90,9 @@ def verify_engineering_transition(previous, current):
     if old.get("execution") not in (None, new["execution"]):
         raise ValueError("Unknown previous execution mode")
     for contract in (old, new):
+        if contract.get("validation_execution") not in (None, "cuda_graph_all_metrics_v1"):
+            raise ValueError("Unknown validation execution mode")
+        contract.pop("validation_execution", None)
         contract.pop("source", None)
         contract.pop("execution", None)
         contract["config"].pop("chunk_bars", None)
@@ -123,6 +127,8 @@ def main():
             raise ValueError("A precision fork requires a fresh output directory")
     if args.precision == "bf16" and not args.optimized:
         raise ValueError("BF16 requires the profiled optimized block path")
+    if args.graph_validation and args.device != "cuda":
+        raise ValueError("Validation graph requires CUDA")
     if args.resume and not args.precision_fork and args.resume.resolve().parent != args.output.resolve():
         raise ValueError("Resume in the SAME run directory to preserve identity")
     args.preparation = "raw_gpu"
@@ -195,6 +201,8 @@ def main():
     )
     if args.optimized:
         contract["execution"] = f"{args.precision}_residual_mlp_cuda_graph_v1"
+    if args.graph_validation:
+        contract["validation_execution"] = "cuda_graph_all_metrics_v1"
     transition = None
     if args.precision_fork:
         peek = torch.load(args.resume, map_location="cpu", weights_only=False)

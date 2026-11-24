@@ -19,7 +19,7 @@ from .data import forward_batch
 from .metrics import Metrics
 from .objectives import objective
 from .schedule import learning_rate
-from .execution import Replay
+from .execution import Replay, EvaluationReplay
 
 
 def stop_requested(args):
@@ -38,6 +38,7 @@ def evaluate(model, manifest, args, reporter, step, rows=None, scope=None):
     model.eval()
     metric = Metrics(args.device)
     source = device = None
+    evaluation_replay = None
     start = time.perf_counter()
     scope = scope or ("development" if rows is not None else "validation")
     training_sample = scope == "training_sample"
@@ -66,8 +67,18 @@ def evaluate(model, manifest, args, reporter, step, rows=None, scope=None):
             if stop_requested(args):
                 reporter.update(validation_complete=False)
                 return None
-            out, values, valid = forward_batch(model, batch)
-            metric.add(model, out, values, valid, batch)
+            if (getattr(args, "graph_validation", False) and rows is None
+                    and len(batch.target) == args.validation_batch_size):
+                if evaluation_replay is None and metric.windows == 0:
+                    evaluation_replay = EvaluationReplay(model, batch, metric)
+                if evaluation_replay is not None:
+                    evaluation_replay(batch)
+                else:
+                    out, values, valid = forward_batch(model, batch)
+                    metric.add(model, out, values, valid, batch)
+            else:
+                out, values, valid = forward_batch(model, batch)
+                metric.add(model, out, values, valid, batch)
             if index % args.log_every == 0 and not training_sample:
                 elapsed = time.perf_counter() - start
                 speed = metric.windows / max(elapsed, 0.001)
@@ -321,6 +332,10 @@ def train(model, manifest, args, contract, reporter):
                             norm = torch.nn.utils.clip_grad_norm_(
                                 model.parameters(), 1.0, error_if_nonfinite=True
                             )
+                        # Enqueue the next transfer while the current GPU work
+                        # is running, before the host waits for finite checks.
+                        # No next-batch optimizer update occurs before this one.
+                        device.advance()
                         if not bool(torch.isfinite(loss) & torch.isfinite(norm)):
                             raise FloatingPointError("Nonfinite update rejected")
                         optimizer.step()
@@ -328,7 +343,6 @@ def train(model, manifest, args, contract, reporter):
                         cursor += 1
                         windows += batch_windows
                         epoch_windows += batch_windows
-                        device.advance()
                         if step % args.log_every == 0:
                             elapsed = time.perf_counter() - measured_at
                             speed = (windows - measured_windows) / max(elapsed, 0.001)

@@ -72,6 +72,27 @@ def fixture_batch():
     return batch, values, valid
 
 
+def test_graph_safe_metrics_match_original_with_missing_bars():
+    """Fixed-shape embedding reduction must exclude missing bars exactly as before."""
+    from ..phase0_v4.metrics import Metrics as OriginalMetrics
+    batch, values, valid = fixture_batch()
+    valid[:, 7] = False
+    model = Autoencoder(parameters())
+    out = model(values, valid)
+    old, new = OriginalMetrics('cpu'), Metrics('cpu')
+    for metric in (old, new):
+        metric.add(model, out, values, valid, batch)
+    expected, actual = old.result(), new.result()
+    assert actual['metrics'].keys() == expected['metrics'].keys()
+    for key in expected['metrics']:
+        np.testing.assert_allclose(actual['metrics'][key], expected['metrics'][key], rtol=1e-10, atol=1e-9)
+    batch.frames[:] = -1
+    rejected = Metrics('cpu')
+    rejected.add(model, out, values, valid, batch)
+    with pytest.raises(ValueError, match='Unknown timeframe'):
+        rejected.result()
+
+
 def test_metrics_perfect_and_wrong_activity_direction():
     batch, values, valid = fixture_batch()
     model = Autoencoder(parameters())

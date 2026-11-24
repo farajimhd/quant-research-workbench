@@ -46,6 +46,12 @@ class Metrics:
         )
         self.band_edges = torch.tensor([0.1, 1.0, 5.0, 20.0, 100.0], device=device)
         self.bands = torch.zeros(6 * 6, 3, device=device, dtype=torch.float64)
+        # Create constants outside graph capture; constructing them from Python
+        # lists inside capture would require a forbidden host-to-device copy.
+        self.frames = torch.tensor(FRAMES, device=device)
+        self.activity_indices = torch.tensor(ACTIVITY, device=device)
+        self.unknown_frames = torch.zeros((), device=device, dtype=torch.int64)
+        self.embedding_count = torch.zeros((), device=device, dtype=torch.int64)
 
     @torch.no_grad()
     def add(self, model, out, values, valid, batch):
@@ -60,9 +66,9 @@ class Metrics:
         keep = source & finite
         target = torch.where(source, target, 0)
         predicted = torch.where(finite, predicted, 0)
-        frame_matches = batch.frames[:, None] == batch.frames.new_tensor(FRAMES)
-        if not bool(frame_matches.any(-1).all()):
-            raise ValueError("Unknown timeframe in metrics")
+        frame_matches = batch.frames[:, None] == self.frames
+        # Validate before publishing, without synchronizing the CPU every batch.
+        self.unknown_frames += (~frame_matches.any(-1)).sum()
         frame = frame_matches.long().argmax(-1)
         groups = F.one_hot(frame, 6).T.double()
         code, code_valid = coordinates(values[..., :18], source)
@@ -73,12 +79,13 @@ class Metrics:
         if "embedding" in out:
             # Missing bars have no market reconstruction target; do not let their
             # repeated placeholder embeddings dominate the collapse diagnostic.
-            embedding = out["embedding"][source.any(-1)].double()
+            embedding_mask = source.any(-1)
+            embedding = torch.where(embedding_mask[..., None], out["embedding"], 0).double().reshape(-1, model.config.embedding)
             moments = torch.stack((embedding.sum(0), embedding.square().sum(0)))
             if self.embedding_moments is None:
                 self.embedding_moments = torch.zeros_like(moments)
             self.embedding_moments += moments
-            self.embedding_count += len(embedding)
+            self.embedding_count += embedding_mask.sum()
         error = predicted - target
         nonzero = keep & (target != 0)
         denominator = torch.where(nonzero, target.abs(), 1)
@@ -163,9 +170,12 @@ class Metrics:
             m[:, 1:, :, 3] & m[:, :-1, :, 3] & (pc[:, :-1] > 0),
             frame,
         )
-        actual_delta = target[:, 1:, ACTIVITY] - target[:, :-1, ACTIVITY]
-        predicted_delta = predicted[:, 1:, ACTIVITY] - predicted[:, :-1, ACTIVITY]
-        pair_mask = keep[:, 1:, ACTIVITY] & keep[:, :-1, ACTIVITY]
+        activity_target = target.index_select(-1, self.activity_indices)
+        activity_prediction = predicted.index_select(-1, self.activity_indices)
+        activity_keep = keep.index_select(-1, self.activity_indices)
+        actual_delta = activity_target[:, 1:] - activity_target[:, :-1]
+        predicted_delta = activity_prediction[:, 1:] - activity_prediction[:, :-1]
+        pair_mask = activity_keep[:, 1:] & activity_keep[:, :-1]
         # Classes: down=0, unchanged=1, up=2. Balanced accuracy prevents a large
         # unchanged population from hiding a systematically wrong moving class.
         actual_class = actual_delta.sign().long() + 1
@@ -183,6 +193,8 @@ class Metrics:
         """Transfer bounded aggregates once; derive human/W&B-friendly scalars."""
         if not self.windows:
             raise ValueError("Cannot report empty evaluation")
+        if int(self.unknown_frames):
+            raise ValueError("Unknown timeframe in metrics")
         base = dict(
             windows=self.windows,
             bars=self.windows * 64,
@@ -256,10 +268,11 @@ class Metrics:
             self.violations.cpu().tolist(),
         ):
             measured["output/" + name] = count
-        if self.embedding_count:
+        embedding_count = int(self.embedding_count)
+        if embedding_count:
             sums, squares = self.embedding_moments.cpu().numpy()
             variance = np.maximum(
-                0, squares / self.embedding_count - (sums / self.embedding_count) ** 2
+                0, squares / embedding_count - (sums / embedding_count) ** 2
             )
             measured["embedding/variance_mean"] = float(variance.mean())
             measured["embedding/near_constant_dimensions"] = int((variance < 1e-8).sum())

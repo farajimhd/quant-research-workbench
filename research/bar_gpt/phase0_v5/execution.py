@@ -48,3 +48,44 @@ class Replay:
             parameter.grad = gradient
         self.graph.replay()
         return self.output
+
+
+class EvaluationReplay:
+    """Replay inference and all existing metric reductions, not a sampled subset.
+
+    Warmup allocates diagnostic tables. Reset only accumulators afterward;
+    constants and their addresses must remain fixed for CUDA graph replay.
+    Python window counters are advanced explicitly because replay executes GPU
+    operations only. Tail batches still use the ordinary eager metric path.
+    """
+
+    @torch.no_grad()
+    def __init__(self, model, batch, metric):
+        self.batch = batch.map(lambda value: value.clone())
+        self.metric = metric
+        stream = torch.cuda.Stream()
+        stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(stream):
+            for _ in range(3):
+                out, values, valid = forward_batch(model, self.batch)
+                metric.add(model, out, values, valid, self.batch)
+        torch.cuda.current_stream().wait_stream(stream)
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph, stream=stream):
+            out, values, valid = forward_batch(model, self.batch)
+            metric.add(model, out, values, valid, self.batch)
+        for name in ("loss", "raw", "moments", "activity_confusion", "violations",
+                     "coordinate_errors", "embedding_moments", "embedding_count",
+                     "denominators", "histogram", "bands", "unknown_frames"):
+            getattr(metric, name).zero_()
+        for table in (*metric.moves.tables.values(), *metric.moves.confusions.values()):
+            table.zero_()
+        metric.windows = 0
+
+    def __call__(self, batch):
+        # raw may alias grid in some batch contracts; copying it twice is safe
+        # and ensures the independent original-unit targets are never stale.
+        for name in ("grid", "slots", "valid", "frames", "raw"):
+            getattr(self.batch, name).copy_(getattr(batch, name))
+        self.graph.replay()
+        self.metric.windows += len(batch.target)
