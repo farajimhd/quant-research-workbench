@@ -69,3 +69,36 @@ Both train and validation cover the unchanged Phase1 split. Detailed profiles,
 selection rationale and exact launch command are under the workstation runtime
 `bar_gpt/phase0-v5-setup-20261123/`. Learning quality remains to be measured;
 these speed results are not evidence that the new representation is better.
+
+## Same-run pipeline optimization
+
+The run was gracefully paused at step 510,858. A pinned checkpoint and its proof
+are retained under `bar_gpt/phase0-v5-speed-20261123/`; the source revision for
+the engineering resume is `992a96aba8b914c0391bc6323abd4464971f96a4`.
+
+| Complete pipeline, same checkpoint | Original | Qualified change |
+|---|---:|---:|
+| Validation, 1,024 windows/batch | 47,759 windows/s | 104,080 windows/s |
+| Training, 4,096 windows/batch | 158,430 windows/s | 177,362 windows/s |
+
+Validation now optionally captures inference and all metric reductions in a
+CUDA graph (`--graph-validation`). No metric, FP64 raw reporting, source mask,
+or sample is removed. Fixed-shape masked embedding reductions replace dynamic
+indexing; unknown-frame counts are checked before publishing. Graph warmup
+statistics are reset, replay advances window counts explicitly, and partial
+batches use eager evaluation. All 2,333 reported metrics matched the original
+evaluator over all 11,146 development windows, six timeframes and the 906-window
+tail (rtol 1e-8, atol 1e-7); objective loss matched exactly. Local tests: 32 passed.
+
+Training stages the next batch before synchronizing for finite-gradient checks,
+overlapping host preparation and transfer with the current backward pass. The
+optimizer still updates only after the finite check. Batch sizes, worker counts,
+precision, loss, model, data order and consumed-window schedule are unchanged.
+The checkpoint restores optimizer, RNG and traversal state; W&B retains run
+`rz5xaifz`. The original panel remains attached to this same runtime directory.
+
+Reproduce the bounded pipeline comparison using `python -B -m
+research.bar_gpt.phase0_v5.profile_pipeline --checkpoint PINNED-CHECKPOINT
+--output NEW-RUNTIME-DIRECTORY --steps 300`. This profiler consumes no live run
+state and must run only when the GPU is free. The numbers above are bounded
+steady-state measurements, not promises for every shard or complete epoch.
