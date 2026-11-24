@@ -46,10 +46,24 @@ def evaluate(model, manifest, args, reporter, step, rows=None, scope=None):
     total = len(rows) if rows is not None else manifest["counts"]["validation"]
     try:
         if rows is not None:
-            batches = (
+            # The two frozen samples are small. Cache prepared GPU inputs and
+            # their graph, never predictions: replay reads current model weights.
+            # Full validation continues streaming the entire certified split.
+            cache = getattr(model, "_evaluation_cache", {})
+            key = (scope, id(rows), args.validation_batch_size, args.device)
+            cached = cache.get(key) if getattr(args, "graph_validation", False) else None
+            if cached is not None:
+                batches, metric, evaluation_replay = cached
+                evaluation_replay.reset()
+            else:
+                batches = tuple(
                 prepare_raw(rows[i : i + args.validation_batch_size], native=True).to(args.device)
                 for i in range(0, len(rows), args.validation_batch_size)
-            )
+                )
+                if getattr(args, "graph_validation", False):
+                    evaluation_replay = EvaluationReplay(model, batches[0], metric)
+                    cache[key] = (batches, metric, evaluation_replay)
+                    model._evaluation_cache = cache
         else:
             source = loader(manifest, args, "validation")
             device = DeviceBatches(source, args.device)
@@ -68,7 +82,7 @@ def evaluate(model, manifest, args, reporter, step, rows=None, scope=None):
             if stop_requested(args):
                 reporter.update(validation_complete=False)
                 return None
-            if (getattr(args, "graph_validation", False) and rows is None
+            if (getattr(args, "graph_validation", False)
                     and len(batch.target) == args.validation_batch_size):
                 if evaluation_replay is None and metric.windows == 0:
                     evaluation_replay = EvaluationReplay(model, batch, metric)

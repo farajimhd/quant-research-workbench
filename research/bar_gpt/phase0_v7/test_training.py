@@ -49,6 +49,22 @@ def test_panel_updates_without_erasing_previous_frame():
         assert "\x1b[H" in update
         assert "\x1b[2K" not in update
         assert "\x1b[2J" not in update
+
+
+def test_expanded_panel_has_same_price_bands_in_all_three_populations():
+    metrics = {"price_band/1s/0.1_1/mape_pct": 12.34,
+               "range/1s/trade/bin_accuracy_pct": 87.65}
+    state = dict(state="running", updated=100, timeframe_metrics=metrics,
+                 training_timeframe_metrics=metrics, full_timeframe_metrics=metrics)
+    for width, height in ((220, 50), (180, 40), (120, 30), (60, 30)):
+        output = io.StringIO()
+        Console(file=output, width=width, height=height).print(render(state, now=100, width=width, height=height))
+        text = output.getvalue()
+        assert len(text.splitlines()) <= height
+        if width >= 180:
+            assert text.count("12.34") == 3
+            assert text.count("87.65") == 3
+            assert text.count("100+%") == 3
 from .schedule import learning_rate
 from .test_model import example, parameters
 from .transforms import coordinates

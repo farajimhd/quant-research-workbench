@@ -73,19 +73,24 @@ class Metrics:
         # Validate before publishing, without synchronizing the CPU every batch.
         self.unknown_frames += (~frame_matches.any(-1)).sum()
         frame = frame_matches.long().argmax(-1)
-        groups = F.one_hot(frame, 6).T.double()
+        def grouped(field):
+            # A dense FP64 matrix multiply wastes work multiplying by one-hot
+            # zeros and is slow on this GPU. Sum each window into its timeframe
+            # directly, preserving FP64 accumulators and every observation.
+            result = field.new_zeros((6, *field.shape[1:]))
+            return result.index_add_(0, frame, field)
         low, high, missing = reasons(batch.raw, batch.valid)
         eligible = ~(low | high | missing)
         for j, field in enumerate((torch.ones_like(eligible), eligible, low, high, missing)):
-            self.coverage[:, j] += groups @ field.double().sum(1)
+            self.coverage[:, j] += grouped(field.double().sum(1))
         code, code_valid = coordinates(values[..., :18], source)
         ratio_valid = source[..., 4] & source[..., 5]
-        self.average_ratio[:, 0] += groups @ ratio_valid.double().sum(1)
-        self.average_ratio[:, 1] += groups @ torch.where(ratio_valid, (out["code"][..., 5]-code[..., 5]).double().abs(), 0).sum(1)
-        self.coordinate_errors[..., 0] += groups @ code_valid.double().sum(1)
-        self.coordinate_errors[..., 1] += groups @ torch.where(
+        self.average_ratio[:, 0] += grouped(ratio_valid.double().sum(1))
+        self.average_ratio[:, 1] += grouped(torch.where(ratio_valid, (out["code"][..., 5]-code[..., 5]).double().abs(), 0).sum(1))
+        self.coordinate_errors[..., 0] += grouped(code_valid.double().sum(1))
+        self.coordinate_errors[..., 1] += grouped(torch.where(
             code_valid, (out["code"] - code).double().abs(), 0
-        ).sum(1)
+        ).sum(1))
         if "embedding" in out:
             # Missing bars have no market reconstruction target; do not let their
             # repeated placeholder embeddings dominate the collapse diagnostic.
@@ -103,7 +108,7 @@ class Metrics:
         fields = (keep.double(), error.abs(), error, relative.abs(), relative, nonzero.double())
         for index, field in enumerate(fields):
             mask = nonzero if index in (3, 4, 5) else keep
-            self.raw[..., index] += groups @ torch.where(mask, field, 0).sum(1)
+            self.raw[..., index] += grouped(torch.where(mask, field, 0).sum(1))
         moment_fields = (
             torch.ones_like(target),
             target,
@@ -113,11 +118,11 @@ class Metrics:
             (out["logs"].double() - values[..., :18]).abs(),
         )
         for index, field in enumerate(moment_fields):
-            self.moments[..., index] += groups @ torch.where(keep, field, 0).sum(1)
-        self.denominators[..., 0] += groups @ (source & (target == 0)).double().sum(1)
-        self.denominators[..., 1] += groups @ (
+            self.moments[..., index] += grouped(torch.where(keep, field, 0).sum(1))
+        self.denominators[..., 0] += grouped((source & (target == 0)).double().sum(1))
+        self.denominators[..., 1] += grouped((
             source & (target.abs() > 0) & (target.abs() < 1e-8)
-        ).double().sum(1)
+        ).double().sum(1))
         self.violations[1] += ((predicted < 0) & keep).sum()
 
         # Percent-error quantiles include every nonzero valid target, including

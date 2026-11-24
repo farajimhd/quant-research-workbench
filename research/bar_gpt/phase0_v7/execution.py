@@ -74,6 +74,11 @@ class EvaluationReplay:
         with torch.cuda.graph(self.graph, stream=stream):
             out, values, valid = forward_batch(model, self.batch)
             metric.add(model, out, values, valid, self.batch)
+        self.reset()
+
+    def reset(self):
+        """Clear totals in place: captured addresses and live model weights stay valid."""
+        metric = self.metric
         for name in ("loss", "raw", "moments", "activity_confusion", "violations",
                      "coordinate_errors", "embedding_moments", "embedding_count",
                      "denominators", "histogram", "bands", "unknown_frames", "coverage", "average_ratio"):

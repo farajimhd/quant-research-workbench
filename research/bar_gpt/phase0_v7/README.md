@@ -67,3 +67,20 @@ validation from a pinned checkpoint while checking all metric scalars for parity
 Never run GPU profiling alongside training. Results are reconstruction evidence,
 not evidence of forecasting usefulness. V7 losses are not directly comparable to
 V6 losses because both eligibility and the count objective changed.
+# Evaluation engineering update (2026-11-24)
+
+Evaluation retains all samples, original batch boundaries, FP64 metric totals,
+and the same objective. Direct timeframe reductions replace dense one-hot FP64
+matrix products. The two frozen panel/development samples are cached on GPU;
+their metric graphs replay against current weights, with totals reset each pass.
+Full validation remains a streaming pass through the complete validation split.
+Use `profile_evaluation --checkpoint ... --reference <previous metrics.py>
+--output <new runtime directory>` to check all-metric parity and pipeline speed.
+
+The panel supports `--maximize` on Windows. At 180+ columns, all three tables
+show trade-close MAE/MAPE, approximate median/P90 APE upper bounds, trade/bid/ask
+candle direction, trade range-bin accuracy, volume/bid-size/ask-size balanced
+direction, volume and smoothed-average log MAE, six all-price-field MAPE bands,
+and eligible-bar percentage. Empty groups remain `n/a`. No inference work is
+added by these columns: they read existing completed reports. Smaller terminals
+retain the compact view. Full validation is never substituted by development.

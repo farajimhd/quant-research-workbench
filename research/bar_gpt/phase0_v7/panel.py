@@ -81,6 +81,32 @@ def enable_virtual_terminal():
     return bool(kernel.SetConsoleMode(handle, mode.value | 0x0004))
 
 
+def maximize_console():
+    """Size only this interactive viewer; never change other application windows."""
+    if os.name != "nt" or not sys.stdout.isatty():
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class Coord(ctypes.Structure):
+        _fields_ = [("X", ctypes.c_short), ("Y", ctypes.c_short)]
+
+    class Font(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.ULONG), ("nFont", wintypes.DWORD),
+                    ("dwFontSize", Coord), ("FontFamily", wintypes.UINT),
+                    ("FontWeight", wintypes.UINT), ("FaceName", wintypes.WCHAR * 32)]
+
+    kernel, user = ctypes.windll.kernel32, ctypes.windll.user32
+    kernel.GetStdHandle.restype = wintypes.HANDLE
+    kernel.GetConsoleWindow.restype = wintypes.HWND
+    kernel.SetCurrentConsoleFontEx.argtypes = [wintypes.HANDLE, wintypes.BOOL, ctypes.POINTER(Font)]
+    user.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    font = Font()
+    font.cbSize, font.dwFontSize, font.FontWeight, font.FaceName = ctypes.sizeof(Font), Coord(8, 16), 400, "Consolas"
+    kernel.SetCurrentConsoleFontEx(kernel.GetStdHandle(-11), False, ctypes.byref(font))
+    user.ShowWindow(kernel.GetConsoleWindow(), 3)
+
+
 class SolidBar:
     """Use solid cells even on consoles where Rich's thin bar looks like dashes."""
 
@@ -99,18 +125,40 @@ class SolidBar:
 def timeframe_table(metrics, title, width):
     """One column definition serves both populations, making comparison direct."""
     table = Table(title=title, title_justify="left", box=None, padding=(0, 1), expand=True)
-    if width < 100:
+    expanded = width >= 180
+    if expanded:
+        headers = ("Frame", "Close $", "MAPE%", "Med%~", "P90%~", "Tdir%", "Bdir%", "Adir%",
+                   "Range%", "Vbal%", "Bbal%", "Abal%", "Vlog", "qlog",
+                   "<.1%", ".1-1%", "1-5%", "5-20%", "20-100%", "100+%", "Keep%")
+    elif width < 100:
         headers = ("Frame", "Close $", "Price T/B/A %", "Act V/B/A %")
     else:
         headers = ("Frame", "Close MAE $", "Trade dir %", "Bid dir %", "Ask dir %",
                    "Vol bal %", "BidSz bal %", "AskSz bal %")
     for i, label in enumerate(headers):
         table.add_column(label, justify="left" if i == 0 else "right",
-                         width=([6, 8, 15, 15][i] if width < 100 else 6 if i == 0 else 12),
-                         style="cyan" if i == 0 else "yellow" if i == 1 else "magenta")
+                         no_wrap=True,
+                         width=(6 if expanded else [6, 8, 15, 15][i] if width < 100 else 6 if i == 0 else 12),
+                         style="cyan" if i == 0 else "yellow" if i == 1 or expanded and i >= 14 else "magenta")
     for frame in DISPLAY_FRAMES:
         price = [metrics.get(f"candle/{frame}/{family}/moving_direction_pct") for family in ("trade", "bid", "ask")]
         activity = [metrics.get(f"activity_direction/{frame}/{channel}/balanced_accuracy_pct") for channel in ("trade_volume", "bid_size", "ask_size")]
+        if expanded:
+            quality = f"quality/{frame}/trade_close"
+            scanned = metrics.get(f"eligibility/{frame}/scanned_bars", 0)
+            kept = metrics.get(f"eligibility/{frame}/eligible_bars", 0)
+            values = [metrics.get(f"mape_pct/{frame}/trade_close"),
+                      metrics.get(quality + "/ape_median_upper_bound_pct"),
+                      metrics.get(quality + "/ape_p90_upper_bound_pct"), *price,
+                      metrics.get(f"range/{frame}/trade/bin_accuracy_pct"), *activity,
+                      metrics.get(f"quality/{frame}/trade_volume/log_mae"),
+                      metrics.get(f"average_volume_ratio/{frame}/log_mae"),
+                      *[metrics.get(f"price_band/{frame}/{band}/mape_pct") for band in
+                        ("below_0.1", "0.1_1", "1_5", "5_20", "20_100", "100_plus")],
+                      100 * kept / scanned if scanned else None]
+            table.add_row(frame, number(metrics.get(f"raw_mae/{frame}/trade_close"), precision=3),
+                          *[number(v) for v in values])
+            continue
         values = (["/".join(number(v, precision=1) for v in group) for group in (price, activity)]
                   if width < 100 else [number(v) for v in price + activity])
         table.add_row(frame, number(metrics.get(f"raw_mae/{frame}/trade_close"), precision=2 if width < 100 else 4), *values)
@@ -193,6 +241,7 @@ def render(state, now=None, width=120, height=40):
         ("Epoch ETA", number(state.get("epoch_eta_seconds"), " s", 0)),
         ("Learning rate", format(state["learning_rate"], ".2e") if state.get("learning_rate") is not None else "n/a"),
         ("Eval speed", number(state.get("validation_windows_per_second"), " w/s", 0)),
+        ("Eval ETA", number(state.get("validation_eta_seconds"), " s", 0)),
         ("GPU / memory", number(state.get("gpu_util"), "%", 0) + " / " + number(state.get("gpu_memory_mib", 0) / 1024, " GiB", 1) if state.get("gpu_memory_mib") is not None else "n/a"),
     ]
     for start in range(0, len(entries), pairs):
@@ -204,6 +253,8 @@ def render(state, now=None, width=120, height=40):
         global_metrics.add_row(*cells)
     resources = Panel(global_metrics, title="RUN STATUS", title_align="left", border_style="blue")
     legend = "Close MAE: trade. Price: open-close moving direction. Activity: previous-bar balanced direction."
+    if width >= 180:
+        legend = "Close errors: trade; ~ histogram upper bound. Bands: all 12 price fields MAPE%. T/B/A direction: open-close. V/B/A activity: adjacent-bar balanced%. Range: trade bin accuracy. Vlog/qlog: log MAE."
     if width < 100:
         legend = "T=trade, B=bid, A=ask, V=volume; activity balanced."
     content = [
@@ -232,10 +283,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--maximize", action="store_true", help="Maximize this viewer's Windows console")
     parser.add_argument(
         "--keep-open", action="store_true", help="Keep final status visible until Ctrl+C"
     )
     args = parser.parse_args()
+    if args.maximize and not args.once:
+        maximize_console()
     # Redirected Windows streams often default to cp1252, which cannot encode
     # solid bars. Real consoles and UTF-8 log readers both support these glyphs.
     if hasattr(sys.stdout, "reconfigure"):
