@@ -30,6 +30,7 @@ def parser():
     result.add_argument("--parent-checkpoint", type=Path, required=True)
     result.add_argument("--mixer-layers", type=int, default=4)
     result.add_argument("--mixer-hidden", type=int, default=128)
+    result.add_argument("--mixer-chunk-windows", type=int, default=4096)
     result.set_defaults(batch_size=4096, validation_batch_size=1024, workers=16, log_every=100,
                         optimized=True, graph_validation=True, training_panel_metrics=True)
     return result
@@ -53,7 +54,7 @@ def build(args):
         raise ValueError("Parent calibration, split, or subset differs")
     manifest = attach(manifest, Path(manifest["dataset"]))
     manifest["splits"] = {}
-    config = Config(**{**parent["config"], "chunk_bars": args.chunk_bars})
+    config = Config(**{**parent["config"], "chunk_bars": args.chunk_bars},mixer_chunk_windows=args.mixer_chunk_windows)
     model = Autoencoder(calibration["parameters"], config)
     model.load_previous(saved)
     model.configure_execution(precision=args.precision)

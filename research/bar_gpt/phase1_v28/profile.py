@@ -108,7 +108,7 @@ def main():
     del reference,candidate,replay,evaluation_replay,batch,model
     torch.cuda.empty_cache()
     results=[]
-    for chunk,prefetch in ((262144,4),(262144,8),(65536,4)):
+    for chunk,prefetch in ((262144,4),(131072,4),(65536,4)):
         batch_size,workers=4096,16
         args.chunk_bars,args.prefetch=chunk,prefetch
         torch.manual_seed(args.seed)

@@ -14,6 +14,7 @@ class Config(PreviousConfig):
     direction_weight: float = 0.05
     range_weight: float = 0.05
     ohlc_weight: float = 0.05
+    mixer_chunk_windows: int = 4096
 
 
 class Autoencoder(Previous):
@@ -48,7 +49,11 @@ class Autoencoder(Previous):
             embedding = torch.where(hidden[...,None], self.mask_token, embedding)
         else:
             hidden = torch.zeros(values.shape[:2], device=values.device, dtype=torch.bool)
-        return self.mixers(embedding), hidden
+        # Windows are independent of each other. Smaller processing chunks can
+        # speed LayerNorm backward without changing the 64-bar context or the
+        # optimizer batch: the complete batch loss is still reduced only once.
+        contextual=torch.cat([self.mixers(chunk) for chunk in embedding.split(self.config.mixer_chunk_windows)])
+        return contextual, hidden
 
     def encode(self, values, valid):
         return self.encode_with_mask(values, valid)[0]
