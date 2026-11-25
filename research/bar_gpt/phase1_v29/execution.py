@@ -5,9 +5,9 @@ from .data import forward_batch
 from .objectives import objective
 
 
-def backward(model, batch):
+def backward(model, batch, *, forward=forward_batch):
     """The same model, objective and gradient clipping as the actual trainer."""
-    out, values, valid = forward_batch(model, batch)
+    out, values, valid = forward(model, batch)
     loss, parts = objective(model, out, values, valid)
     loss.backward()
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0, error_if_nonfinite=False)

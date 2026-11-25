@@ -18,7 +18,7 @@ from .data import forward_batch
 from .metrics import Metrics
 from .objectives import objective
 from .schedule import learning_rate
-from .execution import Replay, EvaluationReplay
+from .execution import Replay, EvaluationReplay, backward
 from .eligibility import reasons
 
 
@@ -357,6 +357,9 @@ def train(model, manifest, args, contract, reporter):
                     reporter.update(loader_startup_seconds=time.perf_counter() - started)
                     measured_at, measured_windows = time.perf_counter(), windows
                     model.train()
+                    # Drop the old graph across full validation and new loader streams.
+                    replay = None
+                    graph_enabled = getattr(args, "optimized", False)
                     while True:
                         if stop_requested(args):
                             checkpoint()
@@ -375,26 +378,42 @@ def train(model, manifest, args, contract, reporter):
                         for group in optimizer.param_groups:
                             group["lr"] = rate * group['lr_scale']
                         optimizer.zero_grad(set_to_none=True)
-                        if getattr(args, "optimized", False) and batch_windows == args.batch_size:
+                        use_graph = graph_enabled and batch_windows == args.batch_size
+                        cuda_rng = torch.cuda.get_rng_state() if args.device == "cuda" else None
+                        if use_graph:
                             if replay is None:
                                 reporter.update(stage="capturing optimized training graph")
                                 replay = Replay(model, batch)
                             loss, norm, _, parts = replay(batch)
                         else:
-                            # Tail batches preserve every sample through the eager
-                            # path instead of padding or silently discarding rows.
-                            out, values, valid = forward_batch(model, batch)
-                            loss, parts = objective(model, out, values, valid)
-                            loss.backward()
-                            norm = torch.nn.utils.clip_grad_norm_(
-                                model.parameters(), 1.0, error_if_nonfinite=True
-                            )
-                        # Enqueue the next transfer while the current GPU work
-                        # is running, before the host waits for finite checks.
-                        # No next-batch optimizer update occurs before this one.
+                            loss, norm, _, parts = backward(model, batch, forward=forward_batch)
+                        # Prefetch may advance the physical iterator. The committed cursor
+                        # advances only after a finite optimizer update.
                         device.advance()
-                        if not bool(torch.isfinite(loss) & torch.isfinite(norm)):
-                            raise FloatingPointError("Nonfinite update rejected")
+                        finite = bool(torch.isfinite(loss) & torch.isfinite(norm))
+                        if not finite:
+                            diagnostic = dict(epoch=epoch + 1, step=step, cursor=cursor,
+                                              loss=str(float(loss)), gradient_norm=str(float(norm)),
+                                              used_graph=use_graph)
+                            if cuda_rng is not None:
+                                torch.cuda.set_rng_state(cuda_rng)
+                            if use_graph:
+                                # Retry the same batch with the same random mask before AdamW
+                                # sees a gradient. Keep this epoch in eager mode if it succeeds.
+                                optimizer.zero_grad(set_to_none=True)
+                                replay = None
+                                graph_enabled = False
+                                loss, norm, _, parts = backward(model, batch, forward=forward_batch)
+                                finite = bool(torch.isfinite(loss) & torch.isfinite(norm))
+                                diagnostic.update(eager_loss=str(float(loss)),
+                                                  eager_gradient_norm=str(float(norm)))
+                            diagnostic["recovered"] = finite
+                            write_json(args.output / f"update-diagnostic-{step:07d}.json", diagnostic)
+                            if not finite:
+                                if cuda_rng is not None:
+                                    torch.cuda.set_rng_state(cuda_rng)
+                                checkpoint()
+                                raise FloatingPointError("Nonfinite update rejected; see update diagnostic")
                         optimizer.step()
                         low, high, missing = reasons(batch.grid, batch.valid)
                         eligibility_totals += torch.stack(((~(low | high | missing)).sum(), low.sum(), high.sum(), missing.sum()))

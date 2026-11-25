@@ -31,6 +31,8 @@ def parser():
     result.add_argument("--mixer-layers", type=int, default=4)
     result.add_argument("--mixer-hidden", type=int, default=128)
     result.add_argument("--mixer-chunk-windows", type=int, default=4096)
+    result.add_argument("--resume-replay-repair", action="store_true",
+                        help="Resume the original V29 snapshot with the qualified replay repair")
     result.set_defaults(batch_size=4096, validation_batch_size=1024, workers=16, log_every=100,
                         optimized=True, graph_validation=True, training_panel_metrics=True)
     return result
@@ -121,6 +123,8 @@ def main():
         raise ValueError("Unbounded loader or update configuration")
     if args.device != "cuda":
         raise ValueError("Full launch requires workstation CUDA; CPU unit tests use train directly")
+    if args.resume_replay_repair and not args.resume:
+        raise ValueError("Replay repair requires a recovery checkpoint")
     if args.resume and args.resume.resolve().parent != args.output.resolve():
         raise ValueError("Resume only in the original run directory")
     args.preparation, args.shard_prefetch, args.shard_prefetch_mib = "raw_gpu", 16, 64
@@ -130,7 +134,11 @@ def main():
     torch.manual_seed(args.seed); random.seed(args.seed); np.random.seed(args.seed)
     model, manifest, contract = build(args)
     if args.resume:
-        load_checkpoint(args.resume, contract)
+        expected = contract
+        if args.resume_replay_repair:
+            expected = dict(contract, source="ab0cdc986684087fa0e2e23a29091d1e5a4e1c51")
+        load_checkpoint(args.resume, expected)
+        args.resume_contract = expected
     configuration = dict(model=contract, output=str(args.output), resume=str(args.resume) if args.resume else None,
                          arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
     with lease(args.output):
