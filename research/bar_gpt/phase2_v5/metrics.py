@@ -1,0 +1,80 @@
+"""Streaming per-horizon price/volume metrics and causal forecast controls."""
+import torch
+from ..phase0_v7.transforms import raw_values
+from .model import HORIZONS, NAMES, SLOTS
+
+
+class Metrics:
+    def __init__(self, device):
+        self.raw = torch.zeros((3, SLOTS, 18), dtype=torch.float64, device=device)
+        self.directions = torch.zeros((3, SLOTS, 3, 9), dtype=torch.int64, device=device)
+        self.persistence = torch.zeros((3, SLOTS, 3), dtype=torch.float64, device=device)
+        self.invalid = torch.zeros((), device=device, dtype=torch.int64)
+        self.indices = torch.tensor([3, 9, 15], device=device)
+
+    @torch.no_grad()
+    def add(self, out, valid, evidence):
+        raw, anchor, anchor_valid = evidence
+        predicted = raw_values(out["logs"])
+        finite = predicted.isfinite()
+        self.invalid += (valid & ~finite).sum()
+        keep = valid & finite
+        difference = torch.where(keep, (predicted - raw).abs(), 0)
+        self.raw += torch.stack((difference.sum(0), keep.sum(0),
+                                 torch.where(keep & (raw != 0), difference / raw.abs().clamp_min(1e-12), 0).sum(0)))
+        p_close, y_close, close_ok = (x.index_select(-1, self.indices) for x in (predicted, raw, keep))
+        opens = self.indices - 3
+        base = close_ok & anchor_valid
+        self.persistence += torch.stack(((torch.where(base, (y_close - anchor).abs(), 0)).sum(0),
+                                         torch.where(base, (y_close - p_close).abs(), 0).sum(0),
+                                         base.sum(0)))
+        pairs = torch.zeros_like(close_ok)
+        start = 0
+        for width in HORIZONS:
+            pairs[:, start+1:start+width] = close_ok[:, start+1:start+width] & close_ok[:, start:start+width-1]
+            start += width
+        tests = (
+            (p_close - predicted.index_select(-1, opens), y_close - raw.index_select(-1, opens),
+             close_ok & keep.index_select(-1, opens)),
+            (p_close - anchor, y_close - anchor, base),
+            (p_close - p_close.roll(1, 1), y_close - y_close.roll(1, 1), pairs),
+        )
+        for j, (forecast, target, mask) in enumerate(tests):
+            label = (torch.where(mask, target, 0).sign().long()+1)*3 + torch.where(mask, forecast, 0).sign().long()+1
+            self.directions[j].scatter_add_(-1, label.permute(1, 2, 0), mask.permute(1, 2, 0).long())
+
+    def result(self):
+        sums, counts, _ = self.raw.cpu()
+        matrices = self.directions.cpu().reshape(3, SLOTS, 3, 3, 3)
+        baseline, comparable, eligible = self.persistence.cpu()
+        features = ("open","high","low","close","size","count")
+        streams = ("trade", "bid", "ask")
+        result = {"nonfinite": int(self.invalid)}
+        slot = 0
+        for frame, width in zip(NAMES, HORIZONS):
+            for horizon in range(1, width+1):
+                prefix = f"{frame}/h{horizon:02d}"
+                for channel in range(18):
+                    n = int(counts[slot, channel])
+                    if n:
+                        name = streams[channel//6] + "_" + features[channel%6]
+                        result[f"{prefix}/{name}/mae"] = float(sums[slot, channel]/n)
+                        result[f"{prefix}/{name}/count"] = n
+                for group, stream in enumerate(streams):
+                    n = int(eligible[slot,group])
+                    if n:
+                        result[f"{prefix}/{stream}/persistence_close_mae"] = float(baseline[slot,group]/n)
+                        result[f"{prefix}/{stream}/comparable_close_mae"] = float(comparable[slot,group]/n)
+                    for mode, confusion in zip(("candle","from_last","path"), matrices[:,slot,group]):
+                        subtotal = confusion.sum(1)
+                        if subtotal.sum() == 0:
+                            continue
+                        correct = confusion.diagonal()
+                        present = subtotal > 0
+                        key = f"{prefix}/{stream}/{mode}"
+                        result[f"{key}/accuracy_pct"] = float(100*correct.sum()/subtotal.sum())
+                        result[f"{key}/balanced_accuracy_pct"] = float(100*(correct[present]/subtotal[present]).mean())
+                        for index, label in enumerate(("down","flat","up")):
+                            result[f"{key}/{label}_count"] = int(subtotal[index])
+                slot += 1
+        return result
