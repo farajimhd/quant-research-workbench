@@ -198,6 +198,142 @@ def eval_panel(report, prior, title, width, detailed, waiting):
                  title_align="left", border_style="blue")
 
 
+def duration(seconds):
+    if seconds is None:
+        return "—"
+    if seconds < 60:
+        return f"{max(0, round(seconds))}s"
+    minutes = math.ceil(seconds / 60)
+    days, minutes = divmod(minutes, 24 * 60)
+    hours, minutes = divmod(minutes, 60)
+    if days:
+        return f"{days}d {hours:02d}h"
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m"
+
+
+def estimates(state, training, manifest, report, active):
+    """Use committed coverage and measured rates, with separate train/eval costs."""
+    total = state.get("pass_origins_total")
+    done = state.get("pass_origins_done")
+    epoch = state.get("epoch")
+    epochs = state.get("epochs")
+    speed = state.get("windows_per_second")
+    rates = [r["train/origins_per_second"] for r in training[:25]
+             if r.get("train/origins_per_second", 0) > 0 and r.get("train/pass", epoch) == epoch]
+    typical = median(rates) if len(rates) >= 5 else speed
+    def at_rate(work, rate):
+        return work / rate if active and work is not None and rate and rate > 0 else None
+
+    left = max(total - done, 0) if total and done is not None else None
+    all_left = left + total * max(0, epochs - epoch) if left is not None and epoch and epochs else None
+    cadence = manifest.get("arguments", {}).get("validation_every")
+    step = state.get("step")
+    next_step = ((step // cadence) + 1) * cadence if step is not None and cadence else None
+    upcoming = None
+    if next_step is not None and len(training) >= 5:
+        latest, oldest = training[0], training[min(24, len(training)-1)]
+        updates = latest["step"] - oldest["step"]
+        origins = latest.get("train/origins", 0) - oldest.get("train/origins", 0)
+        if updates > 0 and origins > 0:
+            upcoming = at_rate((next_step - step) * origins / updates, typical)
+    block_count = manifest.get("model", {}).get("data", {}).get("blocks")
+    eval_count = block_count * 4096 - total if block_count and total else None
+    eval_rate = report.get("origins_per_second")
+    eval_seconds = at_rate(eval_count, eval_rate) if eval_count is not None and eval_count > 0 else None
+    return (typical, left, at_rate(left, speed), at_rate(left, typical),
+            at_rate(all_left, typical), next_step, upcoming, eval_seconds)
+
+
+def status_rows(state, report, manifest, training, step, saved, age, label, color, *, width, compact, stale):
+    age_line = Text(f"{label}  ·  step {num(step)}  ·  saved {num(saved)}  ·  {age:.0f}s old",
+                    style=f"bold {color}", overflow="ellipsis", no_wrap=True)
+    rows = [age_line]
+    if state.get("error"):
+        rows.append(Text(str(state["error"]), style="red", overflow="ellipsis", no_wrap=True))
+    active = state.get("state") == "running" and not stale
+    typical, left, live_eta, pass_eta, run_eta, next_step, dev_eta, eval_eta = estimates(
+        state, training, manifest, report, active)
+    speed = state.get("windows_per_second")
+    memory = state.get("gpu_memory_mib")
+    if compact or width < 75:
+        rows.append(Text(f"Train {num(speed)} /s · Eval {num(report.get('origins_per_second'))} /s",
+                         overflow="ellipsis", no_wrap=True))
+        rows.append(Text(f"Pass ETA {duration(pass_eta)} · Run ETA {duration(run_eta)}",
+                         overflow="ellipsis", no_wrap=True))
+        return rows
+
+    grid = Table.grid(padding=(0, 2), expand=True)
+    for header in ("THROUGHPUT", "TRAINING", "TIME REMAINING"):
+        grid.add_column(ratio=1, no_wrap=True)
+    grid.add_row(*(Text(label, "bold blue") for label in ("THROUGHPUT", "TRAINING", "TIME REMAINING")))
+    entries = (
+        (("Train live", num(speed, suffix=" origins/s")),
+         ("Train loss", num(state.get("loss"), ",.3f")),
+         ("Current pass", duration(pass_eta))),
+        (("Train median", num(typical, suffix=" origins/s")),
+         ("Learning rate", num(state.get("learning_rate"), ".4e")),
+         ("Pass at live rate", duration(live_eta))),
+        (("Last evaluation", num(report.get("origins_per_second"), suffix=" origins/s")),
+         ("GPU / memory", f"{num(state.get('gpu_util'),'.0f','%')} / {num(memory/1024 if memory is not None else None,'.1f',' GiB')}"),
+         ("All passes", duration(run_eta))),
+        (("Eval step", num(report.get("step"))),
+         ("Pass origins left", num(left)),
+         ("Next dev", f"{duration(dev_eta)} · step {num(next_step)}")),
+        (("Full eval budget", duration(eval_eta)),
+         ("Trained origins", num(state.get("done"))),
+         ("Pass size", num(state.get("pass_origins_total")))),
+    )
+    for group in entries:
+        grid.add_row(*(Text(title + "  ", "dim").append(value, "bold cyan") for title, value in group))
+    rows.append(grid)
+    rows.append(Text("ETAs use current or recent-median train rate. Training ETAs exclude evaluations and downtime. "
+                     "Full eval uses held-out candidate count and the last measured eval rate.",
+                     style="dim", overflow="ellipsis", no_wrap=True))
+    return rows
+
+
+GLOSSARY = (
+    ("Bar / Pairs", "Timeframe and nth observed eligible future candle; pairs count trade closes with both a valid target and prior close."),
+    ("Trade $ / Last $", "Mean absolute dollar error of the predicted trade close and of carrying forward the last known trade close, on identical pairs."),
+    ("Skill %", "100 × (1 − Trade $ / Last $). Positive means lower error than persistence; zero is a tie."),
+    ("Origin %", "Sign of forecast close minus last known close vs sign of actual close minus that same last known close."),
+    ("Candle %", "Sign of predicted close minus predicted open vs the same comparison in the actual candle."),
+    ("Path %", "Sign of forecast close minus the previous forecast close vs the actual adjacent change. First horizon has no path comparison."),
+    ("Bid $ / Ask $", "Mean absolute dollar error for bid/ask closes. Each color compares with that stream's own last-close baseline."),
+    ("Bid dir % / Ask dir %", "Origin direction accuracy for each quote stream using its own last known close."),
+    ("Open $ / High $ / Low $", "Mean absolute forecast error for each trade field in dollars, over source-valid outcomes."),
+    ("Vol MAE / Trade #", "Mean absolute error of traded volume in shares and of trade count in trades."),
+    ("Bid size / Ask size", "Mean absolute error of predicted quote sizes in source quantity units."),
+    (">0.5% dir", "Share of correct up/down forecasts when the actual close moved more than 0.5% from the last known close."),
+    (">0.5% MAE / last $", "Forecast and persistence close MAE in dollars on that same large-move subset."),
+    ("Training columns", "Update is the optimizer step; Loss is the masked training objective; Origins/s is throughput; Rate is learning rate; Origins is the cumulative trained count."),
+)
+
+
+def glossary(width, *, expanded):
+    guide = Table.grid(padding=(0, 1), expand=True)
+    guide.add_column(style="bold cyan", no_wrap=True)
+    guide.add_column(ratio=1)
+    if expanded:
+        for name, meaning in GLOSSARY:
+            guide.add_row(name, meaning)
+    else:
+        guide.add_row("Close errors", "Mean absolute dollar error. Last $ carries forward the last known close. Skill % is 100 × (1 − Trade $ / Last $).")
+        guide.add_row("Direction", "Origin = close vs last known close; Candle = close vs open; Path = consecutive closes. Direction uses balanced recall.")
+        guide.add_row("Coverage", "Bar = timeframe/horizon. Pairs = targets with an available prior close. Full-width view shows the complete glossary.")
+    meaning = Text("Dollar errors and skill compare to persistence where available. Direction % uses balanced recall: average recall across present down/flat/up classes, "
+                   "compared with always-flat. Large-move direction uses raw accuracy vs a 50% guess.")
+    colors = Text()
+    colors.append("Green", "bold green")
+    colors.append(" beats the reference; ")
+    colors.append("orange", "bold dark_orange")
+    colors.append(" trails. OHLC and activity MAE use the previous dev report with matching coverage. "
+                  "Training loss/speed use the preceding 25 logged updates' median. Counts and references stay neutral.")
+    return Panel(Group(guide, meaning, colors), title="METRIC GUIDE", title_align="left", border_style="blue")
+
+
 def render(snapshot, *, width, height, now=None):
     state, checkpoint, development, final, manifest, training, prior = snapshot
     if not state:
@@ -215,49 +351,32 @@ def render(snapshot, *, width, height, now=None):
     next_step = ((step // cadence) + 1) * cadence if step is not None and cadence else None
     speed = state.get("windows_per_second")
     gpu_memory = state.get("gpu_memory_mib")
-    report = final or development
-    global_rows = [
-        Text(f"{state_label}  ·  step {num(step)}  ·  saved {num(saved)}  ·  status {age:.0f}s old",
-             style=f"bold {color}", overflow="ellipsis", no_wrap=True),
-        Text(f"Train {num(speed,',.0f',' origins/s')}  ·  Eval {num(report.get('origins_per_second'),',.0f',' origins/s')}"
-             f"  ·  Train loss {num(state.get('loss'),',.3f')}  ·  LR {num(state.get('learning_rate'),'.2e')}",
-             overflow="ellipsis", no_wrap=True),
-        Text(f"GPU {num(state.get('gpu_util'),'.0f','%')} / {num(gpu_memory/1024 if gpu_memory is not None else None,'.1f',' GiB')}"
-             f"  ·  {num(state.get('done'))} origins  ·  next dev step {num(next_step if not final else None)}",
-             overflow="ellipsis", no_wrap=True),
-    ]
-    if state.get("error"):
-        global_rows.insert(1, Text(str(state["error"]), style="red", overflow="ellipsis", no_wrap=True))
+    report = max((development, final), key=lambda item: item.get("step", -1))
+    global_rows = status_rows(state, report, manifest, training, step, saved, age, state_label,
+                             color, width=width, compact=height < 31, stale=stale)
     if fraction is not None:
-        global_rows.append(Text(f"Pass {num(state.get('epoch'))}/{num(state.get('epochs'))} · candidate origins" if state.get("pass_origins_total") else "Session traversal", style="dim"))
-        global_rows.append(SolidBar(1,fraction))
+        pass_label = f"Pass {num(state.get('epoch'))}/{num(state.get('epochs'))} · candidate origins"
+        global_rows.append(Text(pass_label if state.get("pass_origins_total") else "Session traversal", style="dim"))
+        global_rows.append(SolidBar(1, fraction))
     if "validation" in activity and height >= 32:
-        global_rows.append(Text(f"Last eval progress reading  ·  {num(state.get('validation_done'))} origins"
-                                f"  ·  {num(state.get('validation_samples_per_second'),',.0f',' origins/s')}",
+        global_rows.append(Text(f"Last eval progress reading · {num(state.get('validation_done'))} origins"
+                                f" · {num(state.get('validation_samples_per_second'),',.0f',' origins/s')}",
                                 style="cyan", overflow="ellipsis", no_wrap=True))
     top = Panel(Group(*global_rows), title="RUN STATUS  ·  Phase 2 V5", title_align="left", border_style=color)
-    if height < 31 or (final and height < 43):
+    if height < 36 or (final and height < 47):
         return Group(top, Panel(training_table(training[:1],width), title="TRAINING", title_align="left"),
                      Text(f"Dev step {num(development.get('step'))}  ·  loss {num(development.get('loss'),',.3f')}"
                           f"  ·  {('full validation ready' if final else 'full validation pending')}",
                           overflow="ellipsis", no_wrap=True))
-    detailed = height >= (65 if final else 43)
+    detailed = height >= (87 if final else 66)
     views = [
         top,
         Panel(training_table(training,width), title="TRAINING  ·  recent logged updates", title_align="left", border_style="blue"),
         eval_panel(development,prior,"DEVELOPMENT",width,detailed,"Waiting for the first completed development evaluation."),
         eval_panel(final,{},"FULL VALIDATION",width,detailed,"Pending until the full training pass finishes."),
     ]
-    if height >= 34:
-        views.extend([
-            Text("Green improves, orange trails. Close MAE and skill vs last-close persistence; direction vs always-flat."
-                 " OHLC and activity MAE vs previous matching dev report.", style="dim", overflow="ellipsis", no_wrap=True),
-            Text("Origin = move from last known close; candle = close vs open; path = consecutive forecast closes."
-                 " Large-move direction is raw accuracy vs a 50% up/down guess.", style="dim",
-                 overflow="ellipsis", no_wrap=True),
-            Text("Training colors compare with the median of the preceding 25 logged updates. Reference values and counts are neutral.",
-                 style="dim", overflow="ellipsis", no_wrap=True),
-        ])
+    if height >= (60 if final else 46):
+        views.append(glossary(width, expanded=height >= (94 if final else 73) and width >= 145))
     return Group(*views)
 
 
