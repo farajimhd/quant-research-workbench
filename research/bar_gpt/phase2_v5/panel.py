@@ -359,7 +359,7 @@ def glossary(width, *, expanded):
     return Panel(Group(guide, meaning, colors), title="METRIC GUIDE", title_align="left", border_style="blue")
 
 
-def progress_bars(state, development, final, manifest, width):
+def progress_bars(state, final, width):
     """Keep each scope visible; only completed reports certify evaluation completion."""
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(no_wrap=True, style="bold")
@@ -377,27 +377,15 @@ def progress_bars(state, development, final, manifest, width):
         table.add_row(name, bar, Text(detail, style="dim", no_wrap=True, overflow="ellipsis"))
     row("Overall", overall, f"{num(epochs)} training passes")
     row("Current pass", fraction, f"Pass {num(epoch)} of {num(epochs)}")
-    dev_total = manifest.get("arguments", {}).get("eval_sessions")
-    full_total = state.get("full_sessions")
-    for label, stage, limit, report in (
-        ("Development", "development validation", dev_total, development),
-        ("Full validation", "full validation", full_total, final),
-    ):
-        live = state.get("stage") == stage
-        completed = bool(report) and (stage == "development validation" or report.get("data_pass") == epoch)
-        if live and completed:
-            completed = (report.get("step") == state.get("step") if stage == "development validation"
-                         else report.get("data_pass") == epoch)
-        if completed:
-            detail = (f"Last complete · step {num(report.get('step'))}" if stage == "development validation"
-                      else f"Complete · pass {num(epoch)}")
-            row(label, 1, detail)
-        elif live:
-            n = state.get("active_eval_sessions")
-            row(label, n / limit if n is not None and limit else None,
-                f"{num(n)} / {num(limit)} sessions" if n is not None else "Awaiting first count")
-        else:
-            row(label, 0, f"Pending · {num(limit)} sessions")
+    limit = state.get("full_sessions")
+    if final and final.get("data_pass") == epoch:
+        row("Full validation", 1, f"Complete | pass {num(epoch)}")
+    elif state.get("stage") == "full validation":
+        n = state.get("active_eval_sessions")
+        row("Full validation", n / limit if n is not None and limit else None,
+            f"{num(n)} / {num(limit)} sessions" if n is not None else "Awaiting first count")
+    else:
+        row("Full validation", 0, f"Pending | {num(limit)} sessions")
     return table
 
 
@@ -414,7 +402,7 @@ def render(snapshot, *, width, height, now=None):
     report = max((development, final), key=lambda item: item.get("step", -1))
     global_rows = status_rows(state, report, manifest, training, step, saved, age, state_label,
                              color, width=width, compact=height < 46, stale=stale)
-    global_rows.append(progress_bars(state, development, final, manifest, width))
+    global_rows.append(progress_bars(state, final, width))
     top = Panel(Group(*global_rows), title="RUN STATUS  ·  Phase 2 V5", title_align="left", border_style=color)
     # Viewport size alone determines the layout. A report arriving can fill
     # cells, but must never move another section or change the horizon list.
