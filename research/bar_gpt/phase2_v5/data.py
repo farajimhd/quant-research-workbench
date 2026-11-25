@@ -144,20 +144,42 @@ def log_grid(raw, valid):
 
 
 
-def bar_features(teacher, logs, valid, clocks, frame):
-    """Cache exact V29 feature triples except window-local position and first gap."""
-    n = len(clocks)
-    width = ((n+63)//64)*64
-    padded = torch.nn.functional.pad(clocks, (0,width-n))
-    slots = padded.reshape(-1,64)
-    values = torch.nn.functional.pad(logs,(0,0,0,width-n)).reshape(-1,64,18)
-    flags = torch.nn.functional.pad(valid,(0,0,0,width-n)).reshape_as(values)
-    frame_ids = torch.full((len(slots),),frame,device=clocks.device,dtype=clocks.dtype)
-    assembled = BarInputTransformV1.assemble(values,flags,slots,frame_ids,slots>0,torch.diff(slots,dim=1))
-    x = assembled.values.reshape(-1,27)[:n]
-    v = assembled.valid.reshape(-1,27)[:n]
-    x[1:,22] = torch.log1p(torch.diff(clocks).double()/frame)
-    v[:,22] = True
+def packed_pools(teacher, pools, device, cached):
+    """Prepare all five pools in one GPU transform, keeping timeframe boundaries explicit."""
+    lengths = [len(pool) for pool in pools]
+    widths = [((n + 63) // 64) * 64 for n in lengths]
+    starts = np.cumsum([0, *widths[:-1]])
+    slices = [slice(start, start + n) for start, n in zip(starts, lengths)]
+    # Padding aligns each timeframe to an assemble() row. Padding is never
+    # returned as a target or gathered as part of a certified context.
+    raw_host = np.zeros((sum(widths), 18), dtype=pools[0]["values"].dtype)
+    valid_host = np.zeros_like(raw_host, dtype=bool)
+    clock_host = np.zeros(sum(widths), dtype=np.int64)
+    for region, pool in zip(slices, pools):
+        raw_host[region] = pool["values"]
+        valid_host[region] = pool["valid"]
+        clock_host[region] = pool["end_us"]
+    raw, valid, clocks = [torch.from_numpy(a).to(device) for a in (raw_host, valid_host, clock_host)]
+    logs = log_grid(raw, valid)
+    if cached:
+        frame_ids = torch.from_numpy(np.repeat(np.asarray(FRAMES, dtype=np.int64),
+                                               np.asarray(widths) // 64)).to(device)
+        features = bar_features(teacher, logs, valid, clocks, frame_ids)
+    return [(raw[r], valid[r], clocks[r], logs[r], features[r] if cached else None) for r in slices]
+
+
+def bar_features(teacher, logs, valid, clocks, frame_ids):
+    """Build reusable bar features for aligned timeframe pools."""
+    slots = clocks.reshape(-1, 64)
+    assembled = BarInputTransformV1.assemble(logs.reshape(-1, 64, 18), valid.reshape(-1, 64, 18),
+                                             slots, frame_ids, slots > 0, torch.diff(slots, dim=1))
+    x = assembled.values.reshape(-1, 27)
+    v = assembled.valid.reshape(-1, 27)
+    # Internal tile boundaries may fall in a real context. Pool boundaries
+    # cannot: that bar is always position zero and encode_cached clears its gap.
+    gaps = torch.diff(clocks, prepend=clocks[:1]).clamp_min(0)
+    x[:, 22] = torch.log1p(gaps.reshape_as(slots).double() / frame_ids[:, None]).flatten()
+    v[:, 22] = True
     v = model_validity(x,v)
     code, market = coordinates(x[:,:18],v[:,:18])
     features = torch.cat((code,x[:,18:]),-1)
@@ -182,21 +204,17 @@ def encode_cached(teacher, features, gather):
 
 class DeviceSession:
     """Copy each pool once and encode one V29 window per unique completed end."""
-    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False):
+    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True):
         self.encoded = []
         self.targets = []
         self.anchors = []
         self.num_windows = 0
         self.missing = []
         offsets = torch.arange(63, -1, -1, device=device)
-        for f, pool in enumerate(session.pools):
-            raw = torch.from_numpy(np.ascontiguousarray(pool["values"])).to(device)
-            valid = torch.from_numpy(np.ascontiguousarray(pool["valid"], dtype=bool)).to(device)
-            clocks = torch.from_numpy(np.ascontiguousarray(pool["end_us"])).to(device)
-            logs = log_grid(raw, valid)
+        prepared = packed_pools(teacher, session.pools, device, cached)
+        for f, (raw, valid, clocks, logs, features) in enumerate(prepared):
             unique, reverse = np.unique(session.endpoints[:, f], return_inverse=True)
             ends = torch.as_tensor(unique, device=device)
-            features = bar_features(teacher,logs,valid,clocks,FRAMES[f]) if cached else None
             bank, anchors, anchor_masks = [], [], []
             for chunk in ends.split(token_batch):
                 gather = chunk[:, None] - offsets
@@ -228,17 +246,18 @@ class DeviceSession:
                         else:
                             encoded = expected
                 bank.append(encoded)
-                v = valid[gather]
-                close_valid = v[..., [3, 9, 15]]
-                positions = torch.arange(64, device=device).view(1, 64, 1)
-                last = torch.where(close_valid, positions, -1).amax(1)
-                price = raw[gather].gather(1, last.clamp_min(0)[:, None].expand(-1, 1, 3)
-                                          + torch.zeros_like(last[:, None])) if False else raw[gather][..., [3, 9, 15]].gather(1, last.clamp_min(0)[:, None]).squeeze(1)
-                anchors.append(price)
-                anchor_masks.append(last >= 0)
+                if metrics:
+                    channels = [3, 9, 15]
+                    positions = torch.arange(64, device=device).view(1, 64, 1)
+                    close_valid = valid[:, channels][gather]
+                    last = torch.where(close_valid, positions, -1).amax(1)
+                    price = raw[:, channels][gather].gather(1, last.clamp_min(0)[:, None]).squeeze(1)
+                    anchors.append(price)
+                    anchor_masks.append(last >= 0)
             index = torch.as_tensor(reverse, device=device)
             self.encoded.append((torch.cat(bank), index))
-            self.anchors.append((torch.cat(anchors), torch.cat(anchor_masks), index))
+            if metrics:
+                self.anchors.append((torch.cat(anchors), torch.cat(anchor_masks), index))
             targets = torch.as_tensor(session.targets[f], device=device)
             self.targets.append((raw, logs, valid, targets))
             self.num_windows += len(unique)
@@ -247,12 +266,13 @@ class DeviceSession:
     def batch(self, indices, *, metrics=False):
         windows = torch.stack([bank[reverse[indices]] for bank, reverse in self.encoded], 1)
         raw_parts, logs, masks, anchors, anchor_valid = [], [], [], [], []
-        for (raw, values, valid, table), (last, checked, reverse) in zip(self.targets, self.anchors):
+        for f, (raw, values, valid, table) in enumerate(self.targets):
             target = table[indices]
             ids = target.clamp_min(0)
             logs.append(values[ids])
             masks.append(valid[ids] & (target >= 0)[..., None])
             if metrics:
+                last, checked, reverse = self.anchors[f]
                 raw_parts.append(raw[ids])
                 anchors.append(last[reverse[indices], None].expand(-1, table.shape[1], -1))
                 anchor_valid.append(checked[reverse[indices], None].expand(-1, table.shape[1], -1))

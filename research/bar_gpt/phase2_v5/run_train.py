@@ -29,6 +29,7 @@ def parser():
     p.add_argument("--teacher", required=True, type=Path)
     p.add_argument("--calibration", required=True, type=Path)
     p.add_argument("--resume", type=Path)
+    p.add_argument("--resume-prepack", action="store_true", help="Resume the verified pre-packing execution contract")
     p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
@@ -152,7 +153,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
             tick = time.perf_counter()
             with torch.no_grad():
                 device = DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
-                                       verify=bool(args.profile_sessions and number == 0))
+                                       metrics=False, verify=bool(args.profile_sessions and number == 0))
             windows_encoded += device.num_windows
             missing = [a+b for a,b in zip(missing,device.missing)]
             generator = torch.Generator(device="cuda").manual_seed(51771 + index + 1_000_003 * pass_index)
@@ -295,7 +296,8 @@ def main():
                                 pass_order_seed_stride=1009, origin_seed_stride=1_000_003)
     saved = None
     if args.resume:
-        saved = load_checkpoint(args.resume, legacy_contract if args.migrate_fixed_lr else contract)
+        previous = dict(contract, source="1a76327f0a9cfc08beac8a88071ccf56419daafa") if args.resume_prepack else contract
+        saved = load_checkpoint(args.resume, legacy_contract if args.migrate_fixed_lr else previous)
         if args.migrate_fixed_lr:
             saved.update(pass_index=0,pass_origins=saved["windows"])
         else:

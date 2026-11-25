@@ -36,3 +36,30 @@ def test_forecast_shape_teacher_frozen_and_loss_parity():
     loss.backward()
     assert model.heads.weight.grad.isfinite().all()
     assert teacher.decoder.weight.grad is None
+
+def test_packed_pools_match_direct_teacher_and_anchor_lookup():
+    from .data import DeviceSession, Session
+    from ..v5.phase2_ar_shards.contract import BAR, FRAMES
+    from .model import HORIZONS
+
+    teacher = Autoencoder(parameters()).eval().requires_grad_(False)
+    pools = []
+    for i, frame in enumerate(FRAMES):
+        pool = np.zeros(130 + i, dtype=BAR)
+        pool["end_us"] = 1_700_000_000_000_000 + np.arange(len(pool)) * frame
+        pool["values"] = np.arange(len(pool))[:, None] + 1
+        pool["valid"] = 1
+        pool["valid"][64:67, 3] = 0
+        pool["valid"][:, 9] = 0
+        pools.append(pool)
+    ends = np.tile([[63], [66], [128]], (1, 5))
+    targets = [np.tile(ends[:, :1], (1, width)) for width in HORIZONS]
+    source = Session(pools, ends, targets, np.arange(3), "test", 0)
+    ids = torch.arange(3)
+    train = DeviceSession(source, teacher, 2, "cpu", metrics=False)
+    evaluation = DeviceSession(source, teacher, 2, "cpu", verify=True)
+    for actual, expected in zip(train.batch(ids)[:3], evaluation.batch(ids)[:3]):
+        torch.testing.assert_close(actual, expected)
+    _, _, _, (_, anchors, observed) = evaluation.batch(ids, metrics=True)
+    assert anchors[1, 0, 0] == 64
+    assert not observed[:, :, 1].any()
