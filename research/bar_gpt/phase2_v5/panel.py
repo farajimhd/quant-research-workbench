@@ -11,6 +11,7 @@ import time
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
@@ -33,6 +34,9 @@ class Reader:
         self.cached = {}
         self.prior_step = None
         self.prior = {}
+        self.last_eval_counter = None
+        self.eval_cycle = None
+        self.confirmed_sessions = None
 
     def read(self, name):
         path = self.root / name
@@ -83,9 +87,29 @@ class Reader:
                 recent.append(row)
                 if len(recent) == 30:
                     break
-        return (self.read("progress.json"), self.read("checkpoint_last.proof.json"),
-                dev, self.read("validation-final.json"), self.read("manifest.json"),
-                recent, self.prior)
+        state = dict(self.read("progress.json"))
+        manifest = self.read("manifest.json")
+        data = manifest.get("model", {}).get("data", {})
+        if data.get("certificate"):
+            cert = self.read(data["certificate"])
+            if cert.get("hash") and cert["hash"] == data.get("hash"):
+                state["full_sessions"] = sum(row["publications"] for row in cert["distribution"]
+                                             if row["split"] == 1)
+
+        # The trainer reuses the same counter for both evaluation scopes and
+        # leaves the previous value in place until the next eight-session update.
+        stage = state.get("stage")
+        cycle = (stage, state.get("step"), state.get("epoch")) if stage in (
+            "development validation", "full validation") else None
+        counter = (state.get("validation_sessions"), state.get("validation_done"))
+        if cycle != self.eval_cycle:
+            self.confirmed_sessions = None
+        if cycle and self.last_eval_counter is not None and counter != self.last_eval_counter:
+            self.confirmed_sessions = counter[0]
+        self.eval_cycle, self.last_eval_counter = cycle, counter
+        state["active_eval_sessions"] = self.confirmed_sessions
+        return (state, self.read("checkpoint_last.proof.json"), dev,
+                self.read("validation-final.json"), manifest, recent, self.prior)
 
 
 def num(value, fmt=",.0f", suffix=""):
@@ -334,6 +358,48 @@ def glossary(width, *, expanded):
     return Panel(Group(guide, meaning, colors), title="METRIC GUIDE", title_align="left", border_style="blue")
 
 
+def progress_bars(state, development, final, manifest, width):
+    """Keep each scope visible; only completed reports certify evaluation completion."""
+    table = Table.grid(expand=True, padding=(0, 1))
+    table.add_column(no_wrap=True, style="bold")
+    table.add_column(ratio=1)
+    table.add_column(no_wrap=True, max_width=45 if width >= 85 else 20)
+    epoch, epochs = state.get("epoch"), state.get("epochs")
+    total, done = state.get("pass_origins_total"), state.get("pass_origins_done")
+    fraction = done / total if done is not None and total else None
+    overall = ((epoch - 1 + fraction) / epochs
+               if epoch and epochs and fraction is not None else None)
+    if state.get("state") == "complete":
+        overall = fraction = 1
+    def row(name, value, detail):
+        bar = SolidBar(1, value) if value is not None else ProgressBar(total=None, pulse=True)
+        table.add_row(name, bar, Text(detail, style="dim", no_wrap=True, overflow="ellipsis"))
+    row("Overall", overall, f"{num(epochs)} training passes")
+    row("Current pass", fraction, f"Pass {num(epoch)} of {num(epochs)}")
+    dev_total = manifest.get("arguments", {}).get("eval_sessions")
+    full_total = state.get("full_sessions")
+    for label, stage, limit, report in (
+        ("Development", "development validation", dev_total, development),
+        ("Full validation", "full validation", full_total, final),
+    ):
+        live = state.get("stage") == stage
+        completed = bool(report) and (stage == "development validation" or report.get("data_pass") == epoch)
+        if live and completed:
+            completed = (report.get("step") == state.get("step") if stage == "development validation"
+                         else report.get("data_pass") == epoch)
+        if completed:
+            detail = (f"Last complete · step {num(report.get('step'))}" if stage == "development validation"
+                      else f"Complete · pass {num(epoch)}")
+            row(label, 1, detail)
+        elif live:
+            n = state.get("active_eval_sessions")
+            row(label, n / limit if n is not None and limit else None,
+                f"{num(n)} / {num(limit)} sessions" if n is not None else "Awaiting first count")
+        else:
+            row(label, 0, f"Pending · {num(limit)} sessions")
+    return table
+
+
 def render(snapshot, *, width, height, now=None):
     state, checkpoint, development, final, manifest, training, prior = snapshot
     if not state:
@@ -346,22 +412,10 @@ def render(snapshot, *, width, height, now=None):
     activity = state.get("stage", "initializing")
     state_label = ("STALE" if stale else status.upper()) + f" / {activity}"
     step, saved = state.get("step"), checkpoint.get("step")
-    fraction = 1 if status == "complete" else state.get("pass_fraction")
-    cadence = manifest.get("arguments", {}).get("validation_every")
-    next_step = ((step // cadence) + 1) * cadence if step is not None and cadence else None
-    speed = state.get("windows_per_second")
-    gpu_memory = state.get("gpu_memory_mib")
     report = max((development, final), key=lambda item: item.get("step", -1))
     global_rows = status_rows(state, report, manifest, training, step, saved, age, state_label,
                              color, width=width, compact=height < 31, stale=stale)
-    if fraction is not None:
-        pass_label = f"Pass {num(state.get('epoch'))}/{num(state.get('epochs'))} · candidate origins"
-        global_rows.append(Text(pass_label if state.get("pass_origins_total") else "Session traversal", style="dim"))
-        global_rows.append(SolidBar(1, fraction))
-    if "validation" in activity and height >= 32:
-        global_rows.append(Text(f"Last eval progress reading · {num(state.get('validation_done'))} origins"
-                                f" · {num(state.get('validation_samples_per_second'),',.0f',' origins/s')}",
-                                style="cyan", overflow="ellipsis", no_wrap=True))
+    global_rows.append(progress_bars(state, development, final, manifest, width))
     top = Panel(Group(*global_rows), title="RUN STATUS  ·  Phase 2 V5", title_align="left", border_style=color)
     if height < 36 or (final and height < 47):
         return Group(top, Panel(training_table(training[:1],width), title="TRAINING", title_align="left"),
