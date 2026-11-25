@@ -130,7 +130,8 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     missing = [0]*5
     daily_status = Counter()
     rejected = 0
-    compute_seconds = 0.\n    first_loss = last_loss = None
+    compute_seconds = 0.
+    first_loss = last_loss = None
     try:
         for number, (index, session) in enumerate(source):
             if stopped():
