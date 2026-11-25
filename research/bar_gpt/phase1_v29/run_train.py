@@ -136,10 +136,20 @@ def main():
     if args.resume:
         expected = contract
         if args.resume_replay_repair:
-            expected = dict(contract, source="ab0cdc986684087fa0e2e23a29091d1e5a4e1c51")
+            # Only previously deployed V29 engineering revisions may be rebound.
+            previous = torch.load(args.resume, map_location="cpu", weights_only=False)["contract"]["source"]
+            if previous not in ("ab0cdc986684087fa0e2e23a29091d1e5a4e1c51",
+                                "6e29b902c630cf0b03c99c9d26392c6d1db6c757"):
+                raise ValueError("Unknown V29 recovery source")
+            expected = dict(contract, source=previous)
         load_checkpoint(args.resume, expected)
         args.resume_contract = expected
-    configuration = dict(model=contract, output=str(args.output), resume=str(args.resume) if args.resume else None,
+    # The reporter includes the nested model contract in its experiment signature.
+    # Keep engineering revisions outside that signature while recording the exact
+    # source separately and sealing it in each checkpoint contract.
+    scientific_contract = dict(contract, source="ab0cdc986684087fa0e2e23a29091d1e5a4e1c51")
+    configuration = dict(model=scientific_contract, execution_source=args.source_revision,
+                         output=str(args.output), resume=str(args.resume) if args.resume else None,
                          arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
     with lease(args.output):
         load_env_files(discover_env_files(Path(__file__).resolve().parents[3]), verbose=False)
