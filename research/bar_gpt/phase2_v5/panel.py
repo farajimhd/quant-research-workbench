@@ -229,7 +229,7 @@ def render(snapshot, *, width, height, now=None):
     if state.get("error"):
         global_rows.insert(1, Text(str(state["error"]), style="red", overflow="ellipsis", no_wrap=True))
     if fraction is not None:
-        global_rows.append(Text("Session traversal", style="dim"))
+        global_rows.append(Text(f"Pass {num(state.get('epoch'))}/{num(state.get('epochs'))} · candidate origins" if state.get("pass_origins_total") else "Session traversal", style="dim"))
         global_rows.append(SolidBar(1,fraction))
     if "validation" in activity and height >= 32:
         global_rows.append(Text(f"Last eval progress reading  ·  {num(state.get('validation_done'))} origins"

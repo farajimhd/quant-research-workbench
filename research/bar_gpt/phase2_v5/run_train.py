@@ -18,6 +18,7 @@ from research.mlops.env import discover_env_files, load_env_files
 from .data import sessions, DeviceSession
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
+from .schedule import PASSES, FLOOR, PEAK_FACTOR, LEGACY_SOURCE, cosine_rate, order_for_pass, candidate_prefix
 
 
 def parser():
@@ -28,6 +29,7 @@ def parser():
     p.add_argument("--teacher", required=True, type=Path)
     p.add_argument("--calibration", required=True, type=Path)
     p.add_argument("--resume", type=Path)
+    p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
     p.add_argument("--workers", type=int, default=8)
@@ -106,10 +108,14 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
             "seconds": time.perf_counter()-started, "full_split": not limit}
 
 
-def train(args, units, teacher, model, optimizer, contract, reporter=None, saved=None):
+def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, saved=None):
     step = saved["step"] if saved else 0
     cursor = tuple(saved["cursor"]) if saved else (0, 0)
     count = saved["windows"] if saved else 0
+    pass_index = saved.get("pass_index", 0) if saved else 0
+    pass_origins = saved.get("pass_origins", 0) if saved else 0
+    candidates = candidate_prefix(units, *cursor)
+    pass_total = args.pass_origins_total
     next_validation = ((step//args.validation_every)+1)*args.validation_every
     best = saved.get("best", float("inf")) if saved else float("inf")
     if saved:
@@ -119,7 +125,8 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     def checkpoint(name="checkpoint_last.pt"):
         save_checkpoint(args.output/name, dict(model=model.state_dict(), optimizer=optimizer.state_dict(),
                         contract=contract, rng=rng_state(), step=step, cursor=cursor,
-                        windows=count, best=best))
+                        windows=count, best=best, pass_index=pass_index,
+                        pass_origins=pass_origins, schedule_candidates=candidates))
     def stopped():
         return (args.output/"STOP").exists() or (args.output.parent/"STOP").exists()
     first, first_offset = cursor
@@ -139,6 +146,7 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
             rejected += session.rejected_origins
             daily_status[session.daily_status] += 1
             if not len(session.origins):
+                candidates += session.rejected_origins
                 cursor = (index+1, 0)
                 continue
             tick = time.perf_counter()
@@ -147,14 +155,16 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
                                        verify=bool(args.profile_sessions and number == 0))
             windows_encoded += device.num_windows
             missing = [a+b for a,b in zip(missing,device.missing)]
-            generator = torch.Generator(device="cuda").manual_seed(51771+index)
+            generator = torch.Generator(device="cuda").manual_seed(51771 + index + 1_000_003 * pass_index)
             order = torch.randperm(len(session.origins), generator=generator, device="cuda")
             offset = first_offset if index == first else 0
             for ids in order[offset:].split(args.batch_size):
                 if not len(ids) or stopped():
                     break
                 inputs, logs, valid, _ = device.batch(ids)
-                rate = args.learning_rate * min(1., (step+1)/1000)
+                last_batch = offset + len(ids) == len(order)
+                traversed = len(ids) + (session.rejected_origins if last_batch else 0)
+                rate = cosine_rate(args.learning_rate, pass_index, candidates + traversed, pass_total)
                 for group in optimizer.param_groups:
                     group["lr"] = rate
                 optimizer.zero_grad(set_to_none=True)
@@ -167,15 +177,20 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
                 optimizer.step()
                 step += 1
                 count += len(ids)
+                pass_origins += len(ids)
+                candidates += traversed
                 offset += len(ids)
                 cursor = (index, offset) if offset < len(order) else (index+1, 0)
                 if reporter and step % 10 == 0:
                     speed = (count-prior_count)/max(time.perf_counter()-interval, .001)
                     metrics = {"train/loss": float(loss), "train/origins_per_second": speed,
                                "train/learning_rate": rate, "train/origins": count}
+                    metrics.update({"train/pass": pass_index+1,
+                                    "train/pass_fraction": candidates/pass_total})
                     reporter.log(metrics, step)
-                    reporter.update(stage="training", step=step, epoch=1, done=count,
-                                    samples_per_second=speed, pass_fraction=index/len(units),
+                    reporter.update(stage="training", step=step, epoch=pass_index+1, epochs=PASSES, done=count,
+                                    pass_origins_done=candidates, pass_origins_total=pass_total,
+                                    samples_per_second=speed, pass_fraction=candidates/pass_total,
                                     loss=float(loss), windows_per_second=speed,
                                     learning_rate=rate, session_index=index)
                     interval, prior_count = time.perf_counter(), count
@@ -212,13 +227,33 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     write_json(args.output/"training-coverage.json", profile)
     if stopped():
         return "stopped"
-    reporter.update(stage="full validation")
+    if candidates != pass_total:
+        raise ValueError(f"Pass coverage changed: accounted {candidates}, expected {pass_total}")
+    reporter.update(stage="full validation", epoch=pass_index+1, epochs=PASSES,
+                    pass_fraction=1., pass_origins_done=candidates, pass_origins_total=pass_total)
     report = evaluate(units, model, teacher, args, 0, reporter)
     if report is None:
         return "stopped"
-    write_json(args.output/"validation-final.json", dict(step=step, **report))
-    reporter.log({"validation/"+k:v for k,v in report.items()}, step)
+    result = dict(step=step, data_pass=pass_index+1, **report)
+    write_json(args.output/f"validation-pass-{pass_index+1:02d}.json", result)
+    write_json(args.output/"validation-final.json", result)
+    reporter.log({"validation/"+k:v for k,v in result.items()}, step)
     reporter.update(latest_evaluation={"scope":"validation","step":step,"loss":report["loss"]})
+    pass_index += 1
+    cursor, pass_origins, candidates = (0, 0), 0, 0
+    checkpoint()
+    return "complete" if pass_index == PASSES else "next_pass"
+
+
+def train(args, units, teacher, model, optimizer, contract, reporter=None, saved=None):
+    pass_index = saved.get("pass_index", 0) if saved else 0
+    while pass_index < PASSES:
+        active = order_for_pass(units, pass_index)
+        result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved)
+        if result != "next_pass":
+            return result
+        saved = load_checkpoint(args.output/"checkpoint_last.pt", contract)
+        pass_index = saved["pass_index"]
     return "complete"
 
 
@@ -229,6 +264,9 @@ def main():
         raise ValueError("Invalid or unbounded launch settings")
     if args.profile_sessions < 0 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
         raise ValueError("Invalid profile budget or learning rate")
+    if args.migrate_fixed_lr and not args.resume:
+        raise ValueError("Schedule migration requires the original recovery checkpoint")
+    cosine_rate(args.learning_rate, PASSES-1, 0, 1)
     if args.resume and (args.profile_sessions or args.resume.resolve().parent != args.output.resolve()):
         raise ValueError("Resume requires the same full training directory")
     preflight(args, desktop_paths=(r"c:\windows\system32\applicationframehost.exe",
@@ -239,6 +277,7 @@ def main():
     started = time.perf_counter()
     teacher, provenance = teacher_for(args)
     units, data = load_units(release=args.release)
+    args.pass_origins_total = candidate_prefix(units, len(units))
     model = Forecast().cuda()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, fused=True)
     contract = dict(version="phase2-v5-direct-multiscale", source=args.source_revision,
@@ -247,7 +286,22 @@ def main():
                     batch_size=args.batch_size, token_batch=args.token_batch, head_bf16=args.head_bf16,
                     cached_teacher=not args.direct_teacher, tf32=args.tf32,
                     learning_rate=args.learning_rate, warmup_updates=1000, seed=51771)
-    saved = load_checkpoint(args.resume, contract) if args.resume else None
+    # The old scientific identity remains exact for W&B. The checkpoint also
+    # binds the new execution source and schedule to all future resumes.
+    legacy_contract = dict(contract, source=LEGACY_SOURCE)
+    contract["schedule"] = dict(kind="cosine_by_traversed_candidates", passes=PASSES,
+                                peak_factor=PEAK_FACTOR, floor=FLOOR,
+                                candidates_per_pass=args.pass_origins_total,
+                                pass_order_seed_stride=1009, origin_seed_stride=1_000_003)
+    saved = None
+    if args.resume:
+        saved = load_checkpoint(args.resume, legacy_contract if args.migrate_fixed_lr else contract)
+        if args.migrate_fixed_lr:
+            saved.update(pass_index=0,pass_origins=saved["windows"])
+        else:
+            active = order_for_pass(units, saved["pass_index"])
+            if saved["schedule_candidates"] != candidate_prefix(active, *saved["cursor"]):
+                raise ValueError("Checkpoint scheduler count disagrees with source traversal")
     with lease(args.output):
         if args.profile_sessions:
             profile = train(args, units, teacher, model, optimizer, contract)
@@ -261,10 +315,12 @@ def main():
             return
         load_env_files(discover_env_files(Path.cwd()), verbose=False)
         os.environ.setdefault("WANDB_ENTITY","mehdifaraji")
-        configuration = dict(model=contract, resume=str(args.resume) if args.resume else None,
+        configuration = dict(model=legacy_contract, execution_model=contract,
+                             resume=str(args.resume) if args.resume else None,
                              arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
         reporter = Reporter(args.output, configuration, mode="online", project="bargpt-phase2")
         write_json(args.output/"manifest.json", configuration)
+        reporter.update(epoch=saved["pass_index"]+1 if saved else 1, epochs=PASSES)
         try:
             state = train(args, units, teacher, model, optimizer, contract, reporter, saved)
         except BaseException as error:
