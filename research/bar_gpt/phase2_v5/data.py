@@ -204,7 +204,7 @@ def encode_cached(teacher, features, gather):
 
 class DeviceSession:
     """Copy each pool once and encode one V29 window per unique completed end."""
-    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True, pack_windows=False):
+    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True):
         self.encoded = []
         self.targets = []
         self.anchors = []
@@ -218,23 +218,12 @@ class DeviceSession:
         chunks = [a.reshape(-1) for (ends, reverse), target in zip(unique_rows, session.targets)
                   for a in (ends, reverse, target)]
         indices = torch.from_numpy(np.concatenate(chunks)).to(device).split([len(a) for a in chunks])
-        packed_codes = None
-        if pack_windows:
-            if not cached:
-                raise ValueError("Window packing requires cached bar features")
-            features = torch.cat([row[-1] for row in prepared])
-            starts = np.cumsum([0] + [len(row[0]) for row in prepared[:-1]])
-            pool_ends = torch.cat([indices[3*f] + int(start) for f, start in enumerate(starts)])
-            codes = [encode_cached(teacher, features, tile[:, None] - offsets) for tile in pool_ends.split(token_batch)]
-            packed_codes = torch.cat(codes).split([len(ends) for ends, _ in unique_rows])
         for f, (raw, valid, clocks, logs, features) in enumerate(prepared):
             ends, index, flat_targets = indices[3*f:3*f+3]
             bank, anchors, anchor_masks = [], [], []
-            for tile_id, chunk in enumerate(ends.split(token_batch)):
+            for chunk in ends.split(token_batch):
                 gather = chunk[:, None] - offsets
-                if packed_codes is not None:
-                    encoded = packed_codes[f].narrow(0, tile_id * token_batch, len(chunk))
-                elif cached:
+                if cached:
                     encoded = encode_cached(teacher,features,gather)
                 if not cached or (verify and not bank):
                     x, v, times = logs[gather], valid[gather], clocks[gather]
@@ -307,7 +296,7 @@ def device_sessions(source, teacher, args, *, metrics):
             return None
         with torch.no_grad():
             return DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
-                                 metrics=metrics, verify=verify, pack_windows=args.pack_windows)
+                                 metrics=metrics, verify=verify)
 
     lanes = args.session_lanes
     if lanes == 0:

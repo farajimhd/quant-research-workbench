@@ -25,3 +25,12 @@ Use python -B -m research.bar_gpt.phase2_v5.launch with --console-log,
 --output, --source-revision, --release, --teacher and --calibration. Add
 --profile-sessions to benchmark a bounded run. All artifacts and checkpoints
 live under the workstation runtime root.
+
+With --session-lanes 2 the loader prepares upcoming frozen V29 encodings on
+two CUDA streams. The optimizer consumes sessions in certified traversal order.
+--graph-updates replays the existing FP32 forecast forward and backward at
+4,096 and 8,192 origins. Other batch sizes use eager execution. Gradient
+clipping, the finite check, the per-update cosine rate and AdamW stay outside
+the graphs. To adopt this execution path from acefd3256, supply --resume-serial
+on the first resume only. Later resumes use the deployed source revision and
+ordinary --resume. The ten-pass schedule completes full validation each pass.

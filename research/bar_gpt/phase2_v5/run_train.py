@@ -33,7 +33,6 @@ def parser():
     p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
-    p.add_argument("--pack-windows", action="store_true", help="Encode timeframe windows in joint execution tiles")
     p.add_argument("--graph-updates", action="store_true", help="Replay fixed-shape forecast forward/backward on CUDA")
     p.add_argument("--session-lanes", type=int, default=0, choices=(0, 1, 2, 4),
                    help="Concurrent frozen GPU session encoders; zero uses the serial path")
@@ -181,7 +180,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     source = device_sessions(sessions(units, 0, first, args.workers), teacher, args, metrics=False)
     start = interval = time.perf_counter()
     gradients = ForecastGradients(model, teacher, args)
-    prior_count = count
+    starting_count = prior_count = count
     windows_encoded = 0
     missing = [0]*5
     daily_status = Counter()
@@ -263,9 +262,10 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     finally:
         source.close()
     elapsed = time.perf_counter()-start
-    profile = dict(origins=count, updates=step, seconds=elapsed, origins_per_second=count/elapsed,
+    profile = dict(origins=count, updates=step, seconds=elapsed, interval_origins=count-starting_count,
+                   origins_per_second=(count-starting_count)/elapsed,
                    encoded_windows=windows_encoded, missing_slots=dict(zip(NAMES,missing)),
-                   rejected_origins=rejected, daily_status=dict(daily_status), session_compute_seconds=compute_seconds,
+                   rejected_origins=rejected, daily_status=dict(daily_status), consumer_update_seconds=compute_seconds,
                    first_loss=first_loss, last_loss=float(last_loss) if last_loss is not None else None, peak_gpu_bytes=torch.cuda.max_memory_allocated())
     if not reporter:
         return profile
