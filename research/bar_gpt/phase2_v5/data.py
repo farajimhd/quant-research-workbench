@@ -204,7 +204,7 @@ def encode_cached(teacher, features, gather):
 
 class DeviceSession:
     """Copy each pool once and encode one V29 window per unique completed end."""
-    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True):
+    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True, pack_windows=False):
         self.encoded = []
         self.targets = []
         self.anchors = []
@@ -212,13 +212,29 @@ class DeviceSession:
         self.missing = []
         offsets = torch.arange(63, -1, -1, device=device)
         prepared = packed_pools(teacher, session.pools, device, cached)
+        unique_rows = [np.unique(session.endpoints[:, f], return_inverse=True) for f in range(len(prepared))]
+        # A blocking H2D upload per index array previously interrupted the GPU
+        # after each timeframe. Submit all index arrays before encoding begins.
+        chunks = [a.reshape(-1) for (ends, reverse), target in zip(unique_rows, session.targets)
+                  for a in (ends, reverse, target)]
+        indices = torch.from_numpy(np.concatenate(chunks)).to(device).split([len(a) for a in chunks])
+        packed_codes = None
+        if pack_windows:
+            if not cached:
+                raise ValueError("Window packing requires cached bar features")
+            features = torch.cat([row[-1] for row in prepared])
+            starts = np.cumsum([0] + [len(row[0]) for row in prepared[:-1]])
+            pool_ends = torch.cat([indices[3*f] + int(start) for f, start in enumerate(starts)])
+            codes = [encode_cached(teacher, features, tile[:, None] - offsets) for tile in pool_ends.split(token_batch)]
+            packed_codes = torch.cat(codes).split([len(ends) for ends, _ in unique_rows])
         for f, (raw, valid, clocks, logs, features) in enumerate(prepared):
-            unique, reverse = np.unique(session.endpoints[:, f], return_inverse=True)
-            ends = torch.as_tensor(unique, device=device)
+            ends, index, flat_targets = indices[3*f:3*f+3]
             bank, anchors, anchor_masks = [], [], []
-            for chunk in ends.split(token_batch):
+            for tile_id, chunk in enumerate(ends.split(token_batch)):
                 gather = chunk[:, None] - offsets
-                if cached:
+                if packed_codes is not None:
+                    encoded = packed_codes[f].narrow(0, tile_id * token_batch, len(chunk))
+                elif cached:
                     encoded = encode_cached(teacher,features,gather)
                 if not cached or (verify and not bank):
                     x, v, times = logs[gather], valid[gather], clocks[gather]
@@ -254,13 +270,12 @@ class DeviceSession:
                     price = raw[:, channels][gather].gather(1, last.clamp_min(0)[:, None]).squeeze(1)
                     anchors.append(price)
                     anchor_masks.append(last >= 0)
-            index = torch.as_tensor(reverse, device=device)
-            self.encoded.append((torch.cat(bank), index))
+            self.encoded.append((bank[0] if len(bank) == 1 else torch.cat(bank), index))
             if metrics:
                 self.anchors.append((torch.cat(anchors), torch.cat(anchor_masks), index))
-            targets = torch.as_tensor(session.targets[f], device=device)
+            targets = flat_targets.view(session.targets[f].shape)
             self.targets.append((raw, logs, valid, targets))
-            self.num_windows += len(unique)
+            self.num_windows += len(ends)
             self.missing.append(int((session.targets[f] < 0).sum()))
 
     def batch(self, indices, *, metrics=False):
@@ -292,7 +307,7 @@ def device_sessions(source, teacher, args, *, metrics):
             return None
         with torch.no_grad():
             return DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
-                                 metrics=metrics, verify=verify)
+                                 metrics=metrics, verify=verify, pack_windows=args.pack_windows)
 
     lanes = args.session_lanes
     if lanes == 0:

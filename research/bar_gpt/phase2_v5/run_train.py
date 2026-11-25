@@ -33,6 +33,7 @@ def parser():
     p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
+    p.add_argument("--pack-windows", action="store_true", help="Encode timeframe windows in joint execution tiles")
     p.add_argument("--graph-updates", action="store_true", help="Replay fixed-shape forecast forward/backward on CUDA")
     p.add_argument("--session-lanes", type=int, default=0, choices=(0, 1, 2, 4),
                    help="Concurrent frozen GPU session encoders; zero uses the serial path")
@@ -85,7 +86,8 @@ class ForecastGradients:
     def backward(self, inputs, logs, valid):
         loss = objective(self.teacher, predict(self.model, self.teacher, inputs, self.args), logs, valid)
         loss.backward()
-        return loss
+        # Release AccumulateGrad nodes before recording on a different stream.
+        return loss.detach()
 
     def __call__(self, inputs, logs, valid):
         n = len(inputs)
