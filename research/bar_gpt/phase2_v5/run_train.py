@@ -2,6 +2,7 @@
 import os
 os.environ.update(PYTHONDONTWRITEBYTECODE="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
 import argparse
+from collections import Counter
 import json
 import math
 from pathlib import Path
@@ -115,11 +116,15 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     prior_count = count
     windows_encoded = 0
     missing = [0]*5
+    daily_status = Counter()
+    rejected = 0
     spans = []
     try:
         for number, (index, session) in enumerate(source):
             if stopped():
                 break
+            rejected += session.rejected_origins
+            daily_status[session.daily_status] += 1
             if not len(session.origins):
                 cursor = (index+1, 0)
                 continue
@@ -157,6 +162,7 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
                                "train/learning_rate": rate, "train/origins": count}
                     reporter.log(metrics, step)
                     reporter.update(stage="training", step=step, epoch=1, done=count,
+                                    samples_per_second=speed, pass_fraction=index/len(units),
                                     loss=float(loss), windows_per_second=speed,
                                     learning_rate=rate, session_index=index)
                     interval, prior_count = time.perf_counter(), count
@@ -183,9 +189,10 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     elapsed = time.perf_counter()-start
     profile = dict(origins=count, updates=step, seconds=elapsed, origins_per_second=count/elapsed,
                    encoded_windows=windows_encoded, missing_slots=dict(zip(NAMES,missing)),
-                   session_compute_seconds=sum(spans), peak_gpu_bytes=torch.cuda.max_memory_allocated())
+                   rejected_origins=rejected, daily_status=dict(daily_status), session_compute_seconds=sum(spans), peak_gpu_bytes=torch.cuda.max_memory_allocated())
     if not reporter:
         return profile
+    write_json(args.output/"training-coverage.json", profile)
     if stopped():
         return "stopped"
     reporter.update(stage="full validation")

@@ -61,6 +61,7 @@ class Session:
     targets: list
     origins: np.ndarray
     daily_status: str
+    rejected_origins: int
 
 
 def prepare(unit, successor=None):
@@ -68,6 +69,10 @@ def prepare(unit, successor=None):
     pools = [reader.view(f) for f in range(5)]
     for array in pools:
         validate_bars(array)
+        quote = array["values"].reshape(-1,3,6)[:,1:]
+        valid = array["valid"].reshape(-1,3,6)[:,1:].astype(bool)
+        if ((quote[...,:4] <= 0) & valid[...,:4]).any() or ((quote[...,4:] < 0) & valid[...,4:]).any():
+            raise ValueError("Invalid observed quote numerics")
     blocks = reader.array("origins.npy")
     if blocks.dtype != ORIGIN or blocks.shape != (reader.receipt["blocks"], BLOCK):
         raise ValueError("Unexpected certified origin geometry")
@@ -89,7 +94,7 @@ def prepare(unit, successor=None):
         if (other.receipt["hash"] != successor.receipt_hash
                 or other.receipt["ticker"] != reader.receipt["ticker"]
                 or other.receipt["session_date"] <= day
-                or other.receipt["session_date"][:4] != day[:4]
+                or (other.receipt["session_date"][:4] == "2026") != (day[:4] == "2026")
                 or not other.price_basis):
             raise ValueError("Successor lineage differs")
     target_pools[4], status = daily_extension(reader, other, pools[4], day)
@@ -104,7 +109,7 @@ def prepare(unit, successor=None):
             starts = closes - FRAMES[frame]
         targets.append(target_indices(closes, starts, times, width))
     keep = np.concatenate(targets, axis=1).max(1) >= 0
-    return Session(target_pools, ends[keep], [x[keep] for x in targets], times[keep], status)
+    return Session(target_pools, ends[keep], [x[keep] for x in targets], times[keep], status, int((~keep).sum()))
 
 
 def sessions(units, split, start, workers):
