@@ -11,7 +11,6 @@ import time
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress_bar import ProgressBar
 from rich.table import Table
 from rich.text import Text
 
@@ -133,7 +132,7 @@ def flat_reference(report, key):
 
 def forecast_table(report, prior, width, detailed):
     table = Table(expand=True, box=None, padding=(0, 1))
-    table.add_column("Bar", style="cyan", no_wrap=True)
+    table.add_column("Bar", style="cyan", no_wrap=True, width=10)
     columns = ["Trade $", "Last $", "Origin %"]
     if width >= 65:
         columns += ["Skill %", "Candle %", "Path %"]
@@ -144,7 +143,7 @@ def forecast_table(report, prior, width, detailed):
     if width >= 215:
         columns += ["Bid dir %", "Ask dir %", ">0.5% dir", ">0.5% MAE", ">0.5% last $"]
     for label in columns:
-        table.add_column(label, justify="right", no_wrap=True)
+        table.add_column(label, justify="right", no_wrap=True, ratio=1)
     for frame, n in HORIZONS if detailed else SUMMARY:
         prefix = f"{frame}/h{n:02d}"
         def metric(key):
@@ -175,7 +174,7 @@ def forecast_table(report, prior, width, detailed):
             cells += [scored(skill, 0, "+,.1f", higher=True),
                       direction("trade", "candle"), direction("trade", "path")]
         if width >= 100:
-            cells += [close("bid"), close("ask"), num(sum(counts) or None)]
+            cells += [close("bid"), close("ask"), num(sum(counts) if metric("trade/from_last/balanced_accuracy_pct") is not None else None)]
         if width >= 145:
             cells += [raw(key) for key in ("trade_open","trade_high","trade_low","trade_size",
                                            "trade_count","bid_size","ask_size")]
@@ -195,16 +194,17 @@ def forecast_table(report, prior, width, detailed):
     return table
 
 
-def training_table(rows, width):
-    if not rows:
-        return Text("Waiting for logged optimizer updates.", style="dim")
+def training_table(rows, width, *, count=None):
+    if count is None:
+        count = 5 if width >= 95 else 2
     table = Table(expand=True, box=None, padding=(0, 1))
     for col in ("Update", "Loss", "Origins/s", "Rate", "Origins"):
-        table.add_column(col, justify="right", no_wrap=True)
+        table.add_column(col, justify="right", no_wrap=True, ratio=1)
     previous = rows[5:30]
     reference_loss = median(row["train/loss"] for row in previous) if previous else None
     reference_rate = median(row["train/origins_per_second"] for row in previous) if previous else None
-    for row in rows[:5 if width >= 95 else 2]:
+    for index in range(count):
+        row = rows[index] if index < len(rows) else {}
         table.add_row(num(row.get("step")), scored(row.get("train/loss"), reference_loss, ",.3f"),
                       scored(row.get("train/origins_per_second"), reference_rate, ",.0f", higher=True),
                       num(row.get("train/learning_rate"), ".2e"), num(row.get("train/origins")))
@@ -212,12 +212,12 @@ def training_table(rows, width):
 
 
 def eval_panel(report, prior, title, width, detailed, waiting):
-    if not report:
-        return Panel(Text(waiting, style="dim"), title=title, title_align="left")
     header = Text(f"Step {num(report.get('step'))}  ·  {num(report.get('origins'))} origins  ·  "
                   f"loss {num(report.get('loss'),',.3f')}  ·  "
                   f"{num(report.get('origins_per_second'),',.0f',' origins/s')}  ·  "
                   f"nonfinite {num(report.get('nonfinite'))}", overflow="ellipsis", no_wrap=True)
+    if not report:
+        header = Text(waiting, style="dim", overflow="ellipsis", no_wrap=True)
     return Panel(Group(header, forecast_table(report,prior,width,detailed)), title=title,
                  title_align="left", border_style="blue")
 
@@ -275,7 +275,8 @@ def status_rows(state, report, manifest, training, step, saved, age, label, colo
                     style=f"bold {color}", overflow="ellipsis", no_wrap=True)
     rows = [age_line]
     if state.get("error"):
-        rows.append(Text(str(state["error"]), style="red", overflow="ellipsis", no_wrap=True))
+        error = " ".join(str(state["error"]).splitlines())
+        rows[0] = Text(f"{label}  |  {error}", style="bold red", overflow="ellipsis", no_wrap=True)
     active = state.get("state") == "running" and not stale
     typical, left, live_eta, pass_eta, run_eta, next_step, dev_eta, eval_eta = estimates(
         state, training, manifest, report, active)
@@ -363,7 +364,7 @@ def progress_bars(state, development, final, manifest, width):
     table = Table.grid(expand=True, padding=(0, 1))
     table.add_column(no_wrap=True, style="bold")
     table.add_column(ratio=1)
-    table.add_column(no_wrap=True, max_width=45 if width >= 85 else 20)
+    table.add_column(no_wrap=True, width=32 if width >= 85 else 20)
     epoch, epochs = state.get("epoch"), state.get("epochs")
     total, done = state.get("pass_origins_total"), state.get("pass_origins_done")
     fraction = done / total if done is not None and total else None
@@ -372,7 +373,7 @@ def progress_bars(state, development, final, manifest, width):
     if state.get("state") == "complete":
         overall = fraction = 1
     def row(name, value, detail):
-        bar = SolidBar(1, value) if value is not None else ProgressBar(total=None, pulse=True)
+        bar = SolidBar(1, value) if value is not None else Text("\u2591" * max(1, width - 4), style="bright_black", no_wrap=True, overflow="crop")
         table.add_row(name, bar, Text(detail, style="dim", no_wrap=True, overflow="ellipsis"))
     row("Overall", overall, f"{num(epochs)} training passes")
     row("Current pass", fraction, f"Pass {num(epoch)} of {num(epochs)}")
@@ -402,11 +403,9 @@ def progress_bars(state, development, final, manifest, width):
 
 def render(snapshot, *, width, height, now=None):
     state, checkpoint, development, final, manifest, training, prior = snapshot
-    if not state:
-        return Panel("Waiting for progress.json from the trainer.", title="BarGPT · Phase 2 V5")
     now = time.time() if now is None else now
-    age = max(0, now - state.get("updated", 0))
-    status = state.get("state", "unknown")
+    age = max(0, now - state.get("updated", now))
+    status = state.get("state", "waiting")
     stale = age > 30 and status not in TERMINAL
     color = "red" if status == "failed" or stale else "green" if status == "complete" else "cyan"
     activity = state.get("stage", "initializing")
@@ -414,23 +413,26 @@ def render(snapshot, *, width, height, now=None):
     step, saved = state.get("step"), checkpoint.get("step")
     report = max((development, final), key=lambda item: item.get("step", -1))
     global_rows = status_rows(state, report, manifest, training, step, saved, age, state_label,
-                             color, width=width, compact=height < 31, stale=stale)
+                             color, width=width, compact=height < 46, stale=stale)
     global_rows.append(progress_bars(state, development, final, manifest, width))
     top = Panel(Group(*global_rows), title="RUN STATUS  ·  Phase 2 V5", title_align="left", border_style=color)
-    if height < 36 or (final and height < 47):
-        return Group(top, Panel(training_table(training[:1],width), title="TRAINING", title_align="left"),
-                     Text(f"Dev step {num(development.get('step'))}  ·  loss {num(development.get('loss'),',.3f')}"
-                          f"  ·  {('full validation ready' if final else 'full validation pending')}",
-                          overflow="ellipsis", no_wrap=True))
-    detailed = height >= (87 if final else 66)
+    # Viewport size alone determines the layout. A report arriving can fill
+    # cells, but must never move another section or change the horizon list.
+    if height < 46:
+        def summary(label, report):
+            return Text(f"{label}  |  step {num(report.get('step'))}  |  loss {num(report.get('loss'), ',.3f')}",
+                        overflow="ellipsis", no_wrap=True)
+        return Group(top, Panel(training_table(training, width, count=1), title="TRAINING", title_align="left"),
+                     summary("DEVELOPMENT", development), summary("FULL VALIDATION", final))
+    detailed = height >= 87
     views = [
         top,
         Panel(training_table(training,width), title="TRAINING  ·  recent logged updates", title_align="left", border_style="blue"),
         eval_panel(development,prior,"DEVELOPMENT",width,detailed,"Waiting for the first completed development evaluation."),
         eval_panel(final,{},"FULL VALIDATION",width,detailed,"Pending until the full training pass finishes."),
     ]
-    if height >= (60 if final else 46):
-        views.append(glossary(width, expanded=height >= (94 if final else 73) and width >= 145))
+    if height >= 65:
+        views.append(glossary(width, expanded=height >= 94 and width >= 145))
     return Group(*views)
 
 
