@@ -15,7 +15,7 @@ from ..phase2_v2.train import lease, load_checkpoint, save_checkpoint, rng_state
 from ..phase1_v26.reporting import Reporter
 from ..v5.shards.contract import file_hash, write_json
 from research.mlops.env import discover_env_files, load_env_files
-from .data import sessions, DeviceSession
+from .data import sessions, device_sessions
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
 from .schedule import PASSES, FLOOR, PEAK_FACTOR, LEGACY_SOURCE, cosine_rate, order_for_pass, candidate_prefix
@@ -33,6 +33,10 @@ def parser():
     p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
+    p.add_argument("--graph-updates", action="store_true", help="Replay fixed-shape forecast forward/backward on CUDA")
+    p.add_argument("--session-lanes", type=int, default=0, choices=(0, 1, 2, 4),
+                   help="Concurrent frozen GPU session encoders; zero uses the serial path")
+    p.add_argument("--resume-serial", action="store_true", help="Resume the packed serial implementation")
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--profile-sessions", type=int, default=0)
     p.add_argument("--validation-every", type=int, default=10000)
@@ -67,21 +71,62 @@ def predict(model, teacher, windows, args):
     return teacher.decode(encoded.float())
 
 
+class ForecastGradients:
+    """Cache static-buffer graphs for common batch sizes, with eager handling of tails.
+
+    Graphs contain only forward and backward. The caller checks gradients and
+    applies AdamW once per original batch with its current learning rate.
+    """
+    def __init__(self, model, teacher, args):
+        self.model, self.teacher, self.args = model, teacher, args
+        self.graphs = {}
+        self.warmed = set()
+
+    def backward(self, inputs, logs, valid):
+        loss = objective(self.teacher, predict(self.model, self.teacher, inputs, self.args), logs, valid)
+        loss.backward()
+        return loss
+
+    def __call__(self, inputs, logs, valid):
+        n = len(inputs)
+        if not self.args.graph_updates or n not in (4096, 8192):
+            return self.backward(inputs, logs, valid)
+        if n not in self.warmed:
+            self.warmed.add(n)
+            return self.backward(inputs, logs, valid)
+        arguments = (inputs, logs, valid)
+        if n not in self.graphs:
+            buffers = tuple(torch.empty_like(x) for x in arguments)
+            graph = torch.cuda.CUDAGraph()
+            # Capture uses dedicated buffers and fresh gradient storage. No
+            # parameter update or RNG use occurs during recording.
+            with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+                loss = self.backward(*buffers)
+            grads = tuple(p.grad for p in self.model.parameters())
+            self.graphs[n] = graph, buffers, loss, grads
+        graph, buffers, loss, grads = self.graphs[n]
+        for dst, src in zip(buffers, arguments):
+            dst.copy_(src)
+        for parameter, grad in zip(self.model.parameters(), grads):
+            parameter.grad = grad
+        graph.replay()
+        return loss
+
+
 @torch.no_grad()
 def evaluate(units, model, teacher, args, limit, reporter=None):
     stats = Metrics("cuda")
     count = 0
     total_loss = torch.zeros((),device="cuda",dtype=torch.float64)
-    batches = sessions(units, 1, 0, args.workers)
+    batches = device_sessions(sessions(units, 1, 0, args.workers), teacher, args, metrics=True)
     started = time.perf_counter()
     missing = Counter()
     try:
-        for number, (_, source) in enumerate(batches):
+        for number, (_, source, device) in enumerate(batches):
             if (args.output/"STOP").exists() or (args.output.parent/"STOP").exists():
                 return None
             if not len(source.origins):
                 continue
-            device = DeviceSession(source, teacher, args.token_batch, "cuda", cached=not args.direct_teacher)
             missing.update(dict(zip(NAMES,device.missing)))
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
                 inputs, logs, valid, evidence = device.batch(ids, metrics=True)
@@ -131,8 +176,9 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     def stopped():
         return (args.output/"STOP").exists() or (args.output.parent/"STOP").exists()
     first, first_offset = cursor
-    source = sessions(units, 0, first, args.workers)
+    source = device_sessions(sessions(units, 0, first, args.workers), teacher, args, metrics=False)
     start = interval = time.perf_counter()
+    gradients = ForecastGradients(model, teacher, args)
     prior_count = count
     windows_encoded = 0
     missing = [0]*5
@@ -141,7 +187,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     compute_seconds = 0.
     first_loss = last_loss = None
     try:
-        for number, (index, session) in enumerate(source):
+        for number, (index, session, device) in enumerate(source):
             if stopped():
                 break
             rejected += session.rejected_origins
@@ -151,9 +197,6 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 cursor = (index+1, 0)
                 continue
             tick = time.perf_counter()
-            with torch.no_grad():
-                device = DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
-                                       metrics=False, verify=bool(args.profile_sessions and number == 0))
             windows_encoded += device.num_windows
             missing = [a+b for a,b in zip(missing,device.missing)]
             generator = torch.Generator(device="cuda").manual_seed(51771 + index + 1_000_003 * pass_index)
@@ -169,8 +212,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 for group in optimizer.param_groups:
                     group["lr"] = rate
                 optimizer.zero_grad(set_to_none=True)
-                loss = objective(teacher, predict(model, teacher, inputs, args), logs, valid)
-                loss.backward()
+                loss = gradients(inputs, logs, valid)
                 norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
                 if not bool(torch.isfinite(loss)&torch.isfinite(norm)):
                     checkpoint()
@@ -297,6 +339,8 @@ def main():
     saved = None
     if args.resume:
         previous = dict(contract, source="1a76327f0a9cfc08beac8a88071ccf56419daafa") if args.resume_prepack else contract
+        if args.resume_serial:
+            previous = dict(contract, source="acefd32563d52046b4a36f992f037289b1f290a5")
         saved = load_checkpoint(args.resume, legacy_contract if args.migrate_fixed_lr else previous)
         if args.migrate_fixed_lr:
             saved.update(pass_index=0,pass_origins=saved["windows"])

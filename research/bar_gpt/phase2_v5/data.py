@@ -279,3 +279,67 @@ class DeviceSession:
         return windows, torch.cat(logs, 1), torch.cat(masks, 1), (
             (torch.cat(raw_parts, 1), torch.cat(anchors, 1), torch.cat(anchor_valid, 1))
             if metrics else None)
+
+
+def device_sessions(source, teacher, args, *, metrics):
+    """Prefetch frozen encodings on bounded CUDA streams; yield in certified order.
+
+    Only immutable teacher parameters are shared. All gradients, optimizer steps
+    and traversal decisions remain on the caller thread in their original order.
+    """
+    def build(session, verify):
+        if not len(session.origins):
+            return None
+        with torch.no_grad():
+            return DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
+                                 metrics=metrics, verify=verify)
+
+    lanes = args.session_lanes
+    if lanes == 0:
+        try:
+            for n, (index, session) in enumerate(source):
+                yield index, session, build(session, bool(args.profile_sessions and n == 0 and not metrics))
+        finally:
+            source.close()
+        return
+
+    consumer = torch.cuda.current_stream()
+    streams = [torch.cuda.Stream() for _ in range(lanes)]
+    for stream in streams:
+        stream.wait_stream(consumer)
+
+    def prepare_on_stream(stream, session):
+        with torch.cuda.stream(stream):
+            prepared = build(session, False)
+            return prepared, stream.record_event()
+
+    pending = deque()
+    def consume(job):
+        index, session, future = job
+        prepared, ready = future.result()
+        consumer.wait_event(ready)
+        if prepared is not None:
+            # Allocations originate on a worker stream. Prevent recycling their
+            # storage before the last queued consumer kernel has read it.
+            for entries in (prepared.encoded, prepared.anchors, prepared.targets):
+                for entry in entries:
+                    for tensor in entry:
+                        tensor.record_stream(consumer)
+        return index, session, prepared
+
+    try:
+        with ThreadPoolExecutor(max_workers=lanes) as executor:
+            for n, (index, session) in enumerate(source):
+                if n == 0 and args.profile_sessions and not metrics:
+                    # The reference check can temporarily change global matmul precision.
+                    yield index, session, build(session, True)
+                    continue
+                ready = consume(pending.popleft()) if len(pending) == lanes else None
+                stream = streams[n % lanes]
+                pending.append((index, session, executor.submit(prepare_on_stream, stream, session)))
+                if ready is not None:
+                    yield ready
+            while pending:
+                yield consume(pending.popleft())
+    finally:
+        source.close()
