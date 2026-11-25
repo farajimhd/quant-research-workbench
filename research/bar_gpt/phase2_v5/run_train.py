@@ -38,6 +38,7 @@ def parser():
     p.add_argument("--learning-rate", type=float, default=1e-4)
     p.add_argument("--head-bf16", action="store_true")
     p.add_argument("--direct-teacher", action="store_true")
+    p.add_argument("--tf32", action="store_true", help="Opt into the audited fast matrix multiplication path")
     return p
 
 
@@ -64,23 +65,32 @@ def predict(model, teacher, windows, args):
 
 
 @torch.no_grad()
-def evaluate(units, model, teacher, args, limit):
+def evaluate(units, model, teacher, args, limit, reporter=None):
     stats = Metrics("cuda")
     count = 0
     total_loss = torch.zeros((),device="cuda",dtype=torch.float64)
     batches = sessions(units, 1, 0, args.workers)
     started = time.perf_counter()
+    missing = Counter()
     try:
         for number, (_, source) in enumerate(batches):
+            if (args.output/"STOP").exists() or (args.output.parent/"STOP").exists():
+                return None
             if not len(source.origins):
                 continue
             device = DeviceSession(source, teacher, args.token_batch, "cuda", cached=not args.direct_teacher)
+            missing.update(dict(zip(NAMES,device.missing)))
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
                 inputs, logs, valid, evidence = device.batch(ids, metrics=True)
                 out = predict(model, teacher, inputs, args)
                 total_loss += objective(teacher, out, logs, valid).double()*len(ids)
                 stats.add(out, valid, evidence)
                 count += len(ids)
+            if reporter and number % 8 == 0:
+                elapsed = time.perf_counter()-started
+                reporter.update(validation_done=count, validation_sessions=number+1,
+                                validation_samples_per_second=count/max(elapsed,.001),
+                                validation_windows_per_second=count/max(elapsed,.001))
             if limit and number+1 >= limit:
                 break
     finally:
@@ -90,7 +100,9 @@ def evaluate(units, model, teacher, args, limit):
     result = stats.result()
     if result["nonfinite"]:
         raise FloatingPointError("Nonfinite forecast during validation")
-    return {**result, "loss": float(total_loss)/count, "origins": count,
+    elapsed = time.perf_counter()-started
+    return {**result, **{f"missing/{frame}":missing[frame] for frame in NAMES},
+            "loss": float(total_loss)/count, "origins": count, "origins_per_second":count/elapsed,
             "seconds": time.perf_counter()-started, "full_split": not limit}
 
 
@@ -170,7 +182,10 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
                     checkpoint()
                 if reporter and step >= next_validation:
                     reporter.update(stage="development validation")
-                    report = evaluate(units, model, teacher, args, args.eval_sessions)
+                    report = evaluate(units, model, teacher, args, args.eval_sessions, reporter)
+                    if report is None:
+                        checkpoint()
+                        return "stopped"
                     write_json(args.output/"development-latest.json", dict(step=step, **report))
                     reporter.log({"development/"+k:v for k,v in report.items()}, step)
                     reporter.update(latest_evaluation={"scope":"development","step":step,"loss":report["loss"]})
@@ -196,7 +211,9 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     if stopped():
         return "stopped"
     reporter.update(stage="full validation")
-    report = evaluate(units, model, teacher, args, 0)
+    report = evaluate(units, model, teacher, args, 0, reporter)
+    if report is None:
+        return "stopped"
     write_json(args.output/"validation-final.json", dict(step=step, **report))
     reporter.log({"validation/"+k:v for k,v in report.items()}, step)
     reporter.update(latest_evaluation={"scope":"validation","step":step,"loss":report["loss"]})
@@ -216,6 +233,7 @@ def main():
                                    r"c:\windows\immersivecontrolpanel\systemsettings.exe"))
     torch.set_num_threads(1)
     torch.manual_seed(51771)
+    torch.set_float32_matmul_precision("high" if args.tf32 else "highest")
     started = time.perf_counter()
     teacher, provenance = teacher_for(args)
     units, data = load_units(release=args.release)
@@ -225,16 +243,17 @@ def main():
                     teacher=provenance, data=data, horizons=HORIZONS, parameters=sum(p.numel() for p in model.parameters()),
                     label_policy="observed intervals start >= origin; verified daily successor; same split",
                     batch_size=args.batch_size, token_batch=args.token_batch, head_bf16=args.head_bf16,
-                    cached_teacher=not args.direct_teacher,
+                    cached_teacher=not args.direct_teacher, tf32=args.tf32,
                     learning_rate=args.learning_rate, warmup_updates=1000, seed=51771)
     saved = load_checkpoint(args.resume, contract) if args.resume else None
     with lease(args.output):
         if args.profile_sessions:
             profile = train(args, units, teacher, model, optimizer, contract)
             profile["setup_seconds"] = time.perf_counter()-started-profile["seconds"]
-            validation = evaluate(units, model, teacher, args, min(args.eval_sessions, 4))
+            validation = evaluate(units, model, teacher, args, args.eval_sessions)
             write_json(args.output/"profile.json", {**profile, "validation_origins": validation["origins"],
                                                      "validation_seconds": validation["seconds"],
+                                                     "validation_origins_per_second": validation["origins_per_second"],
                                                      "validation_loss": validation["loss"]})
             print(json.dumps(profile), flush=True)
             return

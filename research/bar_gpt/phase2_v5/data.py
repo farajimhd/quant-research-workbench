@@ -113,7 +113,9 @@ def prepare(unit, successor=None):
 
 
 def sessions(units, split, start, workers):
-    next_rows = [successor_rows(table) for _, _, table in units.groups]
+    if not hasattr(units, "forecast_successors"):
+        units.forecast_successors = [successor_rows(table) for _, _, table in units.groups]
+    next_rows = units.forecast_successors
     def load(index, unit):
         group = int(np.searchsorted(units.ends, index, side="right"))
         offset = units.ends[group-1] if group else 0
@@ -204,11 +206,27 @@ class DeviceSession:
                     x, v, times = logs[gather], valid[gather], clocks[gather]
                     frame = torch.full_like(chunk, FRAMES[f])
                     assembled = BarInputTransformV1.assemble(x, v, times, frame, times > 0, torch.diff(times,dim=1))
-                    expected = teacher.encode(assembled.values, assembled.valid)
-                    if cached:
-                        torch.testing.assert_close(encoded,expected,rtol=1e-5,atol=3e-6)
+                    precision = torch.get_float32_matmul_precision()
+                    if verify and cached and precision != "highest":
+                        torch.set_float32_matmul_precision("highest")
+                        try:
+                            expected = teacher.encode(assembled.values, assembled.valid)
+                            expected_logs = teacher.decode(expected)["logs"]
+                            actual_logs = teacher.decode(encoded)["logs"]
+                        finally:
+                            torch.set_float32_matmul_precision(precision)
+                        price = [0,1,2,3,6,7,8,9,12,13,14,15]
+                        difference = (actual_logs[...,price]-expected_logs[...,price]).abs()
+                        # Test log-price output drift rather than allowing an
+                        # embedding-norm tolerance to hide economically large errors.
+                        if bool((difference.mean() > .0001) | (difference.max() > .0025)):
+                            raise ValueError(f"TF32 changes V29 log prices: mean={float(difference.mean())} max={float(difference.max())}")
                     else:
-                        encoded = expected
+                        expected = teacher.encode(assembled.values, assembled.valid)
+                        if cached:
+                            torch.testing.assert_close(encoded,expected,rtol=1e-5,atol=3e-6)
+                        else:
+                            encoded = expected
                 bank.append(encoded)
                 v = valid[gather]
                 close_valid = v[..., [3, 9, 15]]
