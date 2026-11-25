@@ -5,6 +5,7 @@ import math
 import os
 from pathlib import Path
 import sys
+from statistics import median
 import time
 
 from rich.console import Console, Group
@@ -30,6 +31,8 @@ class Reader:
     def __init__(self, root):
         self.root = root
         self.cached = {}
+        self.prior_step = None
+        self.prior = {}
 
     def read(self, name):
         path = self.root / name
@@ -46,73 +49,157 @@ class Reader:
             pass
         return payload
 
+    def journal(self, limit):
+        try:
+            with (self.root / "metrics.jsonl").open("rb") as stream:
+                size = stream.seek(0, os.SEEK_END)
+                start = max(0, size - limit)
+                stream.seek(start)
+                if start:
+                    stream.readline()
+                for line in reversed(stream.read().splitlines()):
+                    try:
+                        yield json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+        except OSError:
+            return
+
     def snapshot(self):
-        return (
-            self.read("progress.json"), self.read("checkpoint_last.proof.json"),
-            self.read("development-latest.json"), self.read("validation-final.json"),
-            self.read("manifest.json"),
-        )
+        dev = self.read("development-latest.json")
+        if dev.get("step") != self.prior_step:
+            self.prior_step = dev.get("step")
+            self.prior = next(
+                ({k.removeprefix("development/"): v for k, v in row.items()
+                  if k.startswith("development/")}
+                 for row in self.journal(8 * 1024**2)
+                 if "development/loss" in row and row["step"] < self.prior_step
+                 and row.get("development/origins") == dev.get("origins")),
+                {},
+            )
+        recent = []
+        for row in self.journal(96 * 1024):
+            if "train/loss" in row:
+                recent.append(row)
+                if len(recent) == 30:
+                    break
+        return (self.read("progress.json"), self.read("checkpoint_last.proof.json"),
+                dev, self.read("validation-final.json"), self.read("manifest.json"),
+                recent, self.prior)
 
 
 def num(value, fmt=",.0f", suffix=""):
     return f"{value:{fmt}}{suffix}" if isinstance(value, (int, float)) and math.isfinite(value) else "—"
 
 
-def delta_color(model, baseline):
-    if model is None or baseline is None:
-        return "dim"
-    if model < baseline:
-        return "green"
-    return "yellow" if model > baseline else "dim"
+def scored(value, reference, fmt, *, higher=False):
+    """Compare only like-for-like measurements; leave unavailable comparisons neutral."""
+    style = "dim" if value is None else ""
+    if value is not None and reference is not None and value != reference:
+        style = "green" if (value > reference) == higher else "dark_orange"
+    return Text(num(value, fmt), style=style)
 
 
-def forecast_table(report, scope, width, height):
-    title = f"{scope}  ·  step {num(report.get('step'))}  ·  {num(report.get('origins'))} origins"
-    if width < 52:
-        title = f"{scope} · step {num(report.get('step'))}"
-    metrics = Table(title=title, title_justify="left", title_style="bold", expand=True,
-                    box=None, padding=(0, 1))
-    metrics.add_column("Frame / bar", no_wrap=True, style="cyan")
-    columns = [("Close $", "close"), ("Last $", "baseline"), ("Origin bal%", "origin")]
-    if width < 52:
-        columns = [("MAE $", "close"), ("Last $", "baseline"), ("Dir%", "origin")]
-    if width >= 72:
-        columns.insert(2, ("Skill %", "skill"))
-        columns.append(("Candle bal%", "candle"))
-    if width >= 104:
-        columns.extend((("Path bal%", "path"), ("Bid $", "bid"), ("Ask $", "ask"), ("Pairs", "count")))
-    for label, _ in columns:
-        metrics.add_column(label, justify="right", no_wrap=True)
-    rows = HORIZONS if height >= 36 else SUMMARY if height >= 20 else tuple(
-        (frame, n) for frame, n in SUMMARY if n == 1 and frame in ("1s", "1m", "daily")
-    )
-    for frame, n in rows:
+def flat_reference(report, key):
+    """Balanced recall for an always-flat forecast on this metric's exact target set."""
+    counts = [report.get(f"{key}/{label}_count", 0) for label in ("down", "flat", "up")]
+    classes = sum(n > 0 for n in counts)
+    return 100 / classes if classes and counts[1] else 0 if classes else None
+
+
+def forecast_table(report, prior, width, detailed):
+    table = Table(expand=True, box=None, padding=(0, 1))
+    table.add_column("Bar", style="cyan", no_wrap=True)
+    columns = ["Trade $", "Last $", "Origin %"]
+    if width >= 65:
+        columns += ["Skill %", "Candle %", "Path %"]
+    if width >= 100:
+        columns += ["Bid $", "Ask $", "Pairs"]
+    if width >= 145:
+        columns += ["Open $", "High $", "Low $", "Vol MAE", "Trade #", "Bid size", "Ask size"]
+    if width >= 215:
+        columns += ["Bid dir %", "Ask dir %", ">0.5% dir", ">0.5% MAE", ">0.5% last $"]
+    for label in columns:
+        table.add_column(label, justify="right", no_wrap=True)
+    for frame, n in HORIZONS if detailed else SUMMARY:
         prefix = f"{frame}/h{n:02d}"
         def metric(key):
             return report.get(f"{prefix}/{key}")
 
-        close = metric("trade/comparable_close_mae")
-        baseline = metric("trade/persistence_close_mae")
-        skill = 100 * (1 - close / baseline) if close is not None and baseline else None
-        color = delta_color(close, baseline)
-        values = {
-            "close": Text(num(close, ",.4f"), style=color),
-            "baseline": num(baseline, ",.4f"),
-            "skill": Text(num(skill, "+,.1f"), style=color),
-            "origin": num(metric("trade/from_last/balanced_accuracy_pct"), ".1f"),
-            "candle": num(metric("trade/candle/balanced_accuracy_pct"), ".1f"),
-            "path": num(metric("trade/path/balanced_accuracy_pct"), ".1f"),
-            "bid": num(metric("bid_close/mae"), ",.4f"),
-            "ask": num(metric("ask_close/mae"), ",.4f"),
-            "count": num(sum(metric(f"trade/from_last/{label}_count") or 0
-                             for label in ("down", "flat", "up")) or None),
-        }
-        metrics.add_row(f"{frame:>5} / {n:02d}", *(values[key] for _, key in columns))
-    return metrics
+        def close(stream):
+            return scored(metric(f"{stream}/comparable_close_mae"),
+                          metric(f"{stream}/persistence_close_mae"), ",.4f")
+
+        def direction(stream, mode):
+            key = f"{stream}/{mode}"
+            return scored(metric(f"{key}/balanced_accuracy_pct"),
+                          flat_reference(report, f"{prefix}/{key}"), ".1f", higher=True)
+
+        def raw(field):
+            key = f"{prefix}/{field}/mae"
+            # Compare adjacent reports only on the same scope and field coverage.
+            count_key = f"{prefix}/{field}/count"
+            reference = prior.get(key) if report.get(count_key) == prior.get(count_key) else None
+            return scored(report.get(key), reference, ",.4g")
+
+        model = metric("trade/comparable_close_mae")
+        last = metric("trade/persistence_close_mae")
+        skill = 100 * (1 - model / last) if model is not None and last else None
+        counts = [metric(f"trade/from_last/{label}_count") or 0 for label in ("down", "flat", "up")]
+        cells = [close("trade"), num(last, ",.4f"), direction("trade", "from_last")]
+        if width >= 65:
+            cells += [scored(skill, 0, "+,.1f", higher=True),
+                      direction("trade", "candle"), direction("trade", "path")]
+        if width >= 100:
+            cells += [close("bid"), close("ask"), num(sum(counts) or None)]
+        if width >= 145:
+            cells += [raw(key) for key in ("trade_open","trade_high","trade_low","trade_size",
+                                           "trade_count","bid_size","ask_size")]
+        if width >= 215:
+            parts = [(metric(f"trade/abs_move_pct/{band}/count") or 0, band)
+                     for band in ("05_1","1_2","gt_2")]
+            total = sum(count for count, _ in parts)
+            def weighted(key):
+                return sum(count * (metric(f"trade/abs_move_pct/{band}/{key}") or 0)
+                           for count, band in parts) / total if total else None
+            # For non-flat moves, compare against a 50% random up/down guess.
+            cells += [direction("bid","from_last"), direction("ask","from_last"),
+                      scored(weighted("direction_accuracy_pct"),50,".1f",higher=True),
+                      scored(weighted("close_mae"),weighted("persistence_close_mae"),",.4f"),
+                      num(weighted("persistence_close_mae"),",.4f")]
+        table.add_row(f"{frame} / {n:02d}", *cells)
+    return table
+
+
+def training_table(rows, width):
+    if not rows:
+        return Text("Waiting for logged optimizer updates.", style="dim")
+    table = Table(expand=True, box=None, padding=(0, 1))
+    for col in ("Update", "Loss", "Origins/s", "Rate", "Origins"):
+        table.add_column(col, justify="right", no_wrap=True)
+    previous = rows[5:30]
+    reference_loss = median(row["train/loss"] for row in previous) if previous else None
+    reference_rate = median(row["train/origins_per_second"] for row in previous) if previous else None
+    for row in rows[:5 if width >= 95 else 2]:
+        table.add_row(num(row.get("step")), scored(row.get("train/loss"), reference_loss, ",.3f"),
+                      scored(row.get("train/origins_per_second"), reference_rate, ",.0f", higher=True),
+                      num(row.get("train/learning_rate"), ".2e"), num(row.get("train/origins")))
+    return table
+
+
+def eval_panel(report, prior, title, width, detailed, waiting):
+    if not report:
+        return Panel(Text(waiting, style="dim"), title=title, title_align="left")
+    header = Text(f"Step {num(report.get('step'))}  ·  {num(report.get('origins'))} origins  ·  "
+                  f"loss {num(report.get('loss'),',.3f')}  ·  "
+                  f"{num(report.get('origins_per_second'),',.0f',' origins/s')}  ·  "
+                  f"nonfinite {num(report.get('nonfinite'))}", overflow="ellipsis", no_wrap=True)
+    return Panel(Group(header, forecast_table(report,prior,width,detailed)), title=title,
+                 title_align="left", border_style="blue")
 
 
 def render(snapshot, *, width, height, now=None):
-    state, checkpoint, development, final, manifest = snapshot
+    state, checkpoint, development, final, manifest, training, prior = snapshot
     if not state:
         return Panel("Waiting for progress.json from the trainer.", title="BarGPT · Phase 2 V5")
     now = time.time() if now is None else now
@@ -121,52 +208,57 @@ def render(snapshot, *, width, height, now=None):
     stale = age > 30 and status not in TERMINAL
     color = "red" if status == "failed" or stale else "green" if status == "complete" else "cyan"
     activity = state.get("stage", "initializing")
-    title = ("STALE" if stale else status.upper()) + f"  /  {activity}"
+    state_label = ("STALE" if stale else status.upper()) + f" / {activity}"
     step, saved = state.get("step"), checkpoint.get("step")
-    content = [
-        Text(title, style=f"bold {color}"),
-        Text(f"Step {num(step)} · saved {num(saved)} · {age:.0f}s old"),
-    ]
-    if state.get("error"):
-        content.append(Text(str(state["error"]), style="red", overflow="ellipsis", no_wrap=True))
-    fraction = state.get("pass_fraction")
-    if status == "complete":
-        fraction = 1
-    content.append(Text(f"Sessions · {num(state.get('done'))} origins",
-                        style="bold"))
-    if fraction is not None:
-        content.append(SolidBar(1, fraction))
-
-    report = final or development
+    fraction = 1 if status == "complete" else state.get("pass_fraction")
     cadence = manifest.get("arguments", {}).get("validation_every")
     next_step = ((step // cadence) + 1) * cadence if step is not None and cadence else None
     speed = state.get("windows_per_second")
-    lr = state.get("learning_rate")
-    gpu = state.get("gpu_util")
-    memory = state.get("gpu_memory_mib")
-    content.append(Text(f"Train {num(speed, ',.0f', ' origins/s')}  ·  loss {num(state.get('loss'), ',.3f')}", style="bold"))
-    if height >= 20:
-        content.append(Text(f"LR {num(lr, '.2e')}  ·  GPU {num(gpu, '.0f', '%')} / "
-                            f"{num(memory / 1024 if memory is not None else None, '.1f', ' GiB')}"))
-    if report:
-        content.append(Text(f"Eval {num(report.get('origins_per_second'), ',.0f', ' origins/s')}  ·  "
-                            f"loss {num(report.get('loss'), ',.3f')}"
-                            + (f"  ·  next dev {num(next_step)}" if next_step and not final and width >= 70 else "")))
-    if "validation" in activity and height >= 22:
-        content.append(Text(f"Latest eval progress reading  ·  {num(state.get('validation_done'))} origins  ·  "
-                            f"{num(state.get('validation_samples_per_second'), ',.0f', ' origins/s')}", style="cyan"))
-    if report and height >= 13:
-        content.append(forecast_table(report, "FULL VALIDATION" if final else "DEVELOPMENT", width, height))
-    elif not report and height >= 13:
-        content.append(Text("Waiting for the first completed forecast evaluation.", style="dim"))
-    if report and height >= 22:
-        content.extend([
-            Text("Close $ = trade MAE. Last $ = persistence MAE.",
-                 style="dim", overflow="ellipsis", no_wrap=True),
-            Text("Origin = direction from last known close.",
+    gpu_memory = state.get("gpu_memory_mib")
+    report = final or development
+    global_rows = [
+        Text(f"{state_label}  ·  step {num(step)}  ·  saved {num(saved)}  ·  status {age:.0f}s old",
+             style=f"bold {color}", overflow="ellipsis", no_wrap=True),
+        Text(f"Train {num(speed,',.0f',' origins/s')}  ·  Eval {num(report.get('origins_per_second'),',.0f',' origins/s')}"
+             f"  ·  Train loss {num(state.get('loss'),',.3f')}  ·  LR {num(state.get('learning_rate'),'.2e')}",
+             overflow="ellipsis", no_wrap=True),
+        Text(f"GPU {num(state.get('gpu_util'),'.0f','%')} / {num(gpu_memory/1024 if gpu_memory is not None else None,'.1f',' GiB')}"
+             f"  ·  {num(state.get('done'))} origins  ·  next dev step {num(next_step if not final else None)}",
+             overflow="ellipsis", no_wrap=True),
+    ]
+    if state.get("error"):
+        global_rows.insert(1, Text(str(state["error"]), style="red", overflow="ellipsis", no_wrap=True))
+    if fraction is not None:
+        global_rows.append(Text("Session traversal", style="dim"))
+        global_rows.append(SolidBar(1,fraction))
+    if "validation" in activity and height >= 32:
+        global_rows.append(Text(f"Last eval progress reading  ·  {num(state.get('validation_done'))} origins"
+                                f"  ·  {num(state.get('validation_samples_per_second'),',.0f',' origins/s')}",
+                                style="cyan", overflow="ellipsis", no_wrap=True))
+    top = Panel(Group(*global_rows), title="RUN STATUS  ·  Phase 2 V5", title_align="left", border_style=color)
+    if height < 31 or (final and height < 43):
+        return Group(top, Panel(training_table(training[:1],width), title="TRAINING", title_align="left"),
+                     Text(f"Dev step {num(development.get('step'))}  ·  loss {num(development.get('loss'),',.3f')}"
+                          f"  ·  {('full validation ready' if final else 'full validation pending')}",
+                          overflow="ellipsis", no_wrap=True))
+    detailed = height >= (65 if final else 43)
+    views = [
+        top,
+        Panel(training_table(training,width), title="TRAINING  ·  recent logged updates", title_align="left", border_style="blue"),
+        eval_panel(development,prior,"DEVELOPMENT",width,detailed,"Waiting for the first completed development evaluation."),
+        eval_panel(final,{},"FULL VALIDATION",width,detailed,"Pending until the full training pass finishes."),
+    ]
+    if height >= 34:
+        views.extend([
+            Text("Green improves, orange trails. Close MAE and skill vs last-close persistence; direction vs always-flat."
+                 " OHLC and activity MAE vs previous matching dev report.", style="dim", overflow="ellipsis", no_wrap=True),
+            Text("Origin = move from last known close; candle = close vs open; path = consecutive forecast closes."
+                 " Large-move direction is raw accuracy vs a 50% up/down guess.", style="dim",
+                 overflow="ellipsis", no_wrap=True),
+            Text("Training colors compare with the median of the preceding 25 logged updates. Reference values and counts are neutral.",
                  style="dim", overflow="ellipsis", no_wrap=True),
         ])
-    return Panel(Group(*content), title="BarGPT · Phase 2 V5 Forecast", border_style=color)
+    return Group(*views)
 
 
 def main():
@@ -184,7 +276,7 @@ def main():
     vt = sys.stdout.isatty() and not args.once and enable_virtual_terminal()
     if vt and os.environ.get("TERM") in ("dumb", "unknown"):
         os.environ["TERM"] = "xterm-256color"
-    console = Console(legacy_windows=False if vt else None)
+    console = Console(legacy_windows=False if vt or args.once else None, force_terminal=False if args.once else None)
     reader = Reader(args.run)
 
     def frame():
