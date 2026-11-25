@@ -6,10 +6,12 @@ from .model import HORIZONS, NAMES, SLOTS
 
 class Metrics:
     def __init__(self, device):
-        self.raw = torch.zeros((3, SLOTS, 18), dtype=torch.float64, device=device)
+        self.raw = torch.zeros((2, SLOTS, 18), dtype=torch.float64, device=device)
         self.directions = torch.zeros((3, SLOTS, 3, 9), dtype=torch.int64, device=device)
         self.persistence = torch.zeros((3, SLOTS, 3), dtype=torch.float64, device=device)
         self.invalid = torch.zeros((), device=device, dtype=torch.int64)
+        self.move_edges = torch.tensor([.05,.1,.25,.5,1.,2.],device=device,dtype=torch.float64)
+        self.move_bins = torch.zeros((4,SLOTS,3,7),device=device,dtype=torch.float64)
         self.indices = torch.tensor([3, 9, 15], device=device)
 
     @torch.no_grad()
@@ -20,14 +22,20 @@ class Metrics:
         self.invalid += (valid & ~finite).sum()
         keep = valid & finite
         difference = torch.where(keep, (predicted - raw).abs(), 0)
-        self.raw += torch.stack((difference.sum(0), keep.sum(0),
-                                 torch.where(keep & (raw != 0), difference / raw.abs().clamp_min(1e-12), 0).sum(0)))
+        self.raw += torch.stack((difference.sum(0), keep.sum(0)))
         p_close, y_close, close_ok = (x.index_select(-1, self.indices) for x in (predicted, raw, keep))
         opens = self.indices - 3
-        base = close_ok & anchor_valid
+        base = close_ok & anchor_valid & (anchor > 0)
         self.persistence += torch.stack(((torch.where(base, (y_close - anchor).abs(), 0)).sum(0),
                                          torch.where(base, (y_close - p_close).abs(), 0).sum(0),
                                          base.sum(0)))
+        move = torch.where(base,100*(y_close-anchor).abs()/anchor.clamp_min(1e-12),0)
+        bins = torch.bucketize(move.contiguous(),self.move_edges).permute(1,2,0)
+        correct = (p_close-anchor).sign() == (y_close-anchor).sign()
+        fields = (base, base & correct, torch.where(base,(y_close-p_close).abs(),0),
+                  torch.where(base,(y_close-anchor).abs(),0))
+        self.move_bins.scatter_add_(-1,bins.unsqueeze(0).expand(4,-1,-1,-1),
+                                    torch.stack(fields).permute(0,2,3,1).double())
         pairs = torch.zeros_like(close_ok)
         start = 0
         for width in HORIZONS:
@@ -44,7 +52,8 @@ class Metrics:
             self.directions[j].scatter_add_(-1, label.permute(1, 2, 0), mask.permute(1, 2, 0).long())
 
     def result(self):
-        sums, counts, _ = self.raw.cpu()
+        sums, counts = self.raw.cpu()
+        move_bins = self.move_bins.cpu()
         matrices = self.directions.cpu().reshape(3, SLOTS, 3, 3, 3)
         baseline, comparable, eligible = self.persistence.cpu()
         features = ("open","high","low","close","size","count")
@@ -65,6 +74,14 @@ class Metrics:
                     if n:
                         result[f"{prefix}/{stream}/persistence_close_mae"] = float(baseline[slot,group]/n)
                         result[f"{prefix}/{stream}/comparable_close_mae"] = float(comparable[slot,group]/n)
+                    for bin_index, label in enumerate(("le_005","005_01","01_025","025_05","05_1","1_2","gt_2")):
+                        size, correct, error, naive = move_bins[:,slot,group,bin_index].tolist()
+                        if size:
+                            key = f"{prefix}/{stream}/abs_move_pct/{label}"
+                            result[f"{key}/count"] = int(size)
+                            result[f"{key}/direction_accuracy_pct"] = 100*correct/size
+                            result[f"{key}/close_mae"] = error/size
+                            result[f"{key}/persistence_close_mae"] = naive/size
                     for mode, confusion in zip(("candle","from_last","path"), matrices[:,slot,group]):
                         subtotal = confusion.sum(1)
                         if subtotal.sum() == 0:

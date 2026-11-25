@@ -130,7 +130,7 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     missing = [0]*5
     daily_status = Counter()
     rejected = 0
-    spans = []
+    compute_seconds = 0.\n    first_loss = last_loss = None
     try:
         for number, (index, session) in enumerate(source):
             if stopped():
@@ -194,7 +194,7 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
                         checkpoint("checkpoint_best.pt")
                     next_validation += args.validation_every
                     interval, prior_count = time.perf_counter(), count
-            spans.append(time.perf_counter()-tick)
+            compute_seconds += time.perf_counter()-tick
             if args.profile_sessions and number+1 >= args.profile_sessions:
                 break
         if reporter:
@@ -204,7 +204,8 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
     elapsed = time.perf_counter()-start
     profile = dict(origins=count, updates=step, seconds=elapsed, origins_per_second=count/elapsed,
                    encoded_windows=windows_encoded, missing_slots=dict(zip(NAMES,missing)),
-                   rejected_origins=rejected, daily_status=dict(daily_status), session_compute_seconds=sum(spans), peak_gpu_bytes=torch.cuda.max_memory_allocated())
+                   rejected_origins=rejected, daily_status=dict(daily_status), session_compute_seconds=compute_seconds,
+                   first_loss=first_loss, last_loss=float(last_loss) if last_loss is not None else None, peak_gpu_bytes=torch.cuda.max_memory_allocated())
     if not reporter:
         return profile
     write_json(args.output/"training-coverage.json", profile)
