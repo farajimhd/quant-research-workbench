@@ -10,6 +10,8 @@ from ..v5.phase2_ar_shards.storage import ShardReader
 from ..v5.shards.sql import clock
 from ..v5.transforms_v1 import BarInputTransformV1
 from ..phase2_v2.data import checked_unit
+from ..phase0_v7.eligibility import model_validity
+from ..phase0_v7.transforms import coordinates
 from .model import HORIZONS
 
 
@@ -134,9 +136,46 @@ def log_grid(raw, valid):
     return torch.where(valid, result, 0).float()
 
 
+
+def bar_features(teacher, logs, valid, clocks, frame):
+    """Cache exact V29 feature triples except window-local position and first gap."""
+    n = len(clocks)
+    width = ((n+63)//64)*64
+    padded = torch.nn.functional.pad(clocks, (0,width-n))
+    slots = padded.reshape(-1,64)
+    values = torch.nn.functional.pad(logs,(0,0,0,width-n)).reshape(-1,64,18)
+    flags = torch.nn.functional.pad(valid,(0,0,0,width-n)).reshape_as(values)
+    frame_ids = torch.full((len(slots),),frame,device=clocks.device,dtype=clocks.dtype)
+    assembled = BarInputTransformV1.assemble(values,flags,slots,frame_ids,slots>0,torch.diff(slots,dim=1))
+    x = assembled.values.reshape(-1,27)[:n]
+    v = assembled.valid.reshape(-1,27)[:n]
+    x[1:,22] = torch.log1p(torch.diff(clocks).double()/frame)
+    v[:,22] = True
+    v = model_validity(x,v)
+    code, market = coordinates(x[:,:18],v[:,:18])
+    features = torch.cat((code,x[:,18:]),-1)
+    observed = torch.cat((market,v[:,18:]),-1)
+    safe = torch.where(observed,features,teacher.mean)
+    scaled = (safe-teacher.mean)/teacher.scale
+    scaled = torch.where(teacher.geometry_mask,torch.asinh(scaled),scaled)
+    return torch.stack((scaled,observed.float(),v.float()),-1)
+
+
+def encode_cached(teacher, features, gather):
+    x = features[gather]
+    pos = torch.arange(64,device=x.device,dtype=torch.float32)/63
+    x[...,18,0] = torch.where(x[...,18,1].bool(),(pos-teacher.mean[18])/teacher.scale[18],0)
+    x[:,0,22] = 0
+    bars = []
+    for tile in x.reshape(-1,81).split(teacher.config.chunk_bars):
+        bars.append(teacher.readout(teacher.blocks(teacher.stem(tile))))
+    embedded = torch.cat(bars).reshape(-1,64,32)
+    return torch.cat([teacher.mixers(tile) for tile in embedded.split(teacher.config.mixer_chunk_windows)])
+
+
 class DeviceSession:
     """Copy each pool once and encode one V29 window per unique completed end."""
-    def __init__(self, session, teacher, token_batch, device):
+    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False):
         self.encoded = []
         self.targets = []
         self.anchors = []
@@ -150,14 +189,23 @@ class DeviceSession:
             logs = log_grid(raw, valid)
             unique, reverse = np.unique(session.endpoints[:, f], return_inverse=True)
             ends = torch.as_tensor(unique, device=device)
+            features = bar_features(teacher,logs,valid,clocks,FRAMES[f]) if cached else None
             bank, anchors, anchor_masks = [], [], []
             for chunk in ends.split(token_batch):
                 gather = chunk[:, None] - offsets
-                x, v, times = logs[gather], valid[gather], clocks[gather]
-                frame = torch.full_like(chunk, FRAMES[f])
-                assembled = BarInputTransformV1.assemble(x, v, times, frame, times > 0,
-                                                         torch.diff(times, dim=1))
-                bank.append(teacher.encode(assembled.values, assembled.valid))
+                if cached:
+                    encoded = encode_cached(teacher,features,gather)
+                if not cached or (verify and not bank):
+                    x, v, times = logs[gather], valid[gather], clocks[gather]
+                    frame = torch.full_like(chunk, FRAMES[f])
+                    assembled = BarInputTransformV1.assemble(x, v, times, frame, times > 0, torch.diff(times,dim=1))
+                    expected = teacher.encode(assembled.values, assembled.valid)
+                    if cached:
+                        torch.testing.assert_close(encoded,expected,rtol=1e-5,atol=3e-6)
+                    else:
+                        encoded = expected
+                bank.append(encoded)
+                v = valid[gather]
                 close_valid = v[..., [3, 9, 15]]
                 positions = torch.arange(64, device=device).view(1, 64, 1)
                 last = torch.where(close_valid, positions, -1).amax(1)
@@ -188,4 +236,3 @@ class DeviceSession:
         return windows, torch.cat(logs, 1), torch.cat(masks, 1), (
             (torch.cat(raw_parts, 1), torch.cat(anchors, 1), torch.cat(anchor_valid, 1))
             if metrics else None)
-

@@ -51,4 +51,3 @@ atexit; closing it when main returns would hide late failures.
 
 if __name__ == "__main__":
     sys.exit(main())
-

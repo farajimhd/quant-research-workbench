@@ -36,6 +36,7 @@ def parser():
     p.add_argument("--eval-sessions", type=int, default=32)
     p.add_argument("--learning-rate", type=float, default=1e-4)
     p.add_argument("--head-bf16", action="store_true")
+    p.add_argument("--direct-teacher", action="store_true")
     return p
 
 
@@ -64,18 +65,19 @@ def predict(model, teacher, windows, args):
 @torch.no_grad()
 def evaluate(units, model, teacher, args, limit):
     stats = Metrics("cuda")
-    count, total_loss = 0, 0.
+    count = 0
+    total_loss = torch.zeros((),device="cuda",dtype=torch.float64)
     batches = sessions(units, 1, 0, args.workers)
     started = time.perf_counter()
     try:
         for number, (_, source) in enumerate(batches):
             if not len(source.origins):
                 continue
-            device = DeviceSession(source, teacher, args.token_batch, "cuda")
+            device = DeviceSession(source, teacher, args.token_batch, "cuda", cached=not args.direct_teacher)
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
                 inputs, logs, valid, evidence = device.batch(ids, metrics=True)
                 out = predict(model, teacher, inputs, args)
-                total_loss += float(objective(teacher, out, logs, valid))*len(ids)
+                total_loss += objective(teacher, out, logs, valid).double()*len(ids)
                 stats.add(out, valid, evidence)
                 count += len(ids)
             if limit and number+1 >= limit:
@@ -87,7 +89,7 @@ def evaluate(units, model, teacher, args, limit):
     result = stats.result()
     if result["nonfinite"]:
         raise FloatingPointError("Nonfinite forecast during validation")
-    return {**result, "loss": total_loss/count, "origins": count,
+    return {**result, "loss": float(total_loss)/count, "origins": count,
             "seconds": time.perf_counter()-started, "full_split": not limit}
 
 
@@ -123,7 +125,8 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
                 continue
             tick = time.perf_counter()
             with torch.no_grad():
-                device = DeviceSession(session, teacher, args.token_batch, "cuda")
+                device = DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
+                                       verify=bool(args.profile_sessions and number == 0))
             windows_encoded += device.num_windows
             missing = [a+b for a,b in zip(missing,device.missing)]
             generator = torch.Generator(device="cuda").manual_seed(51771+index)
@@ -215,6 +218,7 @@ def main():
                     teacher=provenance, data=data, horizons=HORIZONS, parameters=sum(p.numel() for p in model.parameters()),
                     label_policy="observed intervals start >= origin; verified daily successor; same split",
                     batch_size=args.batch_size, token_batch=args.token_batch, head_bf16=args.head_bf16,
+                    cached_teacher=not args.direct_teacher,
                     learning_rate=args.learning_rate, warmup_updates=1000, seed=51771)
     saved = load_checkpoint(args.resume, contract) if args.resume else None
     with lease(args.output):
