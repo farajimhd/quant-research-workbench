@@ -10,23 +10,23 @@ SLOTS = sum(HORIZONS)
 
 
 class Residual(nn.Module):
-    def __init__(self):
+    def __init__(self, width=128):
         super().__init__()
-        self.branch = nn.Sequential(nn.LayerNorm(128), nn.Linear(128, 256),
-                                    nn.GELU(), nn.Linear(256, 128))
+        self.branch = nn.Sequential(nn.LayerNorm(width), nn.Linear(width, 2 * width),
+                                    nn.GELU(), nn.Linear(2 * width, width))
 
     def forward(self, x):
         return x + self.branch(x)
 
 
 class Forecast(nn.Module):
-    def __init__(self):
+    def __init__(self, frame_width=64, embedding=128):
         super().__init__()
-        self.compress = nn.Linear(64 * 32, 64)
-        self.context = nn.Sequential(nn.Linear(5 * 64, 128), nn.GELU(),
-                                     Residual(), Residual(), nn.LayerNorm(128))
+        self.compress = nn.Linear(64 * 32, frame_width)
+        self.context = nn.Sequential(nn.Linear(5 * frame_width, embedding), nn.GELU(),
+                                     Residual(embedding), Residual(embedding), nn.LayerNorm(embedding))
         # One packed GEMM implements five independent timeframe readouts.
-        self.heads = nn.Linear(128, SLOTS * 32)
+        self.heads = nn.Linear(embedding, SLOTS * 32)
 
     def encode(self, windows):
         return self.context(self.compress(windows.flatten(-2)).flatten(1))
