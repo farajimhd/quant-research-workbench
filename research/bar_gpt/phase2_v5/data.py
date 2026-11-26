@@ -75,7 +75,7 @@ def validate_origin_order(times, coverage):
         raise ValueError("Origin order disagrees with the publication policy")
 
 
-def prepare(unit, successor=None):
+def prepare(unit, successor=None, *, unique=False):
     reader = checked_unit(unit)
     pools = [reader.view(f) for f in range(5)]
     for array in pools:
@@ -91,6 +91,12 @@ def prepare(unit, successor=None):
     validate_origin_order(selected["end_us"], reader.receipt.get("origin_coverage"))
     # Keep certified block order and multiplicity for deterministic training.
     rows = selected.reshape(-1)
+    if unique:
+        # All copies of an origin must reference the same completed candles.
+        _, first, reverse = np.unique(rows["end_us"], return_index=True, return_inverse=True)
+        if not np.array_equal(rows["latest"], rows["latest"][first][reverse]):
+            raise ValueError("Repeated source origin disagrees on context endpoints")
+        rows = rows[first]
     times, ends = rows["end_us"], rows["latest"].astype(np.int64)
     day = reader.receipt["session_date"]
     if np.any(times <= clock(day, 4)) or np.any(times > clock(day, 20)):
@@ -122,11 +128,21 @@ def prepare(unit, successor=None):
         else:
             starts = closes - FRAMES[frame]
         targets.append(target_indices(closes, starts, times, width))
-    keep = np.concatenate(targets, axis=1).max(1) >= 0
+    if unique:
+        # Migration preserves no-target origins in the release for coverage.
+        return Session(target_pools, ends, targets, times, status, 0), reader.price_basis
+    return eligible_session(target_pools, ends, targets, times, status)
+
+
+def eligible_session(target_pools, ends, targets, times, status):
+    keep = np.logical_or.reduce([t[:, 0] >= 0 for t in targets])
     return Session(target_pools, ends[keep], [x[keep] for x in targets], times[keep], status, int((~keep).sum()))
 
 
 def sessions(units, split, start, workers):
+    if hasattr(units, "iter_load"):
+        yield from prefetch_sessions(units.iter_load(split, start), units.load, workers)
+        return
     if not hasattr(units, "forecast_successors"):
         units.forecast_successors = [successor_rows(table) for _, _, table in units.groups]
     next_rows = units.forecast_successors
@@ -136,8 +152,12 @@ def sessions(units, split, start, workers):
         next_row = next_rows[group][index-offset]
         following = units[offset + int(next_row)] if next_row >= 0 else None
         return index, prepare(unit, following)
+    yield from prefetch_sessions(units.iter_from(split, start), load, workers)
+
+
+def prefetch_sessions(source, load, workers):
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        source = iter(units.iter_from(split, start))
+        source = iter(source)
         pending = deque()
         for _ in range(workers * 2):
             item = next(source, None)

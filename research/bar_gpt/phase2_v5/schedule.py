@@ -22,6 +22,8 @@ def cosine_rate(peak, pass_index, consumed, total):
 
 
 def order_for_pass(units, pass_index):
+    if hasattr(units, "order_for_pass"):
+        return units.order_for_pass(pass_index)
     if pass_index == 0:
         return units
     groups = []
@@ -37,6 +39,8 @@ def candidate_prefix(units, session_index, offset=0):
     """Count selected training origins before a cursor and committed rows within it."""
     if not 0 <= session_index <= len(units) or offset < 0:
         raise ValueError("Invalid certified session cursor")
+    if hasattr(units, "candidate_prefix"):
+        return units.candidate_prefix(session_index, offset)
     count = 0
     for _, _, table in units.groups:
         included = min(session_index, table.height)

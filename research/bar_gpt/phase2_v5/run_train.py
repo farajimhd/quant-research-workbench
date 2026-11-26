@@ -16,6 +16,7 @@ from ..phase1_v26.reporting import Reporter
 from ..v5.shards.contract import file_hash, write_json
 from research.mlops.env import discover_env_files, load_env_files
 from .data import sessions, device_sessions
+from .unique_data import load_unique_release
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
 from .schedule import PASSES, FLOOR, PEAK_FACTOR, LEGACY_SOURCE, cosine_rate, order_for_pass, candidate_prefix
@@ -25,7 +26,9 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--source-revision", required=True)
-    p.add_argument("--release", required=True, type=Path)
+    release = p.add_mutually_exclusive_group(required=True)
+    release.add_argument("--release", type=Path)
+    release.add_argument("--unique-release", type=Path)
     p.add_argument("--teacher", required=True, type=Path)
     p.add_argument("--calibration", required=True, type=Path)
     p.add_argument("--resume", type=Path)
@@ -324,11 +327,17 @@ def main():
     torch.set_float32_matmul_precision("high" if args.tf32 else "highest")
     started = time.perf_counter()
     teacher, provenance = teacher_for(args)
-    units, data = load_units(release=args.release)
+    if args.unique_release:
+        if any(migrations):
+            raise ValueError("Legacy training cursor is incompatible with the unique population")
+        units, data = load_unique_release(args.unique_release)
+    else:
+        units, data = load_units(release=args.release)
     args.pass_origins_total = candidate_prefix(units, len(units))
     model = Forecast().cuda()
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate, fused=True)
-    contract = dict(version="phase2-v5-direct-multiscale", source=args.source_revision,
+    contract = dict(version=("phase2-v5-unique-origins" if args.unique_release else "phase2-v5-direct-multiscale"),
+                    source=args.source_revision,
                     teacher=provenance, data=data, horizons=HORIZONS, parameters=sum(p.numel() for p in model.parameters()),
                     label_policy="observed intervals start >= origin; verified daily successor; same split",
                     batch_size=args.batch_size, token_batch=args.token_batch, head_bf16=args.head_bf16,
