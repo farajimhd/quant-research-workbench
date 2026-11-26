@@ -6,6 +6,7 @@ import numpy as np
 import polars as pl
 import torch
 from ..v5.phase2_ar_shards.contract import FRAMES, ORIGIN, BLOCK, validate_bars
+from ..v5.phase2_ar_shards.overlap import POLICY as OVERLAP_POLICY
 from ..v5.phase2_ar_shards.storage import ShardReader
 from ..v5.shards.sql import clock
 from ..v5.transforms_v1 import BarInputTransformV1
@@ -64,6 +65,16 @@ class Session:
     rejected_origins: int
 
 
+def validate_origin_order(times, coverage):
+    """Overlapping publications order origins within blocks, and blocks by start."""
+    if coverage and coverage.get("version") == OVERLAP_POLICY:
+        ordered = np.all(np.diff(times, axis=1) > 0) and np.all(np.diff(times[:, 0]) > 0)
+    else:
+        ordered = np.all(np.diff(times.reshape(-1)) > 0)
+    if not ordered:
+        raise ValueError("Origin order disagrees with the publication policy")
+
+
 def prepare(unit, successor=None):
     reader = checked_unit(unit)
     pools = [reader.view(f) for f in range(5)]
@@ -76,11 +87,14 @@ def prepare(unit, successor=None):
     blocks = reader.array("origins.npy")
     if blocks.dtype != ORIGIN or blocks.shape != (reader.receipt["blocks"], BLOCK):
         raise ValueError("Unexpected certified origin geometry")
-    rows = blocks[[x[0] for x in unit.blocks]].reshape(-1)
+    selected = blocks[[x[0] for x in unit.blocks]]
+    validate_origin_order(selected["end_us"], reader.receipt.get("origin_coverage"))
+    # Keep certified block order and multiplicity for deterministic training.
+    rows = selected.reshape(-1)
     times, ends = rows["end_us"], rows["latest"].astype(np.int64)
     day = reader.receipt["session_date"]
-    if np.any(np.diff(times) <= 0) or np.any(times <= clock(day, 4)) or np.any(times > clock(day, 20)):
-        raise ValueError("Origin outside ordered session")
+    if np.any(times <= clock(day, 4)) or np.any(times > clock(day, 20)):
+        raise ValueError("Origin outside session bounds")
     for frame, pool in enumerate(pools):
         expected = np.searchsorted(pool["end_us"], times, side="right") - 1
         if not np.array_equal(expected, ends[:, frame]) or (expected < 63).any():

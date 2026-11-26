@@ -63,3 +63,18 @@ def test_packed_pools_match_direct_teacher_and_anchor_lookup():
     _, _, _, (_, anchors, observed) = evaluation.batch(ids, metrics=True)
     assert anchors[1, 0, 0] == 64
     assert not observed[:, :, 1].any()
+
+def test_origin_order_respects_certified_overlap_policy():
+    import pytest
+    from .data import OVERLAP_POLICY, validate_origin_order
+
+    overlap = {"version": OVERLAP_POLICY}
+    validate_origin_order(np.array([[1, 2, 3], [2, 3, 4]]), overlap)
+    validate_origin_order(np.array([[1, 2, 3], [4, 5, 6]]), None)
+    for clocks, policy in (
+        ([[1, 2, 3], [2, 3, 4]], None),
+        ([[1, 3, 2], [2, 3, 4]], overlap),
+        ([[2, 3, 4], [1, 2, 3]], overlap),
+    ):
+        with pytest.raises(ValueError, match="publication policy"):
+            validate_origin_order(np.array(clocks), policy)

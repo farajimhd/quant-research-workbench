@@ -30,6 +30,8 @@ def parser():
     p.add_argument("--calibration", required=True, type=Path)
     p.add_argument("--resume", type=Path)
     p.add_argument("--resume-prepack", action="store_true", help="Resume the verified pre-packing execution contract")
+    p.add_argument("--resume-pre-overlap-fix", action="store_true",
+                   help="Resume the verified checkpoint from before overlap-aware origin validation")
     p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
@@ -309,8 +311,9 @@ def main():
         raise ValueError("Invalid or unbounded launch settings")
     if args.profile_sessions < 0 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
         raise ValueError("Invalid profile budget or learning rate")
-    if args.migrate_fixed_lr and not args.resume:
-        raise ValueError("Schedule migration requires the original recovery checkpoint")
+    migrations = (args.migrate_fixed_lr, args.resume_prepack, args.resume_serial, args.resume_pre_overlap_fix)
+    if sum(migrations) > 1 or (any(migrations) and not args.resume):
+        raise ValueError("Specify at most one migration and its recovery checkpoint")
     cosine_rate(args.learning_rate, PASSES-1, 0, 1)
     if args.resume and (args.profile_sessions or args.resume.resolve().parent != args.output.resolve()):
         raise ValueError("Resume requires the same full training directory")
@@ -343,6 +346,8 @@ def main():
         previous = dict(contract, source="1a76327f0a9cfc08beac8a88071ccf56419daafa") if args.resume_prepack else contract
         if args.resume_serial:
             previous = dict(contract, source="acefd32563d52046b4a36f992f037289b1f290a5")
+        if args.resume_pre_overlap_fix:
+            previous = dict(contract, source="ad834e86029ae15c2028240b24e434bb5105260a")
         saved = load_checkpoint(args.resume, legacy_contract if args.migrate_fixed_lr else previous)
         if args.migrate_fixed_lr:
             saved.update(pass_index=0,pass_origins=saved["windows"])
