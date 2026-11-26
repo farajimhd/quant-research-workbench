@@ -88,7 +88,9 @@ def main():
     p.add_argument("--output", required=True, type=Path)
     p.add_argument("--storage", type=Path, help="Separate staged payload root if required")
     p.add_argument("--source-revision", required=True)
-    p.add_argument("--workers", type=int, default=4, choices=(1,2,4,8))
+    p.add_argument("--workers", type=int, default=4, choices=(1,2,4,8,16,32))
+    p.add_argument("--resume-eight-worker-journal", action="store_true",
+                   help="Adopt the preceding journal with identical session and payload rules")
     p.add_argument("--pilot", type=int, default=0, help="Pilot session count; never seals a production release")
     args = p.parse_args()
     out = args.output.resolve()
@@ -104,7 +106,7 @@ def main():
     with lease(out):
         started = time.time()
         progress = dict(state="running",phase="Loading certified inventory", completed=0,total=0,
-                        occurrences=0,unique=0,bytes=0,started=started,pid=os.getpid())
+                        occurrences=0,unique=0,bytes=0,started=started,pid=os.getpid(),workers=args.workers)
         status(out, progress)
         try:
             units, authority = load_released_units(args.release)
@@ -121,8 +123,16 @@ def main():
             binding = dict(version=VERSION, parent=authority, storage=str(root),
                            source=args.source_revision, pilot=args.pilot)
             setup = out / "migration.json"
-            if setup.exists() and json.loads(setup.read_text()) != binding:
-                raise ValueError("Journal is bound to a different migration")
+            if setup.exists():
+                previous = json.loads(setup.read_text())
+                parent_source = "a41627a36f8adad01a5b4b235a3f6e08c4b8118a"
+                allowed = args.resume_eight_worker_journal and previous == dict(binding, source=parent_source)
+                if previous != binding and not allowed:
+                    raise ValueError("Journal is bound to a different migration")
+                if allowed:
+                    write_json(out/"previous-migration.json", previous)
+            elif args.resume_eight_worker_journal:
+                raise ValueError("Expected the preceding journal")
             write_json(setup,binding)
             run(out, root, units, selected, binding, expected_occurrences, args.workers, progress)
         except BaseException as e:
@@ -148,6 +158,7 @@ def run(out, root, units, selected, binding, expected_occurrences, workers, prog
             progress["unique"]+=row[4]
             progress["bytes"]+=row[6]
         status(out,progress)
+        copy_started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=workers) as pool:
             for first in range(0,len(pending),workers*4):
                 if (out/"STOP").exists():
@@ -173,7 +184,8 @@ def run(out, root, units, selected, binding, expected_occurrences, workers, prog
                 status(out,progress)
         rows = pl.DataFrame([saved[k] for k,_ in selected],schema=list(FIELDS),orient="row")
         if binding["pilot"]:
-            report = dict(binding, **progress, estimated_bytes=round(progress["bytes"]/len(selected)*len(jobs(units))))
+            report = dict(binding, **progress, copy_seconds=time.perf_counter()-copy_started,
+                          estimated_bytes=round(progress["bytes"]/len(selected)*len(jobs(units))))
             write_json(out/"pilot-result.json",report)
         else:
             if rows["occurrences"].sum()!=expected_occurrences or len(saved)!=len(selected):
