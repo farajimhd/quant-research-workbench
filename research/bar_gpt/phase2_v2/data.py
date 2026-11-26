@@ -144,11 +144,11 @@ def plan_block(reader: ShardReader, index: int):
         reason=None if len(eligible) else 'no origin has all history and an in-block future target'))
 
 
-def checked_unit(unit):
+def checked_unit(unit, *, reader_type=ShardReader):
     resolved=unit.path.resolve()
     if not resolved.is_relative_to(unit.root.resolve()):
         raise ValueError('Selection escapes its dataset root')
-    reader = ShardReader(resolved, unit.binding)
+    reader = reader_type(resolved, unit.binding)
     receipt = reader.receipt
     if unit.receipt_hash is not None and receipt['hash']!=unit.receipt_hash:
         raise ValueError('Receipt differs from the certified all-block inventory')

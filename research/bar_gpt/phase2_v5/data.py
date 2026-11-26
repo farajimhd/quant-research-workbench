@@ -2,6 +2,8 @@
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import hashlib
+import io
 import numpy as np
 import polars as pl
 import torch
@@ -75,8 +77,39 @@ def validate_origin_order(times, coverage):
         raise ValueError("Origin order disagrees with the publication policy")
 
 
+class MigrationShardReader(ShardReader):
+    """Verify and decode the same immutable buffer for the source migration."""
+    def array(self, name):
+        if name not in self.arrays:
+            path, item = self.directory / name, self.files[name]
+            with path.open("rb") as stream:
+                data = stream.read(item["bytes"] + 1)
+            if len(data) != item["bytes"] or hashlib.sha256(data).hexdigest() != item["sha256"]:
+                raise ValueError(f"Monthly payload mutation: {path}")
+            self.arrays[name] = np.load(io.BytesIO(data), allow_pickle=False)
+        return self.arrays[name]
+
+
+def unique_origin_rows(rows, pool):
+    """Collapse repeated block rows with a dense index over the local 1s pool."""
+    seconds = rows["latest"][:, 0]
+    if (seconds < 0).any() or (seconds >= len(pool)).any():
+        raise ValueError("Source origin index outside the 1s pool")
+    if not np.array_equal(pool["end_us"][seconds], rows["end_us"]):
+        raise ValueError("Origin must match its final observed second")
+    representative = np.full(len(pool), -1, dtype=np.intp)
+    representative[seconds] = np.arange(len(rows), dtype=np.intp)
+    selected = representative[representative >= 0]
+    chosen = representative[seconds]
+    for col in range(1, len(FRAMES)):
+        if not np.array_equal(rows["latest"][:, col], rows["latest"][chosen, col]):
+            raise ValueError("Repeated source origin disagrees on context endpoints")
+    return rows[selected]
+
+
 def prepare(unit, successor=None, *, unique=False):
-    reader = checked_unit(unit)
+    reader_type = MigrationShardReader if unique else ShardReader
+    reader = checked_unit(unit, reader_type=reader_type)
     pools = [reader.view(f) for f in range(5)]
     for array in pools:
         validate_bars(array)
@@ -92,11 +125,7 @@ def prepare(unit, successor=None, *, unique=False):
     # Keep certified block order and multiplicity for deterministic training.
     rows = selected.reshape(-1)
     if unique:
-        # All copies of an origin must reference the same completed candles.
-        _, first, reverse = np.unique(rows["end_us"], return_index=True, return_inverse=True)
-        if not np.array_equal(rows["latest"], rows["latest"][first][reverse]):
-            raise ValueError("Repeated source origin disagrees on context endpoints")
-        rows = rows[first]
+        rows = unique_origin_rows(rows, pools[0])
     times, ends = rows["end_us"], rows["latest"].astype(np.int64)
     day = reader.receipt["session_date"]
     if np.any(times <= clock(day, 4)) or np.any(times > clock(day, 20)):
@@ -110,7 +139,7 @@ def prepare(unit, successor=None, *, unique=False):
     target_pools = list(pools)
     other = None
     if successor is not None:
-        other = ShardReader(successor.path, successor.binding)
+        other = reader_type(successor.path, successor.binding)
         if (other.receipt["hash"] != successor.receipt_hash
                 or other.receipt["ticker"] != reader.receipt["ticker"]
                 or other.receipt["session_date"] <= day

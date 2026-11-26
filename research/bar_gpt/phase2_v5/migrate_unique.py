@@ -91,6 +91,8 @@ def main():
     p.add_argument("--workers", type=int, default=4, choices=(1,2,4,8,16,32))
     p.add_argument("--resume-eight-worker-journal", action="store_true",
                    help="Adopt the preceding journal with identical session and payload rules")
+    p.add_argument("--resume-original-reader-journal", action="store_true",
+                   help="Adopt the journal from before the single-read optimization")
     p.add_argument("--pilot", type=int, default=0, help="Pilot session count; never seals a production release")
     args = p.parse_args()
     out = args.output.resolve()
@@ -126,12 +128,15 @@ def main():
             if setup.exists():
                 previous = json.loads(setup.read_text())
                 parent_source = "a41627a36f8adad01a5b4b235a3f6e08c4b8118a"
-                allowed = args.resume_eight_worker_journal and previous == dict(binding, source=parent_source)
+                prior_worker_source = "c941959ae61dc1e1d30048f89f1b633de6f787d9"
+                allowed = ((args.resume_eight_worker_journal and previous == dict(binding, source=parent_source))
+                           or (args.resume_original_reader_journal
+                               and previous == dict(binding, source=prior_worker_source)))
                 if previous != binding and not allowed:
                     raise ValueError("Journal is bound to a different migration")
                 if allowed:
                     write_json(out/"previous-migration.json", previous)
-            elif args.resume_eight_worker_journal:
+            elif args.resume_eight_worker_journal or args.resume_original_reader_journal:
                 raise ValueError("Expected the preceding journal")
             write_json(setup,binding)
             run(out, root, units, selected, binding, expected_occurrences, args.workers, progress)
@@ -150,13 +155,19 @@ def run(out, root, units, selected, binding, expected_occurrences, workers, prog
         db.execute("CREATE TABLE IF NOT EXISTS sessions (key TEXT PRIMARY KEY, result TEXT NOT NULL)")
         saved = {k:json.loads(v) for k,v in db.execute("SELECT key, result FROM sessions")}
         pending = [(k,r) for k,r in selected if k not in saved]
-        progress.update(total=len(selected), completed=len(saved), phase="Copying and verifying sessions")
+        pending_keys = {key for key, _ in pending}
+        progress.update(total=len(selected), completed=len(saved), resumed_completed=len(saved),
+                        phase="Checking committed payloads")
+        status(out,progress)
         for row in saved.values():
-            if file_hash(root/row[0]) != row[1]:
-                raise ValueError(f"Previously committed payload changed: {row[0]}")
+            # Committed payloads were read back and hashed before this journal
+            # commit. A full parallel readback below precedes publication.
+            if (root/row[0]).stat().st_size != row[6]:
+                raise ValueError(f"Previously committed payload size changed: {row[0]}")
             progress["occurrences"]+=row[3]
             progress["unique"]+=row[4]
             progress["bytes"]+=row[6]
+        progress.update(phase="Copying and verifying sessions",copy_started_at=time.time())
         status(out,progress)
         copy_started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -190,6 +201,20 @@ def run(out, root, units, selected, binding, expected_occurrences, workers, prog
         else:
             if rows["occurrences"].sum()!=expected_occurrences or len(saved)!=len(selected):
                 raise ValueError("Final source coverage reconciliation failed")
+            if progress["resumed_completed"]:
+                progress.update(phase="Checking previous payload hashes",rechecked=0,
+                                recheck_total=progress["resumed_completed"])
+                status(out,progress)
+                prior = [row for key,row in saved.items() if key not in pending_keys]
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    for first in range(0,len(prior),512):
+                        batch = prior[first:first+512]
+                        hashes = pool.map(file_hash,(root/row[0] for row in batch))
+                        for row, sha in zip(batch, hashes):
+                            if sha != row[1]:
+                                raise ValueError(f"Previously committed payload changed: {row[0]}")
+                        progress["rechecked"] += len(batch)
+                        status(out,progress)
             catalog = root/"sessions.parquet"
             tmp = catalog.with_suffix(".partial")
             rows.write_parquet(tmp)

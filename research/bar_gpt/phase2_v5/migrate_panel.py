@@ -21,14 +21,20 @@ def view(values):
     done, total = values.get("completed",0), values.get("total",0)
     state = values.get("state","waiting")
     error = " ".join(values.get("error","").splitlines())
-    elapsed = max(1,values.get("updated",0)-values.get("started",0))
-    remaining = f"{(total-done)*elapsed/done/3600:.1f} h" if done and total and state=="running" else "—"
+    elapsed = max(1, values.get("updated",0)-values.get("copy_started_at",values.get("started",0)))
+    rate = max(0,done-values.get("resumed_completed",0))/elapsed
+    copying = values.get("phase") == "Copying and verifying sessions" and state=="running"
+    remaining = f"{(total-done)/rate/3600:.1f} h" if rate and total and copying else "—"
+    if not error and values.get("phase") == "Checking previous payload hashes":
+        detail = f"Previous hashes checked  {values['rechecked']:,} / {values['recheck_total']:,}"
+    else:
+        detail = error or "Source shards retained during migration."
     lines = [
         f"{state.upper()}  |  {values.get('phase','Waiting for migration')}",
         f"Sessions  {done:,} / {total:,}" if total else "Sessions  Waiting for source inventory",
-        f"Verified storage  {values.get('bytes',0)/1e9:,.2f} GB  |  Session rate  {done/elapsed:,.1f}/s  |  ETA  {remaining}",
+        f"Verified storage  {values.get('bytes',0)/1e9:,.2f} GB  |  Session rate  {rate:,.1f}/s  |  ETA  {remaining}",
         f"Source occurrences  {values.get('occurrences',0):,}  |  Unique origins  {values.get('unique',0):,}",
-        error or "Source shards retained during migration.",
+        detail,
     ]
     return Panel(Group(Text(lines[0], no_wrap=True, overflow="ellipsis"),
                        ProgressBar(total=total or None,completed=done,pulse=not total),
