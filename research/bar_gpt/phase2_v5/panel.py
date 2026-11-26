@@ -92,8 +92,12 @@ class Reader:
         if data.get("certificate"):
             cert = self.read(data["certificate"])
             if cert.get("hash") and cert["hash"] == data.get("hash"):
-                state["full_sessions"] = sum(row["publications"] for row in cert["distribution"]
-                                             if row["split"] == 1)
+                if "split_counts" in cert:
+                    state["full_sessions"] = sum(row["sessions"] for row in cert["split_counts"]
+                                                 if row["split"] == 1)
+                else:
+                    state["full_sessions"] = sum(row["publications"] for row in cert["distribution"]
+                                                 if row["split"] == 1)
 
         # The trainer reuses the same counter for both evaluation scopes and
         # leaves the previous value in place until the next eight-session update.
@@ -264,6 +268,9 @@ def estimates(state, training, manifest, report, active):
             upcoming = at_rate((next_step - step) * origins / updates, typical)
     block_count = manifest.get("model", {}).get("data", {}).get("blocks")
     eval_count = block_count * 4096 - total if block_count and total else None
+    split_counts = manifest.get("model", {}).get("data", {}).get("split_counts")
+    if split_counts:
+        eval_count = sum(row["eligible"] for row in split_counts if row["split"] == 1)
     eval_rate = report.get("origins_per_second")
     eval_seconds = at_rate(eval_count, eval_rate) if eval_count is not None and eval_count > 0 else None
     return (typical, left, at_rate(left, speed), at_rate(left, typical),

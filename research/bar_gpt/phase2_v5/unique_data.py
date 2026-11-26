@@ -113,6 +113,10 @@ class UniqueRelease:
     def candidate_prefix(self, index, offset):
         return int(self.prefix[index]) + offset
 
+    @cached_property
+    def train_eligible(self):
+        return self.rows.filter(pl.col("split") == 0)["eligible"].sum()
+
     def load(self, index, row):
         name, sha, count, eligible = row
         return index, read_session(self.root / name, sha, count, eligible)
@@ -133,9 +137,12 @@ def load_unique_release(certificate):
     if file_hash(catalog) != manifest["catalog_sha256"]:
         raise ValueError("Unique release catalog hash differs")
     rows = pl.read_parquet(catalog)
+    counts = rows.group_by("split").agg(pl.sum("candidates", "eligible"),
+                                        pl.len().alias("sessions")).sort("split").to_dicts()
     if rows.height != manifest["sessions"] or rows["path"].n_unique() != rows.height:
         raise ValueError("Unique session inventory differs")
     if (rows["path"].str.contains(r"^sessions/[a-f0-9]{2}/[a-f0-9]{24}/[0-9-]{10}\.npz$").not_().any()
-            or rows["candidates"].sum() != manifest["unique_origins"]):
+            or rows["candidates"].sum() != manifest["unique_origins"]
+            or counts != manifest["split_counts"]):
         raise ValueError("Unique release paths or row counts differ")
     return UniqueRelease(certificate.parent, rows), dict(manifest, hash=sha, certificate=str(certificate))

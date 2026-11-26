@@ -34,3 +34,31 @@ clipping, the finite check, the per-update cosine rate and AdamW stay outside
 the graphs. To adopt this execution path from acefd3256, supply --resume-serial
 on the first resume only. Later resumes use the deployed source revision and
 ordinary --resume. The ten-pass schedule completes full validation each pass.
+
+## Unique-origin release
+
+Run python -B -m research.bar_gpt.phase2_v5.migrate_unique with --release,
+--output, --source-revision and --workers. A separate --pilot output exercises
+real sessions and estimates storage before the full copy. Only the full run
+publishes a certificate. The journal commits bounded batches of sessions.
+Restart with the same arguments and source revision to use the journal.
+A STOP file in the migration output pauses between batches. Use
+migrate_panel --run OUTPUT to see progress.
+
+The unit is the complete ticker session, with a variable number of sorted
+origins. Five shared losslessly compressed pools preserve values, validity
+bits and timestamps. The converter rejects inconsistent price bases,
+conflicting shared bars and any insertion into an original 64-bar context.
+Each payload records checksummed arrays and a digest of its source receipts.
+The migration accounts for every certified block occurrence before publishing.
+
+A trimmed source pool can shift a label to a later candle. The new release
+labels from the union of certified pools under the existing interval start rule
+and preserves the original daily successor basis checks. The catalog records
+source target shifts and newly filled slots by timeframe. Rows with no target
+remain in the index and are counted separately by the loader.
+
+Use --unique-release PATH/certificate.json in place of --release for a new
+training identity. The prior optimizer cursor represents stored occurrences.
+The new loader shuffles sessions and encodes each distinct V29 context once
+within a session. The pass checks both visited and trained eligible counts.

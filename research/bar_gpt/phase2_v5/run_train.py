@@ -279,6 +279,9 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
         return "stopped"
     if candidates != pass_total:
         raise ValueError(f"Pass coverage changed: accounted {candidates}, expected {pass_total}")
+    expected_eligible = getattr(units, "train_eligible", None)
+    if expected_eligible is not None and pass_origins != expected_eligible:
+        raise ValueError(f"Eligible training origins differ: {pass_origins} vs {expected_eligible}")
     reporter.update(stage="full validation", epoch=pass_index+1, epochs=PASSES,
                     pass_fraction=1., pass_origins_done=candidates, pass_origins_total=pass_total)
     report = evaluate(units, model, teacher, args, 0, reporter)
