@@ -1,11 +1,14 @@
 from pathlib import Path
 
 import numpy as np
+import polars as pl
 import pytest
+import torch
 
-from .data import Session
+from . import data
+from .data import Session, SlowContextCache
 from .model import HORIZONS
-from .unique_data import merge_sessions, payload, read_session
+from .unique_data import UniqueRelease, merge_sessions, payload, read_session
 from .migrate_unique import write_payload
 from ..v5.phase2_ar_shards.contract import BAR
 
@@ -45,3 +48,40 @@ def test_conflicting_context_or_target_fails():
     audit = []
     merge_sessions([a,b],audit=audit)
     assert audit[0]["shifted"] == 1
+
+
+def test_local_order_is_deterministic_and_keeps_every_session():
+    rows = pl.DataFrame({"path": [f"ticker-{i // 10}/{i % 10:02d}" for i in range(60)],
+                         "split": [0] * 50 + [1] * 10, "candidates": range(60)})
+    release = UniqueRelease(Path("."), rows, locality=8)
+    first = release.order_for_pass(0)
+    second = release.order_for_pass(1)
+    assert first.rows.equals(release.order_for_pass(0).rows)
+    assert not first.rows.equals(second.rows)
+    assert first.rows.sort("path").equals(rows)
+    assert second.rows.sort("path").equals(rows)
+    assert first.rows.tail(10).equals(rows.tail(10))
+    assert first.candidate_prefix(len(first), 0) == sum(range(50))
+
+
+def test_slow_cache_binds_frame_clock_values_and_validity(monkeypatch):
+    calls = []
+
+    def encode(_teacher, features, rows):
+        calls.append(len(rows))
+        return features[rows].sum(1)
+
+    monkeypatch.setattr(data, "encode_cached", encode)
+    pool = example(0, [70])[0].pools[0]
+    gather = torch.arange(7, 71)[None]
+    features = torch.arange(len(pool))[:, None]
+    cache = SlowContextCache()
+    original, hits = cache.encode(None, 3, pool, [70], features, gather)
+    assert hits == 0
+    same, hits = cache.encode(None, 3, pool.copy(), [70], features, gather)
+    torch.testing.assert_close(same, original)
+    assert hits == 1
+    assert cache.encode(None, 4, pool, [70], features, gather)[1] == 0
+    pool["valid"][50, 0] = 0
+    assert cache.encode(None, 3, pool, [70], features, gather)[1] == 0
+    assert calls == [1, 1, 1]

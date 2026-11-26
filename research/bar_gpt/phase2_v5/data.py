@@ -1,5 +1,5 @@
 """Join complete future candles to certified session pools without reading events."""
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
@@ -267,11 +267,13 @@ def encode_cached(teacher, features, gather):
 
 class DeviceSession:
     """Copy each pool once and encode one V29 window per unique completed end."""
-    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True):
+    def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True,
+                 slow_cache=None):
         self.encoded = []
         self.targets = []
         self.anchors = []
         self.num_windows = 0
+        self.cache_hits = 0
         self.missing = []
         offsets = torch.arange(63, -1, -1, device=device)
         prepared = packed_pools(teacher, session.pools, device, cached)
@@ -284,9 +286,13 @@ class DeviceSession:
         for f, (raw, valid, clocks, logs, features) in enumerate(prepared):
             ends, index, flat_targets = indices[3*f:3*f+3]
             bank, anchors, anchor_masks = [], [], []
-            for chunk in ends.split(token_batch):
+            for first, chunk in enumerate(ends.split(token_batch)):
                 gather = chunk[:, None] - offsets
-                if cached:
+                if slow_cache is not None and f >= 3:
+                    host_ends = unique_rows[f][0][first * token_batch:(first + 1) * token_batch]
+                    encoded, hits = slow_cache.encode(teacher, f, session.pools[f], host_ends, features, gather)
+                    self.cache_hits += hits
+                elif cached:
                     encoded = encode_cached(teacher,features,gather)
                 if not cached or (verify and not bank):
                     x, v, times = logs[gather], valid[gather], clocks[gather]
@@ -348,36 +354,73 @@ class DeviceSession:
             if metrics else None)
 
 
+class SlowContextCache:
+    """Reuse frozen slow-frame embeddings only for identical completed windows."""
+    def __init__(self, limit=2048):
+        self.entries = OrderedDict()
+        self.limit = limit
+
+    def encode(self, teacher, frame, pool, ends, features, gather):
+        # Full records bind clocks, market values and source-validity bits.
+        # The time gap at window position zero is cleared by encode_cached.
+        keys = [(frame, hashlib.sha256(pool[end-63:end+1].tobytes()).digest()) for end in ends]
+        rows, misses = [], []
+        for index, key in enumerate(keys):
+            hit = self.entries.get(key)
+            rows.append(hit)
+            if hit is None:
+                misses.append(index)
+            else:
+                self.entries.move_to_end(key)
+        if misses:
+            selected = torch.tensor(misses, device=gather.device)
+            calculated = encode_cached(teacher, features, gather if len(misses) == len(ends) else gather[selected])
+            for index, value in zip(misses, calculated.unbind()):
+                rows[index] = value
+                self.entries[keys[index]] = value.clone()
+            while len(self.entries) > self.limit:
+                self.entries.popitem(last=False)
+            if len(misses) == len(ends):
+                return calculated, 0
+        return torch.stack(rows), len(ends) - len(misses)
+
+
 def device_sessions(source, teacher, args, *, metrics):
     """Prefetch frozen encodings on bounded CUDA streams; yield in certified order.
 
     Only immutable teacher parameters are shared. All gradients, optimizer steps
     and traversal decisions remain on the caller thread in their original order.
     """
-    def build(session, verify):
+    reuse = (getattr(args, "locality", 1) > 1 and not args.direct_teacher and not metrics
+             and not getattr(args, "no_cross_session_cache", False))
+
+    def build(session, verify, slow_cache=None):
         if not len(session.origins):
             return None
         with torch.no_grad():
             return DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
-                                 metrics=metrics, verify=verify)
+                                 metrics=metrics, verify=verify, slow_cache=slow_cache)
 
     lanes = args.session_lanes
     if lanes == 0:
+        cache = SlowContextCache() if reuse else None
         try:
             for n, (index, session) in enumerate(source):
-                yield index, session, build(session, bool(args.profile_sessions and n == 0 and not metrics))
+                verify = bool(args.profile_sessions and n == 0 and not metrics)
+                yield index, session, build(session, verify, None if verify else cache)
         finally:
             source.close()
         return
 
     consumer = torch.cuda.current_stream()
     streams = [torch.cuda.Stream() for _ in range(lanes)]
+    caches = [SlowContextCache() if reuse else None for _ in streams]
     for stream in streams:
         stream.wait_stream(consumer)
 
-    def prepare_on_stream(stream, session):
+    def prepare_on_stream(stream, session, cache):
         with torch.cuda.stream(stream):
-            prepared = build(session, False)
+            prepared = build(session, False, cache)
             return prepared, stream.record_event()
 
     pending = deque()
@@ -402,8 +445,8 @@ def device_sessions(source, teacher, args, *, metrics):
                     yield index, session, build(session, True)
                     continue
                 ready = consume(pending.popleft()) if len(pending) == lanes else None
-                stream = streams[n % lanes]
-                pending.append((index, session, executor.submit(prepare_on_stream, stream, session)))
+                lane = (n - int(bool(args.profile_sessions and not metrics))) % lanes
+                pending.append((index, session, executor.submit(prepare_on_stream, streams[lane], session, caches[lane])))
                 if ready is not None:
                     yield ready
             while pending:

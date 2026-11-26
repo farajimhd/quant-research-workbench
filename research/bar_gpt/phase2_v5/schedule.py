@@ -9,16 +9,19 @@ PASSES = 10
 FLOOR = 5e-6
 PEAK_FACTOR = .9
 LEGACY_SOURCE = "001f861f8bd3833afca302988994c5d0c727eb0e"
+UNIQUE_PASSES = 20
+UNIQUE_FLOOR = 5e-7
 
 
-def cosine_rate(peak, pass_index, consumed, total):
+def cosine_rate(peak, pass_index, consumed, total, *, unique=False):
     """Use the one-based position after the incoming batch to hit the floor."""
-    if not 0 <= pass_index < PASSES or not 0 <= consumed <= total or total <= 0:
+    passes, floor = (UNIQUE_PASSES, UNIQUE_FLOOR) if unique else (PASSES, FLOOR)
+    if not 0 <= pass_index < passes or not 0 <= consumed <= total or total <= 0:
         raise ValueError("Invalid pass or origin count")
-    ceiling = peak * PEAK_FACTOR**pass_index
-    if not math.isfinite(ceiling) or ceiling <= FLOOR:
+    ceiling = peak * PEAK_FACTOR**(pass_index + int(unique))
+    if not math.isfinite(ceiling) or ceiling <= floor:
         raise ValueError("Pass peak must exceed the learning-rate floor")
-    return FLOOR + (ceiling - FLOOR) * (1 + math.cos(math.pi * consumed / total)) / 2
+    return floor + (ceiling - floor) * (1 + math.cos(math.pi * consumed / total)) / 2
 
 
 def order_for_pass(units, pass_index):

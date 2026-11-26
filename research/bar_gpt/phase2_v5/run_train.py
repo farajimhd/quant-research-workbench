@@ -19,7 +19,8 @@ from .data import sessions, device_sessions
 from .unique_data import load_unique_release
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
-from .schedule import PASSES, FLOOR, PEAK_FACTOR, LEGACY_SOURCE, cosine_rate, order_for_pass, candidate_prefix
+from .schedule import (PASSES, FLOOR, UNIQUE_PASSES, UNIQUE_FLOOR, PEAK_FACTOR, LEGACY_SOURCE,
+                       cosine_rate, order_for_pass, candidate_prefix)
 
 
 def parser():
@@ -32,12 +33,18 @@ def parser():
     p.add_argument("--teacher", required=True, type=Path)
     p.add_argument("--calibration", required=True, type=Path)
     p.add_argument("--resume", type=Path)
+    p.add_argument("--from-completed-pass", type=Path,
+                   help="Initialize a new unique run from the validated original pass-one boundary")
+    p.add_argument("--locality", type=int, default=1, choices=(1, 8, 16),
+                   help="Shuffle short chronological clusters and reuse exact slow-frame contexts")
+    p.add_argument("--no-cross-session-cache", action="store_true",
+                   help="Disable slow-frame cache while retaining the same locality order for profiling")
     p.add_argument("--resume-prepack", action="store_true", help="Resume the verified pre-packing execution contract")
     p.add_argument("--resume-pre-overlap-fix", action="store_true",
                    help="Resume the verified checkpoint from before overlap-aware origin validation")
     p.add_argument("--resume-overlap-checkpoint", action="store_true",
                    help="Resume the verified original overlap-aware training checkpoint")
-    p.add_argument("--stop-after-pass", type=int, choices=range(1, PASSES + 1),
+    p.add_argument("--stop-after-pass", type=int, choices=range(1, UNIQUE_PASSES + 1),
                    help="Stop after saving this pass's full validation and checkpoint")
     p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
@@ -56,6 +63,22 @@ def parser():
     p.add_argument("--direct-teacher", action="store_true")
     p.add_argument("--tf32", action="store_true", help="Opt into the audited fast matrix multiplication path")
     return p
+
+
+def completed_pass(path, contract):
+    manifest = json.loads((path.parent / "manifest.json").read_text())
+    previous = manifest["execution_model"]
+    saved = load_checkpoint(path, previous)
+    if (previous["version"] != "phase2-v5-direct-multiscale"
+            or previous["data"]["hash"] != contract["data"]["parent"]["hash"]
+            or saved["pass_index"] != 1 or tuple(saved["cursor"]) != (0, 0)
+            or saved["pass_origins"] != 0 or saved["schedule_candidates"] != 0):
+        raise ValueError("Expected the certified source release's completed first pass")
+    for key in ("teacher", "horizons", "parameters", "batch_size", "head_bf16", "cached_teacher", "tf32"):
+        if previous[key] != json.loads(json.dumps(contract[key])):
+            raise ValueError(f"Checkpoint initialization would change {key}")
+    return saved, dict(sha256=file_hash(path), step=saved["step"], origins=saved["windows"],
+                       source=previous["source"], wandb=manifest.get("wandb_identity", {}).get("id"))
 
 
 def teacher_for(args):
@@ -191,6 +214,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     gradients = ForecastGradients(model, teacher, args)
     starting_count = prior_count = count
     windows_encoded = 0
+    reused_windows = 0
     missing = [0]*5
     daily_status = Counter()
     rejected = 0
@@ -208,6 +232,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 continue
             tick = time.perf_counter()
             windows_encoded += device.num_windows
+            reused_windows += device.cache_hits
             missing = [a+b for a,b in zip(missing,device.missing)]
             generator = torch.Generator(device="cuda").manual_seed(51771 + index + 1_000_003 * pass_index)
             order = torch.randperm(len(session.origins), generator=generator, device="cuda")
@@ -218,7 +243,8 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 inputs, logs, valid, _ = device.batch(ids)
                 last_batch = offset + len(ids) == len(order)
                 traversed = len(ids) + (session.rejected_origins if last_batch else 0)
-                rate = cosine_rate(args.learning_rate, pass_index, candidates + traversed, pass_total)
+                rate = cosine_rate(args.learning_rate, pass_index, candidates + traversed, pass_total,
+                                   unique=bool(args.unique_release))
                 for group in optimizer.param_groups:
                     group["lr"] = rate
                 optimizer.zero_grad(set_to_none=True)
@@ -230,6 +256,9 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 optimizer.step()
                 step += 1
                 count += len(ids)
+                if args.profile_sessions:
+                    first_loss = loss.clone() if first_loss is None else first_loss
+                    last_loss = loss
                 pass_origins += len(ids)
                 candidates += traversed
                 offset += len(ids)
@@ -238,10 +267,13 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                     speed = (count-prior_count)/max(time.perf_counter()-interval, .001)
                     metrics = {"train/loss": float(loss), "train/origins_per_second": speed,
                                "train/learning_rate": rate, "train/origins": count}
-                    metrics.update({"train/pass": pass_index+1,
-                                    "train/pass_fraction": candidates/pass_total})
+                    metrics.update({"train/pass": pass_index+1, "train/pass_fraction": candidates/pass_total,
+                                    "train/distinct_context_requests": windows_encoded,
+                                    "train/reused_cross_session_contexts": reused_windows,
+                                    "train/context_cache_hit_fraction": 1 - (windows_encoded-reused_windows)
+                                    / max(1, (count-starting_count)*len(NAMES))})
                     reporter.log(metrics, step)
-                    reporter.update(stage="training", step=step, epoch=pass_index+1, epochs=PASSES, done=count,
+                    reporter.update(stage="training", step=step, epoch=pass_index+1, epochs=args.passes, done=count,
                                     pass_origins_done=candidates, pass_origins_total=pass_total,
                                     samples_per_second=speed, pass_fraction=candidates/pass_total,
                                     loss=float(loss), windows_per_second=speed,
@@ -273,9 +305,13 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     elapsed = time.perf_counter()-start
     profile = dict(origins=count, updates=step, seconds=elapsed, interval_origins=count-starting_count,
                    origins_per_second=(count-starting_count)/elapsed,
-                   encoded_windows=windows_encoded, missing_slots=dict(zip(NAMES,missing)),
+                   encoded_windows=windows_encoded-reused_windows, reused_windows=reused_windows,
+                   context_cache_hit_fraction=1 - (windows_encoded-reused_windows)
+                   / max(1, (count-starting_count)*len(NAMES)), missing_slots=dict(zip(NAMES,missing)),
                    rejected_origins=rejected, daily_status=dict(daily_status), consumer_update_seconds=compute_seconds,
-                   first_loss=first_loss, last_loss=float(last_loss) if last_loss is not None else None, peak_gpu_bytes=torch.cuda.max_memory_allocated())
+                   first_loss=float(first_loss) if first_loss is not None else None,
+                   last_loss=float(last_loss) if last_loss is not None else None,
+                   peak_gpu_bytes=torch.cuda.max_memory_allocated())
     if not reporter:
         return profile
     write_json(args.output/"training-coverage.json", profile)
@@ -286,7 +322,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     expected_eligible = getattr(units, "train_eligible", None)
     if expected_eligible is not None and pass_origins != expected_eligible:
         raise ValueError(f"Eligible training origins differ: {pass_origins} vs {expected_eligible}")
-    reporter.update(stage="full validation", epoch=pass_index+1, epochs=PASSES,
+    reporter.update(stage="full validation", epoch=pass_index+1, epochs=args.passes,
                     pass_fraction=1., pass_origins_done=candidates, pass_origins_total=pass_total)
     report = evaluate(units, model, teacher, args, 0, reporter)
     if report is None:
@@ -299,12 +335,12 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     pass_index += 1
     cursor, pass_origins, candidates = (0, 0), 0, 0
     checkpoint()
-    return "complete" if pass_index == PASSES else "next_pass"
+    return "complete" if pass_index == args.passes else "next_pass"
 
 
 def train(args, units, teacher, model, optimizer, contract, reporter=None, saved=None):
     pass_index = saved.get("pass_index", 0) if saved else 0
-    while pass_index < PASSES:
+    while pass_index < args.passes:
         active = order_for_pass(units, pass_index)
         result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved)
         if result != "next_pass":
@@ -320,6 +356,12 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
 def main():
     args = parser().parse_args()
     args.device = "cuda"
+    args.passes = UNIQUE_PASSES if args.unique_release else PASSES
+    if (args.from_completed_pass and (args.resume or not args.unique_release)
+            or args.locality > 1 and not args.unique_release
+            or args.no_cross_session_cache and args.locality == 1
+            or args.stop_after_pass and args.stop_after_pass > args.passes):
+        raise ValueError("Invalid unique continuation or profiling options")
     if min(args.batch_size,args.token_batch,args.workers,args.validation_every,args.checkpoint_every,args.eval_sessions)<1 or args.workers>32:
         raise ValueError("Invalid or unbounded launch settings")
     if args.profile_sessions < 0 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
@@ -328,7 +370,7 @@ def main():
                   args.resume_pre_overlap_fix, args.resume_overlap_checkpoint)
     if sum(migrations) > 1 or (any(migrations) and not args.resume):
         raise ValueError("Specify at most one migration and its recovery checkpoint")
-    cosine_rate(args.learning_rate, PASSES-1, 0, 1)
+    cosine_rate(args.learning_rate, args.passes-1, 0, 1, unique=bool(args.unique_release))
     if args.resume and (args.profile_sessions or args.resume.resolve().parent != args.output.resolve()):
         raise ValueError("Resume requires the same full training directory")
     preflight(args, desktop_paths=(r"c:\windows\system32\applicationframehost.exe",
@@ -342,6 +384,9 @@ def main():
         if any(migrations):
             raise ValueError("Legacy training cursor is incompatible with the unique population")
         units, data = load_unique_release(args.unique_release)
+        if data.get("profile_only") and not args.profile_sessions:
+            raise ValueError("A profiling sample cannot be used for a full training run")
+        units.locality = args.locality
     else:
         units, data = load_units(release=args.release)
     args.pass_origins_total = candidate_prefix(units, len(units))
@@ -357,12 +402,25 @@ def main():
     # The old scientific identity remains exact for W&B. The checkpoint also
     # binds the new execution source and schedule to all future resumes.
     legacy_contract = dict(contract, source=LEGACY_SOURCE)
-    contract["schedule"] = dict(kind="cosine_by_traversed_candidates", passes=PASSES,
-                                peak_factor=PEAK_FACTOR, floor=FLOOR,
+    contract["schedule"] = dict(kind="cosine_by_traversed_candidates", passes=args.passes,
+                                peak_factor=PEAK_FACTOR, floor=UNIQUE_FLOOR if args.unique_release else FLOOR,
                                 candidates_per_pass=args.pass_origins_total,
                                 pass_order_seed_stride=1009, origin_seed_stride=1_000_003)
     saved = None
+    if args.unique_release:
+        contract.update(locality=args.locality, cross_session_cache=not args.no_cross_session_cache and args.locality > 1,
+                        first_peak_exponent=1,
+                        eligible_origins_per_pass=units.train_eligible)
+    if args.from_completed_pass:
+        parent, lineage = completed_pass(args.from_completed_pass, contract)
+        contract["initialization"] = lineage
+        saved = dict(parent, cursor=(0, 0), pass_index=0, pass_origins=0, windows=0,
+                     schedule_candidates=0, best=float("inf"))
     if args.resume:
+        if args.unique_release:
+            previous_manifest = json.loads((args.output/"manifest.json").read_text())
+            if "initialization" in previous_manifest["execution_model"]:
+                contract["initialization"] = previous_manifest["execution_model"]["initialization"]
         previous = dict(contract, source="1a76327f0a9cfc08beac8a88071ccf56419daafa") if args.resume_prepack else contract
         if args.resume_serial:
             previous = dict(contract, source="acefd32563d52046b4a36f992f037289b1f290a5")
@@ -381,7 +439,7 @@ def main():
                 raise ValueError("Checkpoint scheduler count disagrees with source traversal")
     with lease(args.output):
         if args.profile_sessions:
-            profile = train(args, units, teacher, model, optimizer, contract)
+            profile = train(args, units, teacher, model, optimizer, contract, saved=saved)
             profile["setup_seconds"] = time.perf_counter()-started-profile["seconds"]
             validation = evaluate(units, model, teacher, args, args.eval_sessions)
             write_json(args.output/"profile.json", {**profile, "validation_origins": validation["origins"],
@@ -397,7 +455,9 @@ def main():
                              arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
         reporter = Reporter(args.output, configuration, mode="online", project="bargpt-phase2")
         write_json(args.output/"manifest.json", configuration)
-        reporter.update(epoch=saved["pass_index"]+1 if saved else 1, epochs=PASSES)
+        if args.from_completed_pass:
+            save_checkpoint(args.output/"checkpoint_last.pt", dict(saved, contract=contract))
+        reporter.update(epoch=saved["pass_index"]+1 if saved else 1, epochs=args.passes)
         try:
             state = train(args, units, teacher, model, optimizer, contract, reporter, saved)
         except BaseException as error:

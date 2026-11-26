@@ -62,3 +62,27 @@ Use --unique-release PATH/certificate.json in place of --release for a new
 training identity. The prior optimizer cursor represents stored occurrences.
 The new loader shuffles sessions and encodes each distinct V29 context once
 within a session. The pass checks both visited and trained eligible counts.
+# Deduplicated continuation
+
+The new unique-release run starts from the original completed pass-one checkpoint,
+keeping the model, AdamW moments, optimizer update count and RNG state. Its own
+epoch and origin counters restart. Each epoch walks the certified training split
+once, counts rows without any valid forecast target separately and keeps
+validation isolated. The learning rate follows cosine decay by origin traversal
+from `1e-4 * 0.9 ** epoch` to `5e-7` for epochs 1 through 20.
+
+Run `python -B -u -m research.bar_gpt.phase2_v5.continue_unique --help` for the
+workstation launcher. It profiles 512 already-verified training sessions and 48
+validation sessions in a profiling-only catalog, compares loader and CUDA stream
+settings on identical batches, and waits for the full migration certificate
+before starting the new W&B run. It records the selected settings and final
+certificate in the control directory. A `STOP` file in that directory cancels
+the pending full launch. Once training starts, use the STOP file in the training
+directory and resume its own `checkpoint_last.pt` using the recorded command
+with `--resume` replacing `--from-completed-pass`.
+
+Short chronological session clusters are shuffled each epoch. Origins within
+each session remain shuffled for optimizer updates. Within-session V29
+embeddings are keyed by completed endpoints, while the optional bounded GPU
+cache reuses 1h and daily embeddings across sessions only when all 64 source
+records match. Faster timeframes continue to use the session-local banks.

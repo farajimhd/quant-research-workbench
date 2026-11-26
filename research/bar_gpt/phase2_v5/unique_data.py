@@ -1,5 +1,7 @@
 """Session-local, deduplicated Phase 2 data and its certified reader."""
 from functools import cached_property
+import hashlib
+import io
 from pathlib import Path
 import json
 
@@ -79,9 +81,10 @@ def payload(session):
 
 
 def read_session(path, sha, candidates, eligible):
-    if file_hash(path) != sha:
+    content = path.read_bytes()
+    if hashlib.sha256(content).hexdigest() != sha:
         raise ValueError(f"Session payload hash differs: {path}")
-    with np.load(path, allow_pickle=False) as data:
+    with np.load(io.BytesIO(content), allow_pickle=False) as data:
         origins = data["clocks"]
         if len(origins) != candidates or np.any(np.diff(origins) <= 0):
             raise ValueError(f"Unique session count/order differs: {path}")
@@ -95,15 +98,27 @@ def read_session(path, sha, candidates, eligible):
 
 class UniqueRelease:
     """One catalog row per ticker/session. Shuffle the sessions on every pass."""
-    def __init__(self, root, rows):
+    def __init__(self, root, rows, locality=1):
         self.root, self.rows = root, rows
+        self.locality = locality
 
     def __len__(self):
         return self.rows.height
 
     def order_for_pass(self, index):
-        training = self.rows.filter(pl.col("split") == 0).sample(fraction=1., shuffle=True, seed=17041+1009*index)
-        return UniqueRelease(self.root, training.vstack(self.rows.filter(pl.col("split") == 1)))
+        seed = 17041 + 1009 * index
+        training = self.rows.filter(pl.col("split") == 0)
+        if self.locality > 1:
+            # Shuffle small clusters each pass so nearby sessions of a ticker
+            # can reuse exact slow-frame contexts without globally sorting training.
+            training = training.sort("path").with_row_index("_position").with_columns(
+                ((pl.col("_position") + index % self.locality) // self.locality).alias("_group"))
+            groups = training.select("_group").unique(maintain_order=True).sample(
+                fraction=1., shuffle=True, seed=seed)
+            training = groups.join(training, on="_group", maintain_order="left_right").drop("_position", "_group")
+        else:
+            training = training.sample(fraction=1., shuffle=True, seed=seed)
+        return UniqueRelease(self.root, training.vstack(self.rows.filter(pl.col("split") == 1)), self.locality)
 
     @cached_property
     def prefix(self):
@@ -131,7 +146,7 @@ def load_unique_release(certificate):
     certificate = Path(certificate)
     manifest = json.loads(certificate.read_text())
     sha = manifest.pop("hash")
-    if manifest.get("version") != VERSION or sha != digest(manifest):
+    if manifest.get("version") != VERSION or manifest.get("pilot") != 0 or sha != digest(manifest):
         raise ValueError("Expected sealed unique release")
     catalog = certificate.parent / "sessions.parquet"
     if file_hash(catalog) != manifest["catalog_sha256"]:

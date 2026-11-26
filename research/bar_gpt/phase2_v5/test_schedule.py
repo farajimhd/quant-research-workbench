@@ -3,7 +3,7 @@ from pathlib import Path
 
 import polars as pl
 
-from .schedule import FLOOR, candidate_prefix, cosine_rate, order_for_pass
+from .schedule import FLOOR, UNIQUE_FLOOR, candidate_prefix, cosine_rate, order_for_pass
 from ..phase2_v2.release import ReleasedUnits
 
 
@@ -13,6 +13,14 @@ def test_pass_rates_and_boundary():
         assert math.isclose(cosine_rate(1e-4, index, 0, 100), start)
         assert math.isclose(cosine_rate(1e-4, index, 50, 100), (start + FLOOR) / 2)
         assert cosine_rate(1e-4, index, 100, 100) == FLOOR
+
+
+def test_unique_pass_rates():
+    for index in range(20):
+        peak = 1e-4 * .9**(index + 1)
+        assert math.isclose(cosine_rate(1e-4, index, 0, 100, unique=True), peak)
+        assert math.isclose(cosine_rate(1e-4, index, 50, 100, unique=True), (peak + UNIQUE_FLOOR) / 2)
+        assert cosine_rate(1e-4, index, 100, 100, unique=True) == 5e-7
 
 
 def test_pass_cursor_and_shuffle():
