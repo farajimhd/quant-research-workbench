@@ -35,6 +35,10 @@ def parser():
     p.add_argument("--resume-prepack", action="store_true", help="Resume the verified pre-packing execution contract")
     p.add_argument("--resume-pre-overlap-fix", action="store_true",
                    help="Resume the verified checkpoint from before overlap-aware origin validation")
+    p.add_argument("--resume-overlap-checkpoint", action="store_true",
+                   help="Resume the verified original overlap-aware training checkpoint")
+    p.add_argument("--stop-after-pass", type=int, choices=range(1, PASSES + 1),
+                   help="Stop after saving this pass's full validation and checkpoint")
     p.add_argument("--migrate-fixed-lr", action="store_true", help="Adopt the ten-pass schedule from the original V5 checkpoint")
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
@@ -305,6 +309,9 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
         result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved)
         if result != "next_pass":
             return result
+        if pass_index + 1 == getattr(args, "stop_after_pass", None):
+            reporter.update(stage=f"pass {pass_index + 1} validation complete")
+            return "stopped"
         saved = load_checkpoint(args.output/"checkpoint_last.pt", contract)
         pass_index = saved["pass_index"]
     return "complete"
@@ -317,7 +324,8 @@ def main():
         raise ValueError("Invalid or unbounded launch settings")
     if args.profile_sessions < 0 or not math.isfinite(args.learning_rate) or args.learning_rate <= 0:
         raise ValueError("Invalid profile budget or learning rate")
-    migrations = (args.migrate_fixed_lr, args.resume_prepack, args.resume_serial, args.resume_pre_overlap_fix)
+    migrations = (args.migrate_fixed_lr, args.resume_prepack, args.resume_serial,
+                  args.resume_pre_overlap_fix, args.resume_overlap_checkpoint)
     if sum(migrations) > 1 or (any(migrations) and not args.resume):
         raise ValueError("Specify at most one migration and its recovery checkpoint")
     cosine_rate(args.learning_rate, PASSES-1, 0, 1)
@@ -360,7 +368,11 @@ def main():
             previous = dict(contract, source="acefd32563d52046b4a36f992f037289b1f290a5")
         if args.resume_pre_overlap_fix:
             previous = dict(contract, source="ad834e86029ae15c2028240b24e434bb5105260a")
+        if args.resume_overlap_checkpoint:
+            previous = dict(contract, source="fdff372b17a369cf266e1ac88f6a6b0677d72f0f")
         saved = load_checkpoint(args.resume, legacy_contract if args.migrate_fixed_lr else previous)
+        if args.stop_after_pass is not None and saved.get("pass_index", 0) >= args.stop_after_pass:
+            raise ValueError("Requested stop boundary was already reached by this checkpoint")
         if args.migrate_fixed_lr:
             saved.update(pass_index=0,pass_origins=saved["windows"])
         else:
