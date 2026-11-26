@@ -2,7 +2,6 @@
 import argparse
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-import io
 import json
 import os
 from pathlib import Path
@@ -65,7 +64,8 @@ def convert(units, root, key, refs):
     occurrences = sum(r[3] for r in refs) * BLOCK
     items = [prepare(units[i], units[next_i] if next_i is not None else None, unique=True)
              for i, next_i, _, _, _ in refs]
-    data = merge_sessions(items)
+    targets = []
+    data = merge_sessions(items, audit=targets)
     ticker_key, day = key.split("/")[1:]
     if not (len(ticker_key)==24 and len(day)==10 and all(c in "0123456789abcdef" for c in ticker_key)
             and all(c in "0123456789-" for c in day)):
@@ -76,10 +76,10 @@ def convert(units, root, key, refs):
     sha = write_payload(path, payload(data))
     eligible = np.logical_or.reduce([x[:,0]>=0 for x in data.targets])
     return (rel, sha, splits.pop(), occurrences, len(data.origins), int(eligible.sum()), path.stat().st_size,
-            digest([r[4] for r in refs]))
+            digest([r[4] for r in refs]), json.dumps(targets, separators=(",",":")))
 
 
-FIELDS = ("path", "sha", "split", "occurrences", "candidates", "eligible", "bytes", "source_receipts")
+FIELDS = ("path", "sha", "split", "occurrences", "candidates", "eligible", "bytes", "source_receipts", "target_audit")
 
 
 def main():

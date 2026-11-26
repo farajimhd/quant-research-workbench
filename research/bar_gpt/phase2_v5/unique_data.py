@@ -8,15 +8,16 @@ import polars as pl
 
 from ..v5.phase2_ar_shards.contract import BAR, FRAMES
 from ..v5.shards.contract import digest, file_hash
-from .data import Session, eligible_session
+from ..v5.shards.sql import clock
+from .data import Session, eligible_session, target_indices
 from .model import HORIZONS
 
 VERSION = "phase2-unique-context-v1"
 POOL_KEYS = tuple(f"pool{i}" for i in range(len(FRAMES)))
 
 
-def merge_sessions(sources):
-    """Preserve every origin, exact ordered contexts and compatible available labels."""
+def merge_sessions(sources, audit=None):
+    """Preserve every origin and context; label from the union of certified pools."""
     sessions, bases = zip(*sources)
     if any(b != bases[0] for b in bases[1:]):
         raise ValueError("Price basis differs for source copies")
@@ -37,7 +38,15 @@ def merge_sessions(sources):
         keep = np.r_[True, np.diff(ordered["end_us"]) > 0]
         pool = ordered[keep]
         pools.append(pool)
-        out = np.full((len(clocks), width), -1, np.int32)
+        closes = pool["end_us"]
+        duration = (6 * 3600 + 30 * 60) * 1_000_000 if f == 4 else FRAMES[f]
+        # Intraday pools include input warm-up and can include partial source
+        # ranges. The forecast stays within the source session.
+        label_closes = closes
+        if f != 4 and "session_date" in bases[0]:
+            label_closes = closes[:np.searchsorted(closes, clock(bases[0]["session_date"], 20), side="right")]
+        out = target_indices(label_closes, label_closes-duration, clocks, width).astype(np.int32)
+        changes = filled = 0
         for s, dest in zip(sessions, destinations):
             mapping = np.searchsorted(pool["end_us"], s.pools[f]["end_us"])
             end = s.endpoints[:, f]
@@ -53,10 +62,13 @@ def merge_sessions(sources):
             endpoints[dest, f] = mapped
             src = s.targets[f]
             target = np.where(src >= 0, mapping[src.clip(min=0)], -1)
-            previous = out[dest]
-            if ((previous >= 0) & (target >= 0) & (previous != target)).any():
-                raise ValueError(f"Copies disagree on an available forecast target, frame {f}")
-            out[dest] = np.maximum(previous, target)
+            canonical = out[dest]
+            if ((target >= 0) & (canonical < 0)).any():
+                raise ValueError(f"Pool union loses an available target, frame {f}")
+            changes += int(((target >= 0) & (canonical != target)).sum())
+            filled += int(((target < 0) & (canonical >= 0)).sum())
+        if audit is not None:
+            audit.append(dict(shifted=changes, filled=filled))
         targets.append(out)
     return Session(pools, endpoints, targets, clocks, "sealed-source-targets", 0)
 
