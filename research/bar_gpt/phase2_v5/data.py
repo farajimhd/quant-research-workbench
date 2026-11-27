@@ -16,6 +16,7 @@ from ..phase2_v2.data import checked_unit
 from ..phase0_v7.eligibility import model_validity
 from ..phase0_v7.transforms import coordinates
 from .model import HORIZONS
+from .capture import cuda_capture_gate
 
 
 def target_indices(ends, starts, origins, width):
@@ -445,7 +446,7 @@ def device_sessions(source, teacher, args, *, metrics, session_type=DeviceSessio
         stream.wait_stream(consumer)
 
     def prepare_on_stream(stream, session, cache):
-        with torch.cuda.stream(stream):
+        with cuda_capture_gate.prepare(), torch.cuda.stream(stream):
             prepared = build(session, False, cache)
             return prepared, stream.record_event()
 

@@ -86,6 +86,10 @@ def main():
         contract = dict(spec["contract"], version="phase2-v6-bar-cache-full20", source=args.source_revision,
                         parameters=sum(p.numel() for p in model.parameters()), parent_sha256=spec["parent_sha256"],
                         transfer_profile_source=spec["source"], transfer_sessions=args.profile_sessions)
+        if opt.resume:
+            # The checkpoint and W&B bind the original scientific contract.
+            # preflight separately verifies the actual execution snapshot.
+            contract["source"] = config["execution_model"]["source"]
         checkpoint = args.output / "checkpoint_last.pt"
         if opt.resume:
             saved = v5.load_checkpoint(checkpoint, contract)
@@ -107,6 +111,7 @@ def main():
         args.profile_sessions = 0
         resume_writer = opt.resume and (args.output / "wandb-identity.json").is_file()
         config = dict(model=contract, execution_model=contract, initialization_profile=spec,
+                      execution_source=args.source_revision,
                       panel_title="Phase 2 V6 · cached bars", resume=str(checkpoint) if resume_writer else None,
                       arguments=vars(args), wandb_upload_files=False)
         config = json.loads(json.dumps(config, default=str))

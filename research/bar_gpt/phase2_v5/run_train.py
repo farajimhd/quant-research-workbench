@@ -17,6 +17,7 @@ from ..phase1_v26.reporting import Reporter
 from ..v5.shards.contract import digest, file_hash, write_json
 from research.mlops.env import discover_env_files, load_env_files
 from .data import sessions, device_sessions, DeviceSession
+from .capture import cuda_capture_gate
 from .unique_data import load_unique_release
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
@@ -199,7 +200,7 @@ class ForecastGradients(GraphInputs):
             graph = torch.cuda.CUDAGraph()
             # Capture uses dedicated buffers and fresh gradient storage. No
             # parameter update or RNG use occurs during recording.
-            with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+            with cuda_capture_gate.capture(), torch.cuda.graph(graph, capture_error_mode="thread_local"):
                 loss = self.backward(*buffers)
             grads = tuple(p.grad for p in self.model.parameters())
             self.graphs[bucket] = graph, buffers, loss, grads
@@ -243,7 +244,7 @@ class ForecastEvaluation(GraphInputs):
         if bucket not in self.graphs:
             buffers = graph_buffers(arguments, bucket)
             graph = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+            with cuda_capture_gate.capture(), torch.cuda.graph(graph, capture_error_mode="thread_local"):
                 result = self.compute(*buffers)
             self.graphs[bucket] = graph, buffers, result
         graph, buffers, result = self.graphs[bucket]
