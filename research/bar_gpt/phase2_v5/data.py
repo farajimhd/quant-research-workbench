@@ -351,6 +351,9 @@ class DeviceSession:
         selected = self.rows[indices].reshape(-1)
         flat = None if window_buffer is None else window_buffer.view(-1, 64, 32)
         windows = torch.index_select(self.bank, 0, selected, out=flat).view(len(indices), len(HORIZONS), 64, 32)
+        return self.targets_for(indices, windows, metrics)
+
+    def targets_for(self, indices, windows, metrics):
         raw_parts, logs, masks, anchors, anchor_valid = [], [], [], [], []
         for f, (raw, values, valid, table) in enumerate(self.targets):
             target = table[indices]
@@ -406,7 +409,7 @@ class SlowContextCache:
         return torch.stack(rows), len(ends) - len(misses)
 
 
-def device_sessions(source, teacher, args, *, metrics):
+def device_sessions(source, teacher, args, *, metrics, session_type=DeviceSession):
     """Prefetch frozen encodings on bounded CUDA streams; yield in certified order.
 
     Only immutable teacher parameters are shared. All gradients, optimizer steps
@@ -421,7 +424,7 @@ def device_sessions(source, teacher, args, *, metrics):
         if not len(session.origins):
             return None
         with torch.no_grad():
-            return DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
+            return session_type(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
                                  metrics=metrics, verify=verify, slow_cache=slow_cache, loss_anchors=anchor_loss)
 
     lanes = args.session_lanes

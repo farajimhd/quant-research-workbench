@@ -16,7 +16,7 @@ from ..phase2_v2.train import lease, load_checkpoint, save_checkpoint, rng_state
 from ..phase1_v26.reporting import Reporter
 from ..v5.shards.contract import digest, file_hash, write_json
 from research.mlops.env import discover_env_files, load_env_files
-from .data import sessions, device_sessions
+from .data import sessions, device_sessions, DeviceSession
 from .unique_data import load_unique_release
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
@@ -253,13 +253,13 @@ class ForecastEvaluation(GraphInputs):
 
 
 @torch.no_grad()
-def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None):
+def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None, *, session_type=DeviceSession):
     evaluation = evaluation if evaluation is not None else ForecastEvaluation(model, teacher, args)
     evaluation.stats.reset()
     count = 0
     total_loss = torch.zeros((),device="cuda",dtype=torch.float64)
     reference_loss = torch.zeros_like(total_loss)
-    batches = device_sessions(sessions(units, 1, 0, args.workers), teacher, args, metrics=True)
+    batches = device_sessions(sessions(units, 1, 0, args.workers), teacher, args, metrics=True, session_type=session_type)
     started = time.perf_counter()
     missing = Counter()
     try:
@@ -299,7 +299,8 @@ def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None)
             "seconds": time.perf_counter()-started, "full_split": not limit}
 
 
-def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, saved=None, evaluation=None):
+def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, saved=None, evaluation=None,
+               *, session_type=DeviceSession, gradients_type=ForecastGradients):
     step = saved["step"] if saved else 0
     cursor = tuple(saved["cursor"]) if saved else (0, 0)
     count = saved["windows"] if saved else 0
@@ -321,9 +322,10 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     def stopped():
         return (args.output/"STOP").exists() or (args.output.parent/"STOP").exists()
     first, first_offset = cursor
-    source = device_sessions(sessions(units, 0, first, args.workers), teacher, args, metrics=False)
+    source = device_sessions(sessions(units, 0, first, args.workers), teacher, args, metrics=False,
+                             session_type=session_type)
     start = interval = time.perf_counter()
-    gradients = ForecastGradients(model, teacher, args)
+    gradients = gradients_type(model, teacher, args)
     starting_count = prior_count = count
     windows_encoded = 0
     reused_windows = 0

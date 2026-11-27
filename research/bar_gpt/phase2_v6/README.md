@@ -1,0 +1,7 @@
+# Phase 2 frozen physical-bar cache trial
+
+The bounded launcher reads the stopped Phase 2 parent and restores its certified session cursor, order, FP32 settings, frozen V29 decoder, six loss weights, and AdamW schedule. The control keeps full V29. The candidate uses V29's frozen per-bar stem, blocks and readout once per physical pool row. Absolute clocks and same-pool predecessor gaps remain causal. Relative window position is omitted from the bar encoder and supplied by the ordered 2,048-input temporal projection. Only the 64D summaries are shared within an optimizer update. The new GELU and residual MLP feed the previous cross-timeframe network and decoder.
+
+The default comparison inherits all shared forecast weights and AdamW moments. Use `--fresh` on both arms to compare early learning with fresh forecast weights at the same data cursor and learning rate. Profile outputs and W&B metrics are isolated from the parent. All checkpoints stay local. The launcher writes before/after development metrics and bounded training throughput, with no automatic full run.
+
+From the immutable workstation snapshot run `python -B -m research.bar_gpt.phase2_v6.profile --arm bar-cache --parent <stopped-run> --output <new-runtime> --source-revision <snapshot-commit> --sessions 1536 --eval-sessions 256`. Repeat with `--arm v29` and a new output path. CUDA gradient parity is tested by running `test_cache.py` on a CUDA machine.
