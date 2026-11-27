@@ -120,6 +120,11 @@ def test_packed_pools_match_direct_teacher_and_anchor_lookup():
     evaluation = DeviceSession(source, teacher, 2, "cpu", verify=True)
     for actual, expected in zip(train.batch(ids)[:3], evaluation.batch(ids)[:3]):
         torch.testing.assert_close(actual, expected)
+    shuffled = ids[[2, 0, 2]]
+    buffer = torch.empty_like(train.batch(ids)[0])
+    gathered = train.batch(shuffled, window_buffer=buffer)[0]
+    assert gathered.data_ptr() == buffer.data_ptr()
+    torch.testing.assert_close(gathered, train.batch(ids)[0][shuffled], atol=0, rtol=0)
     _, _, _, (_, anchors, observed) = evaluation.batch(ids, metrics=True)
     assert anchors[1, 0, 0] == 64
     assert not observed[:, :, 1].any()

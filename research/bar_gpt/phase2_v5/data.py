@@ -222,11 +222,11 @@ def packed_pools(teacher, pools, device, cached):
         raw_host[region] = pool["values"]
         valid_host[region] = pool["valid"]
         clock_host[region] = pool["end_us"]
-    raw, valid, clocks = [torch.from_numpy(a).to(device) for a in (raw_host, valid_host, clock_host)]
+    raw, valid, clocks = [torch.from_numpy(a).to(device, non_blocking=True) for a in (raw_host, valid_host, clock_host)]
     logs = log_grid(raw, valid)
     if cached:
         frame_ids = torch.from_numpy(np.repeat(np.asarray(FRAMES, dtype=np.int64),
-                                               np.asarray(widths) // 64)).to(device)
+                                               np.asarray(widths) // 64)).to(device, non_blocking=True)
         features = bar_features(teacher, logs, valid, clocks, frame_ids)
     return [(raw[r], valid[r], clocks[r], logs[r], features[r] if cached else None) for r in slices]
 
@@ -261,15 +261,15 @@ def encode_cached(teacher, features, gather):
     bars = []
     for tile in x.reshape(-1,81).split(teacher.config.chunk_bars):
         bars.append(teacher.readout(teacher.blocks(teacher.stem(tile))))
-    embedded = torch.cat(bars).reshape(-1,64,32)
-    return torch.cat([teacher.mixers(tile) for tile in embedded.split(teacher.config.mixer_chunk_windows)])
+    embedded = (bars[0] if len(bars) == 1 else torch.cat(bars)).reshape(-1,64,32)
+    mixed = [teacher.mixers(tile) for tile in embedded.split(teacher.config.mixer_chunk_windows)]
+    return mixed[0] if len(mixed) == 1 else torch.cat(mixed)
 
 
 class DeviceSession:
     """Copy each pool once and encode one V29 window per unique completed end."""
     def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True,
                  slow_cache=None, loss_anchors=False):
-        self.encoded = []
         self.targets = []
         self.anchors = []
         self.loss_anchors = []
@@ -283,7 +283,8 @@ class DeviceSession:
         # after each timeframe. Submit all index arrays before encoding begins.
         chunks = [a.reshape(-1) for (ends, reverse), target in zip(unique_rows, session.targets)
                   for a in (ends, reverse, target)]
-        indices = torch.from_numpy(np.concatenate(chunks)).to(device).split([len(a) for a in chunks])
+        indices = torch.from_numpy(np.concatenate(chunks)).to(device, non_blocking=True).split([len(a) for a in chunks])
+        banks, rows = [], []
         for f, (raw, valid, clocks, logs, features) in enumerate(prepared):
             ends, index, flat_targets = indices[3*f:3*f+3]
             bank, anchors, anchor_masks = [], [], []
@@ -329,7 +330,8 @@ class DeviceSession:
                     price = raw[:, channels][gather].gather(1, last.clamp_min(0)[:, None]).squeeze(1)
                     anchors.append(price)
                     anchor_masks.append(last >= 0)
-            self.encoded.append((bank[0] if len(bank) == 1 else torch.cat(bank), index))
+            banks.extend(bank)
+            rows.append(index + self.num_windows)
             if metrics:
                 self.anchors.append((torch.cat(anchors), torch.cat(anchor_masks), index))
             if loss_anchors:
@@ -340,9 +342,15 @@ class DeviceSession:
             self.targets.append((raw, logs, valid, targets))
             self.num_windows += len(ends)
             self.missing.append(int((session.targets[f] < 0).sum()))
+        self.bank = torch.cat(banks)
+        self.rows = torch.stack(rows, dim=1)
 
-    def batch(self, indices, *, metrics=False):
-        windows = torch.stack([bank[reverse[indices]] for bank, reverse in self.encoded], 1)
+    def batch(self, indices, *, metrics=False, window_buffer=None):
+        # All five timeframe indices refer to the packed session bank. Gather
+        # straight into the graph input when available to avoid a batch-sized copy.
+        selected = self.rows[indices].reshape(-1)
+        flat = None if window_buffer is None else window_buffer.view(-1, 64, 32)
+        windows = torch.index_select(self.bank, 0, selected, out=flat).view(len(indices), len(HORIZONS), 64, 32)
         raw_parts, logs, masks, anchors, anchor_valid = [], [], [], [], []
         for f, (raw, values, valid, table) in enumerate(self.targets):
             target = table[indices]
@@ -446,7 +454,9 @@ def device_sessions(source, teacher, args, *, metrics):
         if prepared is not None:
             # Allocations originate on a worker stream. Prevent recycling their
             # storage before the last queued consumer kernel has read it.
-            for entries in (prepared.encoded, prepared.anchors, prepared.loss_anchors, prepared.targets):
+            prepared.bank.record_stream(consumer)
+            prepared.rows.record_stream(consumer)
+            for entries in (prepared.anchors, prepared.loss_anchors, prepared.targets):
                 for entry in entries:
                     for tensor in entry:
                         tensor.record_stream(consumer)

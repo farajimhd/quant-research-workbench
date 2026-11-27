@@ -63,6 +63,8 @@ def parser():
                    help="Replay the exact validation objective and metrics in CUDA graph buckets")
     p.add_argument("--resume-before-metrics-only", action="store_true",
                    help="Resume a checkpoint from the preceding reporter revision")
+    p.add_argument("--resume-before-packed-gather", action="store_true",
+                   help="Resume the FP32 structural forecast checkpoint from before direct graph input gathering")
     p.add_argument("--session-lanes", type=int, default=0, choices=(0, 1, 2, 4),
                    help="Concurrent frozen GPU session encoders; zero uses the serial path")
     p.add_argument("--resume-serial", action="store_true", help="Resume the packed serial implementation")
@@ -154,7 +156,13 @@ def stage_graph_batch(buffers, arguments, n, mask_positions):
             buffers[index][n:].zero_()
 
 
-class ForecastGradients:
+class GraphInputs:
+    def window_buffer(self, n):
+        graph = self.graphs.get(self.bucket(n))
+        return graph[1][0][:n] if graph is not None else None
+
+
+class ForecastGradients(GraphInputs):
     """Cache static-buffer graphs for common batch sizes, with eager handling of tails.
 
     Graphs contain only forward and backward. The caller checks gradients and
@@ -172,10 +180,14 @@ class ForecastGradients:
         # Release AccumulateGrad nodes before recording on a different stream.
         return loss.detach()
 
+    def bucket(self, n):
+        unit = self.args.graph_tail_bucket
+        return min(self.args.batch_size, ((n + unit - 1) // unit) * unit) if unit and n >= 512 else n
+
     def __call__(self, inputs, logs, valid, *anchors):
         n = len(inputs)
         unit = self.args.graph_tail_bucket
-        bucket = min(self.args.batch_size, ((n + unit - 1) // unit) * unit) if unit and n >= 512 else n
+        bucket = self.bucket(n)
         if not self.args.graph_updates or (n not in (4096, 8192) and not (unit and n >= 512)):
             return self.backward(inputs, logs, valid, *anchors)
         if bucket not in self.warmed:
@@ -199,7 +211,7 @@ class ForecastGradients:
         return loss
 
 
-class ForecastEvaluation:
+class ForecastEvaluation(GraphInputs):
     """Keep readout, objective, and metric graph buffers across validations."""
     def __init__(self, model, teacher, args):
         self.model, self.teacher, self.args = model, teacher, args
@@ -216,12 +228,15 @@ class ForecastEvaluation:
         loss = objective(self.teacher, out, logs, valid)
         return loss, loss
 
+    def bucket(self, n):
+        return min(self.args.batch_size, ((n + 2047) // 2048) * 2048) if n >= 512 else n
+
     def __call__(self, inputs, logs, valid, evidence, anchors):
         n = len(inputs)
         arguments = (inputs, logs, valid, *evidence, *anchors)
         if not self.args.graph_validation or n < 512:
             return self.compute(*arguments)
-        bucket = min(self.args.batch_size, ((n + 2047) // 2048) * 2048)
+        bucket = self.bucket(n)
         if bucket not in self.warmed:
             self.warmed.add(bucket)
             return self.compute(*arguments)
@@ -255,7 +270,7 @@ def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None)
                 continue
             missing.update(dict(zip(NAMES,device.missing)))
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
-                inputs, logs, valid, evidence = device.batch(ids, metrics=True)
+                inputs, logs, valid, evidence = device.batch(ids, metrics=True, window_buffer=evaluation.window_buffer(len(ids)))
                 anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.uses_anchor else ()
                 loss, original = evaluation(inputs, logs, valid, evidence, anchors)
                 total_loss += loss.double()*len(ids)
@@ -337,7 +352,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
             for ids in order[offset:].split(args.batch_size):
                 if not len(ids) or stopped():
                     break
-                inputs, logs, valid, _ = device.batch(ids)
+                inputs, logs, valid, _ = device.batch(ids, window_buffer=gradients.window_buffer(len(ids)))
                 last_batch = offset + len(ids) == len(order)
                 traversed = len(ids) + (session.rejected_origins if last_batch else 0)
                 rate = cosine_rate(args.learning_rate, pass_index, candidates + traversed, pass_total,
@@ -543,6 +558,8 @@ def main():
             if "objective_parent" in previous_manifest["execution_model"]:
                 contract["objective_parent"] = previous_manifest["execution_model"]["objective_parent"]
         previous = dict(contract, source="1a76327f0a9cfc08beac8a88071ccf56419daafa") if args.resume_prepack else contract
+        if args.resume_before_packed_gather:
+            previous = dict(contract, source="d1480c5a76e7bcda849de25841728f9de25abfa4")
         if args.resume_before_metrics_only:
             previous = dict(contract, source="9e6c4d8d3c42404a67f97845add72f9e9a51db2e")
         if args.resume_serial:
