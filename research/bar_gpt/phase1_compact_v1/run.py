@@ -24,17 +24,18 @@ from ..v5.shards.phase1_contract import SAMPLE_DTYPE, digest, file_hash, write_j
 VERSION = "phase1-compact-v1"
 SPLITS = ("train", "validation")
 CHUNK = 512
+MAX_BATCH_INPUT_BYTES = 256 * 1024**2
 
 
 def read_json(path):
     return json.loads(path.read_text())
 
 
-def verify_part(output, item):
+def verify_container(output, item):
     number, expected_sha, expected_size = item
     path = part_path(output, number)
     if path.stat().st_size != expected_size or file_hash(path) != expected_sha:
-        raise ValueError(f"Committed compact part differs: {number}")
+        raise ValueError(f"Committed compact container differs: {number}")
 
 
 def read_authority(cohort):
@@ -96,7 +97,9 @@ def catalog(db, root, authority, indices, progress, workers):
         CREATE TABLE IF NOT EXISTS sources (
             number INTEGER PRIMARY KEY, source_key TEXT UNIQUE NOT NULL, source_sha TEXT NOT NULL,
             source_bytes INTEGER NOT NULL, windows INTEGER, bars INTEGER, exceptions INTEGER,
-            output_bytes INTEGER, output_sha TEXT);
+            output_bytes INTEGER, output_sha TEXT, container INTEGER, offset INTEGER);
+        CREATE TABLE IF NOT EXISTS containers (
+            number INTEGER PRIMARY KEY, sha TEXT NOT NULL, bytes INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS entries (
             split TEXT NOT NULL, ordinal INTEGER NOT NULL, number INTEGER NOT NULL,
             start INTEGER NOT NULL, stop INTEGER NOT NULL, PRIMARY KEY(split, ordinal));
@@ -119,7 +122,7 @@ def catalog(db, root, authority, indices, progress, workers):
             progress("Finding purged-only source parts", files_done=len(sources))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 for member, info in base.items():
-                    receipts = (member / "jobs").rglob("receipt.json")
+                    receipts = unknown_receipts(member, root, sources)
                     reader = partial(index_receipt, binding=info["binding"])
                     while batch := list(islice(receipts, CHUNK)):
                         if (progress.output / "STOP").exists():
@@ -138,7 +141,18 @@ def catalog(db, root, authority, indices, progress, workers):
         db.execute("INSERT INTO metadata VALUES ('planned','true')")
 
 
-def copy_part(runtime, output, item):
+def unknown_receipts(member, root, sources):
+    """Only open receipts for parts absent from the already sealed split index."""
+    for directory, _, files in os.walk(member / "jobs"):
+        if "receipt.json" in files:
+            parent = Path(directory)
+            prefix = parent.relative_to(root).as_posix()
+            if any(name.startswith("samples-") and name.endswith(".npy") and f"{prefix}/{name}" not in sources
+                   for name in files):
+                yield parent / "receipt.json"
+
+
+def pack_part(runtime, item):
     number, key, expected_sha, size = item
     source = runtime / key
     data = source.read_bytes()
@@ -148,19 +162,36 @@ def copy_part(runtime, output, item):
     if len(original) != size // SAMPLE_DTYPE.itemsize:
         raise ValueError(f"Original payload row count differs: {key}")
     fields = pack_windows(original)
-    target = part_path(output, number)
-    temporary = target.with_suffix(".partial")
-    # Each task owns a different part. Publication follows disk readback.
-    with temporary.open("wb") as stream:
-        np.savez(stream, **fields)
-        stream.flush()
-        os.fsync(stream.fileno())
-    stored = temporary.read_bytes()
+    stream = io.BytesIO()
+    np.savez(stream, **fields)
+    stored = stream.getvalue()
     with np.load(io.BytesIO(stored), allow_pickle=False) as compact:
         restored = unpack(compact)
     if original.tobytes() != restored.tobytes():
         raise ValueError(f"Compact shard changed a market value, validity bit, clock or window: {key}")
-    sha = hashlib.sha256(stored).hexdigest()
+    return len(original), len(fields["pool"]), len(fields["exceptions"]), stored, number
+
+
+def publish_container(output, number, parts):
+    """Publish a sequential bundle after readback verifies the exact packed bytes."""
+    target = part_path(output, number)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".partial")
+    checksum = hashlib.sha256()
+    rows = []
+    with temporary.open("wb") as stream:
+        for windows, bars, exceptions, stored, source_number in parts:
+            offset = stream.tell()
+            stream.write(stored)
+            checksum.update(stored)
+            rows.append((windows, bars, exceptions, len(stored), hashlib.sha256(stored).hexdigest(),
+                         number, offset, source_number))
+        size = stream.tell()
+        stream.flush()
+        os.fsync(stream.fileno())
+    sha = checksum.hexdigest()
+    if file_hash(temporary) != sha or temporary.stat().st_size != size:
+        raise ValueError(f"Compact container failed disk readback: {number}")
     if target.exists():
         # The previous process may have stopped after publish and before its
         # catalog transaction. Admit only an identical orphan.
@@ -169,7 +200,7 @@ def copy_part(runtime, output, item):
         temporary.unlink()
     else:
         temporary.replace(target)
-    return len(original), len(fields["pool"]), len(fields["exceptions"]), len(stored), sha, number
+    return rows, (number, sha, size)
 
 
 class Progress:
@@ -245,17 +276,18 @@ def main(argv=None):
                     pilot_done = done
                 progress("Packing and reading back", files_done=done, files_total=limit, source_bytes=source_bytes,
                          input_bytes=input_bytes, compact_bytes=compact_bytes, windows=windows, unique_bars=bars)
-                work = partial(copy_part, runtime, output)
+                work = partial(pack_part, runtime)
                 with ThreadPoolExecutor(max_workers=args.workers) as pool:
                     if done:
-                        cursor = db.execute("SELECT number,output_sha,output_bytes FROM sources WHERE output_sha IS NOT NULL")
+                        cursor = db.execute("SELECT number,sha,bytes FROM containers")
+                        verify_total = db.execute("SELECT COUNT(*) FROM containers").fetchone()[0]
                         verified = 0
                         while batch := cursor.fetchmany(CHUNK):
                             if (output/"STOP").exists():
                                 raise InterruptedError("STOP")
-                            for _ in pool.map(partial(verify_part, output), batch):
+                            for _ in pool.map(partial(verify_container, output), batch):
                                 verified += 1
-                            progress("Verifying already committed parts", rechecked=verified, verify_total=done)
+                            progress("Verifying already committed containers", rechecked=verified, verify_total=verify_total)
                         started = time.perf_counter()
                     while pilot_done < limit and not (output/"STOP").exists():
                         if shutil.disk_usage(output).free < 8 * 1024**3:
@@ -264,13 +296,14 @@ def main(argv=None):
                             "SELECT number,source_key,source_sha,source_bytes FROM sources "
                             f"WHERE output_sha IS NULL AND {selected} ORDER BY number LIMIT ?",
                             (min(CHUNK,limit-pilot_done),)).fetchall()
-                        for number, *_ in batch:
-                            part_path(output,number).parent.mkdir(parents=True, exist_ok=True)
-                        result = list(pool.map(work,batch))
+                        prefix = int((np.cumsum([item[3] for item in batch]) <= MAX_BATCH_INPUT_BYTES).sum())
+                        batch = batch[:max(1, prefix)]
+                        result, container = publish_container(output, batch[0][0], pool.map(work,batch))
                         with db:
                             db.executemany(
-                                """UPDATE sources SET windows=?,bars=?,exceptions=?,output_bytes=?,output_sha=?
+                                """UPDATE sources SET windows=?,bars=?,exceptions=?,output_bytes=?,output_sha=?,container=?,offset=?
                                    WHERE number=?""", result)
+                            db.execute("INSERT INTO containers VALUES (?,?,?)", container)
                         done += len(result)
                         pilot_done += len(result)
                         input_bytes += sum(item[3] for item in batch)
@@ -289,11 +322,13 @@ def main(argv=None):
                     return
                 if windows != authority["inventory_samples"]:
                     raise ValueError("Published windows differ from certified inventory")
+                containers = db.execute("SELECT COUNT(*) FROM containers").fetchone()[0]
                 db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 db.execute("PRAGMA journal_mode=DELETE")
             db.close()
             seal = dict(version=VERSION, source=args.source_revision, split_sha256=authority["split_sha256"],
-                        split_hash=authority["split_hash"], counts=authority["counts"], files=total,
+                        split_hash=authority["split_hash"], counts=authority["counts"], source_files=total,
+                        containers=containers,
                         windows=windows, purged_crossing=authority["purged_crossing"], unique_bars=bars,
                         exceptional_windows=exceptional, source_payload_bytes=source_bytes,
                         compact_payload_bytes=compact_bytes, catalog_sha256=file_hash(db_path))

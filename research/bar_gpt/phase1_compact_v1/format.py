@@ -90,7 +90,7 @@ def unpack(part, start=0, stop=None):
 
 
 def part_path(root, number):
-    return Path(root) / "parts" / f"{number // 1024:04x}" / f"{number:08x}.npz"
+    return Path(root) / "parts" / f"{number // 16384:04x}" / f"{number:08x}.pack"
 
 
 class CompactRelease:
@@ -113,19 +113,21 @@ class CompactRelease:
     def read(self, split, ordinal):
         """Resolve an original split-loader entry by ordinal."""
         item = self.db.execute(
-            """SELECT s.number, e.start, e.stop, s.output_sha FROM entries e
+            """SELECT s.container, s.offset, s.output_bytes, e.start, e.stop, s.output_sha FROM entries e
                JOIN sources s ON e.number=s.number WHERE e.split=? AND e.ordinal=?""",
             (split, ordinal),
         ).fetchone()
         if item is None:
             raise IndexError((split, ordinal))
-        number, start, stop, expected = item
+        number, offset, size, start, stop, expected = item
         path = part_path(self.root, number)
         import hashlib
         import io
 
-        data = path.read_bytes()
-        if hashlib.sha256(data).hexdigest() != expected:
+        with path.open("rb") as stream:
+            stream.seek(offset)
+            data = stream.read(size)
+        if len(data) != size or hashlib.sha256(data).hexdigest() != expected:
             raise ValueError(f"Compact shard hash differs: {number}")
         with np.load(io.BytesIO(data), allow_pickle=False) as part:
             return unpack(part, start, stop)

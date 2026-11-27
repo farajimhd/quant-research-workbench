@@ -5,7 +5,7 @@ import numpy as np
 
 from ..v5.shards.phase1_contract import SAMPLE_DTYPE, digest, file_hash, write_json
 from .format import CompactRelease, pack_windows, part_path, unpack
-from .run import copy_part
+from .run import pack_part, publish_container
 
 
 def windows():
@@ -48,13 +48,15 @@ def test_verified_file_and_portable_split_slice(tmp_path):
     rows = windows()
     np.save(original, rows, allow_pickle=False)
     item = (0, original.name, file_hash(original), original.stat().st_size)
-    result = copy_part(source,out,item)
-    assert result == copy_part(source,out,item)  # Recover an uncommitted publication.
+    packed = pack_part(source, item)
+    result, container = publish_container(out, 0, [packed, (*packed[:-1], 1)])
+    assert (result, container) == publish_container(out, 0, [packed, (*packed[:-1], 1)])
     with closing(sqlite3.connect(out/"catalog.sqlite")) as db:
         with db:
-            db.executescript("CREATE TABLE sources(number, output_sha); CREATE TABLE entries(split,ordinal,number,start,stop);")
-            db.execute("INSERT INTO sources VALUES (?,?)", (0, result[4]))
-            db.execute("INSERT INTO entries VALUES ('validation',0,0,2,3)")
+            db.executescript("""CREATE TABLE sources(output_bytes, output_sha, container, offset, number);
+                                CREATE TABLE entries(split,ordinal,number,start,stop);""")
+            db.executemany("INSERT INTO sources VALUES (?,?,?,?,?)", [row[3:] for row in result])
+            db.execute("INSERT INTO entries VALUES ('validation',0,1,2,3)")
     seal = dict(version="phase1-compact-v1", catalog_sha256=file_hash(out/"catalog.sqlite"))
     write_json(out/"certificate.json", dict(**seal, hash=digest(seal)))
     moved = out.rename(tmp_path/"moved")
