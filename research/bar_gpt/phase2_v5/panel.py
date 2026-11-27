@@ -368,7 +368,7 @@ PRICE_LABELS = (
 
 
 def breakdown_panel(report, title, horizon):
-    table = Table(expand=True, box=None, padding=(0, 1))
+    table = Table(box=None, padding=(0, 1))
     table.add_column("Group", no_wrap=True)
     for column in ("Pairs", "Dir %", "MAE $", "Base $", "Skill %"):
         table.add_column(column, justify="right", no_wrap=True)
@@ -574,16 +574,25 @@ def render(snapshot, *, width, height, now=None, scrollable=False):
     if scrollable:
         horizons = DETAIL_HORIZONS
         fine = state.get("fine_move_diagnostics")
-        families = [(breakdown_panel, "trade move and price groups")]
+        for horizon in horizons:
+            frame, step_label = horizon.split("/h")
+            panels = [breakdown_panel(item, f"{scope} · trade move and price groups · {frame} / {step_label}", horizon)
+                      for scope, item in scopes]
+            if width >= 240:
+                row = Table.grid(padding=(0, 1))
+                for _ in panels:
+                    row.add_column(vertical="top")
+                row.add_row(*panels)
+                views.append(row)
+            else:
+                views.extend(panels)
         if fine:
-            families.extend(((fine_move_panel, "fine signed moves"),
-                             (move_by_price_panel, "price bands × signed moves")))
-        for make_panel, label in families:
-            for horizon in horizons:
-                frame, step_label = horizon.split("/h")
-                for scope, item in scopes:
-                    views.append(make_panel(item, f"{scope} · {label} · {frame} / {step_label}", horizon))
-        if fine:
+            for make_panel, label in ((fine_move_panel, "fine signed moves"),
+                                      (move_by_price_panel, "price bands × signed moves")):
+                for horizon in horizons:
+                    frame, step_label = horizon.split("/h")
+                    for scope, item in scopes:
+                        views.append(make_panel(item, f"{scope} · {label} · {frame} / {step_label}", horizon))
             for horizon in horizons:
                 frame, step_label = horizon.split("/h")
                 for scope, item in scopes:
