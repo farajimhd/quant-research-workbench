@@ -18,7 +18,7 @@ from rich.text import Text
 
 from ..phase1_v29.panel import SolidBar, enable_virtual_terminal, maximize_console
 from .scroll_input import console_scroll_input
-from .move_diagnostics import CENTER, MOVE_LABELS as FINE_MOVE_LABELS, SLOT_NAMES
+from .move_diagnostics import CENTER, MOVE_EDGES, MOVE_LABELS as FINE_MOVE_LABELS, SLOT_NAMES
 
 HORIZONS = tuple(
     (frame, n)
@@ -363,36 +363,51 @@ def status_rows(state, report, manifest, training, step, saved, age, label, colo
     return rows
 
 
-MOVE_LABELS = (
-    ("down_large", "Down >0.5%"), ("down_small", "Down ≤0.5%"), ("flat", "Flat"),
-    ("up_small", "Up ≤0.5%"), ("up_large", "Up >0.5%"),
-)
 PRICE_LABELS = (
     ("lt1", "<$1"), ("1_5", "$1–<5"), ("5_20", "$5–<20"),
     ("20_100", "$20–<100"), ("ge100", "$100+"),
 )
 
 
-def breakdown_panel(report, title, horizon):
+def signed_move_summary(report, horizon):
+    """Pool disjoint fine buckets using their actual pair counts."""
+    stem = f"{horizon}/trade/fine_move/-1"
+    counts = [report.get(f"{stem}/{i}/count", 0) for i in range(len(FINE_MOVE_LABELS))]
+    total = sum(counts)
+    cutoff = MOVE_EDGES.index(.5)
+    groups = (
+        ("Down >0.5%", range(0, CENTER - cutoff)),
+        ("Down 0.01–0.5%", range(CENTER - cutoff, CENTER)),
+        ("Near-flat ±0.01%", range(CENTER, CENTER + 1)),
+        ("Up 0.01–0.5%", range(CENTER + 1, CENTER + cutoff + 1)),
+        ("Up >0.5%", range(CENTER + cutoff + 1, len(counts))),
+    )
+    for label, bins in groups:
+        n = sum(counts[i] for i in bins)
+
+        def average(metric):
+            terms = [(counts[i], report.get(f"{stem}/{i}/{metric}")) for i in bins if counts[i]]
+            return sum(count * value for count, value in terms) / n if n and all(
+                value is not None for _, value in terms) else None
+
+        yield (label, n if f"{stem}/{CENTER}/count" in report else None,
+               100 * n / total if total else None, average("direction_accuracy_pct"),
+               average("close_mae"), average("persistence_close_mae"), average("signed_error"))
+
+
+def move_summary_panel(report, title, horizon):
     table = Table(box=None, padding=(0, 2), header_style="bold bright_white")
     table.add_column("Group", no_wrap=True)
-    for column in ("Pairs", "Dir %", "MAE $", "Base $", "Skill %"):
+    for column in ("Pairs", "Share %", "Dir %", "MAE $", "Base $", "Skill %", "Bias $"):
         table.add_column(column, justify="right", no_wrap=True)
-    for family, labels in (("signed_move", MOVE_LABELS), ("price_band", PRICE_LABELS)):
-        if family == "price_band":
-            table.add_row()
-        for key, label in labels:
-            prefix = f"{horizon}/trade/{family}/{key}"
-            count, error, baseline = (report.get(f"{prefix}/{k}") for k in
-                                      ("count", "close_mae", "persistence_close_mae"))
-            accuracy = "balanced_accuracy_pct" if family == "price_band" else "direction_accuracy_pct"
-            table.add_row(label, num(count), num(report.get(f"{prefix}/{accuracy}"), ".1f"),
-                          scored(error, baseline, ",.3f"), num(baseline, ",.3f"),
-                          scored(skill_pct(error, baseline), 0, "+.1f", higher=True))
+    for label, n, share, hit, error, base, bias in signed_move_summary(report, horizon):
+        table.add_row(label, num(n), num(share, ".2f"), num(hit, ".1f"), scored(error, base, ".4g"),
+                      num(base, ".4g"), scored(skill_pct(error, base), 0, "+.1f", higher=True),
+                      num(bias, "+.4g"))
     return titled_panel(table, title, expand=False)
 
 
-DETAIL_HORIZONS = ("1s/h01", "1s/h10", "1m/h01", "daily/h01")
+DETAIL_HORIZONS = tuple(f"{frame}/h{horizon:02d}" for frame, horizon in SUMMARY)
 
 
 def fine_move_panel(report, title, horizon):
@@ -509,6 +524,7 @@ def glossary():
             ("Price band rows", "Group by last known trade close at forecast time. Dir % is balanced origin direction accuracy within the band."),
             ("Breakdown columns", "Pairs shows group coverage. MAE $ is model dollar error, Base $ is baseline dollar error, and Skill % uses those same pairs."),
             ("Fine signed moves", "The central ±0.01% band is near-flat for both actual and predicted moves. False flat is the share of non-flat targets predicted near-flat."),
+            ("Signed move summary", "Five groups pool the fine signed ranges by pair count. Dir % is the hit rate within each group. Small excludes the near-flat band."),
             ("Bias $ / P90 ≥$", "Bias is mean forecast minus actual close. P90 is the lower dollar edge of the histogram bin containing the 90th percentile absolute error."),
             ("Training reports", "Target distribution is counted once over a complete pass. Training forecast metrics score fixed sampled sessions with the end-of-pass checkpoint."),
         )),
@@ -594,16 +610,12 @@ def render(snapshot, *, width, height, now=None, scrollable=False):
     if scrollable:
         horizons = DETAIL_HORIZONS
         fine = state.get("fine_move_diagnostics")
-        for horizon in horizons:
-            frame, step_label = horizon.split("/h")
-            panels = [breakdown_panel(item, f"{scope} · trade move and price groups · {frame} / {step_label}", horizon)
-                      for scope, item in scopes]
-            views.append(scope_row(panels, width, 265))
         if fine:
             price_cross_tab = partial(move_by_price_panel, compact=width < 175)
             # Cross-tab cells hold three numbers. Keep their panels stacked
             # until there is room for three fully populated tables.
-            for make_panel, label, minimum in ((fine_move_panel, "fine signed moves", 345),
+            for make_panel, label, minimum in ((move_summary_panel, "signed move summary", 335),
+                                               (fine_move_panel, "fine signed moves", 345),
                                                (price_cross_tab, "price bands × signed moves", 480)):
                 for horizon in horizons:
                     frame, step_label = horizon.split("/h")
