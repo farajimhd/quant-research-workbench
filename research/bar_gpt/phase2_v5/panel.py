@@ -151,7 +151,7 @@ def forecast_table(report, prior, width, detailed):
         columns += ["Vol MAE", "Trade #", "Bid size", "Ask size", "Small dir %", "Small skill %", "Flat MAE $"]
     if width >= 340:
         columns += ["Bid dir %", "Ask dir %", "Up hit %", "Down hit %", ">0.5% dir", ">0.5% MAE",
-                    ">0.5% Base MAE", "Large skill %"]
+                    ">0.5% Base", "Large skill %"]
     for label in columns:
         table.add_column(label, justify="right", no_wrap=True, min_width=len(label), ratio=1)
     for frame, n in HORIZONS if detailed else SUMMARY:
@@ -389,7 +389,7 @@ def glossary(width, *, expanded):
     guide.add_row("Direction", "Origin compares with last known close. Candle compares close with open. Path compares adjacent closes within the timeframe.")
     guide.add_row("Balanced direction", "Equal weight for each observed down, flat and up class. Small dir excludes flat and balances up/down. Large dir counts each move equally.")
     if expanded:
-        guide.add_row("Move / price groups", "Small is 0 < |actual move| ≤ 0.5%. Large is >0.5%. Flat baseline error is zero. Base MAE is baseline MAE. Price bands use the last known trade close.")
+        guide.add_row("Move / price groups", "Small is 0 < |actual move| ≤ 0.5%. Large is >0.5%. Flat baseline error is zero. Base means baseline MAE. Price bands use the last known trade close.")
         guide.add_row("Activity / Training", "Volume in shares, Trade # in trades, quote sizes in source units. Loss uses the training objective. Origins is cumulative.")
         guide.add_row("Colors", "Green beats the reference, orange trails. Close errors use baseline, skill uses zero, direction uses always-flat or 50% for large moves.")
         guide.add_row("Other references", "Activity compares with matching prior development coverage. Training loss and speed compare with the earlier log median. Dash means unavailable.")
