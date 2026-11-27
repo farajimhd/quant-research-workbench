@@ -603,10 +603,13 @@ class ScrollViewport:
     def __init__(self):
         self.offset = 0
         self.at_bottom = False
+        self.lines = []
 
     def frame(self, console, content, actions=()):
         page = max(1, console.height - 1)
-        lines = console.render_lines(content, console.options.update(height=None), new_lines=True)
+        if content is not None:
+            self.lines = console.render_lines(content, console.options.update(height=None), new_lines=True)
+        lines = self.lines
         end = max(0, len(lines) - page)
         if self.at_bottom:
             self.offset = end
@@ -670,6 +673,7 @@ def main():
             frames = 0
             next_refresh = 0
             snapshot = reader.snapshot()
+            last_size = None
             while True:
                 actions = navigation.read(max(1, console.height - 3)) if navigation else []
                 refresh = time.monotonic() >= next_refresh
@@ -677,9 +681,14 @@ def main():
                     snapshot = reader.snapshot()
                     next_refresh = time.monotonic() + 1
                     frames += 1
-                if refresh or actions:
-                    content = frame(snapshot, scrollable=bool(navigation))
+                size = console.size
+                resized = size != last_size
+                if refresh or resized or actions:
+                    # Scrolling reuses the rendered rows between one-second
+                    # refreshes, so wheel input does not rebuild every table.
+                    content = frame(snapshot, scrollable=bool(navigation)) if refresh or resized else None
                     live.update(viewport.frame(console, content, actions) if navigation else content, refresh=True)
+                    last_size = size
                 if refresh and (frames == 1 or frames % 10 == 0):
                     receipt = dict(pid=os.getpid(), updated=time.time(), frames=frames,
                                    virtual_terminal=vt, alternate_screen=vt, scrollable=bool(navigation),
