@@ -16,7 +16,7 @@ from ..phase2_v2.train import lease, load_checkpoint, save_checkpoint, rng_state
 from ..phase1_v26.reporting import Reporter
 from ..v5.shards.contract import digest, file_hash, write_json
 from research.mlops.env import discover_env_files, load_env_files
-from .data import sessions, device_sessions, prepare_window_graphs, prepare_pool_graphs
+from .data import sessions, device_sessions
 from .unique_data import load_unique_release
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
@@ -57,9 +57,6 @@ def parser():
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
     p.add_argument("--graph-updates", action="store_true", help="Replay fixed-shape forecast forward/backward on CUDA")
-    p.add_argument("--graph-teacher", action="store_true", help="Replay frequent exact frozen-window shapes on CUDA")
-    p.add_argument("--graph-pools", action="store_true", help="Replay certified pool transforms in aligned CUDA buffers")
-    p.add_argument("--inline-prefetch", action="store_true", help="Submit preparation streams on the optimizer thread")
     p.add_argument("--graph-tail-bucket", type=int, default=0, choices=(0, 1024, 2048),
                    help="Replay variable batches in bounded CUDA graph buckets using validity padding")
     p.add_argument("--graph-validation", action="store_true",
@@ -508,15 +505,6 @@ def main():
     torch.set_float32_matmul_precision("high" if args.tf32 else "highest")
     started = time.perf_counter()
     teacher, provenance = teacher_for(args)
-    if args.graph_teacher or args.graph_pools:
-        teacher.preparation_streams = [torch.cuda.Stream() for _ in range(args.session_lanes)]
-        for stream in teacher.preparation_streams or [torch.cuda.current_stream()]:
-            stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(stream):
-                if args.graph_teacher:
-                    prepare_window_graphs(teacher)
-                if args.graph_pools:
-                    prepare_pool_graphs(teacher)
     if args.unique_release:
         if any(migrations):
             raise ValueError("Legacy training cursor is incompatible with the unique population")
