@@ -8,6 +8,7 @@ from pathlib import Path
 
 from rich.console import Console, Group
 from rich.live import Live
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.progress_bar import ProgressBar
 from rich.table import Table
@@ -48,7 +49,8 @@ def render(status):
     ):
         grid.add_row(label, data)
     status_line = Text(f"{phase.upper()} · {status.get('stage', 'Awaiting migration state')}", style=f"bold {accent}")
-    parts = [status_line, ProgressBar(total=total, completed=done, pulse=total is None), grid]
+    bar = Padding(ProgressBar(total=total, completed=done, pulse=total is None), (0, 0, 1, 0))
+    parts = [status_line, bar, grid]
     if status.get("error"):
         parts.append(Text(status["error"], style="red"))
     return Panel(Group(*parts), title=Text("Phase 1 · Lossless shard migration", "bold white"),
@@ -71,14 +73,17 @@ def main():
             pass
         if not status and args.retirement:
             try:
-                p = json.loads((args.retirement/"retirement-progress.json").read_text())
+                status_file = args.retirement/"retirement-aggregate.json"
+                if not status_file.exists():
+                    status_file = args.retirement/"retirement-progress.json"
+                p = json.loads(status_file.read_text())
             except (FileNotFoundError, PermissionError, json.JSONDecodeError):
                 p = {}
             finished = p.get("completed_roots", ())
             done = p.get("sessions", 0) + sum(item["sessions"] for item in finished)
             freed = p.get("bytes_removed", 0) + sum(item["payload_bytes_removed"] for item in finished)
             title = Text("Phase 1 migration · awaiting approved Phase 2 retirement", "bold white")
-            return Panel(Group(ProgressBar(total=1577160, completed=done),
+            return Panel(Group(Padding(ProgressBar(total=1577160, completed=done), (0, 0, 1, 0)),
                                Text(f"Legacy Phase 2 sessions {done:,} / 1,577,160  ·  "
                                     f"Retired payload {freed/1e12:.2f} TB")),
                          title=title, border_style="blue", title_align="left")
