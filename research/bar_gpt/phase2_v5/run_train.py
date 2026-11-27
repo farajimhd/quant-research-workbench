@@ -59,6 +59,7 @@ def parser():
     p.add_argument("--graph-updates", action="store_true", help="Replay fixed-shape forecast forward/backward on CUDA")
     p.add_argument("--graph-teacher", action="store_true", help="Replay frequent exact frozen-window shapes on CUDA")
     p.add_argument("--graph-pools", action="store_true", help="Replay certified pool transforms in aligned CUDA buffers")
+    p.add_argument("--inline-prefetch", action="store_true", help="Submit preparation streams on the optimizer thread")
     p.add_argument("--graph-tail-bucket", type=int, default=0, choices=(0, 1024, 2048),
                    help="Replay variable batches in bounded CUDA graph buckets using validity padding")
     p.add_argument("--graph-validation", action="store_true",
@@ -472,6 +473,8 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
 def main():
     args = parser().parse_args()
     args.device = "cuda"
+    if args.graph_teacher and args.session_lanes and not args.inline_prefetch:
+        raise ValueError("Frozen window graphs require single-thread CUDA submission")
     if args.anchored_direction:
         if not args.loss_weights:
             raise ValueError("Anchored direction requires explicit loss weights")

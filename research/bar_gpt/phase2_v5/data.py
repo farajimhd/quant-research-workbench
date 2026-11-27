@@ -1,6 +1,7 @@
 """Join complete future candles to certified session pools without reading events."""
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
 import hashlib
 import io
@@ -517,9 +518,10 @@ def device_sessions(source, teacher, args, *, metrics):
             return prepared, stream.record_event()
 
     pending = deque()
+    inline = getattr(args, "inline_prefetch", False)
     def consume(job):
-        index, session, future = job
-        prepared, ready = future.result()
+        index, session, prepared_job = job
+        prepared, ready = prepared_job if inline else prepared_job.result()
         consumer.wait_event(ready)
         if prepared is not None:
             # Allocations originate on a worker stream. Prevent recycling their
@@ -533,7 +535,7 @@ def device_sessions(source, teacher, args, *, metrics):
         return index, session, prepared
 
     try:
-        with ThreadPoolExecutor(max_workers=lanes) as executor:
+        with (nullcontext() if inline else ThreadPoolExecutor(max_workers=lanes)) as executor:
             for n, (index, session) in enumerate(source):
                 if n == 0 and args.profile_sessions and not metrics:
                     # The reference check can temporarily change global matmul precision.
@@ -541,7 +543,11 @@ def device_sessions(source, teacher, args, *, metrics):
                     continue
                 ready = consume(pending.popleft()) if len(pending) == lanes else None
                 lane = (n - int(bool(args.profile_sessions and not metrics))) % lanes
-                pending.append((index, session, executor.submit(prepare_on_stream, streams[lane], session, caches[lane])))
+                inputs = streams[lane], session, caches[lane]
+                # One submitting thread can queue the next session on a GPU
+                # preparation stream before training consumes the previous one.
+                job = prepare_on_stream(*inputs) if inline else executor.submit(prepare_on_stream, *inputs)
+                pending.append((index, session, job))
                 if ready is not None:
                     yield ready
             while pending:
