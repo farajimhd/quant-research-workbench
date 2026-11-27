@@ -86,3 +86,21 @@ each session remain shuffled for optimizer updates. Within-session V29
 embeddings are keyed by completed endpoints, while the optional bounded GPU
 cache reuses 1h and daily embeddings across sessions only when all 64 source
 records match. Faster timeframes continue to use the session-local banks.
+# Forecast objective comparison
+
+`python -B -u -m research.bar_gpt.phase2_v5.compare_objectives --help` launches
+matched trials from a stopped unique-run checkpoint, then starts a separate
+W&B training run with the winning objective. It preserves the position in
+the original epoch, optimizer moments, and scheduler. Each trial compares the
+same training batches and full validation origins. The decision favors
+equal-timeframe balanced trade-close direction relative to the last completed
+candle, with persistence-normalized MAE and a worst-frame/stream MAE guard.
+Individual trial speed, per-horizon metrics and the decision are retained in
+the workstation runtime.
+
+Weights are specified as `price,activity,coordinate,direction,range,ohlc,from_last`.
+The direction term covers candle bodies and adjacent predicted close and
+activity changes. The final term compares predicted and realized changes to
+the same last completed candle of each timeframe, with separate close,
+activity, and log-range directions. That candle's source validity controls the
+loss mask. Anchor values are never passed to the forecast model or decoder.

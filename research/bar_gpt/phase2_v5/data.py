@@ -268,10 +268,11 @@ def encode_cached(teacher, features, gather):
 class DeviceSession:
     """Copy each pool once and encode one V29 window per unique completed end."""
     def __init__(self, session, teacher, token_batch, device, *, cached=True, verify=False, metrics=True,
-                 slow_cache=None):
+                 slow_cache=None, loss_anchors=False):
         self.encoded = []
         self.targets = []
         self.anchors = []
+        self.loss_anchors = []
         self.num_windows = 0
         self.cache_hits = 0
         self.missing = []
@@ -331,6 +332,10 @@ class DeviceSession:
             self.encoded.append((bank[0] if len(bank) == 1 else torch.cat(bank), index))
             if metrics:
                 self.anchors.append((torch.cat(anchors), torch.cat(anchor_masks), index))
+            if loss_anchors:
+                # The certified endpoint is the last completed candle as of
+                # this origin. Use precisely that row and its validity bits.
+                self.loss_anchors.append((logs[ends], valid[ends], index))
             targets = flat_targets.view(session.targets[f].shape)
             self.targets.append((raw, logs, valid, targets))
             self.num_windows += len(ends)
@@ -352,6 +357,14 @@ class DeviceSession:
         return windows, torch.cat(logs, 1), torch.cat(masks, 1), (
             (torch.cat(raw_parts, 1), torch.cat(anchors, 1), torch.cat(anchor_valid, 1))
             if metrics else None)
+
+    def forecast_anchors(self, indices):
+        fields, masks = [], []
+        for width, (logs, valid, reverse) in zip(HORIZONS, self.loss_anchors):
+            rows = reverse[indices]
+            fields.append(logs[rows, None].expand(-1, width, -1))
+            masks.append(valid[rows, None].expand(-1, width, -1))
+        return torch.cat(fields, 1), torch.cat(masks, 1)
 
 
 class SlowContextCache:
@@ -393,13 +406,15 @@ def device_sessions(source, teacher, args, *, metrics):
     """
     reuse = (getattr(args, "locality", 1) > 1 and not args.direct_teacher and not metrics
              and not getattr(args, "no_cross_session_cache", False))
+    weights = getattr(args, "loss_weights", None)
+    anchor_loss = bool(weights and weights.from_last)
 
     def build(session, verify, slow_cache=None):
         if not len(session.origins):
             return None
         with torch.no_grad():
             return DeviceSession(session, teacher, args.token_batch, "cuda", cached=not args.direct_teacher,
-                                 metrics=metrics, verify=verify, slow_cache=slow_cache)
+                                 metrics=metrics, verify=verify, slow_cache=slow_cache, loss_anchors=anchor_loss)
 
     lanes = args.session_lanes
     if lanes == 0:
@@ -431,7 +446,7 @@ def device_sessions(source, teacher, args, *, metrics):
         if prepared is not None:
             # Allocations originate on a worker stream. Prevent recycling their
             # storage before the last queued consumer kernel has read it.
-            for entries in (prepared.encoded, prepared.anchors, prepared.targets):
+            for entries in (prepared.encoded, prepared.anchors, prepared.loss_anchors, prepared.targets):
                 for entry in entries:
                     for tensor in entry:
                         tensor.record_stream(consumer)

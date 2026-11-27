@@ -13,12 +13,13 @@ from ..phase1_v29.model import Autoencoder, Config
 from ..phase2_v4.data import load_units
 from ..phase2_v2.train import lease, load_checkpoint, save_checkpoint, rng_state, restore_rng
 from ..phase1_v26.reporting import Reporter
-from ..v5.shards.contract import file_hash, write_json
+from ..v5.shards.contract import digest, file_hash, write_json
 from research.mlops.env import discover_env_files, load_env_files
 from .data import sessions, device_sessions
 from .unique_data import load_unique_release
 from .metrics import Metrics
 from .model import Forecast, HORIZONS, NAMES, objective
+from .objectives import LossWeights, forecast_objective
 from .schedule import (PASSES, FLOOR, UNIQUE_PASSES, UNIQUE_FLOOR, PEAK_FACTOR, LEGACY_SOURCE,
                        cosine_rate, order_for_pass, candidate_prefix)
 
@@ -35,6 +36,9 @@ def parser():
     p.add_argument("--resume", type=Path)
     p.add_argument("--from-completed-pass", type=Path,
                    help="Initialize a new unique run from the validated original pass-one boundary")
+    p.add_argument("--objective-fork", type=Path, help="Start a new objective from a stopped unique-run checkpoint")
+    p.add_argument("--loss-weights", type=LossWeights.parse,
+                   help="price,activity,coordinate,direction,range,ohlc,from_last")
     p.add_argument("--locality", type=int, default=1, choices=(1, 8, 16),
                    help="Shuffle short chronological clusters and reuse exact slow-frame contexts")
     p.add_argument("--no-cross-session-cache", action="store_true",
@@ -55,6 +59,7 @@ def parser():
     p.add_argument("--resume-serial", action="store_true", help="Resume the packed serial implementation")
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--profile-sessions", type=int, default=0)
+    p.add_argument("--profile-full-validation", action="store_true")
     p.add_argument("--validation-every", type=int, default=10000)
     p.add_argument("--checkpoint-every", type=int, default=500)
     p.add_argument("--eval-sessions", type=int, default=32)
@@ -81,6 +86,24 @@ def completed_pass(path, contract):
                        source=previous["source"], wandb=manifest.get("wandb_identity", {}).get("id"))
 
 
+def objective_fork(path, contract):
+    manifest = json.loads((path.parent / "manifest.json").read_text())
+    progress = json.loads((path.parent / "progress.json").read_text())
+    previous = manifest["execution_model"]
+    unchanged = {key: value for key, value in contract.items() if key not in ("source", "loss_weights")}
+    unchanged["initialization"] = previous["initialization"]
+    prior = {key: value for key, value in previous.items() if key not in ("source", "loss_weights", "objective_parent")}
+    if progress["state"] != "stopped" or digest(prior) != digest(unchanged):
+        raise ValueError("Objective fork requires a stopped run with matching teacher, traversal and optimizer contract")
+    saved = load_checkpoint(path, previous)
+    lineage = dict(sha256=file_hash(path), step=saved["step"], cursor=saved["cursor"],
+                   origins=saved["windows"], source=previous["source"], wandb=manifest["wandb_identity"]["id"])
+    contract.update(initialization=previous["initialization"], objective_parent=lineage)
+    # The previous best used a different loss scale. Keep all optimizer and
+    # traversal state while establishing a best under the new objective.
+    return dict(saved, best=float("inf"))
+
+
 def teacher_for(args):
     saved = torch.load(args.teacher, map_location="cpu", weights_only=False)
     saved = load_checkpoint(args.teacher, saved["contract"])
@@ -103,6 +126,11 @@ def predict(model, teacher, windows, args):
     return teacher.decode(encoded.float())
 
 
+def batch_objective(teacher, out, logs, valid, args, anchors=()):
+    return (forecast_objective(teacher, out, logs, valid, args.loss_weights, anchors)
+            if args.loss_weights else objective(teacher, out, logs, valid))
+
+
 class ForecastGradients:
     """Cache static-buffer graphs for common batch sizes, with eager handling of tails.
 
@@ -114,20 +142,21 @@ class ForecastGradients:
         self.graphs = {}
         self.warmed = set()
 
-    def backward(self, inputs, logs, valid):
-        loss = objective(self.teacher, predict(self.model, self.teacher, inputs, self.args), logs, valid)
+    def backward(self, inputs, logs, valid, *anchors):
+        loss = batch_objective(self.teacher, predict(self.model, self.teacher, inputs, self.args),
+                               logs, valid, self.args, anchors)
         loss.backward()
         # Release AccumulateGrad nodes before recording on a different stream.
         return loss.detach()
 
-    def __call__(self, inputs, logs, valid):
+    def __call__(self, inputs, logs, valid, *anchors):
         n = len(inputs)
         if not self.args.graph_updates or n not in (4096, 8192):
-            return self.backward(inputs, logs, valid)
+            return self.backward(inputs, logs, valid, *anchors)
         if n not in self.warmed:
             self.warmed.add(n)
-            return self.backward(inputs, logs, valid)
-        arguments = (inputs, logs, valid)
+            return self.backward(inputs, logs, valid, *anchors)
+        arguments = (inputs, logs, valid, *anchors)
         if n not in self.graphs:
             buffers = tuple(torch.empty_like(x) for x in arguments)
             graph = torch.cuda.CUDAGraph()
@@ -151,6 +180,7 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
     stats = Metrics("cuda")
     count = 0
     total_loss = torch.zeros((),device="cuda",dtype=torch.float64)
+    reference_loss = torch.zeros_like(total_loss)
     batches = device_sessions(sessions(units, 1, 0, args.workers), teacher, args, metrics=True)
     started = time.perf_counter()
     missing = Counter()
@@ -164,7 +194,10 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
                 inputs, logs, valid, evidence = device.batch(ids, metrics=True)
                 out = predict(model, teacher, inputs, args)
-                total_loss += objective(teacher, out, logs, valid).double()*len(ids)
+                anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.from_last else ()
+                total_loss += batch_objective(teacher, out, logs, valid, args, anchors).double()*len(ids)
+                if args.loss_weights:
+                    reference_loss += objective(teacher, out, logs, valid).double()*len(ids)
                 stats.add(out, valid, evidence)
                 count += len(ids)
             if reporter and number % 8 == 0:
@@ -182,6 +215,8 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
     if result["nonfinite"]:
         raise FloatingPointError("Nonfinite forecast during validation")
     elapsed = time.perf_counter()-started
+    if args.loss_weights:
+        result["original_objective_loss"] = float(reference_loss)/count
     return {**result, **{f"missing/{frame}":missing[frame] for frame in NAMES},
             "loss": float(total_loss)/count, "origins": count, "origins_per_second":count/elapsed,
             "seconds": time.perf_counter()-started, "full_split": not limit}
@@ -248,7 +283,8 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 for group in optimizer.param_groups:
                     group["lr"] = rate
                 optimizer.zero_grad(set_to_none=True)
-                loss = gradients(inputs, logs, valid)
+                anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.from_last else ()
+                loss = gradients(inputs, logs, valid, *anchors)
                 norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
                 if not bool(torch.isfinite(loss)&torch.isfinite(norm)):
                     checkpoint()
@@ -358,6 +394,9 @@ def main():
     args.device = "cuda"
     args.passes = UNIQUE_PASSES if args.unique_release else PASSES
     if (args.from_completed_pass and (args.resume or not args.unique_release)
+            or args.objective_fork and (args.resume or args.from_completed_pass or not args.unique_release)
+            or args.loss_weights and not args.unique_release
+            or args.profile_full_validation and not args.profile_sessions
             or args.locality > 1 and not args.unique_release
             or args.no_cross_session_cache and args.locality == 1
             or args.stop_after_pass and args.stop_after_pass > args.passes):
@@ -402,6 +441,9 @@ def main():
     # The old scientific identity remains exact for W&B. The checkpoint also
     # binds the new execution source and schedule to all future resumes.
     legacy_contract = dict(contract, source=LEGACY_SOURCE)
+    if args.loss_weights:
+        contract["loss_weights"] = vars(args.loss_weights)
+        legacy_contract["loss_weights"] = vars(args.loss_weights)
     contract["schedule"] = dict(kind="cosine_by_traversed_candidates", passes=args.passes,
                                 peak_factor=PEAK_FACTOR, floor=UNIQUE_FLOOR if args.unique_release else FLOOR,
                                 candidates_per_pass=args.pass_origins_total,
@@ -416,11 +458,17 @@ def main():
         contract["initialization"] = lineage
         saved = dict(parent, cursor=(0, 0), pass_index=0, pass_origins=0, windows=0,
                      schedule_candidates=0, best=float("inf"))
+    if args.objective_fork:
+        if args.objective_fork.resolve().parent == args.output.resolve():
+            raise ValueError("Objective fork requires a new output directory")
+        saved = objective_fork(args.objective_fork, contract)
     if args.resume:
         if args.unique_release:
             previous_manifest = json.loads((args.output/"manifest.json").read_text())
             if "initialization" in previous_manifest["execution_model"]:
                 contract["initialization"] = previous_manifest["execution_model"]["initialization"]
+            if "objective_parent" in previous_manifest["execution_model"]:
+                contract["objective_parent"] = previous_manifest["execution_model"]["objective_parent"]
         previous = dict(contract, source="1a76327f0a9cfc08beac8a88071ccf56419daafa") if args.resume_prepack else contract
         if args.resume_serial:
             previous = dict(contract, source="acefd32563d52046b4a36f992f037289b1f290a5")
@@ -437,11 +485,17 @@ def main():
             active = order_for_pass(units, saved["pass_index"])
             if saved["schedule_candidates"] != candidate_prefix(active, *saved["cursor"]):
                 raise ValueError("Checkpoint scheduler count disagrees with source traversal")
+    if args.objective_fork:
+        active = order_for_pass(units, saved["pass_index"])
+        if saved["schedule_candidates"] != candidate_prefix(active, *saved["cursor"]):
+            raise ValueError("Objective fork would change the training cursor")
     with lease(args.output):
         if args.profile_sessions:
             profile = train(args, units, teacher, model, optimizer, contract, saved=saved)
             profile["setup_seconds"] = time.perf_counter()-started-profile["seconds"]
-            validation = evaluate(units, model, teacher, args, args.eval_sessions)
+            validation = evaluate(units, model, teacher, args, 0 if args.profile_full_validation else args.eval_sessions)
+            if args.profile_full_validation:
+                write_json(args.output/"profile-validation.json", validation)
             write_json(args.output/"profile.json", {**profile, "validation_origins": validation["origins"],
                                                      "validation_seconds": validation["seconds"],
                                                      "validation_origins_per_second": validation["origins_per_second"],
@@ -452,12 +506,16 @@ def main():
         os.environ.setdefault("WANDB_ENTITY","mehdifaraji")
         configuration = dict(model=legacy_contract, execution_model=contract,
                              resume=str(args.resume) if args.resume else None,
-                             arguments={k:str(v) if isinstance(v,Path) else v for k,v in vars(args).items()})
+                             arguments={k:str(v) if isinstance(v,Path) else vars(v) if isinstance(v,LossWeights) else v
+                                        for k,v in vars(args).items()})
         reporter = Reporter(args.output, configuration, mode="online", project="bargpt-phase2")
         write_json(args.output/"manifest.json", configuration)
-        if args.from_completed_pass:
+        if args.from_completed_pass or args.objective_fork:
             save_checkpoint(args.output/"checkpoint_last.pt", dict(saved, contract=contract))
-        reporter.update(epoch=saved["pass_index"]+1 if saved else 1, epochs=args.passes)
+        reporter.update(epoch=saved["pass_index"]+1 if saved else 1, epochs=args.passes,
+                        step=saved["step"] if saved else 0, done=saved["windows"] if saved else 0,
+                        pass_origins_done=saved["schedule_candidates"] if saved else 0,
+                        pass_origins_total=args.pass_origins_total)
         try:
             state = train(args, units, teacher, model, optimizer, contract, reporter, saved)
         except BaseException as error:

@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from .data import target_indices
 from .model import Forecast, SLOTS, objective
+from .objectives import LossWeights, forecast_objective, relative_direction
 from ..phase1_v29.model import Autoencoder
 from ..phase0_v7.test_model import parameters
 from ..phase0_v7.objectives import objective as v29_objective
@@ -37,6 +38,30 @@ def test_forecast_shape_teacher_frozen_and_loss_parity():
     assert model.heads.weight.grad.isfinite().all()
     assert teacher.decoder.weight.grad is None
 
+
+def test_weighted_forecast_loss_backpropagates_through_frozen_decoder():
+    teacher = Autoencoder(parameters()).eval().requires_grad_(False)
+    model = Forecast()
+    out = teacher.decode(model(torch.randn(4, 5, 64, 32)))
+    target = torch.randn_like(out["logs"])
+    valid = torch.rand_like(target) > .2
+    anchors = torch.randn_like(target), torch.rand_like(target) > .2
+    torch.testing.assert_close(forecast_objective(teacher, out, target, valid, LossWeights()),
+                               objective(teacher, out, target, valid))
+    weights = LossWeights.parse(".65,.35,.1,.05,.05,.05,.5")
+    loss = forecast_objective(teacher, out, target, valid, weights, anchors)
+    loss.backward()
+    assert all(p.grad is not None and p.grad.isfinite().all() for p in model.parameters())
+    assert all(p.grad is None for p in teacher.parameters())
+
+
+def test_causal_direction_penalizes_wrong_way_moves_and_masks_missing_anchors():
+    pred = torch.tensor([.99, 1.01, 100.], requires_grad=True)
+    value = relative_direction(pred, torch.tensor([1.01, .99, .99]), torch.ones(3),
+                               torch.tensor([True, True, False]), .001)
+    value.backward()
+    assert pred.grad[0] < 0 and pred.grad[1] > 0 and pred.grad[2] == 0
+
 def test_packed_pools_match_direct_teacher_and_anchor_lookup():
     from .data import DeviceSession, Session
     from ..v5.phase2_ar_shards.contract import BAR, FRAMES
@@ -56,13 +81,16 @@ def test_packed_pools_match_direct_teacher_and_anchor_lookup():
     targets = [np.tile(ends[:, :1], (1, width)) for width in HORIZONS]
     source = Session(pools, ends, targets, np.arange(3), "test", 0)
     ids = torch.arange(3)
-    train = DeviceSession(source, teacher, 2, "cpu", metrics=False)
+    train = DeviceSession(source, teacher, 2, "cpu", metrics=False, loss_anchors=True)
     evaluation = DeviceSession(source, teacher, 2, "cpu", verify=True)
     for actual, expected in zip(train.batch(ids)[:3], evaluation.batch(ids)[:3]):
         torch.testing.assert_close(actual, expected)
     _, _, _, (_, anchors, observed) = evaluation.batch(ids, metrics=True)
     assert anchors[1, 0, 0] == 64
     assert not observed[:, :, 1].any()
+    last_logs, last_valid = train.forecast_anchors(ids)
+    torch.testing.assert_close(last_logs[1, :10, 0], torch.full((10,), np.log(67)))
+    assert not last_valid[1, :10, 3].any()
 
 def test_origin_order_respects_certified_overlap_policy():
     import pytest
