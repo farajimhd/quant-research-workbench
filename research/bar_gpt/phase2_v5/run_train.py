@@ -59,6 +59,8 @@ def parser():
     p.add_argument("--graph-updates", action="store_true", help="Replay fixed-shape forecast forward/backward on CUDA")
     p.add_argument("--graph-tail-bucket", type=int, default=0, choices=(0, 1024, 2048),
                    help="Replay variable batches in bounded CUDA graph buckets using validity padding")
+    p.add_argument("--graph-validation", action="store_true",
+                   help="Replay the exact validation objective and metrics in CUDA graph buckets")
     p.add_argument("--session-lanes", type=int, default=0, choices=(0, 1, 2, 4),
                    help="Concurrent frozen GPU session encoders; zero uses the serial path")
     p.add_argument("--resume-serial", action="store_true", help="Resume the packed serial implementation")
@@ -136,6 +138,20 @@ def batch_objective(teacher, out, logs, valid, args, anchors=()):
             if args.loss_weights else objective(teacher, out, logs, valid))
 
 
+def graph_buffers(arguments, bucket):
+    return tuple(x.new_zeros((bucket, *x.shape[1:])) for x in arguments)
+
+
+def stage_graph_batch(buffers, arguments, n, mask_positions):
+    for dst, src in zip(buffers, arguments):
+        dst[:n].copy_(src)
+    if n < len(buffers[0]):
+        # Extra rows have no effect on per-example LayerNorm and are
+        # excluded from all losses and counters by their validity masks.
+        for index in mask_positions:
+            buffers[index][n:].zero_()
+
+
 class ForecastGradients:
     """Cache static-buffer graphs for common batch sizes, with eager handling of tails.
 
@@ -165,7 +181,7 @@ class ForecastGradients:
             return self.backward(inputs, logs, valid, *anchors)
         arguments = (inputs, logs, valid, *anchors)
         if bucket not in self.graphs:
-            buffers = tuple(x.new_zeros((bucket, *x.shape[1:])) for x in arguments)
+            buffers = graph_buffers(arguments, bucket)
             graph = torch.cuda.CUDAGraph()
             # Capture uses dedicated buffers and fresh gradient storage. No
             # parameter update or RNG use occurs during recording.
@@ -174,23 +190,55 @@ class ForecastGradients:
             grads = tuple(p.grad for p in self.model.parameters())
             self.graphs[bucket] = graph, buffers, loss, grads
         graph, buffers, loss, grads = self.graphs[bucket]
-        for dst, src in zip(buffers, arguments):
-            dst[:n].copy_(src)
-        if n < bucket:
-            # LayerNorm and all model operations are per example. Masking row
-            # validity excludes the extra slots from every objective reduction.
-            buffers[2][n:].zero_()
-            if anchors:
-                buffers[4][n:].zero_()
+        stage_graph_batch(buffers, arguments, n, (2, 4) if anchors else (2,))
         for parameter, grad in zip(self.model.parameters(), grads):
             parameter.grad = grad
         graph.replay()
         return loss
 
 
+class ForecastEvaluation:
+    """Keep readout, objective, and metric graph buffers across validations."""
+    def __init__(self, model, teacher, args):
+        self.model, self.teacher, self.args = model, teacher, args
+        self.stats = Metrics("cuda")
+        self.graphs = {}
+        self.warmed = set()
+
+    def compute(self, inputs, logs, valid, raw, last, last_valid, *anchors):
+        out = predict(self.model, self.teacher, inputs, self.args)
+        self.stats.add(out, valid, (raw, last, last_valid))
+        if self.args.loss_weights:
+            return forecast_objective(self.teacher, out, logs, valid, self.args.loss_weights, anchors,
+                                      return_original=True)
+        loss = objective(self.teacher, out, logs, valid)
+        return loss, loss
+
+    def __call__(self, inputs, logs, valid, evidence, anchors):
+        n = len(inputs)
+        arguments = (inputs, logs, valid, *evidence, *anchors)
+        if not self.args.graph_validation or n < 512:
+            return self.compute(*arguments)
+        bucket = min(self.args.batch_size, ((n + 2047) // 2048) * 2048)
+        if bucket not in self.warmed:
+            self.warmed.add(bucket)
+            return self.compute(*arguments)
+        if bucket not in self.graphs:
+            buffers = graph_buffers(arguments, bucket)
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph, capture_error_mode="thread_local"):
+                result = self.compute(*buffers)
+            self.graphs[bucket] = graph, buffers, result
+        graph, buffers, result = self.graphs[bucket]
+        stage_graph_batch(buffers, arguments, n, (2, 5, 7) if anchors else (2, 5))
+        graph.replay()
+        return result
+
+
 @torch.no_grad()
-def evaluate(units, model, teacher, args, limit, reporter=None):
-    stats = Metrics("cuda")
+def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None):
+    evaluation = evaluation if evaluation is not None else ForecastEvaluation(model, teacher, args)
+    evaluation.stats.reset()
     count = 0
     total_loss = torch.zeros((),device="cuda",dtype=torch.float64)
     reference_loss = torch.zeros_like(total_loss)
@@ -206,12 +254,11 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
             missing.update(dict(zip(NAMES,device.missing)))
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
                 inputs, logs, valid, evidence = device.batch(ids, metrics=True)
-                out = predict(model, teacher, inputs, args)
                 anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.uses_anchor else ()
-                total_loss += batch_objective(teacher, out, logs, valid, args, anchors).double()*len(ids)
+                loss, original = evaluation(inputs, logs, valid, evidence, anchors)
+                total_loss += loss.double()*len(ids)
                 if args.loss_weights:
-                    reference_loss += objective(teacher, out, logs, valid).double()*len(ids)
-                stats.add(out, valid, evidence)
+                    reference_loss += original.double()*len(ids)
                 count += len(ids)
             if reporter and number % 8 == 0:
                 elapsed = time.perf_counter()-started
@@ -224,7 +271,7 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
         batches.close()
     if count == 0:
         raise ValueError("Validation has no eligible targets")
-    result = stats.result()
+    result = evaluation.stats.result()
     if result["nonfinite"]:
         raise FloatingPointError("Nonfinite forecast during validation")
     elapsed = time.perf_counter()-started
@@ -235,7 +282,7 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
             "seconds": time.perf_counter()-started, "full_split": not limit}
 
 
-def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, saved=None):
+def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, saved=None, evaluation=None):
     step = saved["step"] if saved else 0
     cursor = tuple(saved["cursor"]) if saved else (0, 0)
     count = saved["windows"] if saved else 0
@@ -332,7 +379,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                     checkpoint()
                 if reporter and step >= next_validation:
                     reporter.update(stage="development validation")
-                    report = evaluate(units, model, teacher, args, args.eval_sessions, reporter)
+                    report = evaluate(units, model, teacher, args, args.eval_sessions, reporter, evaluation)
                     if report is None:
                         checkpoint()
                         return "stopped"
@@ -373,7 +420,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
         raise ValueError(f"Eligible training origins differ: {pass_origins} vs {expected_eligible}")
     reporter.update(stage="full validation", epoch=pass_index+1, epochs=args.passes,
                     pass_fraction=1., pass_origins_done=candidates, pass_origins_total=pass_total)
-    report = evaluate(units, model, teacher, args, 0, reporter)
+    report = evaluate(units, model, teacher, args, 0, reporter, evaluation)
     if report is None:
         return "stopped"
     result = dict(step=step, data_pass=pass_index+1, **report)
@@ -389,9 +436,10 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
 
 def train(args, units, teacher, model, optimizer, contract, reporter=None, saved=None):
     pass_index = saved.get("pass_index", 0) if saved else 0
+    evaluation = ForecastEvaluation(model, teacher, args) if reporter else None
     while pass_index < args.passes:
         active = order_for_pass(units, pass_index)
-        result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved)
+        result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved, evaluation)
         if result != "next_pass":
             return result
         if pass_index + 1 == getattr(args, "stop_after_pass", None):
@@ -411,6 +459,8 @@ def main():
         args.loss_weights = replace(args.loss_weights, anchored_direction=True)
     if args.graph_tail_bucket and (not args.graph_updates or args.batch_size > 8192):
         raise ValueError("Graph tail buckets require graph updates and a batch size at most 8192")
+    if args.graph_validation and args.batch_size > 8192:
+        raise ValueError("Graph validation requires a batch size at most 8192")
     args.passes = UNIQUE_PASSES if args.unique_release else PASSES
     if (args.from_completed_pass and (args.resume or not args.unique_release)
             or args.objective_fork and (args.resume or args.from_completed_pass or not args.unique_release)

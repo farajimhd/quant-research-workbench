@@ -72,9 +72,9 @@ def relative_direction(pred, target, base, valid, scale):
     return sum(means) / torch.stack(counts).sum().clamp_min(1)
 
 
-def structural_terms(out, logs, valid, anchors, weights):
+def structural_terms(out, logs, valid, anchors, weights, encoded_targets):
     safe = torch.where(valid, logs, 0)
-    target_code, code_valid = coordinates(safe, valid)
+    target_code, code_valid = encoded_targets
     (o, h, l, c, a), (ov, hv, lv, cv, av) = candle_fields(safe, target_code, valid, code_valid)
     (po, ph, pl, pc, pa), _ = candle_fields(out["logs"], out["code"], valid, code_valid)
     zero = out["logs"].new_zeros(())
@@ -113,12 +113,16 @@ def structural_terms(out, logs, valid, anchors, weights):
     return direction, range_loss, ohlc, from_last
 
 
-def forecast_objective(decoder, out, logs, valid, weights, anchors=None):
+def forecast_objective(decoder, out, logs, valid, weights, anchors=None, *, return_original=False):
+    structural = bool(weights.direction or weights.range or weights.ohlc or weights.from_last)
+    encoded_targets = coordinates(torch.where(valid, logs, 0), valid) if structural else None
     base = objective(decoder, out, logs, valid, price=weights.price, activity=weights.activity,
-                     coordinate=weights.coordinate)
-    if not (weights.direction or weights.range or weights.ohlc or weights.from_last):
+                     coordinate=weights.coordinate, encoded_targets=encoded_targets, return_original=return_original)
+    if not structural:
         return base
-    direction, candle_range, ohlc, from_last = structural_terms(out, logs, valid, anchors, weights)
+    direction, candle_range, ohlc, from_last = structural_terms(out, logs, valid, anchors, weights, encoded_targets)
     if weights.anchored_direction:
         direction = .5 * (direction + from_last)
-    return base + weights.direction * direction + weights.range * candle_range + weights.ohlc * ohlc + weights.from_last * from_last
+    extra = (weights.direction * direction + weights.range * candle_range + weights.ohlc * ohlc
+             + weights.from_last * from_last)
+    return (base[0] + extra, base[1]) if return_original else base + extra

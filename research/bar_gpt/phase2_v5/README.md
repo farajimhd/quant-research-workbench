@@ -112,3 +112,6 @@ range and OHLC at 0.10 each. `--graph-tail-bucket 1024` or `2048` with
 `--graph-updates` lets variable-size training batches use CUDA graph replay.
 Padding rows are excluded by all validity masks and each original batch still
 receives one optimizer update with the same real origins.
+`--graph-validation` replays the forward pass, losses and metric reductions in
+reusable CUDA graphs. Validation shares the reconstruction calculation between
+the active loss and original comparison loss.

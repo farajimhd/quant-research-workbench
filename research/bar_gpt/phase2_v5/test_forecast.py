@@ -79,6 +79,10 @@ def test_direction_and_zero_padding_preserve_objective_and_gradient():
         return torch.cat((x, torch.zeros_like(x[:3])))
 
     original = forecast_objective(teacher, teacher.decode(prediction), target, valid, weights, (anchor, anchor_valid))
+    reported, reference = forecast_objective(teacher, teacher.decode(prediction), target, valid, weights,
+                                             (anchor, anchor_valid), return_original=True)
+    torch.testing.assert_close(reported, original)
+    torch.testing.assert_close(reference, objective(teacher, teacher.decode(prediction), target, valid))
     padded = forecast_objective(teacher, teacher.decode(pad(prediction)), pad(target), pad(valid),
                                 weights, (pad(anchor), pad(anchor_valid)))
     torch.testing.assert_close(original, padded)

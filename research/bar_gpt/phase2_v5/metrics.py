@@ -14,6 +14,11 @@ class Metrics:
         self.move_bins = torch.zeros((4,SLOTS,3,7),device=device,dtype=torch.float64)
         self.indices = torch.tensor([3, 9, 15], device=device)
 
+    def reset(self):
+        """Keep CUDA graph buffer addresses stable between validation cycles."""
+        for tensor in (self.raw, self.directions, self.persistence, self.invalid, self.move_bins):
+            tensor.zero_()
+
     @torch.no_grad()
     def add(self, out, valid, evidence):
         raw, anchor, anchor_valid = evidence

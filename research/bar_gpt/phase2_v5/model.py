@@ -35,9 +35,10 @@ class Forecast(nn.Module):
         return self.heads(self.encode(windows)).reshape(-1, SLOTS, 32)
 
 
-def objective(decoder, out, logs, valid, *, price=.5, activity=.5, coordinate=.1):
+def objective(decoder, out, logs, valid, *, price=.5, activity=.5, coordinate=.1,
+              encoded_targets=None, return_original=False):
     """Phase0 V7/V29 coordinates and weighted price/activity families per frame."""
-    code, observed = coordinates(logs, valid)
+    code, observed = encoded_targets if encoded_targets is not None else coordinates(logs, valid)
     ratio = torch.arange(18, device=valid.device) == 5
     keep = torch.where(ratio, observed, valid)
     pred = torch.where(ratio, out["code"], out["logs"])
@@ -48,6 +49,7 @@ def objective(decoder, out, logs, valid, *, price=.5, activity=.5, coordinate=.1
     normalized = (code - decoder.mean[:18]) / decoder.scale[:18]
     coord = torch.nn.functional.smooth_l1_loss(out["normalized"], normalized, reduction="none")
     losses = []
+    original = []
     available = []
     start = 0
     for width in HORIZONS:
@@ -61,6 +63,10 @@ def objective(decoder, out, logs, valid, *, price=.5, activity=.5, coordinate=.1
         mask = observed[:, section]
         shape = torch.where(mask, coord[:, section], 0).sum() / mask.sum().clamp_min(1)
         losses.append(price * price_loss + activity * activity_loss + coordinate * shape)
+        if return_original:
+            original.append(.5 * (price_loss + activity_loss) + .1 * shape)
         available.append(active.any())
         start += width
-    return torch.stack(losses).sum() / torch.stack(available).sum().clamp_min(1)
+    denominator = torch.stack(available).sum().clamp_min(1)
+    loss = torch.stack(losses).sum() / denominator
+    return (loss, torch.stack(original).sum() / denominator) if return_original else loss
