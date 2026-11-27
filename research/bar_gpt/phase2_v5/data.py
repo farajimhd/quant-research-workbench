@@ -325,6 +325,8 @@ def prepare_pool_graphs(teacher):
         valid = torch.zeros_like(raw, dtype=torch.bool)
         clocks = torch.zeros(size, dtype=torch.long, device=device)
         frames = torch.ones(size // 64, dtype=torch.long, device=device)
+        # Populate the device-specific candle-order lookup outside capture.
+        bar_features(teacher, log_grid(raw, valid), valid, clocks, frames)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
             logs = log_grid(raw, valid)
