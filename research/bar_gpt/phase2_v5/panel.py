@@ -1,5 +1,6 @@
 """Read-only Phase 2 forecast monitor for the live V5 run."""
 import argparse
+from functools import partial
 import json
 import math
 import os
@@ -421,8 +422,8 @@ def fine_move_panel(report, title, horizon):
     return titled_panel(Group(table, note), title, expand=False)
 
 
-def move_by_price_panel(report, title, horizon):
-    table = Table(box=None, padding=(0, 2), header_style="bold bright_white")
+def move_by_price_panel(report, title, horizon, *, compact=False):
+    table = Table(box=None, padding=(0, 1 if compact else 2), header_style="bold bright_white")
     table.add_column("Actual signed move")
     for _, label in PRICE_LABELS:
         table.add_column(label, justify="right")
@@ -433,9 +434,11 @@ def move_by_price_panel(report, title, horizon):
             n = report.get(f"{key}/count")
             hit = report.get(f"{key}/direction_accuracy_pct")
             skill = skill_pct(report.get(f"{key}/close_mae"), report.get(f"{key}/persistence_close_mae"))
-            cells.append(f"{num(n)} / {num(hit, '.1f', '%')} / {num(skill, '+.1f', '%')}")
+            fields = (num(n), num(hit, ".1f", "%"), num(skill, "+.3g" if compact else "+.1f", "%"))
+            cells.append("\n".join(fields) if compact else " / ".join(fields))
         table.add_row(label, *cells)
-    explanation = Text("Trade close · Each cell shows pairs / direction hit / MAE skill.", style="dim")
+    order = "pairs, direction hit, and MAE skill top to bottom" if compact else "pairs / direction hit / MAE skill"
+    explanation = Text(f"Trade close · Each cell shows {order}.", style="dim")
     return titled_panel(Group(explanation, table), title, expand=False)
 
 
@@ -597,10 +600,11 @@ def render(snapshot, *, width, height, now=None, scrollable=False):
                       for scope, item in scopes]
             views.append(scope_row(panels, width, 265))
         if fine:
+            price_cross_tab = partial(move_by_price_panel, compact=width < 175)
             # Cross-tab cells hold three numbers. Keep their panels stacked
             # until there is room for three fully populated tables.
             for make_panel, label, minimum in ((fine_move_panel, "fine signed moves", 345),
-                                               (move_by_price_panel, "price bands × signed moves", 480)):
+                                               (price_cross_tab, "price bands × signed moves", 480)):
                 for horizon in horizons:
                     frame, step_label = horizon.split("/h")
                     panels = [make_panel(item, f"{scope} · {label} · {frame} / {step_label}", horizon)
