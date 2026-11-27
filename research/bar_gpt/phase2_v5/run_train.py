@@ -3,6 +3,7 @@ import os
 os.environ.update(PYTHONDONTWRITEBYTECODE="1", OMP_NUM_THREADS="1", MKL_NUM_THREADS="1")
 import argparse
 from collections import Counter
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -39,6 +40,8 @@ def parser():
     p.add_argument("--objective-fork", type=Path, help="Start a new objective from a stopped unique-run checkpoint")
     p.add_argument("--loss-weights", type=LossWeights.parse,
                    help="price,activity,coordinate,direction,range,ohlc,from_last")
+    p.add_argument("--anchored-direction", action="store_true",
+                   help="Split the direction weight equally between candle/path and last-candle moves")
     p.add_argument("--locality", type=int, default=1, choices=(1, 8, 16),
                    help="Shuffle short chronological clusters and reuse exact slow-frame contexts")
     p.add_argument("--no-cross-session-cache", action="store_true",
@@ -54,6 +57,8 @@ def parser():
     p.add_argument("--batch-size", type=int, default=4096)
     p.add_argument("--token-batch", type=int, default=1024)
     p.add_argument("--graph-updates", action="store_true", help="Replay fixed-shape forecast forward/backward on CUDA")
+    p.add_argument("--graph-tail-bucket", type=int, default=0, choices=(0, 1024, 2048),
+                   help="Replay variable batches in bounded CUDA graph buckets using validity padding")
     p.add_argument("--session-lanes", type=int, default=0, choices=(0, 1, 2, 4),
                    help="Concurrent frozen GPU session encoders; zero uses the serial path")
     p.add_argument("--resume-serial", action="store_true", help="Resume the packed serial implementation")
@@ -151,24 +156,32 @@ class ForecastGradients:
 
     def __call__(self, inputs, logs, valid, *anchors):
         n = len(inputs)
-        if not self.args.graph_updates or n not in (4096, 8192):
+        unit = self.args.graph_tail_bucket
+        bucket = min(self.args.batch_size, ((n + unit - 1) // unit) * unit) if unit and n >= 512 else n
+        if not self.args.graph_updates or (n not in (4096, 8192) and not (unit and n >= 512)):
             return self.backward(inputs, logs, valid, *anchors)
-        if n not in self.warmed:
-            self.warmed.add(n)
+        if bucket not in self.warmed:
+            self.warmed.add(bucket)
             return self.backward(inputs, logs, valid, *anchors)
         arguments = (inputs, logs, valid, *anchors)
-        if n not in self.graphs:
-            buffers = tuple(torch.empty_like(x) for x in arguments)
+        if bucket not in self.graphs:
+            buffers = tuple(x.new_zeros((bucket, *x.shape[1:])) for x in arguments)
             graph = torch.cuda.CUDAGraph()
             # Capture uses dedicated buffers and fresh gradient storage. No
             # parameter update or RNG use occurs during recording.
             with torch.cuda.graph(graph, capture_error_mode="thread_local"):
                 loss = self.backward(*buffers)
             grads = tuple(p.grad for p in self.model.parameters())
-            self.graphs[n] = graph, buffers, loss, grads
-        graph, buffers, loss, grads = self.graphs[n]
+            self.graphs[bucket] = graph, buffers, loss, grads
+        graph, buffers, loss, grads = self.graphs[bucket]
         for dst, src in zip(buffers, arguments):
-            dst.copy_(src)
+            dst[:n].copy_(src)
+        if n < bucket:
+            # LayerNorm and all model operations are per example. Masking row
+            # validity excludes the extra slots from every objective reduction.
+            buffers[2][n:].zero_()
+            if anchors:
+                buffers[4][n:].zero_()
         for parameter, grad in zip(self.model.parameters(), grads):
             parameter.grad = grad
         graph.replay()
@@ -194,7 +207,7 @@ def evaluate(units, model, teacher, args, limit, reporter=None):
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
                 inputs, logs, valid, evidence = device.batch(ids, metrics=True)
                 out = predict(model, teacher, inputs, args)
-                anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.from_last else ()
+                anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.uses_anchor else ()
                 total_loss += batch_objective(teacher, out, logs, valid, args, anchors).double()*len(ids)
                 if args.loss_weights:
                     reference_loss += objective(teacher, out, logs, valid).double()*len(ids)
@@ -283,7 +296,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 for group in optimizer.param_groups:
                     group["lr"] = rate
                 optimizer.zero_grad(set_to_none=True)
-                anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.from_last else ()
+                anchors = device.forecast_anchors(ids) if args.loss_weights and args.loss_weights.uses_anchor else ()
                 loss = gradients(inputs, logs, valid, *anchors)
                 norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.)
                 if not bool(torch.isfinite(loss)&torch.isfinite(norm)):
@@ -392,6 +405,12 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
 def main():
     args = parser().parse_args()
     args.device = "cuda"
+    if args.anchored_direction:
+        if not args.loss_weights:
+            raise ValueError("Anchored direction requires explicit loss weights")
+        args.loss_weights = replace(args.loss_weights, anchored_direction=True)
+    if args.graph_tail_bucket and (not args.graph_updates or args.batch_size > 8192):
+        raise ValueError("Graph tail buckets require graph updates and a batch size at most 8192")
     args.passes = UNIQUE_PASSES if args.unique_release else PASSES
     if (args.from_completed_pass and (args.resume or not args.unique_release)
             or args.objective_fork and (args.resume or args.from_completed_pass or not args.unique_release)
@@ -442,8 +461,10 @@ def main():
     # binds the new execution source and schedule to all future resumes.
     legacy_contract = dict(contract, source=LEGACY_SOURCE)
     if args.loss_weights:
-        contract["loss_weights"] = vars(args.loss_weights)
-        legacy_contract["loss_weights"] = vars(args.loss_weights)
+        weights = {key: value for key, value in vars(args.loss_weights).items()
+                   if key != "anchored_direction" or value}
+        contract["loss_weights"] = weights
+        legacy_contract["loss_weights"] = weights
     contract["schedule"] = dict(kind="cosine_by_traversed_candidates", passes=args.passes,
                                 peak_factor=PEAK_FACTOR, floor=UNIQUE_FLOOR if args.unique_release else FLOOR,
                                 candidates_per_pass=args.pass_origins_total,

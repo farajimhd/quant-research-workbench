@@ -62,6 +62,37 @@ def test_causal_direction_penalizes_wrong_way_moves_and_masks_missing_anchors():
     value.backward()
     assert pred.grad[0] < 0 and pred.grad[1] > 0 and pred.grad[2] == 0
 
+
+def test_direction_and_zero_padding_preserve_objective_and_gradient():
+    from ..phase1_v29.objectives import direction_loss
+
+    rng = torch.Generator().manual_seed(43)
+    prediction = torch.randn(4, SLOTS, 32, generator=rng).requires_grad_()
+    teacher = Autoencoder(parameters()).eval().requires_grad_(False)
+    target = torch.randn(4, SLOTS, 18, generator=rng)
+    valid = torch.rand(4, SLOTS, 18, generator=rng) > .2
+    anchor = torch.randn(4, SLOTS, 18, generator=rng)
+    anchor_valid = torch.rand(4, SLOTS, 18, generator=rng) > .25
+    weights = LossWeights(.65, .35, .1, .1, .1, .1, anchored_direction=True)
+
+    def pad(x):
+        return torch.cat((x, torch.zeros_like(x[:3])))
+
+    original = forecast_objective(teacher, teacher.decode(prediction), target, valid, weights, (anchor, anchor_valid))
+    padded = forecast_objective(teacher, teacher.decode(pad(prediction)), pad(target), pad(valid),
+                                weights, (pad(anchor), pad(anchor_valid)))
+    torch.testing.assert_close(original, padded)
+    torch.testing.assert_close(torch.autograd.grad(original, prediction)[0],
+                               torch.autograd.grad(padded, prediction)[0])
+
+    actual = target.clone()
+    actual[0] = anchor[0]
+    pred = torch.randn(actual.shape, generator=rng).requires_grad_()
+    expected = direction_loss(pred-anchor, actual-anchor, valid, .1)
+    observed = relative_direction(pred, actual, anchor, valid, .1)
+    torch.testing.assert_close(observed, expected)
+    torch.testing.assert_close(torch.autograd.grad(observed, pred)[0], torch.autograd.grad(expected, pred)[0])
+
 def test_packed_pools_match_direct_teacher_and_anchor_lookup():
     from .data import DeviceSession, Session
     from ..v5.phase2_ar_shards.contract import BAR, FRAMES

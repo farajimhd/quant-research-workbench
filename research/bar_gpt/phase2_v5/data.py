@@ -407,7 +407,7 @@ def device_sessions(source, teacher, args, *, metrics):
     reuse = (getattr(args, "locality", 1) > 1 and not args.direct_teacher and not metrics
              and not getattr(args, "no_cross_session_cache", False))
     weights = getattr(args, "loss_weights", None)
-    anchor_loss = bool(weights and weights.from_last)
+    anchor_loss = bool(weights and weights.uses_anchor)
 
     def build(session, verify, slow_cache=None):
         if not len(session.origins):

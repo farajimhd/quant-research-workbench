@@ -104,3 +104,11 @@ activity changes. The final term compares predicted and realized changes to
 the same last completed candle of each timeframe, with separate close,
 activity, and log-range directions. That candle's source validity controls the
 loss mask. Anchor values are never passed to the forecast model or decoder.
+
+`--anchored-direction` puts candle/path and last-completed-candle direction
+under one coefficient, using equal weights between the two. For example,
+`--loss-weights .65,.35,.1,.1,.1,.1,0 --anchored-direction` adds direction,
+range and OHLC at 0.10 each. `--graph-tail-bucket 1024` or `2048` with
+`--graph-updates` lets variable-size training batches use CUDA graph replay.
+Padding rows are excluded by all validity masks and each original batch still
+receives one optimizer update with the same real origins.

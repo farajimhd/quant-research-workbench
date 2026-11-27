@@ -6,7 +6,7 @@ import torch
 from torch.nn import functional as F
 
 from ..phase0_v7.transforms import coordinates
-from ..phase1_v29.objectives import direction_loss, masked_mean
+from ..phase1_v29.objectives import masked_mean
 from .model import HORIZONS, objective
 
 
@@ -19,11 +19,18 @@ class LossWeights:
     range: float = 0.
     ohlc: float = 0.
     from_last: float = 0.
+    anchored_direction: bool = False
 
     def __post_init__(self):
         if (any(not math.isfinite(v) or v < 0 for v in vars(self).values())
                 or not math.isclose(self.price + self.activity, 1.)):
             raise ValueError("Loss weights must be finite and nonnegative, with price + activity = 1")
+        if self.anchored_direction and (not self.direction or self.from_last):
+            raise ValueError("Anchored direction requires one nonzero combined direction weight")
+
+    @property
+    def uses_anchor(self):
+        return bool(self.from_last or self.anchored_direction)
 
     @classmethod
     def parse(cls, value):
@@ -51,7 +58,18 @@ def candle_fields(logs, code, valid, code_valid):
 
 def relative_direction(pred, target, base, valid, scale):
     """Anchor both moves to the same known value and mask missing fields first."""
-    return direction_loss(torch.where(valid, pred-base, 0), torch.where(valid, target-base, 0), valid, scale)
+    predicted = torch.where(valid, pred-base, 0)
+    actual = torch.where(valid, target-base, 0)
+    sign = actual.sign()
+    margin = actual.abs().clamp_max(scale)
+    residual = torch.where(sign == 0, predicted, (margin-sign*predicted).relu()) / scale
+    error = F.smooth_l1_loss(residual, torch.zeros_like(residual), reduction="none")
+    means, counts = [], []
+    for selected in (valid & (sign < 0), valid & (sign == 0), valid & (sign > 0)):
+        count = selected.sum()
+        counts.append(count > 0)
+        means.append(torch.where(selected, error, 0).sum() / count.clamp_min(1))
+    return sum(means) / torch.stack(counts).sum().clamp_min(1)
 
 
 def structural_terms(out, logs, valid, anchors, weights):
@@ -65,13 +83,11 @@ def structural_terms(out, logs, valid, anchors, weights):
         # Roll only within a timeframe. Consecutive forecasts are both model
         # outputs; the previous realized future bar is used only in the label.
         close_pairs, activity_pairs = [], []
-        for width, close_valid, activity_valid in zip(HORIZONS, cv.split(HORIZONS, 1), av.split(HORIZONS, 1)):
-            if width > 1:
-                close_pairs.append(torch.cat((torch.zeros_like(close_valid[:, :1]), close_valid[:, 1:] & close_valid[:, :-1]), 1))
-                activity_pairs.append(torch.cat((torch.zeros_like(activity_valid[:, :1]), activity_valid[:, 1:] & activity_valid[:, :-1]), 1))
-            else:
-                close_pairs.append(torch.zeros_like(close_valid))
-                activity_pairs.append(torch.zeros_like(activity_valid))
+        for close_valid, activity_valid in zip(cv.split(HORIZONS, 1), av.split(HORIZONS, 1)):
+            close_pairs.append(torch.cat((torch.zeros_like(close_valid[:, :1]),
+                                          close_valid[:, 1:] & close_valid[:, :-1]), 1))
+            activity_pairs.append(torch.cat((torch.zeros_like(activity_valid[:, :1]),
+                                             activity_valid[:, 1:] & activity_valid[:, :-1]), 1))
         body = relative_direction(pc-po, c-o, 0, cv & ov, .001)
         path = relative_direction(pc-pc.roll(1, 1), c-c.roll(1, 1), 0, torch.cat(close_pairs, 1), .001)
         activity = relative_direction(pa-pa.roll(1, 1), a-a.roll(1, 1), 0, torch.cat(activity_pairs, 1), .1)
@@ -84,7 +100,7 @@ def structural_terms(out, logs, valid, anchors, weights):
         structural = F.smooth_l1_loss(violations, torch.zeros_like(violations), reduction="none").mean(-1)
         consistent = (h >= torch.maximum(o, c)) & (l <= torch.minimum(o, c))
         ohlc = masked_mean(structural, ov & hv & lv & cv & consistent)
-    if weights.from_last:
+    if weights.uses_anchor:
         anchor_logs, anchor_valid = anchors
         anchor_logs = torch.where(anchor_valid, anchor_logs, 0)
         anchor_code, anchor_code_valid = coordinates(anchor_logs, anchor_valid)
@@ -103,4 +119,6 @@ def forecast_objective(decoder, out, logs, valid, weights, anchors=None):
     if not (weights.direction or weights.range or weights.ohlc or weights.from_last):
         return base
     direction, candle_range, ohlc, from_last = structural_terms(out, logs, valid, anchors, weights)
+    if weights.anchored_direction:
+        direction = .5 * (direction + from_last)
     return base + weights.direction * direction + weights.range * candle_range + weights.ohlc * ohlc + weights.from_last * from_last
