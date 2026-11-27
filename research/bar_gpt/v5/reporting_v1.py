@@ -17,9 +17,11 @@ class Reporter:
     """One controller owns metrics; a bounded thread owns progress publication and GPU polling."""
 
     def __init__(
-        self, root: Path, config: dict, mode="online", project="bargpt-column-mae-v1"
+        self, root: Path, config: dict, mode="online", project="bargpt-column-mae-v1",
+        *, upload_files=True
     ):
         self.root, self.lock, self.stop = root, threading.Lock(), threading.Event()
+        self.upload_files = upload_files
         self.state = dict(
             state="running", stage="initializing", done=0, total=0, results=[]
         )
@@ -80,7 +82,7 @@ class Reporter:
         self.journal = (self.root / "metrics.jsonl").open(
             "a", encoding="utf-8", buffering=1
         )
-        if self.run:
+        if self.run and self.upload_files:
             # W&B's file service handles flushed journal changes asynchronously.
             self.run.save(
                 str(self.root / "metrics.jsonl"),
@@ -160,7 +162,7 @@ class Reporter:
             self.journal.close()  # Flush/close before artifacts read the final local evidence.
         self.update(state=state, error=error)
         self.publish()
-        if self.run:
+        if self.run and self.upload_files:
             import wandb
 
             artifact = wandb.Artifact(
@@ -175,6 +177,7 @@ class Reporter:
                 if (self.root / name).exists():
                     artifact.add_file(str(self.root / name))
             self.run.log_artifact(artifact)
+        if self.run:
             # A planned bounded qualification is a completed experiment, not
             # a training exception. Keep its distinct local state above.
             self.run.finish(exit_code=0 if state in ("complete", "qualification_complete") else 1)

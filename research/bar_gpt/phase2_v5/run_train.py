@@ -61,6 +61,8 @@ def parser():
                    help="Replay variable batches in bounded CUDA graph buckets using validity padding")
     p.add_argument("--graph-validation", action="store_true",
                    help="Replay the exact validation objective and metrics in CUDA graph buckets")
+    p.add_argument("--resume-before-metrics-only", action="store_true",
+                   help="Resume a checkpoint from the preceding reporter revision")
     p.add_argument("--session-lanes", type=int, default=0, choices=(0, 1, 2, 4),
                    help="Concurrent frozen GPU session encoders; zero uses the serial path")
     p.add_argument("--resume-serial", action="store_true", help="Resume the packed serial implementation")
@@ -541,6 +543,8 @@ def main():
             if "objective_parent" in previous_manifest["execution_model"]:
                 contract["objective_parent"] = previous_manifest["execution_model"]["objective_parent"]
         previous = dict(contract, source="1a76327f0a9cfc08beac8a88071ccf56419daafa") if args.resume_prepack else contract
+        if args.resume_before_metrics_only:
+            previous = dict(contract, source="9e6c4d8d3c42404a67f97845add72f9e9a51db2e")
         if args.resume_serial:
             previous = dict(contract, source="acefd32563d52046b4a36f992f037289b1f290a5")
         if args.resume_pre_overlap_fix:
@@ -579,7 +583,8 @@ def main():
                              resume=str(args.resume) if args.resume else None,
                              arguments={k:str(v) if isinstance(v,Path) else vars(v) if isinstance(v,LossWeights) else v
                                         for k,v in vars(args).items()})
-        reporter = Reporter(args.output, configuration, mode="online", project="bargpt-phase2")
+        configuration["wandb_upload_files"] = False
+        reporter = Reporter(args.output, configuration, mode="online", project="bargpt-phase2", upload_files=False)
         write_json(args.output/"manifest.json", configuration)
         if args.from_completed_pass or args.objective_fork:
             save_checkpoint(args.output/"checkpoint_last.pt", dict(saved, contract=contract))
