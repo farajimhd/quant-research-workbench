@@ -224,11 +224,24 @@ def packed_pools(teacher, pools, device, cached):
         valid_host[region] = pool["valid"]
         clock_host[region] = pool["end_us"]
     raw, valid, clocks = [torch.from_numpy(a).to(device, non_blocking=True) for a in (raw_host, valid_host, clock_host)]
-    logs = log_grid(raw, valid)
     if cached:
         frame_ids = torch.from_numpy(np.repeat(np.asarray(FRAMES, dtype=np.int64),
                                                np.asarray(widths) // 64)).to(device, non_blocking=True)
-        features = bar_features(teacher, logs, valid, clocks, frame_ids)
+    pool_graphs = getattr(teacher, "pool_graphs", {}) if cached else {}
+    capacity = max(1024, 1 << (len(raw) - 1).bit_length())
+    if capacity in pool_graphs:
+        graph, buffers, results, lock, ready = pool_graphs[capacity]
+        with lock:
+            torch.cuda.current_stream().wait_event(ready)
+            for dst, src in zip(buffers, (raw, valid, clocks, frame_ids)):
+                dst[:len(src)].copy_(src)
+            graph.replay()
+            logs, features = (value[:len(raw)].clone() for value in results)
+            ready.record()
+    else:
+        logs = log_grid(raw, valid)
+        if cached:
+            features = bar_features(teacher, logs, valid, clocks, frame_ids)
     return [(raw[r], valid[r], clocks[r], logs[r], features[r] if cached else None) for r in slices]
 
 
@@ -296,6 +309,29 @@ def prepare_window_graphs(teacher):
         ready = torch.cuda.current_stream().record_event()
         graphs[size] = graph, static, output, Lock(), ready
     teacher.window_graphs = graphs
+
+
+@torch.no_grad()
+def prepare_pool_graphs(teacher):
+    """Pad only the end of the physical pool. Bars before that suffix retain
+    their timeframe, 64-row alignment and preceding-clock difference.
+    """
+    graphs = {}
+    for size in (1024, 2048, 4096, 8192, 16384, 32768, 65536):
+        device = teacher.mean.device
+        # Mirror the on-disk float32 BAR field. log_grid promotes to float64
+        # internally before rounding its output to the original teacher dtype.
+        raw = torch.zeros((size, 18), dtype=torch.float32, device=device)
+        valid = torch.zeros_like(raw, dtype=torch.bool)
+        clocks = torch.zeros(size, dtype=torch.long, device=device)
+        frames = torch.ones(size // 64, dtype=torch.long, device=device)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            logs = log_grid(raw, valid)
+            features = bar_features(teacher, logs, valid, clocks, frames)
+        ready = torch.cuda.current_stream().record_event()
+        graphs[size] = graph, (raw, valid, clocks, frames), (logs, features), Lock(), ready
+    teacher.pool_graphs = graphs
 
 
 class DeviceSession:
