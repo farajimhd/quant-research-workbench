@@ -11,10 +11,12 @@ import time
 from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.table import Table
 from rich.text import Text
 
 from ..phase1_v29.panel import SolidBar, enable_virtual_terminal, maximize_console
+from .scroll_input import console_scroll_input
 
 HORIZONS = tuple(
     (frame, n)
@@ -380,19 +382,52 @@ def breakdown_panel(report, title, width):
     return Panel(grid, title=title, title_align="left", border_style="blue")
 
 
-def glossary(width, *, expanded):
+def glossary():
     guide = Table.grid(padding=(0, 1), expand=True)
-    guide.add_column(style="bold cyan", no_wrap=True)
+    guide.add_column(style="bold cyan")
     guide.add_column(ratio=1)
-    guide.add_row("Bar / Pairs", "Timeframe and future candle number. Pairs have a valid target close, finite forecast and positive last known close.")
-    guide.add_row("Baseline / Skill", "Carry the last known close to every horizon. Skill % = 100 × (1 − model MAE / baseline MAE). Dollar errors are MAE.")
-    guide.add_row("Direction", "Origin compares with last known close. Candle compares close with open. Path compares adjacent closes within the timeframe.")
-    guide.add_row("Balanced direction", "Equal weight for each observed down, flat and up class. Small dir excludes flat and balances up/down. Large dir counts each move equally.")
-    if expanded:
-        guide.add_row("Move / price groups", "Small is 0 < |actual move| ≤ 0.5%. Large is >0.5%. Flat baseline error is zero. Base means baseline MAE. Price bands use the last known trade close.")
-        guide.add_row("Activity / Training", "Volume in shares, Trade # in trades, quote sizes in source units. Loss uses the training objective. Origins is cumulative.")
-        guide.add_row("Colors", "Green beats the reference, orange trails. Close errors use baseline, skill uses zero, direction uses always-flat or 50% for large moves.")
-        guide.add_row("Other references", "Activity compares with matching prior development coverage. Training loss and speed compare with the earlier log median. Dash means unavailable.")
+    sections = (
+        ("Rows and coverage", (
+            ("Bar", "Timeframe and forecast horizon. 1s / 03 is the third eligible future 1-second candle."),
+            ("Pairs", "Rows at this horizon with a valid actual trade close, finite forecast, and valid positive last known trade close."),
+            ("Development / End of pass", "For this run both reports cover the same held-out split. Their headers show the checkpoint step and evaluated coverage."),
+        )),
+        ("Dollar error and skill", (
+            ("Trade MAE", "Mean absolute error of the model's trade-close forecast in dollars. Lower is better."),
+            ("Baseline MAE", "Dollar MAE from carrying the last known trade close forward to every horizon. It uses the same pairs as Trade MAE."),
+            ("Skill %", "100 × (1 − Model MAE / Baseline MAE). +20% means 20% lower error, zero is a tie, and −20% means 20% higher error. A zero baseline gives a dash."),
+            ("Bid $ / Ask $", "Dollar close MAE for bid and ask. Each compares with its own last-known-close baseline."),
+            ("Volume / Counts / Sizes", "Vol MAE is in shares, Trade # is in trades, and bid/ask size MAE uses the source quantity units."),
+        )),
+        ("Direction scores", (
+            ("Origin dir %", "Compare the forecast close and actual close against the same last known close."),
+            ("Candle dir %", "Compare the sign of forecast close minus forecast open with the sign of actual close minus actual open."),
+            ("Path dir %", "Compare adjacent forecast closes with adjacent actual closes within the same timeframe. The first horizon has no path score."),
+            ("Bid dir % / Ask dir %", "Origin direction for each quote stream using its own last known close."),
+            ("Balanced accuracy", "Average accuracy separately across actual down, flat and up moves, giving each observed class equal weight."),
+        )),
+        ("Move and price breakdowns", (
+            ("Small dir % / Small skill %", "Actual moves greater than zero and at most 0.5% in magnitude. Direction gives up and down equal weight. Skill compares dollar MAE on those same rows."),
+            (">0.5% dir / Large skill %", "Actual moves above 0.5% in magnitude. Direction is the percentage called correctly, with each move weighted equally. Skill compares dollar MAE."),
+            (">0.5% MAE / >0.5% Base", "Dollar MAE of the forecast and last-close baseline on the same large moves."),
+            ("Up hit % / Down hit %", "Among actual up moves and actual down moves, respectively, the share called correctly."),
+            ("Flat MAE $", "Model dollar error when the actual close equals the last known close. Baseline MAE is zero."),
+            ("Signed move rows", "Group by realized direction and magnitude relative to last known close. Dir % is the share called correctly within each row."),
+            ("Price band rows", "Group by last known trade close at forecast time. Dir % is balanced origin direction accuracy within the band."),
+            ("Breakdown columns", "Pairs shows group coverage. MAE $ is model dollar error, Base $ is baseline dollar error, and Skill % uses those same pairs."),
+        )),
+        ("Colors and training", (
+            ("Green / Orange / Dash", "Green beats the reference, orange trails, and ties stay neutral. A dash indicates an unavailable value."),
+            ("Close MAE / Skill", "Close errors use the last-known-close baseline. Skill compares with zero."),
+            ("Direction references", "Colored balanced scores compare with always-flat on the same rows. Large-move direction compares with a 50% up/down guess."),
+            ("Activity and speed references", "Activity MAE compares with the previous development report when field counts match. Training loss and speed compare with the median of up to 25 earlier log entries."),
+            ("Training columns", "Update is the optimizer step. Loss is the weighted training objective. Origins/s is recent throughput. Learning rate is the current optimizer rate. Origins is the cumulative processed count."),
+        )),
+    )
+    for heading, rows in sections:
+        guide.add_row(Text(heading, "bold white"), "")
+        for label, explanation in rows:
+            guide.add_row(label, explanation)
     return Panel(guide, title="METRIC GUIDE", title_align="left", border_style="blue")
 
 
@@ -426,7 +461,7 @@ def progress_bars(state, final, width):
     return table
 
 
-def render(snapshot, *, width, height, now=None):
+def render(snapshot, *, width, height, now=None, scrollable=False):
     state, checkpoint, development, final, manifest, training, prior = snapshot
     now = time.time() if now is None else now
     age = max(0, now - state.get("updated", now))
@@ -460,9 +495,51 @@ def render(snapshot, *, width, height, now=None):
     if height >= 103 and width >= 100:
         views.extend((breakdown_panel(development, "DEVELOPMENT · trade move and price groups", width),
                       breakdown_panel(final, "END-OF-PASS · trade move and price groups", width)))
-    if height >= 65:
-        views.append(glossary(width, expanded=height >= 94 and width >= 145))
+    if scrollable or height >= 65:
+        views.append(glossary())
     return Group(*views)
+
+
+class ScrollViewport:
+    """Keep a stable viewport into the live dashboard, including its guide."""
+
+    def __init__(self):
+        self.offset = 0
+        self.at_bottom = False
+
+    def frame(self, console, content, actions=()):
+        page = max(1, console.height - 1)
+        lines = console.render_lines(content, console.options.update(height=None), new_lines=True)
+        end = max(0, len(lines) - page)
+        if self.at_bottom:
+            self.offset = end
+        for action in actions:
+            self.at_bottom = action == "end"
+            if action == "home":
+                self.offset = 0
+            elif action == "end":
+                self.offset = end
+            else:
+                self.offset += action
+            self.offset = min(end, max(0, self.offset))
+        self.offset = min(end, self.offset)
+        visible = lines[self.offset:self.offset + page]
+        footer = Text("Wheel or PgUp/PgDn to scroll · Home top · End metric guide"
+                      f"  |  Rows {self.offset + 1}–{self.offset + len(visible)} of {len(lines)}",
+                      style="dim", no_wrap=True, overflow="crop")
+        return ViewportFrame(visible, footer)
+
+
+class ViewportFrame:
+    def __init__(self, lines, footer):
+        self.lines, self.footer = lines, footer
+
+    def __rich_console__(self, console, options):
+        for line in self.lines:
+            yield from line
+            if not line or line[-1].text != "\n":
+                yield Segment.line()
+        yield self.footer
 
 
 def main():
@@ -483,26 +560,35 @@ def main():
     console = Console(legacy_windows=False if vt or args.once else None, force_terminal=False if args.once else None)
     reader = Reader(args.run)
 
-    def frame():
-        return render(reader.snapshot(), width=console.width, height=console.height)
+    def frame(snapshot, scrollable=False):
+        height = max(103, console.height) if scrollable else console.height
+        return render(snapshot, width=console.width, height=height, scrollable=scrollable)
 
     if args.once or not console.is_terminal:
-        console.print(frame())
+        console.print(frame(reader.snapshot(), scrollable=True))
         return
     try:
-        with Live(frame(), console=console, screen=vt, auto_refresh=False) as live:
+        with console_scroll_input(vt) as navigation, Live(console=console, screen=vt, auto_refresh=False) as live:
+            viewport = ScrollViewport()
             frames = 0
+            next_refresh = 0
+            snapshot = reader.snapshot()
             while True:
-                live.update(frame(), refresh=True)
-                frames += 1
-                if frames == 1 or frames % 10 == 0:
+                actions = navigation.read(max(1, console.height - 3)) if navigation else []
+                refresh = time.monotonic() >= next_refresh
+                if refresh:
+                    snapshot = reader.snapshot()
+                    next_refresh = time.monotonic() + 1
+                    frames += 1
+                if refresh or actions:
+                    content = frame(snapshot, scrollable=bool(navigation))
+                    live.update(viewport.frame(console, content, actions) if navigation else content, refresh=True)
+                if refresh and (frames == 1 or frames % 10 == 0):
                     receipt = dict(pid=os.getpid(), updated=time.time(), frames=frames,
-                                   virtual_terminal=vt, alternate_screen=vt,
-                                   columns=console.width, rows=console.height)
-                    (args.run / "forecast-panel-status.json").write_text(
-                        json.dumps(receipt), encoding="utf-8"
-                    )
-                time.sleep(1)
+                                   virtual_terminal=vt, alternate_screen=vt, scrollable=bool(navigation),
+                                   columns=console.width, rows=console.height, scroll_offset=viewport.offset)
+                    (args.run / "forecast-panel-status.json").write_text(json.dumps(receipt), encoding="utf-8")
+                time.sleep(.06 if navigation else 1)
     except KeyboardInterrupt:
         pass
 
