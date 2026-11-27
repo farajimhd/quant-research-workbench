@@ -241,9 +241,14 @@ def training_table(rows, width, *, count=None):
     return table
 
 
-def titled_panel(content, title, *, border_style="blue"):
-    return Panel(content, title=Text(title, style="bold bright_white"),
-                 title_align="left", border_style=border_style)
+SCOPE_TITLE_COLORS = {"TRAINING": "bright_cyan", "DEVELOPMENT": "bright_yellow",
+                      "VALIDATION": "bright_magenta"}
+
+
+def titled_panel(content, title, *, border_style="blue", expand=True):
+    color = SCOPE_TITLE_COLORS.get(title.split(" · ", 1)[0], "bright_white")
+    return Panel(content, title=Text(title, style=f"bold {color}"),
+                 title_align="left", border_style=border_style, expand=expand)
 
 
 def eval_panel(report, prior, title, width, detailed, waiting):
@@ -368,11 +373,13 @@ PRICE_LABELS = (
 
 
 def breakdown_panel(report, title, horizon):
-    table = Table(box=None, padding=(0, 1))
+    table = Table(box=None, padding=(0, 2), header_style="bold bright_white")
     table.add_column("Group", no_wrap=True)
     for column in ("Pairs", "Dir %", "MAE $", "Base $", "Skill %"):
         table.add_column(column, justify="right", no_wrap=True)
     for family, labels in (("signed_move", MOVE_LABELS), ("price_band", PRICE_LABELS)):
+        if family == "price_band":
+            table.add_row()
         for key, label in labels:
             prefix = f"{horizon}/trade/{family}/{key}"
             count, error, baseline = (report.get(f"{prefix}/{k}") for k in
@@ -381,14 +388,14 @@ def breakdown_panel(report, title, horizon):
             table.add_row(label, num(count), num(report.get(f"{prefix}/{accuracy}"), ".1f"),
                           scored(error, baseline, ",.3f"), num(baseline, ",.3f"),
                           scored(skill_pct(error, baseline), 0, "+.1f", higher=True))
-    return titled_panel(table, title)
+    return titled_panel(table, title, expand=False)
 
 
 DETAIL_HORIZONS = ("1s/h01", "1s/h10", "1m/h01", "daily/h01")
 
 
 def fine_move_panel(report, title, horizon):
-    table = Table(expand=True, box=None, padding=(0, 1))
+    table = Table(box=None, padding=(0, 2), header_style="bold bright_white")
     table.add_column("Actual signed move", no_wrap=True)
     for col in ("Pairs", "Share %", "Dir %", "MAE $", "Base $", "Skill %", "Bias $", "P90 ≥$"):
         table.add_column(col, justify="right")
@@ -411,11 +418,11 @@ def fine_move_panel(report, title, horizon):
                   if total > report.get(f"{stem}/{CENTER}/count", 0) else None)
     note = Text(f"Exact flats {num(exact)} · Near-flat hit {num(flat, '.1f', '%')} · "
                 f"False flat {num(false_flat, '.1f', '%')}", style="dim")
-    return titled_panel(Group(table, note), title)
+    return titled_panel(Group(table, note), title, expand=False)
 
 
 def move_by_price_panel(report, title, horizon):
-    table = Table(expand=True, box=None)
+    table = Table(box=None, padding=(0, 2), header_style="bold bright_white")
     table.add_column("Actual signed move")
     for _, label in PRICE_LABELS:
         table.add_column(label, justify="right")
@@ -429,11 +436,11 @@ def move_by_price_panel(report, title, horizon):
             cells.append(f"{num(n)} / {num(hit, '.1f', '%')} / {num(skill, '+.1f', '%')}")
         table.add_row(label, *cells)
     explanation = Text("Trade close · Each cell shows pairs / direction hit / MAE skill.", style="dim")
-    return titled_panel(Group(explanation, table), title)
+    return titled_panel(Group(explanation, table), title, expand=False)
 
 
 def distribution_panel(report, title, horizon, *, census=False):
-    table = Table(expand=True, box=None)
+    table = Table(box=None, padding=(0, 2), header_style="bold bright_white")
     table.add_column("Actual signed move")
     for _, label in PRICE_LABELS:
         table.add_column(label, justify="right")
@@ -452,7 +459,17 @@ def distribution_panel(report, title, horizon, *, census=False):
     else:
         header = (f"Step {num(report.get('step'))} · eligible trade pairs by starting price"
                   if report else "Pending the first completed report.")
-    return titled_panel(Group(Text(header, style="dim"), table), title)
+    return titled_panel(Group(Text(header, style="dim"), table), title, expand=False)
+
+
+def scope_row(panels, width, minimum):
+    if width < minimum:
+        return Group(*panels)
+    row = Table.grid(padding=(0, 2))
+    for _ in panels:
+        row.add_column(vertical="top")
+    row.add_row(*panels)
+    return row
 
 
 def glossary():
@@ -578,29 +595,27 @@ def render(snapshot, *, width, height, now=None, scrollable=False):
             frame, step_label = horizon.split("/h")
             panels = [breakdown_panel(item, f"{scope} · trade move and price groups · {frame} / {step_label}", horizon)
                       for scope, item in scopes]
-            if width >= 240:
-                row = Table.grid(padding=(0, 1))
-                for _ in panels:
-                    row.add_column(vertical="top")
-                row.add_row(*panels)
-                views.append(row)
-            else:
-                views.extend(panels)
+            views.append(scope_row(panels, width, 265))
         if fine:
-            for make_panel, label in ((fine_move_panel, "fine signed moves"),
-                                      (move_by_price_panel, "price bands × signed moves")):
+            # Cross-tab cells hold three numbers. Keep their panels stacked
+            # until there is room for three fully populated tables.
+            for make_panel, label, minimum in ((fine_move_panel, "fine signed moves", 345),
+                                               (move_by_price_panel, "price bands × signed moves", 480)):
                 for horizon in horizons:
                     frame, step_label = horizon.split("/h")
-                    for scope, item in scopes:
-                        views.append(make_panel(item, f"{scope} · {label} · {frame} / {step_label}", horizon))
+                    panels = [make_panel(item, f"{scope} · {label} · {frame} / {step_label}", horizon)
+                              for scope, item in scopes]
+                    views.append(scope_row(panels, width, minimum))
             for horizon in horizons:
                 frame, step_label = horizon.split("/h")
+                panels = []
                 for scope, item in scopes:
                     census = scope == "TRAINING"
                     if census:
                         item = state.get("training_target_distribution", {})
-                    views.append(distribution_panel(item, f"{scope} · target distribution · {frame} / {step_label}",
-                                                    horizon, census=census))
+                    panels.append(distribution_panel(item, f"{scope} · target distribution · {frame} / {step_label}",
+                                                     horizon, census=census))
+                views.append(scope_row(panels, width, 265))
     if scrollable or height >= 65:
         views.append(glossary())
     return Group(*views)
