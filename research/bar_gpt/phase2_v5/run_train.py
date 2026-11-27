@@ -473,8 +473,6 @@ def train(args, units, teacher, model, optimizer, contract, reporter=None, saved
 def main():
     args = parser().parse_args()
     args.device = "cuda"
-    if args.graph_teacher and args.session_lanes and not args.inline_prefetch:
-        raise ValueError("Frozen window graphs require single-thread CUDA submission")
     if args.anchored_direction:
         if not args.loss_weights:
             raise ValueError("Anchored direction requires explicit loss weights")
@@ -510,10 +508,15 @@ def main():
     torch.set_float32_matmul_precision("high" if args.tf32 else "highest")
     started = time.perf_counter()
     teacher, provenance = teacher_for(args)
-    if args.graph_teacher:
-        prepare_window_graphs(teacher)
-    if args.graph_pools:
-        prepare_pool_graphs(teacher)
+    if args.graph_teacher or args.graph_pools:
+        teacher.preparation_streams = [torch.cuda.Stream() for _ in range(args.session_lanes)]
+        for stream in teacher.preparation_streams or [torch.cuda.current_stream()]:
+            stream.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(stream):
+                if args.graph_teacher:
+                    prepare_window_graphs(teacher)
+                if args.graph_pools:
+                    prepare_pool_graphs(teacher)
     if args.unique_release:
         if any(migrations):
             raise ValueError("Legacy training cursor is incompatible with the unique population")

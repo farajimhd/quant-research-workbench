@@ -230,15 +230,14 @@ def packed_pools(teacher, pools, device, cached):
                                                np.asarray(widths) // 64)).to(device, non_blocking=True)
     pool_graphs = getattr(teacher, "pool_graphs", {}) if cached else {}
     capacity = max(1024, 1 << (len(raw) - 1).bit_length())
-    if capacity in pool_graphs:
-        graph, buffers, results, lock, ready = pool_graphs[capacity]
+    pool_key = (torch.cuda.current_stream().cuda_stream, capacity) if pool_graphs else None
+    if pool_key in pool_graphs:
+        graph, buffers, results, lock = pool_graphs[pool_key]
         with lock:
-            torch.cuda.current_stream().wait_event(ready)
             for dst, src in zip(buffers, (raw, valid, clocks, frame_ids)):
                 dst[:len(src)].copy_(src)
             graph.replay()
             logs, features = (value[:len(raw)].clone() for value in results)
-            ready.record()
     else:
         logs = log_grid(raw, valid)
         if cached:
@@ -271,16 +270,15 @@ def bar_features(teacher, logs, valid, clocks, frame_ids):
 def encode_cached(teacher, features, gather):
     x = features[gather]
     graphs = getattr(teacher, "window_graphs", None)
-    if graphs and len(x) in graphs:
-        graph, static, output, lock, ready = graphs[len(x)]
-        # Producer streams share one static input per shape. Only reuse it
-        # after the preceding stream has copied out its result.
+    key = (torch.cuda.current_stream().cuda_stream, len(x)) if graphs else None
+    if graphs and key in graphs:
+        graph, static, output, lock = graphs[key]
+        # Static inputs and graph instances are private to this GPU stream.
+        # A nested evaluation may submit to it from another host thread.
         with lock:
-            torch.cuda.current_stream().wait_event(ready)
             static.copy_(x)
             graph.replay()
             result = output.clone()
-            ready.record()
         return result
     return encode_features(teacher, x)
 
@@ -300,15 +298,15 @@ def encode_features(teacher, x):
 @torch.no_grad()
 def prepare_window_graphs(teacher):
     """Capture repeated exact V29 shapes before starting any producer thread."""
-    graphs = {}
+    graphs = getattr(teacher, "window_graphs", {})
+    stream_id = torch.cuda.current_stream().cuda_stream
     for size in (*range(1, 17), 4096, 8192):
         static = teacher.mean.new_zeros((size, 64, 27, 3))
         encode_features(teacher, static)
         graph = torch.cuda.CUDAGraph()
         with torch.cuda.graph(graph):
             output = encode_features(teacher, static)
-        ready = torch.cuda.current_stream().record_event()
-        graphs[size] = graph, static, output, Lock(), ready
+        graphs[stream_id, size] = graph, static, output, Lock()
     teacher.window_graphs = graphs
 
 
@@ -317,7 +315,8 @@ def prepare_pool_graphs(teacher):
     """Pad only the end of the physical pool. Bars before that suffix retain
     their timeframe, 64-row alignment and preceding-clock difference.
     """
-    graphs = {}
+    graphs = getattr(teacher, "pool_graphs", {})
+    stream_id = torch.cuda.current_stream().cuda_stream
     for size in (1024, 2048, 4096, 8192, 16384, 32768, 65536):
         device = teacher.mean.device
         # Mirror the on-disk float32 BAR field. log_grid promotes to float64
@@ -332,8 +331,7 @@ def prepare_pool_graphs(teacher):
         with torch.cuda.graph(graph):
             logs = log_grid(raw, valid)
             features = bar_features(teacher, logs, valid, clocks, frames)
-        ready = torch.cuda.current_stream().record_event()
-        graphs[size] = graph, (raw, valid, clocks, frames), (logs, features), Lock(), ready
+        graphs[stream_id, size] = graph, (raw, valid, clocks, frames), (logs, features), Lock()
     teacher.pool_graphs = graphs
 
 
@@ -507,7 +505,7 @@ def device_sessions(source, teacher, args, *, metrics):
         return
 
     consumer = torch.cuda.current_stream()
-    streams = [torch.cuda.Stream() for _ in range(lanes)]
+    streams = getattr(teacher, "preparation_streams", None) or [torch.cuda.Stream() for _ in range(lanes)]
     caches = [SlowContextCache() if reuse else None for _ in streams]
     for stream in streams:
         stream.wait_stream(consumer)
