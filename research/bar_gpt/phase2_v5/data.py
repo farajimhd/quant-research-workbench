@@ -66,6 +66,7 @@ class Session:
     origins: np.ndarray
     daily_status: str
     rejected_origins: int
+    diagnostic_counts: tuple | None = None
 
 
 def validate_origin_order(times, coverage):
@@ -169,9 +170,15 @@ def eligible_session(target_pools, ends, targets, times, status):
     return Session(target_pools, ends[keep], [x[keep] for x in targets], times[keep], status, int((~keep).sum()))
 
 
-def sessions(units, split, start, workers):
+def sessions(units, split, start, workers, *, count_targets=None):
     if hasattr(units, "iter_load"):
-        yield from prefetch_sessions(units.iter_load(split, start), units.load, workers)
+        def load_and_count(index, unit):
+            index, session = units.load(index, unit)
+            session.diagnostic_counts = count_targets(session)
+            return index, session
+
+        yield from prefetch_sessions(units.iter_load(split, start),
+                                     load_and_count if count_targets else units.load, workers)
         return
     if not hasattr(units, "forecast_successors"):
         units.forecast_successors = [successor_rows(table) for _, _, table in units.groups]

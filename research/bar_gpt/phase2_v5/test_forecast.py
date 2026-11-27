@@ -179,3 +179,42 @@ def test_signed_moves_and_price_bands_reconcile_with_trade_pairs():
     assert result[trade+"signed_move/flat/persistence_close_mae"] == 0
     stats.reset()
     assert stats.result()[trade+"price_band/ge100/count"] == 0
+
+def test_fine_move_counts_soft_flat_and_price_census(tmp_path):
+    from .data import Session
+    from .metrics import Metrics
+    from .model import HORIZONS, SLOTS
+    from .move_diagnostics import CENTER, TrainingCensus, session_target_counts
+    from ..v5.phase2_ar_shards.contract import BAR
+
+    pool = np.zeros(67, dtype=BAR)
+    pool["values"][:, 3] = np.r_[np.full(64, 100.), 100., 100.005, 100.3]
+    pool["valid"][:, 3] = 1
+    targets = [np.repeat(np.arange(64, 67)[:, None], w, axis=1) for w in HORIZONS]
+    session = Session([pool]*5, np.full((3, 5), 63), targets, np.arange(3), "test", 0)
+    session.diagnostic_counts = session_target_counts(session)
+
+    raw = torch.from_numpy(pool["values"][64:, 3].copy()).double()[:, None, None].expand(-1, SLOTS, 18)
+    prediction = torch.tensor([100.001, 100.004, 99.7], dtype=torch.float64)[:, None, None].expand_as(raw)
+    anchor = torch.full((3, SLOTS, 3), 100.)
+    stats = Metrics("cpu", fine_moves=True)
+    stats.add({"logs": prediction.log()}, torch.ones_like(raw, dtype=torch.bool),
+              (raw, anchor, torch.ones_like(anchor, dtype=torch.bool)))
+    result = stats.result()
+    stem = "1s/h01/trade/fine_move/4/"
+    assert result[f"{stem}{CENTER}/count"] == 2
+    assert result[f"{stem}{CENTER}/exact_flat_count"] == 1
+    assert result[f"{stem}{CENTER}/direction_accuracy_pct"] == 100
+    assert result[f"{stem}{CENTER+4}/count"] == 1
+    assert result[f"{stem}{CENTER+4}/direction_accuracy_pct"] == 0
+    expected, exact = session.diagnostic_counts
+    assert [result[f"{stem}{i}/count"] for i in range(15)] == expected[0, 4].tolist()
+    assert exact[0, 4] == 1
+
+    assert not TrainingCensus(tmp_path, "release", 0, None, (1, 0)).active
+    census = TrainingCensus(tmp_path, "release", 1, None, (0, 0))
+    census.commit(0, session)
+    resumed = TrainingCensus(tmp_path, "release", 1, census.state(), (1, 42))
+    resumed.commit(1, session)
+    resumed.publish(2, 6)
+    assert not TrainingCensus(tmp_path, "release", 2, None, (0, 0)).active

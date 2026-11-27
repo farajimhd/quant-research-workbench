@@ -2,13 +2,15 @@
 import torch
 from ..phase0_v7.transforms import raw_values
 from .model import HORIZONS, NAMES, SLOTS
+from .move_diagnostics import MoveMetrics
 
 MOVE_GROUPS = ("down_large", "down_small", "flat", "up_small", "up_large")
 PRICE_BANDS = ("lt1", "1_5", "5_20", "20_100", "ge100")
 
 
 class Metrics:
-    def __init__(self, device):
+    def __init__(self, device, *, fine_moves=False):
+        self.fine_moves = MoveMetrics(device) if fine_moves else None
         self.raw = torch.zeros((2, SLOTS, 18), dtype=torch.float64, device=device)
         self.directions = torch.zeros((3, SLOTS, 3, 9), dtype=torch.int64, device=device)
         self.persistence = torch.zeros((3, SLOTS, 3), dtype=torch.float64, device=device)
@@ -25,6 +27,8 @@ class Metrics:
         for tensor in (self.raw, self.directions, self.persistence, self.invalid, self.move_bins,
                        self.signed_moves, self.price_groups):
             tensor.zero_()
+        if self.fine_moves:
+            self.fine_moves.reset()
 
     @torch.no_grad()
     def add(self, out, valid, evidence):
@@ -57,6 +61,8 @@ class Metrics:
         self.signed_moves.scatter_add_(-1, move_group.T.expand_as(trade_fields), trade_fields)
         price_index = (price_group * 3 + sign + 1).T
         self.price_groups.scatter_add_(-1, price_index.expand_as(trade_fields), trade_fields)
+        if self.fine_moves:
+            self.fine_moves.add(p_close[..., 0], y_close[..., 0], anchor[..., 0], base[..., 0])
         pairs = torch.zeros_like(close_ok)
         start = 0
         for width in HORIZONS:
@@ -134,4 +140,6 @@ class Metrics:
                         for index, label in enumerate(("down","flat","up")):
                             result[f"{key}/{label}_count"] = int(subtotal[index])
                 slot += 1
+        if self.fine_moves:
+            result.update(self.fine_moves.result())
         return result

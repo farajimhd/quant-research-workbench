@@ -17,6 +17,7 @@ from rich.text import Text
 
 from ..phase1_v29.panel import SolidBar, enable_virtual_terminal, maximize_console
 from .scroll_input import console_scroll_input
+from .move_diagnostics import CENTER, MOVE_LABELS as FINE_MOVE_LABELS, SLOT_NAMES
 
 HORIZONS = tuple(
     (frame, n)
@@ -91,6 +92,10 @@ class Reader:
         state = dict(self.read("progress.json"))
         manifest = self.read("manifest.json")
         state["panel_title"] = manifest.get("panel_title", "Phase 2 V5")
+        if manifest.get("arguments", {}).get("fine_move_diagnostics"):
+            state["fine_move_diagnostics"] = True
+            state["training_sample"] = self.read("training-sample-latest.json")
+            state["training_target_distribution"] = self.read("training-target-distribution.json")
         data = manifest.get("model", {}).get("data", {})
         if data.get("certificate"):
             cert = self.read(data["certificate"])
@@ -382,6 +387,76 @@ def breakdown_panel(report, title, width):
     return Panel(grid, title=title, title_align="left", border_style="blue")
 
 
+DETAIL_HORIZONS = ("1s/h01", "1s/h10", "1m/h01", "daily/h01")
+
+
+def fine_move_panel(report, title, width):
+    grid = Table.grid(expand=True)
+    horizons = DETAIL_HORIZONS if width >= 350 else DETAIL_HORIZONS[:1]
+    for _ in horizons:
+        grid.add_column(ratio=1)
+    tables = []
+    for horizon in horizons:
+        table = Table(expand=True, box=None, padding=(0, 1))
+        table.add_column(horizon, no_wrap=True)
+        for col in ("Pairs", "Share %", "Dir %", "MAE $", "Base $", "Skill %", "Bias $", "P90 ≥$"):
+            table.add_column(col, justify="right")
+        stem = f"{horizon}/trade/fine_move/-1"
+        total = sum(report.get(f"{stem}/{i}/count", 0) for i in range(len(FINE_MOVE_LABELS)))
+        for i, label in enumerate(FINE_MOVE_LABELS):
+            def value(key):
+                return report.get(f"{stem}/{i}/{key}")
+            n, error, base = (value(k) for k in ("count", "close_mae", "persistence_close_mae"))
+            table.add_row(label, num(n), num(100*n/total if total and n is not None else None, ".2f"),
+                          num(value("direction_accuracy_pct"), ".1f"), scored(error, base, ".4g"),
+                          num(base, ".4g"), scored(skill_pct(error, base), 0, "+.1f", higher=True),
+                          num(value("signed_error"), "+.4g"), num(value("p90_lower"), ".4g"))
+        exact = report.get(f"{stem}/{CENTER}/exact_flat_count")
+        flat = report.get(f"{stem}/{CENTER}/predicted_near_flat_pct")
+        false_flat = (sum(report.get(f"{stem}/{i}/count", 0)
+                          * report.get(f"{stem}/{i}/predicted_near_flat_pct", 0)
+                          for i in range(len(FINE_MOVE_LABELS)) if i != CENTER)
+                      / (total-report[f"{stem}/{CENTER}/count"])
+                      if total > report.get(f"{stem}/{CENTER}/count", 0) else None)
+        tables.append(Group(table, Text(f"Exact flats {num(exact)} · Near-flat hit {num(flat, '.1f', '%')} · "
+                                       f"False flat {num(false_flat, '.1f', '%')}", style="dim")))
+    grid.add_row(*tables)
+    return Panel(grid, title=title, title_align="left", border_style="blue")
+
+
+def move_by_price_panel(report, title, width):
+    horizon = "1s/h01"
+    table = Table(expand=True, box=None)
+    table.add_column("Actual signed move")
+    for _, label in PRICE_LABELS:
+        table.add_column(label, justify="right")
+    for i, label in enumerate(FINE_MOVE_LABELS):
+        cells = []
+        for band in range(len(PRICE_LABELS)):
+            key = f"{horizon}/trade/fine_move/{band}/{i}"
+            n = report.get(f"{key}/count")
+            hit = report.get(f"{key}/direction_accuracy_pct")
+            skill = skill_pct(report.get(f"{key}/close_mae"), report.get(f"{key}/persistence_close_mae"))
+            cells.append(f"{num(n)} / {num(hit, '.1f', '%')} / {num(skill, '+.1f', '%')}")
+        table.add_row(label, *cells)
+    explanation = Text("Next 1s trade close · Each cell shows pairs / direction hit / MAE skill.", style="dim")
+    return Panel(Group(explanation, table), title=title, title_align="left", border_style="blue")
+
+
+def training_distribution_panel(report):
+    table = Table(expand=True, box=None)
+    table.add_column("Next 1s signed move")
+    for _, label in PRICE_LABELS:
+        table.add_column(label, justify="right")
+    counts = report.get("counts")
+    for i, label in enumerate(FINE_MOVE_LABELS):
+        table.add_row(label, *(num(row[i]) for row in counts[SLOT_NAMES.index("1s/h01")]) if counts else ("—",)*5)
+    header = (f"Pass {report['data_pass']} · {num(report['sessions'])} sessions · {num(report['origins'])} origins · saved once"
+              if report else "Pending the first complete census pass.")
+    return Panel(Group(Text(header, style="dim"), table), title="TRAINING TARGET DISTRIBUTION",
+                 title_align="left", border_style="blue")
+
+
 def glossary():
     guide = Table.grid(padding=(0, 1), expand=True)
     guide.add_column(style="bold cyan")
@@ -415,6 +490,9 @@ def glossary():
             ("Signed move rows", "Group by realized direction and magnitude relative to last known close. Dir % is the share called correctly within each row."),
             ("Price band rows", "Group by last known trade close at forecast time. Dir % is balanced origin direction accuracy within the band."),
             ("Breakdown columns", "Pairs shows group coverage. MAE $ is model dollar error, Base $ is baseline dollar error, and Skill % uses those same pairs."),
+            ("Fine signed moves", "The central ±0.01% band is near-flat for both actual and predicted moves. False flat is the share of non-flat targets predicted near-flat."),
+            ("Bias $ / P90 ≥$", "Bias is mean forecast minus actual close. P90 is the lower dollar edge of the histogram bin containing the 90th percentile absolute error."),
+            ("Training reports", "Target distribution is counted once over a complete pass. Training forecast metrics score fixed sampled sessions with the end-of-pass checkpoint."),
         )),
         ("Colors and training", (
             ("Green / Orange / Dash", "Green beats the reference, orange trails, and ties stay neutral. A dash indicates an unavailable value."),
@@ -495,6 +573,15 @@ def render(snapshot, *, width, height, now=None, scrollable=False):
     if height >= 103 and width >= 100:
         views.extend((breakdown_panel(development, "DEVELOPMENT · trade move and price groups", width),
                       breakdown_panel(final, "END-OF-PASS · trade move and price groups", width)))
+    if scrollable and state.get("fine_move_diagnostics"):
+        for scope, item in (("DEVELOPMENT", development), ("END-OF-PASS VALIDATION", final),
+                            ("TRAINING SAMPLE", state["training_sample"])):
+            if scope == "TRAINING SAMPLE":
+                views.append(eval_panel(item, {}, "TRAINING SAMPLE · fixed end-of-pass checkpoint", width, False,
+                                        "Pending the next end-of-pass checkpoint."))
+            views.append(fine_move_panel(item, f"{scope} · signed moves", width))
+            views.append(move_by_price_panel(item, f"{scope} · price bands × signed moves", width))
+        views.append(training_distribution_panel(state["training_target_distribution"]))
     if scrollable or height >= 65:
         views.append(glossary())
     return Group(*views)

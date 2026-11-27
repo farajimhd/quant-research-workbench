@@ -20,6 +20,7 @@ from .data import sessions, device_sessions, DeviceSession
 from .capture import cuda_capture_gate
 from .unique_data import load_unique_release
 from .metrics import Metrics
+from .move_diagnostics import TrainingCensus, session_target_counts
 from .model import Forecast, HORIZONS, NAMES, objective
 from .objectives import LossWeights, forecast_objective
 from .schedule import (PASSES, FLOOR, UNIQUE_PASSES, UNIQUE_FLOOR, PEAK_FACTOR, LEGACY_SOURCE,
@@ -216,7 +217,7 @@ class ForecastEvaluation(GraphInputs):
     """Keep readout, objective, and metric graph buffers across validations."""
     def __init__(self, model, teacher, args):
         self.model, self.teacher, self.args = model, teacher, args
-        self.stats = Metrics("cuda")
+        self.stats = Metrics("cuda", fine_moves=getattr(args, "fine_move_diagnostics", False))
         self.graphs = {}
         self.warmed = set()
 
@@ -254,13 +255,13 @@ class ForecastEvaluation(GraphInputs):
 
 
 @torch.no_grad()
-def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None, *, session_type=DeviceSession):
+def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None, *, session_type=DeviceSession, split=1):
     evaluation = evaluation if evaluation is not None else ForecastEvaluation(model, teacher, args)
     evaluation.stats.reset()
     count = 0
     total_loss = torch.zeros((),device="cuda",dtype=torch.float64)
     reference_loss = torch.zeros_like(total_loss)
-    batches = device_sessions(sessions(units, 1, 0, args.workers), teacher, args, metrics=True, session_type=session_type)
+    batches = device_sessions(sessions(units, split, 0, args.workers), teacher, args, metrics=True, session_type=session_type)
     started = time.perf_counter()
     missing = Counter()
     evaluated_sessions = 0
@@ -302,8 +303,16 @@ def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None,
             "seconds": time.perf_counter()-started, "full_split": not limit, "sessions": evaluated_sessions}
 
 
+def report_metrics(report, prefix):
+    # Keep the complete cross-tab in the local report and marginals in W&B.
+    headline = ("1s/h01/", "1s/h10/", "1m/h01/", "daily/h01/")
+    return {prefix+k:v for k,v in report.items()
+            if ("/fine_move/" not in k and (prefix != "training_sample/" or "/" not in k))
+            or (k.startswith(headline) and "/fine_move/-1/" in k)}
+
+
 def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, saved=None, evaluation=None,
-               *, session_type=DeviceSession, gradients_type=ForecastGradients):
+               *, session_type=DeviceSession, gradients_type=ForecastGradients, training_sample=None):
     step = saved["step"] if saved else 0
     cursor = tuple(saved["cursor"]) if saved else (0, 0)
     count = saved["windows"] if saved else 0
@@ -313,19 +322,28 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     pass_total = args.pass_origins_total
     next_validation = ((step//args.validation_every)+1)*args.validation_every
     best = saved.get("best", float("inf")) if saved else float("inf")
+    census = (TrainingCensus(args.output, contract["data"]["hash"], pass_index,
+                             saved.get("training_census") if saved else None, cursor)
+              if training_sample is not None else None)
+    counting = census is not None and census.active
     if saved:
         model.load_state_dict(saved["model"])
         optimizer.load_state_dict(saved["optimizer"])
         restore_rng(saved["rng"])
     def checkpoint(name="checkpoint_last.pt"):
-        save_checkpoint(args.output/name, dict(model=model.state_dict(), optimizer=optimizer.state_dict(),
+        state = dict(model=model.state_dict(), optimizer=optimizer.state_dict(),
                         contract=contract, rng=rng_state(), step=step, cursor=cursor,
                         windows=count, best=best, pass_index=pass_index,
-                        pass_origins=pass_origins, schedule_candidates=candidates))
+                        pass_origins=pass_origins, schedule_candidates=candidates)
+        if counting and census.pass_index == pass_index:
+            state["training_census"] = census.state()
+        save_checkpoint(args.output/name, state)
     def stopped():
         return (args.output/"STOP").exists() or (args.output.parent/"STOP").exists()
     first, first_offset = cursor
-    source = device_sessions(sessions(units, 0, first, args.workers), teacher, args, metrics=False,
+    source = device_sessions(sessions(units, 0, first, args.workers,
+                                      count_targets=session_target_counts if counting else None),
+                             teacher, args, metrics=False,
                              session_type=session_type)
     start = interval = time.perf_counter()
     gradients = gradients_type(model, teacher, args)
@@ -346,6 +364,8 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
             if not len(session.origins):
                 candidates += session.rejected_origins
                 cursor = (index+1, 0)
+                if counting:
+                    census.commit(index, session)
                 continue
             tick = time.perf_counter()
             windows_encoded += device.num_windows
@@ -381,6 +401,8 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                 candidates += traversed
                 offset += len(ids)
                 cursor = (index, offset) if offset < len(order) else (index+1, 0)
+                if last_batch and counting:
+                    census.commit(index, session)
                 if reporter and step % 10 == 0:
                     speed = (count-prior_count)/max(time.perf_counter()-interval, .001)
                     metrics = {"train/loss": float(loss), "train/origins_per_second": speed,
@@ -407,7 +429,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                         checkpoint()
                         return "stopped"
                     write_json(args.output/"development-latest.json", dict(step=step, **report))
-                    reporter.log({"development/"+k:v for k,v in report.items()}, step)
+                    reporter.log(report_metrics(report, "development/"), step)
                     reporter.update(latest_evaluation={"scope":"development","step":step,"loss":report["loss"]})
                     if report["loss"] < best:
                         best = report["loss"]
@@ -449,8 +471,20 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     result = dict(step=step, data_pass=pass_index+1, **report)
     write_json(args.output/f"validation-pass-{pass_index+1:02d}.json", result)
     write_json(args.output/"validation-final.json", result)
-    reporter.log({"validation/"+k:v for k,v in result.items()}, step)
+    reporter.log(report_metrics(result, "validation/"), step)
     reporter.update(latest_evaluation={"scope":"validation","step":step,"loss":report["loss"]})
+    if counting:
+        census.publish(units.rows.filter(units.rows["split"] == 0).height, pass_origins)
+    if training_sample is not None:
+        reporter.update(stage="training sample evaluation")
+        sampled = evaluate(training_sample, model, teacher, args, 0, evaluation=evaluation,
+                           session_type=session_type, split=0)
+        if sampled is None:
+            return "stopped"
+        sampled.update(step=step, data_pass=pass_index+1, full_split=False,
+                       sample="fixed checkpoint evaluation on up to 128 seeded training sessions")
+        write_json(args.output/"training-sample-latest.json", sampled)
+        reporter.log(report_metrics(sampled, "training_sample/"), step)
     pass_index += 1
     cursor, pass_origins, candidates = (0, 0), 0, 0
     checkpoint()
@@ -458,13 +492,14 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
 
 
 def train(args, units, teacher, model, optimizer, contract, reporter=None, saved=None, *,
-          session_type=DeviceSession, gradients_type=ForecastGradients, evaluation_type=ForecastEvaluation):
+          session_type=DeviceSession, gradients_type=ForecastGradients, evaluation_type=ForecastEvaluation,
+          training_sample=None):
     pass_index = saved.get("pass_index", 0) if saved else 0
     evaluation = evaluation_type(model, teacher, args) if reporter else None
     while pass_index < args.passes:
         active = order_for_pass(units, pass_index)
         result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved, evaluation,
-                            session_type=session_type, gradients_type=gradients_type)
+                            session_type=session_type, gradients_type=gradients_type, training_sample=training_sample)
         if result != "next_pass":
             return result
         if pass_index + 1 == getattr(args, "stop_after_pass", None):

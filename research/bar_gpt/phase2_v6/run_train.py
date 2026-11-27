@@ -11,6 +11,7 @@ import torch
 from ..phase2_v5 import run_train as v5
 from .data import BarSession
 from .model import BarForecast, CachedGradients, CachedEvaluation
+from ..phase2_v5.unique_data import UniqueRelease
 
 
 def read(path):
@@ -109,11 +110,16 @@ def main():
                          pass_index=0, pass_origins=0, schedule_candidates=0)
             v5.save_checkpoint(checkpoint, saved)
         args.profile_sessions = 0
+        args.fine_move_diagnostics = True
+        training_rows = units.rows.filter(units.rows["split"] == 0)
+        training_rows = training_rows.sample(n=min(128, len(training_rows)), seed=20261127, shuffle=True)
+        training_sample = UniqueRelease(units.root, training_rows)
         resume_writer = opt.resume and (args.output / "wandb-identity.json").is_file()
         config = dict(model=contract, execution_model=contract, initialization_profile=spec,
                       execution_source=args.source_revision,
                       panel_title="Phase 2 V6 · cached bars", resume=str(checkpoint) if resume_writer else None,
-                      arguments=vars(args), wandb_upload_files=False)
+                      arguments=vars(args), wandb_upload_files=False,
+                      training_sample_hash=v5.digest(training_rows["path"].to_list()))
         config = json.loads(json.dumps(config, default=str))
         v5.write_json(args.output / "manifest.json", config)
         v5.load_env_files(v5.discover_env_files(Path.cwd()), verbose=False)
@@ -126,7 +132,7 @@ def main():
                             pass_origins_total=args.pass_origins_total)
             status = v5.train(args, units, teacher, model, optimizer, contract, reporter, saved,
                               session_type=BarSession, gradients_type=CachedGradients,
-                              evaluation_type=CachedEvaluation)
+                              evaluation_type=CachedEvaluation, training_sample=training_sample)
         except BaseException as error:
             reporter.finish("failed", repr(error))
             raise
