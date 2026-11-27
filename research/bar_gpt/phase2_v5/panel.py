@@ -241,6 +241,11 @@ def training_table(rows, width, *, count=None):
     return table
 
 
+def titled_panel(content, title, *, border_style="blue"):
+    return Panel(content, title=Text(title, style="bold bright_white"),
+                 title_align="left", border_style=border_style)
+
+
 def eval_panel(report, prior, title, width, detailed, waiting):
     session_count = f"{num(report['sessions'])} sessions  ·  " if "sessions" in report else ""
     header = Text(f"Step {num(report.get('step'))}  ·  {session_count}{num(report.get('origins'))} origins  ·  "
@@ -249,8 +254,7 @@ def eval_panel(report, prior, title, width, detailed, waiting):
                   f"nonfinite {num(report.get('nonfinite'))}", overflow="ellipsis", no_wrap=True)
     if not report:
         header = Text(waiting, style="dim", overflow="ellipsis", no_wrap=True)
-    return Panel(Group(header, forecast_table(report,prior,width,detailed)), title=title,
-                 title_align="left", border_style="blue")
+    return titled_panel(Group(header, forecast_table(report, prior, width, detailed)), title)
 
 
 def duration(seconds):
@@ -363,69 +367,54 @@ PRICE_LABELS = (
 )
 
 
-def breakdown_panel(report, title, width):
-    grid = Table.grid(expand=True)
-    horizons = (("1s", 1), ("1s", 10), ("1m", 1), ("daily", 1)) if width >= 280 else (("1s", 1),)
-    tables = []
-    for frame, horizon in horizons:
-        grid.add_column(ratio=1)
-        table = Table(expand=True, box=None, padding=(0, 1))
-        table.add_column(f"{frame} / {horizon:02d}", no_wrap=True)
-        for column in ("Pairs", "Dir %", "MAE $", "Base $", "Skill %"):
-            table.add_column(column, justify="right", no_wrap=True)
-        for family, labels in (("signed_move", MOVE_LABELS), ("price_band", PRICE_LABELS)):
-            for key, label in labels:
-                prefix = f"{frame}/h{horizon:02d}/trade/{family}/{key}"
-                count, error, baseline = (report.get(f"{prefix}/{k}") for k in
-                                          ("count", "close_mae", "persistence_close_mae"))
-                accuracy = "balanced_accuracy_pct" if family == "price_band" else "direction_accuracy_pct"
-                table.add_row(label, num(count), num(report.get(f"{prefix}/{accuracy}"), ".1f"),
-                              scored(error, baseline, ",.3f"), num(baseline, ",.3f"),
-                              scored(skill_pct(error, baseline), 0, "+.1f", higher=True))
-        tables.append(table)
-    grid.add_row(*tables)
-    return Panel(grid, title=title, title_align="left", border_style="blue")
+def breakdown_panel(report, title, horizon):
+    table = Table(expand=True, box=None, padding=(0, 1))
+    table.add_column("Group", no_wrap=True)
+    for column in ("Pairs", "Dir %", "MAE $", "Base $", "Skill %"):
+        table.add_column(column, justify="right", no_wrap=True)
+    for family, labels in (("signed_move", MOVE_LABELS), ("price_band", PRICE_LABELS)):
+        for key, label in labels:
+            prefix = f"{horizon}/trade/{family}/{key}"
+            count, error, baseline = (report.get(f"{prefix}/{k}") for k in
+                                      ("count", "close_mae", "persistence_close_mae"))
+            accuracy = "balanced_accuracy_pct" if family == "price_band" else "direction_accuracy_pct"
+            table.add_row(label, num(count), num(report.get(f"{prefix}/{accuracy}"), ".1f"),
+                          scored(error, baseline, ",.3f"), num(baseline, ",.3f"),
+                          scored(skill_pct(error, baseline), 0, "+.1f", higher=True))
+    return titled_panel(table, title)
 
 
 DETAIL_HORIZONS = ("1s/h01", "1s/h10", "1m/h01", "daily/h01")
 
 
-def fine_move_panel(report, title, width):
-    grid = Table.grid(expand=True)
-    horizons = DETAIL_HORIZONS if width >= 350 else DETAIL_HORIZONS[:1]
-    for _ in horizons:
-        grid.add_column(ratio=1)
-    tables = []
-    for horizon in horizons:
-        table = Table(expand=True, box=None, padding=(0, 1))
-        table.add_column(horizon, no_wrap=True)
-        for col in ("Pairs", "Share %", "Dir %", "MAE $", "Base $", "Skill %", "Bias $", "P90 ≥$"):
-            table.add_column(col, justify="right")
-        stem = f"{horizon}/trade/fine_move/-1"
-        total = sum(report.get(f"{stem}/{i}/count", 0) for i in range(len(FINE_MOVE_LABELS)))
-        for i, label in enumerate(FINE_MOVE_LABELS):
-            def value(key):
-                return report.get(f"{stem}/{i}/{key}")
-            n, error, base = (value(k) for k in ("count", "close_mae", "persistence_close_mae"))
-            table.add_row(label, num(n), num(100*n/total if total and n is not None else None, ".2f"),
-                          num(value("direction_accuracy_pct"), ".1f"), scored(error, base, ".4g"),
-                          num(base, ".4g"), scored(skill_pct(error, base), 0, "+.1f", higher=True),
-                          num(value("signed_error"), "+.4g"), num(value("p90_lower"), ".4g"))
-        exact = report.get(f"{stem}/{CENTER}/exact_flat_count")
-        flat = report.get(f"{stem}/{CENTER}/predicted_near_flat_pct")
-        false_flat = (sum(report.get(f"{stem}/{i}/count", 0)
-                          * report.get(f"{stem}/{i}/predicted_near_flat_pct", 0)
-                          for i in range(len(FINE_MOVE_LABELS)) if i != CENTER)
-                      / (total-report[f"{stem}/{CENTER}/count"])
-                      if total > report.get(f"{stem}/{CENTER}/count", 0) else None)
-        tables.append(Group(table, Text(f"Exact flats {num(exact)} · Near-flat hit {num(flat, '.1f', '%')} · "
-                                       f"False flat {num(false_flat, '.1f', '%')}", style="dim")))
-    grid.add_row(*tables)
-    return Panel(grid, title=title, title_align="left", border_style="blue")
+def fine_move_panel(report, title, horizon):
+    table = Table(expand=True, box=None, padding=(0, 1))
+    table.add_column("Actual signed move", no_wrap=True)
+    for col in ("Pairs", "Share %", "Dir %", "MAE $", "Base $", "Skill %", "Bias $", "P90 ≥$"):
+        table.add_column(col, justify="right")
+    stem = f"{horizon}/trade/fine_move/-1"
+    total = sum(report.get(f"{stem}/{i}/count", 0) for i in range(len(FINE_MOVE_LABELS)))
+    for i, label in enumerate(FINE_MOVE_LABELS):
+        def value(key):
+            return report.get(f"{stem}/{i}/{key}")
+        n, error, base = (value(k) for k in ("count", "close_mae", "persistence_close_mae"))
+        table.add_row(label, num(n), num(100*n/total if total and n is not None else None, ".2f"),
+                      num(value("direction_accuracy_pct"), ".1f"), scored(error, base, ".4g"),
+                      num(base, ".4g"), scored(skill_pct(error, base), 0, "+.1f", higher=True),
+                      num(value("signed_error"), "+.4g"), num(value("p90_lower"), ".4g"))
+    exact = report.get(f"{stem}/{CENTER}/exact_flat_count")
+    flat = report.get(f"{stem}/{CENTER}/predicted_near_flat_pct")
+    false_flat = (sum(report.get(f"{stem}/{i}/count", 0)
+                      * report.get(f"{stem}/{i}/predicted_near_flat_pct", 0)
+                      for i in range(len(FINE_MOVE_LABELS)) if i != CENTER)
+                  / (total-report[f"{stem}/{CENTER}/count"])
+                  if total > report.get(f"{stem}/{CENTER}/count", 0) else None)
+    note = Text(f"Exact flats {num(exact)} · Near-flat hit {num(flat, '.1f', '%')} · "
+                f"False flat {num(false_flat, '.1f', '%')}", style="dim")
+    return titled_panel(Group(table, note), title)
 
 
-def move_by_price_panel(report, title, width):
-    horizon = "1s/h01"
+def move_by_price_panel(report, title, horizon):
     table = Table(expand=True, box=None)
     table.add_column("Actual signed move")
     for _, label in PRICE_LABELS:
@@ -439,22 +428,31 @@ def move_by_price_panel(report, title, width):
             skill = skill_pct(report.get(f"{key}/close_mae"), report.get(f"{key}/persistence_close_mae"))
             cells.append(f"{num(n)} / {num(hit, '.1f', '%')} / {num(skill, '+.1f', '%')}")
         table.add_row(label, *cells)
-    explanation = Text("Next 1s trade close · Each cell shows pairs / direction hit / MAE skill.", style="dim")
-    return Panel(Group(explanation, table), title=title, title_align="left", border_style="blue")
+    explanation = Text("Trade close · Each cell shows pairs / direction hit / MAE skill.", style="dim")
+    return titled_panel(Group(explanation, table), title)
 
 
-def training_distribution_panel(report):
+def distribution_panel(report, title, horizon, *, census=False):
     table = Table(expand=True, box=None)
-    table.add_column("Next 1s signed move")
+    table.add_column("Actual signed move")
     for _, label in PRICE_LABELS:
         table.add_column(label, justify="right")
     counts = report.get("counts")
+    slot = SLOT_NAMES.index(horizon)
     for i, label in enumerate(FINE_MOVE_LABELS):
-        table.add_row(label, *(num(row[i]) for row in counts[SLOT_NAMES.index("1s/h01")]) if counts else ("—",)*5)
-    header = (f"Pass {report['data_pass']} · {num(report['sessions'])} sessions · {num(report['origins'])} origins · saved once"
-              if report else "Pending the first complete census pass.")
-    return Panel(Group(Text(header, style="dim"), table), title="TRAINING TARGET DISTRIBUTION",
-                 title_align="left", border_style="blue")
+        if census:
+            values = [counts[slot][band][i] if counts else None for band in range(len(PRICE_LABELS))]
+        else:
+            values = [report.get(f"{horizon}/trade/fine_move/{band}/{i}/count")
+                      for band in range(len(PRICE_LABELS))]
+        table.add_row(label, *(num(value) for value in values))
+    if census:
+        header = (f"Pass {report['data_pass']} · {num(report['sessions'])} sessions · {num(report['origins'])} origins · saved once"
+                  if counts else "Pending the first complete census pass.")
+    else:
+        header = (f"Step {num(report.get('step'))} · eligible trade pairs by starting price"
+                  if report else "Pending the first completed report.")
+    return titled_panel(Group(Text(header, style="dim"), table), title)
 
 
 def glossary():
@@ -506,7 +504,7 @@ def glossary():
         guide.add_row(Text(heading, "bold white"), "")
         for label, explanation in rows:
             guide.add_row(label, explanation)
-    return Panel(guide, title="METRIC GUIDE", title_align="left", border_style="blue")
+    return titled_panel(guide, "METRIC GUIDE")
 
 
 def progress_bars(state, final, width):
@@ -553,35 +551,47 @@ def render(snapshot, *, width, height, now=None, scrollable=False):
     global_rows = status_rows(state, report, manifest, training, step, saved, age, state_label,
                              color, width=width, compact=height < 46, stale=stale)
     global_rows.append(progress_bars(state, final, width))
-    top = Panel(Group(*global_rows), title=f"RUN STATUS  ·  {state.get('panel_title', 'Phase 2 V5')}",
-                title_align="left", border_style=color)
-    # Viewport size alone determines the layout. A report arriving can fill
-    # cells, but must never move another section or change the horizon list.
+    top = titled_panel(Group(*global_rows), f"RUN STATUS  ·  {state.get('panel_title', 'Phase 2 V5')}",
+                       border_style=color)
+    # Each comparison is ordered by scope within a metric and horizon.
+    sample = state.get("training_sample", {})
+    scopes = (("TRAINING", sample), ("DEVELOPMENT", development), ("VALIDATION", final))
+    recent = titled_panel(training_table(training, width, count=1 if height < 46 else None),
+                          "TRAINING ACTIVITY · recent optimizer updates")
     if height < 46:
-        def summary(label, report):
-            return Text(f"{label}  |  step {num(report.get('step'))}  |  loss {num(report.get('loss'), ',.3f')}",
-                        overflow="ellipsis", no_wrap=True)
-        return Group(top, Panel(training_table(training, width, count=1), title="TRAINING", title_align="left"),
-                     summary("DEVELOPMENT", development), summary("FULL VALIDATION", final))
-    detailed = height >= 87
-    views = [
-        top,
-        Panel(training_table(training,width), title="TRAINING  ·  recent logged updates", title_align="left", border_style="blue"),
-        eval_panel(development,prior,"DEVELOPMENT · held-out split",width,detailed,"Waiting for the first completed development evaluation."),
-        eval_panel(final,{},"END-OF-PASS VALIDATION · held-out split",width,detailed,"Pending until the full training pass finishes."),
-    ]
-    if height >= 103 and width >= 100:
-        views.extend((breakdown_panel(development, "DEVELOPMENT · trade move and price groups", width),
-                      breakdown_panel(final, "END-OF-PASS · trade move and price groups", width)))
-    if scrollable and state.get("fine_move_diagnostics"):
-        for scope, item in (("DEVELOPMENT", development), ("END-OF-PASS VALIDATION", final),
-                            ("TRAINING SAMPLE", state["training_sample"])):
-            if scope == "TRAINING SAMPLE":
-                views.append(eval_panel(item, {}, "TRAINING SAMPLE · fixed end-of-pass checkpoint", width, False,
-                                        "Pending the next end-of-pass checkpoint."))
-            views.append(fine_move_panel(item, f"{scope} · signed moves", width))
-            views.append(move_by_price_panel(item, f"{scope} · price bands × signed moves", width))
-        views.append(training_distribution_panel(state["training_target_distribution"]))
+        return Group(top, recent, *(Text(f"{scope}  |  step {num(item.get('step'))}  |  "
+                                         f"loss {num(item.get('loss'), ',.3f')}",
+                                         overflow="ellipsis", no_wrap=True)
+                                    for scope, item in scopes))
+    notes = ("fixed end-of-pass sample", "held-out split", "end-of-pass held-out split")
+    waits = ("Waiting for the end-of-pass training sample.",
+             "Waiting for the first completed development evaluation.",
+             "Waiting for the end-of-pass evaluation.")
+    views = [top, recent]
+    for (scope, item), note, wait in zip(scopes, notes, waits):
+        views.append(eval_panel(item, prior if scope == "DEVELOPMENT" else {},
+                                f"{scope} · forecast performance · {note}", width, height >= 87, wait))
+    if scrollable:
+        horizons = DETAIL_HORIZONS
+        fine = state.get("fine_move_diagnostics")
+        families = [(breakdown_panel, "trade move and price groups")]
+        if fine:
+            families.extend(((fine_move_panel, "fine signed moves"),
+                             (move_by_price_panel, "price bands × signed moves")))
+        for make_panel, label in families:
+            for horizon in horizons:
+                frame, step_label = horizon.split("/h")
+                for scope, item in scopes:
+                    views.append(make_panel(item, f"{scope} · {label} · {frame} / {step_label}", horizon))
+        if fine:
+            for horizon in horizons:
+                frame, step_label = horizon.split("/h")
+                for scope, item in scopes:
+                    census = scope == "TRAINING"
+                    if census:
+                        item = state.get("training_target_distribution", {})
+                    views.append(distribution_panel(item, f"{scope} · target distribution · {frame} / {step_label}",
+                                                    horizon, census=census))
     if scrollable or height >= 65:
         views.append(glossary())
     return Group(*views)
