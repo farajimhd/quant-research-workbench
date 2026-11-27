@@ -5,3 +5,7 @@ The bounded launcher reads the stopped Phase 2 parent and restores its certified
 The default comparison inherits all shared forecast weights and AdamW moments. Use `--fresh` on both arms to compare early learning with fresh forecast weights at the same data cursor and learning rate. Profile outputs and W&B metrics are isolated from the parent. All checkpoints stay local. The launcher writes before/after development metrics and bounded training throughput, with no automatic full run.
 
 From the immutable workstation snapshot run `python -B -m research.bar_gpt.phase2_v6.profile --arm bar-cache --parent <stopped-run> --output <new-runtime> --source-revision <snapshot-commit> --sessions 1536 --eval-sessions 256`. Repeat with `--arm v29` and a new output path. CUDA gradient parity is tested by running `test_cache.py` on a CUDA machine.
+
+## Full training
+
+Use `python -B -m research.bar_gpt.phase2_v6.run_train --output <new-runtime> --source-revision <full-commit> --transfer-profile <transfer-cache-profile>`. The launcher replays the profiled transfer, verifies the development metrics, then starts twenty complete passes from the recovered weights and AdamW moments. The step, traversal and pass-local cosine schedule start at the first origin of pass one. For recovery use the same output and revision with `--resume` in place of `--transfer-profile`. Rolling checkpoints contain model, optimizer, RNG, cursor and scheduler position. The V5 forecast panel supports the V6 run directory.

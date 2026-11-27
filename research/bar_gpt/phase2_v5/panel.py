@@ -88,6 +88,7 @@ class Reader:
                     break
         state = dict(self.read("progress.json"))
         manifest = self.read("manifest.json")
+        state["panel_title"] = manifest.get("panel_title", "Phase 2 V5")
         data = manifest.get("model", {}).get("data", {})
         if data.get("certificate"):
             cert = self.read(data["certificate"])
@@ -410,7 +411,8 @@ def render(snapshot, *, width, height, now=None):
     global_rows = status_rows(state, report, manifest, training, step, saved, age, state_label,
                              color, width=width, compact=height < 46, stale=stale)
     global_rows.append(progress_bars(state, final, width))
-    top = Panel(Group(*global_rows), title="RUN STATUS  ·  Phase 2 V5", title_align="left", border_style=color)
+    top = Panel(Group(*global_rows), title=f"RUN STATUS  ·  {state.get('panel_title', 'Phase 2 V5')}",
+                title_align="left", border_style=color)
     # Viewport size alone determines the layout. A report arriving can fill
     # cells, but must never move another section or change the horizon list.
     if height < 46:

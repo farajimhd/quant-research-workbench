@@ -398,7 +398,8 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
                     checkpoint()
                 if reporter and step >= next_validation:
                     reporter.update(stage="development validation")
-                    report = evaluate(units, model, teacher, args, args.eval_sessions, reporter, evaluation)
+                    report = evaluate(units, model, teacher, args, args.eval_sessions, reporter, evaluation,
+                                      session_type=session_type)
                     if report is None:
                         checkpoint()
                         return "stopped"
@@ -439,7 +440,7 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
         raise ValueError(f"Eligible training origins differ: {pass_origins} vs {expected_eligible}")
     reporter.update(stage="full validation", epoch=pass_index+1, epochs=args.passes,
                     pass_fraction=1., pass_origins_done=candidates, pass_origins_total=pass_total)
-    report = evaluate(units, model, teacher, args, 0, reporter, evaluation)
+    report = evaluate(units, model, teacher, args, 0, reporter, evaluation, session_type=session_type)
     if report is None:
         return "stopped"
     result = dict(step=step, data_pass=pass_index+1, **report)
@@ -453,12 +454,14 @@ def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, 
     return "complete" if pass_index == args.passes else "next_pass"
 
 
-def train(args, units, teacher, model, optimizer, contract, reporter=None, saved=None):
+def train(args, units, teacher, model, optimizer, contract, reporter=None, saved=None, *,
+          session_type=DeviceSession, gradients_type=ForecastGradients, evaluation_type=ForecastEvaluation):
     pass_index = saved.get("pass_index", 0) if saved else 0
-    evaluation = ForecastEvaluation(model, teacher, args) if reporter else None
+    evaluation = evaluation_type(model, teacher, args) if reporter else None
     while pass_index < args.passes:
         active = order_for_pass(units, pass_index)
-        result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved, evaluation)
+        result = train_pass(args, active, teacher, model, optimizer, contract, reporter, saved, evaluation,
+                            session_type=session_type, gradients_type=gradients_type)
         if result != "next_pass":
             return result
         if pass_index + 1 == getattr(args, "stop_after_pass", None):
