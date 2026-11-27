@@ -143,17 +143,17 @@ def forecast_table(report, prior, width, detailed):
     table = Table(expand=True, box=None, padding=(0, 1))
     table.add_column("Bar", style="cyan", no_wrap=True, width=10)
     columns = ["Trade MAE", "Baseline MAE", "Origin dir %"]
-    if width >= 65:
+    if width >= 110:
         columns += ["Skill %", "Candle dir %", "Path dir %"]
-    if width >= 100:
-        columns += ["Bid $", "Ask $", "Pairs"]
     if width >= 145:
+        columns += ["Bid $", "Ask $", "Pairs"]
+    if width >= 225:
         columns += ["Vol MAE", "Trade #", "Bid size", "Ask size", "Small dir %", "Small skill %", "Flat MAE $"]
-    if width >= 215:
+    if width >= 340:
         columns += ["Bid dir %", "Ask dir %", "Up hit %", "Down hit %", ">0.5% dir", ">0.5% MAE",
-                    ">0.5% Baseline MAE", "Large skill %"]
+                    ">0.5% Base MAE", "Large skill %"]
     for label in columns:
-        table.add_column(label, justify="right", no_wrap=True, ratio=1)
+        table.add_column(label, justify="right", no_wrap=True, min_width=len(label), ratio=1)
     for frame, n in HORIZONS if detailed else SUMMARY:
         prefix = f"{frame}/h{n:02d}"
         def metric(key):
@@ -185,19 +185,19 @@ def forecast_table(report, prior, width, detailed):
             return sum(v * n for v, n in valid) / sum(n for _, n in valid) if valid else None
         counts = [metric(f"trade/from_last/{label}_count") or 0 for label in ("down", "flat", "up")]
         cells = [close("trade"), num(last, ",.4f"), direction("trade", "from_last")]
-        if width >= 65:
+        if width >= 110:
             cells += [scored(skill, 0, "+,.1f", higher=True),
                       direction("trade", "candle"), direction("trade", "path")]
-        if width >= 100:
-            cells += [close("bid"), close("ask"), num(sum(counts) if metric("trade/from_last/balanced_accuracy_pct") is not None else None)]
         if width >= 145:
+            cells += [close("bid"), close("ask"), num(sum(counts) if metric("trade/from_last/balanced_accuracy_pct") is not None else None)]
+        if width >= 225:
             cells += [raw(key) for key in ("trade_size", "trade_count", "bid_size", "ask_size")]
             small = ("up_small", "down_small")
             cells += [num(signed(small, "direction_accuracy_pct", balanced=True), ".1f"),
                       scored(skill_pct(signed(small, "close_mae"), signed(small, "persistence_close_mae")),
                              0, "+.1f", higher=True),
                       num(signed(("flat",), "close_mae"), ",.4f")]
-        if width >= 215:
+        if width >= 340:
             parts = [(metric(f"trade/abs_move_pct/{band}/count") or 0, band)
                      for band in ("05_1","1_2","gt_2")]
             total = sum(count for count, _ in parts)
@@ -389,7 +389,7 @@ def glossary(width, *, expanded):
     guide.add_row("Direction", "Origin compares with last known close. Candle compares close with open. Path compares adjacent closes within the timeframe.")
     guide.add_row("Balanced direction", "Equal weight for each observed down, flat and up class. Small dir excludes flat and balances up/down. Large dir counts each move equally.")
     if expanded:
-        guide.add_row("Move / price groups", "Small is 0 < |actual move| ≤ 0.5%. Large is >0.5%. Flat has zero baseline error. Price bands use last known trade close.")
+        guide.add_row("Move / price groups", "Small is 0 < |actual move| ≤ 0.5%. Large is >0.5%. Flat baseline error is zero. Base MAE is baseline MAE. Price bands use the last known trade close.")
         guide.add_row("Activity / Training", "Volume in shares, Trade # in trades, quote sizes in source units. Loss uses the training objective. Origins is cumulative.")
         guide.add_row("Colors", "Green beats the reference, orange trails. Close errors use baseline, skill uses zero, direction uses always-flat or 50% for large moves.")
         guide.add_row("Other references", "Activity compares with matching prior development coverage. Training loss and speed compare with the earlier log median. Dash means unavailable.")
@@ -457,7 +457,7 @@ def render(snapshot, *, width, height, now=None):
         eval_panel(development,prior,"DEVELOPMENT · held-out split",width,detailed,"Waiting for the first completed development evaluation."),
         eval_panel(final,{},"END-OF-PASS VALIDATION · held-out split",width,detailed,"Pending until the full training pass finishes."),
     ]
-    if height >= 100 and width >= 90:
+    if height >= 103 and width >= 100:
         views.extend((breakdown_panel(development, "DEVELOPMENT · trade move and price groups", width),
                       breakdown_panel(final, "END-OF-PASS · trade move and price groups", width)))
     if height >= 65:
