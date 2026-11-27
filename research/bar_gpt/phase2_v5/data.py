@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import hashlib
 import io
+from threading import Lock
 import numpy as np
 import polars as pl
 import torch
@@ -255,6 +256,22 @@ def bar_features(teacher, logs, valid, clocks, frame_ids):
 
 def encode_cached(teacher, features, gather):
     x = features[gather]
+    graphs = getattr(teacher, "window_graphs", None)
+    if graphs and len(x) in graphs:
+        graph, static, output, lock, ready = graphs[len(x)]
+        # Producer streams share one static input per shape. Only reuse it
+        # after the preceding stream has copied out its result.
+        with lock:
+            torch.cuda.current_stream().wait_event(ready)
+            static.copy_(x)
+            graph.replay()
+            result = output.clone()
+            ready.record()
+        return result
+    return encode_features(teacher, x)
+
+
+def encode_features(teacher, x):
     pos = torch.arange(64,device=x.device,dtype=torch.float32)/63
     x[...,18,0] = torch.where(x[...,18,1].bool(),(pos-teacher.mean[18])/teacher.scale[18],0)
     x[:,0,22] = 0
@@ -264,6 +281,21 @@ def encode_cached(teacher, features, gather):
     embedded = (bars[0] if len(bars) == 1 else torch.cat(bars)).reshape(-1,64,32)
     mixed = [teacher.mixers(tile) for tile in embedded.split(teacher.config.mixer_chunk_windows)]
     return mixed[0] if len(mixed) == 1 else torch.cat(mixed)
+
+
+@torch.no_grad()
+def prepare_window_graphs(teacher):
+    """Capture repeated exact V29 shapes before starting any producer thread."""
+    graphs = {}
+    for size in (*range(1, 17), 4096, 8192):
+        static = teacher.mean.new_zeros((size, 64, 27, 3))
+        encode_features(teacher, static)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = encode_features(teacher, static)
+        ready = torch.cuda.current_stream().record_event()
+        graphs[size] = graph, static, output, Lock(), ready
+    teacher.window_graphs = graphs
 
 
 class DeviceSession:
