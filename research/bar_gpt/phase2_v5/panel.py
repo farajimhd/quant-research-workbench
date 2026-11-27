@@ -135,18 +135,23 @@ def flat_reference(report, key):
     return 100 / classes if classes and counts[1] else 0 if classes else None
 
 
+def skill_pct(error, baseline):
+    return 100 * (1 - error / baseline) if error is not None and baseline else None
+
+
 def forecast_table(report, prior, width, detailed):
     table = Table(expand=True, box=None, padding=(0, 1))
     table.add_column("Bar", style="cyan", no_wrap=True, width=10)
-    columns = ["Trade $", "Last $", "Origin %"]
+    columns = ["Trade MAE", "Baseline MAE", "Origin dir %"]
     if width >= 65:
-        columns += ["Skill %", "Candle %", "Path %"]
+        columns += ["Skill %", "Candle dir %", "Path dir %"]
     if width >= 100:
         columns += ["Bid $", "Ask $", "Pairs"]
     if width >= 145:
-        columns += ["Open $", "High $", "Low $", "Vol MAE", "Trade #", "Bid size", "Ask size"]
+        columns += ["Vol MAE", "Trade #", "Bid size", "Ask size", "Small dir %", "Small skill %", "Flat MAE $"]
     if width >= 215:
-        columns += ["Bid dir %", "Ask dir %", ">0.5% dir", ">0.5% MAE", ">0.5% last $"]
+        columns += ["Bid dir %", "Ask dir %", "Up hit %", "Down hit %", ">0.5% dir", ">0.5% MAE",
+                    ">0.5% Baseline MAE", "Large skill %"]
     for label in columns:
         table.add_column(label, justify="right", no_wrap=True, ratio=1)
     for frame, n in HORIZONS if detailed else SUMMARY:
@@ -172,7 +177,12 @@ def forecast_table(report, prior, width, detailed):
 
         model = metric("trade/comparable_close_mae")
         last = metric("trade/persistence_close_mae")
-        skill = 100 * (1 - model / last) if model is not None and last else None
+        skill = skill_pct(model, last)
+        def signed(labels, field, *, balanced=False):
+            values = [(metric(f"trade/signed_move/{label}/{field}"),
+                       metric(f"trade/signed_move/{label}/count")) for label in labels]
+            valid = [(v, 1 if balanced else count) for v, count in values if count and v is not None]
+            return sum(v * n for v, n in valid) / sum(n for _, n in valid) if valid else None
         counts = [metric(f"trade/from_last/{label}_count") or 0 for label in ("down", "flat", "up")]
         cells = [close("trade"), num(last, ",.4f"), direction("trade", "from_last")]
         if width >= 65:
@@ -181,8 +191,12 @@ def forecast_table(report, prior, width, detailed):
         if width >= 100:
             cells += [close("bid"), close("ask"), num(sum(counts) if metric("trade/from_last/balanced_accuracy_pct") is not None else None)]
         if width >= 145:
-            cells += [raw(key) for key in ("trade_open","trade_high","trade_low","trade_size",
-                                           "trade_count","bid_size","ask_size")]
+            cells += [raw(key) for key in ("trade_size", "trade_count", "bid_size", "ask_size")]
+            small = ("up_small", "down_small")
+            cells += [num(signed(small, "direction_accuracy_pct", balanced=True), ".1f"),
+                      scored(skill_pct(signed(small, "close_mae"), signed(small, "persistence_close_mae")),
+                             0, "+.1f", higher=True),
+                      num(signed(("flat",), "close_mae"), ",.4f")]
         if width >= 215:
             parts = [(metric(f"trade/abs_move_pct/{band}/count") or 0, band)
                      for band in ("05_1","1_2","gt_2")]
@@ -192,9 +206,13 @@ def forecast_table(report, prior, width, detailed):
                            for count, band in parts) / total if total else None
             # For non-flat moves, compare against a 50% random up/down guess.
             cells += [direction("bid","from_last"), direction("ask","from_last"),
+                      num(signed(("up_small", "up_large"), "direction_accuracy_pct"), ".1f"),
+                      num(signed(("down_small", "down_large"), "direction_accuracy_pct"), ".1f"),
                       scored(weighted("direction_accuracy_pct"),50,".1f",higher=True),
                       scored(weighted("close_mae"),weighted("persistence_close_mae"),",.4f"),
-                      num(weighted("persistence_close_mae"),",.4f")]
+                      num(weighted("persistence_close_mae"),",.4f"),
+                      scored(skill_pct(weighted("close_mae"), weighted("persistence_close_mae")),
+                             0, "+.1f", higher=True)]
         table.add_row(f"{frame} / {n:02d}", *cells)
     return table
 
@@ -203,7 +221,7 @@ def training_table(rows, width, *, count=None):
     if count is None:
         count = 5 if width >= 95 else 2
     table = Table(expand=True, box=None, padding=(0, 1))
-    for col in ("Update", "Loss", "Origins/s", "Rate", "Origins"):
+    for col in ("Update", "Loss", "Origins/s", "Learning rate", "Origins"):
         table.add_column(col, justify="right", no_wrap=True, ratio=1)
     previous = rows[5:30]
     reference_loss = median(row["train/loss"] for row in previous) if previous else None
@@ -217,7 +235,8 @@ def training_table(rows, width, *, count=None):
 
 
 def eval_panel(report, prior, title, width, detailed, waiting):
-    header = Text(f"Step {num(report.get('step'))}  ·  {num(report.get('origins'))} origins  ·  "
+    session_count = f"{num(report['sessions'])} sessions  ·  " if "sessions" in report else ""
+    header = Text(f"Step {num(report.get('step'))}  ·  {session_count}{num(report.get('origins'))} origins  ·  "
                   f"loss {num(report.get('loss'),',.3f')}  ·  "
                   f"{num(report.get('origins_per_second'),',.0f',' origins/s')}  ·  "
                   f"nonfinite {num(report.get('nonfinite'))}", overflow="ellipsis", no_wrap=True)
@@ -327,44 +346,54 @@ def status_rows(state, report, manifest, training, step, saved, age, label, colo
     return rows
 
 
-GLOSSARY = (
-    ("Bar / Pairs", "Timeframe and nth observed eligible future candle; pairs count trade closes with both a valid target and prior close."),
-    ("Trade $ / Last $", "Mean absolute dollar error of the predicted trade close and of carrying forward the last known trade close, on identical pairs."),
-    ("Skill %", "100 × (1 − Trade $ / Last $). Positive means lower error than persistence; zero is a tie."),
-    ("Origin %", "Sign of forecast close minus last known close vs sign of actual close minus that same last known close."),
-    ("Candle %", "Sign of predicted close minus predicted open vs the same comparison in the actual candle."),
-    ("Path %", "Sign of forecast close minus the previous forecast close vs the actual adjacent change. First horizon has no path comparison."),
-    ("Bid $ / Ask $", "Mean absolute dollar error for bid/ask closes. Each color compares with that stream's own last-close baseline."),
-    ("Bid dir % / Ask dir %", "Origin direction accuracy for each quote stream using its own last known close."),
-    ("Open $ / High $ / Low $", "Mean absolute forecast error for each trade field in dollars, over source-valid outcomes."),
-    ("Vol MAE / Trade #", "Mean absolute error of traded volume in shares and of trade count in trades."),
-    ("Bid size / Ask size", "Mean absolute error of predicted quote sizes in source quantity units."),
-    (">0.5% dir", "Share of correct up/down forecasts when the actual close moved more than 0.5% from the last known close."),
-    (">0.5% MAE / last $", "Forecast and persistence close MAE in dollars on that same large-move subset."),
-    ("Training columns", "Update is the optimizer step; Loss is the masked training objective; Origins/s is throughput; Rate is learning rate; Origins is the cumulative trained count."),
+MOVE_LABELS = (
+    ("down_large", "Down >0.5%"), ("down_small", "Down ≤0.5%"), ("flat", "Flat"),
+    ("up_small", "Up ≤0.5%"), ("up_large", "Up >0.5%"),
 )
+PRICE_LABELS = (
+    ("lt1", "<$1"), ("1_5", "$1–<5"), ("5_20", "$5–<20"),
+    ("20_100", "$20–<100"), ("ge100", "$100+"),
+)
+
+
+def breakdown_panel(report, title, width):
+    grid = Table.grid(expand=True)
+    horizons = (("1s", 1), ("1s", 10), ("1m", 1), ("daily", 1)) if width >= 280 else (("1s", 1),)
+    tables = []
+    for frame, horizon in horizons:
+        grid.add_column(ratio=1)
+        table = Table(expand=True, box=None, padding=(0, 1))
+        table.add_column(f"{frame} / {horizon:02d}", no_wrap=True)
+        for column in ("Pairs", "Dir %", "MAE $", "Base $", "Skill %"):
+            table.add_column(column, justify="right", no_wrap=True)
+        for family, labels in (("signed_move", MOVE_LABELS), ("price_band", PRICE_LABELS)):
+            for key, label in labels:
+                prefix = f"{frame}/h{horizon:02d}/trade/{family}/{key}"
+                count, error, baseline = (report.get(f"{prefix}/{k}") for k in
+                                          ("count", "close_mae", "persistence_close_mae"))
+                accuracy = "balanced_accuracy_pct" if family == "price_band" else "direction_accuracy_pct"
+                table.add_row(label, num(count), num(report.get(f"{prefix}/{accuracy}"), ".1f"),
+                              scored(error, baseline, ",.3f"), num(baseline, ",.3f"),
+                              scored(skill_pct(error, baseline), 0, "+.1f", higher=True))
+        tables.append(table)
+    grid.add_row(*tables)
+    return Panel(grid, title=title, title_align="left", border_style="blue")
 
 
 def glossary(width, *, expanded):
     guide = Table.grid(padding=(0, 1), expand=True)
     guide.add_column(style="bold cyan", no_wrap=True)
     guide.add_column(ratio=1)
+    guide.add_row("Bar / Pairs", "Timeframe and future candle number. Pairs have a valid target close, finite forecast and positive last known close.")
+    guide.add_row("Baseline / Skill", "Carry the last known close to every horizon. Skill % = 100 × (1 − model MAE / baseline MAE). Dollar errors are MAE.")
+    guide.add_row("Direction", "Origin compares with last known close. Candle compares close with open. Path compares adjacent closes within the timeframe.")
+    guide.add_row("Balanced direction", "Equal weight for each observed down, flat and up class. Small dir excludes flat and balances up/down. Large dir counts each move equally.")
     if expanded:
-        for name, meaning in GLOSSARY:
-            guide.add_row(name, meaning)
-    else:
-        guide.add_row("Close errors", "Mean absolute dollar error. Last $ carries forward the last known close. Skill % is 100 × (1 − Trade $ / Last $).")
-        guide.add_row("Direction", "Origin = close vs last known close; Candle = close vs open; Path = consecutive closes. Direction uses balanced recall.")
-        guide.add_row("Coverage", "Bar = timeframe/horizon. Pairs = targets with an available prior close. Full-width view shows the complete glossary.")
-    meaning = Text("Dollar errors and skill compare to persistence where available. Direction % uses balanced recall: average recall across present down/flat/up classes, "
-                   "compared with always-flat. Large-move direction uses raw accuracy vs a 50% guess.")
-    colors = Text()
-    colors.append("Green", "bold green")
-    colors.append(" beats the reference; ")
-    colors.append("orange", "bold dark_orange")
-    colors.append(" trails. OHLC and activity MAE use the previous dev report with matching coverage. "
-                  "Training loss/speed use the preceding 25 logged updates' median. Counts and references stay neutral.")
-    return Panel(Group(guide, meaning, colors), title="METRIC GUIDE", title_align="left", border_style="blue")
+        guide.add_row("Move / price groups", "Small is 0 < |actual move| ≤ 0.5%. Large is >0.5%. Flat has zero baseline error. Price bands use last known trade close.")
+        guide.add_row("Activity / Training", "Volume in shares, Trade # in trades, quote sizes in source units. Loss uses the training objective. Origins is cumulative.")
+        guide.add_row("Colors", "Green beats the reference, orange trails. Close errors use baseline, skill uses zero, direction uses always-flat or 50% for large moves.")
+        guide.add_row("Other references", "Activity compares with matching prior development coverage. Training loss and speed compare with the earlier log median. Dash means unavailable.")
+    return Panel(guide, title="METRIC GUIDE", title_align="left", border_style="blue")
 
 
 def progress_bars(state, final, width):
@@ -425,9 +454,12 @@ def render(snapshot, *, width, height, now=None):
     views = [
         top,
         Panel(training_table(training,width), title="TRAINING  ·  recent logged updates", title_align="left", border_style="blue"),
-        eval_panel(development,prior,"DEVELOPMENT",width,detailed,"Waiting for the first completed development evaluation."),
-        eval_panel(final,{},"FULL VALIDATION",width,detailed,"Pending until the full training pass finishes."),
+        eval_panel(development,prior,"DEVELOPMENT · held-out split",width,detailed,"Waiting for the first completed development evaluation."),
+        eval_panel(final,{},"END-OF-PASS VALIDATION · held-out split",width,detailed,"Pending until the full training pass finishes."),
     ]
+    if height >= 100 and width >= 90:
+        views.extend((breakdown_panel(development, "DEVELOPMENT · trade move and price groups", width),
+                      breakdown_panel(final, "END-OF-PASS · trade move and price groups", width)))
     if height >= 65:
         views.append(glossary(width, expanded=height >= 94 and width >= 145))
     return Group(*views)

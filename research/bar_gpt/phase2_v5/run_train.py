@@ -263,12 +263,14 @@ def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None,
     batches = device_sessions(sessions(units, 1, 0, args.workers), teacher, args, metrics=True, session_type=session_type)
     started = time.perf_counter()
     missing = Counter()
+    evaluated_sessions = 0
     try:
         for number, (_, source, device) in enumerate(batches):
             if (args.output/"STOP").exists() or (args.output.parent/"STOP").exists():
                 return None
             if not len(source.origins):
                 continue
+            evaluated_sessions += 1
             missing.update(dict(zip(NAMES,device.missing)))
             for ids in torch.arange(len(source.origins), device="cuda").split(args.batch_size):
                 inputs, logs, valid, evidence = device.batch(ids, metrics=True, window_buffer=evaluation.window_buffer(len(ids)))
@@ -297,7 +299,7 @@ def evaluate(units, model, teacher, args, limit, reporter=None, evaluation=None,
         result["original_objective_loss"] = float(reference_loss)/count
     return {**result, **{f"missing/{frame}":missing[frame] for frame in NAMES},
             "loss": float(total_loss)/count, "origins": count, "origins_per_second":count/elapsed,
-            "seconds": time.perf_counter()-started, "full_split": not limit}
+            "seconds": time.perf_counter()-started, "full_split": not limit, "sessions": evaluated_sessions}
 
 
 def train_pass(args, units, teacher, model, optimizer, contract, reporter=None, saved=None, evaluation=None,

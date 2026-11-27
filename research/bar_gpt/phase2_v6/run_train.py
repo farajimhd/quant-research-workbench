@@ -36,7 +36,7 @@ def replay(args, trial_root, trial, parent, teacher, units, legacy, prior_optimi
     report = v5.evaluate(units, model, teacher, args, args.eval_sessions,
                          evaluation=CachedEvaluation(model, teacher, args), session_type=BarSession)
     expected = read(trial_root / "after.json")
-    if report is None or report.keys() != expected.keys():
+    if report is None or not expected.keys() <= report.keys():
         raise ValueError("Incomplete transfer replay evaluation")
     for key in expected.keys() - {"seconds", "origins_per_second"}:
         if not math.isclose(report[key], expected[key], rel_tol=1e-7, abs_tol=1e-9):

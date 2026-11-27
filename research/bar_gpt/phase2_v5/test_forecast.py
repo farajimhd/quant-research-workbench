@@ -146,3 +146,36 @@ def test_origin_order_respects_certified_overlap_policy():
     ):
         with pytest.raises(ValueError, match="publication policy"):
             validate_origin_order(np.array(clocks), policy)
+
+def test_signed_moves_and_price_bands_reconcile_with_trade_pairs():
+    from .metrics import Metrics
+    from .model import SLOTS
+
+    stats = Metrics("cpu")
+    anchor = torch.tensor([.50, 1., 5., 20., 100., 100., 100., 100.], dtype=torch.float64)
+    actual = anchor * torch.tensor([.99, .998, 1., 1.002, 1.02, 1., .98, 1.02],
+                                   dtype=torch.float64)
+    forecast = anchor * torch.tensor([.99, 1.02, 1.01, 1.002, 1.02, .99, .98, 1.02],
+                                     dtype=torch.float64)
+    raw = actual[:, None, None].expand(-1, SLOTS, 18)
+    logs = forecast.log()[:, None, None].expand_as(raw)
+    base = anchor[:, None, None].expand(-1, SLOTS, 3)
+    mask = torch.ones_like(base, dtype=torch.bool)
+    mask[-1] = False
+    stats.add({"logs": logs}, torch.ones_like(raw, dtype=torch.bool), (raw, base, mask))
+    result = stats.result()
+    trade = "1s/h01/trade/"
+    for family, labels, expected in (
+        ("signed_move", ("down_large","down_small","flat","up_small","up_large"), (2,1,2,1,1)),
+        ("price_band", ("lt1","1_5","5_20","20_100","ge100"), (1,1,1,1,3)),
+    ):
+        keys = [trade + f"{family}/{label}/" for label in labels]
+        assert tuple(result[k+"count"] for k in keys) == expected
+        for metric in ("close_mae", "persistence_close_mae"):
+            overall = ("comparable_close_mae" if metric == "close_mae" else metric)
+            value = sum(result[k+metric]*n for k,n in zip(keys,expected)) / sum(expected)
+            assert abs(value - result[trade+overall]) < 1e-12
+    assert result[trade+"signed_move/down_small/direction_accuracy_pct"] == 0
+    assert result[trade+"signed_move/flat/persistence_close_mae"] == 0
+    stats.reset()
+    assert stats.result()[trade+"price_band/ge100/count"] == 0
